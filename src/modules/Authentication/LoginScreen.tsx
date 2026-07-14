@@ -126,7 +126,7 @@ export default function LoginScreen() {
       // Success – navigate to main app
       navigation.reset({
         index: 0,
-        routes: [{ name: 'Home' }],
+        routes: [{ name: 'MainTabs' }],
       });
 
     } catch (error: any) {
@@ -136,42 +136,52 @@ export default function LoginScreen() {
     }
   };
 
-    const handleGoogleLogin = async () => {
-        setLoading(true);
-        try {
-            // ✅ Let Supabase handle the redirect – no redirectTo needed!
-            const { data, error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: {
-                queryParams: {
-                access_type: 'offline',
-                prompt: 'consent',
-                },
-            },
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    try {
+      // ✅ Use redirectTo with your app's URL scheme
+      const redirectTo = makeRedirectUri({
+        scheme: 'packnship',
+        path: 'auth/callback',
+      });
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: redirectTo,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+        },
+      });
+
+      if (error) throw error;
+
+      if (data?.url) {
+        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+
+        if (result.type === 'success') {
+          // ✅ Supabase automatically handles the session
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData?.session) {
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'MainTabs' }],
             });
-
-            if (error) throw error;
-
-            if (data?.url) {
-            const result = await WebBrowser.openAuthSessionAsync(data.url);
-
-            if (result.type === 'success') {
-                // ✅ Supabase automatically handles the session
-                const { data: sessionData } = await supabase.auth.getSession();
-                if (sessionData?.session) {
-                navigation.reset({
-                    index: 0,
-                    routes: [{ name: 'Home' }],
-                });
-                }
-            }
-            }
-        } catch (error: any) {
-            Alert.alert('Google Login Failed', error.message);
-        } finally {
-            setLoading(false);
+          }
+        } else if (result.type === 'cancel') {
+          Alert.alert('Cancelled', 'Google login was cancelled.');
         }
-        };
+      } else {
+        Alert.alert('Error', 'Could not initiate Google login. Please try again.');
+      }
+    } catch (error: any) {
+      Alert.alert('Google Login Failed', error.message || 'Something went wrong.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -219,10 +229,10 @@ export default function LoginScreen() {
                 />
               </View>
               {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
-                <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
+              <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
                 <Ionicons name="lock-closed-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
                 <Animated.View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
-                    <TextInput
+                  <TextInput
                     style={styles.passwordInput}
                     placeholder="Password"
                     placeholderTextColor="#9CA3AF"
@@ -232,20 +242,20 @@ export default function LoginScreen() {
                     onFocus={() => setFocusedInput('password')}
                     onBlur={() => setFocusedInput(null)}
                     editable={!loading}
-                    />
+                  />
                 </Animated.View>
                 <TouchableOpacity
-                    style={styles.eyeButton}
-                    onPress={togglePasswordVisibility}
-                    disabled={loading}
+                  style={styles.eyeButton}
+                  onPress={togglePasswordVisibility}
+                  disabled={loading}
                 >
-                    <Ionicons
+                  <Ionicons
                     name={showPassword ? "eye-off-outline" : "eye-outline"}
                     size={22}
                     color="#6B7280"
-                    />
+                  />
                 </TouchableOpacity>
-                </View>
+              </View>
               {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
 
               <TouchableOpacity style={styles.forgotPasswordButton} disabled={loading}>
@@ -375,27 +385,27 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.02,
     shadowRadius: 4,
     elevation: 1,
-    },
+  },
   inputIcon: {
     paddingLeft: 14,
-    paddingRight: 8, // Added to create space between icon and text
-    },
+    paddingRight: 8,
+  },
   input: {
     flex: 1,
     paddingVertical: 14,
     paddingHorizontal: 12,
     fontSize: 15,
     color: '#111827',
-    },
+  },
   passwordInput: {
     flex: 1,
     paddingVertical: 14,
-    paddingLeft: 12, // Match the 12px left padding from the email input
+    paddingLeft: 12,
     paddingRight: 0,
-    paddingHorizontal: 0, // Remove horizontal padding to let parent handle spacing
+    paddingHorizontal: 0,
     fontSize: 15,
     color: '#111827',
-    },
+  },
   inputWithoutIcon: {
     paddingLeft: 1,
   },

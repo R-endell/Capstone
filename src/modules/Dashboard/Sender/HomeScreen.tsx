@@ -3,7 +3,10 @@ import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, StatusBar, Alert
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../../../App';
 
 import { supabase } from '../../../utils/supabase';
 
@@ -67,6 +70,7 @@ const MOCK_COMPLETED = [
 ];
 
 export default function HomeScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [firstName, setFirstName] = useState('First');
   const [lastName, setLastName] = useState('Last');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -84,7 +88,6 @@ export default function HomeScreen() {
     fetchUser();
   }, []);
 
-  // ✅ Placeholder actions (no navigation to non-existent screens)
   const handleSendPackage = () => {
     Alert.alert('Coming Soon', 'Send Package feature will be available in the next update.');
   };
@@ -94,7 +97,7 @@ export default function HomeScreen() {
   };
 
   const handleViewProfile = () => {
-    Alert.alert('Coming Soon', 'Profile screen will be available in the next update.');
+    navigation.navigate('MainTabs', { screen: 'Account' });
   };
 
   const handleViewNotifications = () => {
@@ -102,7 +105,7 @@ export default function HomeScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor="#F27024" />
 
       {/* Header */}
@@ -249,6 +252,9 @@ export default function HomeScreen() {
             </View>
           ))}
         </View>
+        
+        {/* Bottom spacer for tab bar */}
+        <View style={styles.bottomSpacer} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -260,7 +266,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   scrollContent: {
-    paddingBottom: 40,
+    paddingBottom: 20,
+  },
+  bottomSpacer: {
+    height: 80,
   },
 
   // Header
