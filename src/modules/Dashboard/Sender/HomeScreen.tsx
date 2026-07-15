@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../../../App';
+import type { RootStackParamList } from '../../../../App';
 
 import { supabase } from '../../../utils/supabase';
 
@@ -89,16 +89,16 @@ export default function HomeScreen() {
   }, []);
 
   const handleSendPackage = () => {
-    Alert.alert('Coming Soon', 'Send Package feature will be available in the next update.');
+  navigation.navigate('DropoffType', { mode: 'sendNow' });
   };
 
   const handleScheduleDelivery = () => {
-    Alert.alert('Coming Soon', 'Schedule Delivery feature will be available in the next update.');
+  navigation.navigate('DropoffType', { mode: 'schedule' });
   };
 
   const handleViewProfile = () => {
-    navigation.navigate('MainTabs', { screen: 'Account' });
-  };
+  navigation.navigate('Account');
+};
 
   const handleViewNotifications = () => {
     Alert.alert('Coming Soon', 'Notifications will be available in the next update.');

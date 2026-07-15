@@ -15,6 +15,18 @@ import MessagesScreen from './src/modules/Dashboard/Sender/MessagesScreen';
 import ActivityScreen from './src/modules/Dashboard/Sender/ActivityScreen';
 import EditProfileScreen from './src/modules/Dashboard/Sender/EditProfileScreen';
 
+// 👇 NEW: Import Schedule Context Provider
+import { ScheduleProvider } from './src/modules/Dashboard/Sender/Delivery/ScheduleContext';
+
+// 👇 NEW: Import Delivery Flow Screens
+import DropoffTypeScreen from './src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen';
+import ShipmentSizeScreen from './src/modules/Dashboard/Sender/Delivery/ShipmentSizeScreen';
+import AddItemScreen from './src/modules/Dashboard/Sender/Delivery/AddItemScreen';
+import ScheduleCalendarScreen from './src/modules/Dashboard/Sender/Delivery/ScheduleCalendarScreen';
+import LocationSelectScreen from './src/modules/Dashboard/Sender/Delivery/LocationSelectScreen';
+import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen';
+import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
+
 // 👇 Define the navigation param list for Stack
 export type RootStackParamList = {
   Loading: undefined;
@@ -23,6 +35,15 @@ export type RootStackParamList = {
   MainTabs: undefined;
   Account: undefined;
   EditProfile: undefined;
+  // 👇 NEW: Delivery Flow Screens
+  DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
+  ShipmentSize: undefined;
+  AddItem: { size: 'Small' | 'Medium' | 'Large' };
+  ScheduleCalendar: undefined;
+  PickupLocation: { type: 'pickup'; initialCoords?: any };
+  DropoffLocation: { type: 'dropoff'; initialCoords?: any };
+  Booking: { mode: 'sendNow' | 'schedule' };
+  DeliveryList: { status: 'Pending' | 'Accepted' };
 };
 
 // 👇 Define the navigation param list for Bottom Tabs
@@ -87,19 +108,31 @@ function MainTabs() {
 
 export default function App() {
   return (
-    <NavigationContainer>
-      <Stack.Navigator
-        initialRouteName="Loading"
-        screenOptions={{
-          headerShown: false,
-        }}
-      >
-        <Stack.Screen name="Loading" component={LoadingScreen} />
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="Register" component={RegisterScreen} />
-        <Stack.Screen name="MainTabs" component={MainTabs} />
-        <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-      </Stack.Navigator>
-    </NavigationContainer>
+    // 👇 NEW: Wrap with ScheduleProvider
+    <ScheduleProvider>
+      <NavigationContainer>
+        <Stack.Navigator
+          initialRouteName="Loading"
+          screenOptions={{
+            headerShown: false,
+          }}
+        >
+          <Stack.Screen name="Loading" component={LoadingScreen} />
+          <Stack.Screen name="Login" component={LoginScreen} />
+          <Stack.Screen name="Register" component={RegisterScreen} />
+          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+          {/* 👇 NEW: Delivery Flow Screens */}
+          <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+          <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+          <Stack.Screen name="AddItem" component={AddItemScreen} />
+          <Stack.Screen name="ScheduleCalendar" component={ScheduleCalendarScreen} />
+          <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
+          <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
+          <Stack.Screen name="Booking" component={BookingScreen} />
+          <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </ScheduleProvider>
   );
 }

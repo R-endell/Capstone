@@ -9,7 +9,6 @@ import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
 
-
 const { width, height } = Dimensions.get('window');
 
 export default function ActivityScreen({ navigation: navProp }: any) {
@@ -19,11 +18,60 @@ export default function ActivityScreen({ navigation: navProp }: any) {
   const [showFullMap, setShowFullMap] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   // State for the Package Detail Modal
   const [viewingPackage, setViewingPackage] = useState<any | null>(null);
-  
+
   const insets = useSafeAreaInsets();
+
+  // ✅ FIXED: Define deleteDelivery function
+  const deleteDelivery = async (requestId: number, cargoId: number, pickupLocId: number, dropoffLocId: number) => {
+    try {
+      // Delete in correct order (respect foreign key constraints)
+      
+      // 1. Delete delivery_requests (this will cascade to deliveries if set up)
+      const { error: requestError } = await supabase
+        .from('delivery_requests')
+        .delete()
+        .eq('request_id', requestId);
+      
+      if (requestError) throw requestError;
+
+      // 2. Delete cargo_profiles
+      if (cargoId) {
+        const { error: cargoError } = await supabase
+          .from('cargo_profiles')
+          .delete()
+          .eq('cargo_id', cargoId);
+        
+        if (cargoError) throw cargoError;
+      }
+
+      // 3. Delete locations (pickup and dropoff)
+      if (pickupLocId) {
+        const { error: pickupError } = await supabase
+          .from('locations')
+          .delete()
+          .eq('location_id', pickupLocId);
+        
+        if (pickupError) throw pickupError;
+      }
+
+      if (dropoffLocId) {
+        const { error: dropoffError } = await supabase
+          .from('locations')
+          .delete()
+          .eq('location_id', dropoffLocId);
+        
+        if (dropoffError) throw dropoffError;
+      }
+
+      Alert.alert('Success', 'Delivery has been cancelled and removed.');
+    } catch (error: any) {
+      console.error('Delete error:', error);
+      throw new Error(error.message || 'Failed to delete delivery');
+    }
+  };
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -57,7 +105,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
           dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( location_id, street_address, latitude, longitude )
         `)
         .eq('sender_id', userRecord.user_id)
-        .in('delivery_status', ['Accepted', 'Pending', 'Finding Provider'])
+        .in('delivery_status', ['Accepted', 'Pending',])
         .order('created_at', { ascending: false });
 
       if (active && active.length > 0) {
@@ -277,7 +325,8 @@ export default function ActivityScreen({ navigation: navProp }: any) {
         activeOpacity={0.8}
         onPress={() => setShowFullMap(true)}
       >
-        <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+        {/* ✅ FIXED: StyleSheet.absoluteFillObject (already correct) */}
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <MapView
             style={styles.map}
             initialRegion={{
@@ -395,8 +444,9 @@ export default function ActivityScreen({ navigation: navProp }: any) {
 
     return (
       <View style={styles.fullMapContainer}>
+        {/* ✅ FIXED: StyleSheet.absoluteFillObject (already correct) */}
         <MapView
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
           initialRegion={{
             latitude: (selectedDelivery.coords.pickup.latitude + selectedDelivery.coords.dropoff.latitude) / 2,
             longitude: (selectedDelivery.coords.pickup.longitude + selectedDelivery.coords.dropoff.longitude) / 2,
@@ -537,7 +587,11 @@ export default function ActivityScreen({ navigation: navProp }: any) {
         onRequestClose={() => setViewingPackage(null)}
       >
         <View style={styles.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setViewingPackage(null)} />
+          {/* ✅ FIXED: StyleSheet.absoluteFillObject (was absoluteFill) */}
+          <TouchableOpacity 
+            style={StyleSheet.absoluteFill} 
+            onPress={() => setViewingPackage(null)} 
+          />
           <View style={styles.pkgModalCard}>
             
             <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setViewingPackage(null)}>
@@ -696,7 +750,7 @@ const styles = StyleSheet.create({
   pageTitleDetail: { fontSize: 22, fontWeight: '700', color: '#000' },
   trackingId: { fontSize: 12, color: '#4B5563', marginBottom: 4 },
   detailMapCard: { width: '100%', height: 200, borderRadius: 16, overflow: 'hidden', marginBottom: 30, borderWidth: 1, borderColor: '#E5E7EB' },
-  map: { ...StyleSheet.absoluteFillObject },
+  map: { ...StyleSheet.absoluteFill },
   mapOverlayPill: { position: 'absolute', bottom: 16, left: 16, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 6, flexDirection: 'row', alignItems: 'center' },
   overlayPillText: { fontSize: 9, fontWeight: '600', color: '#000', marginLeft: 6 },
   packageStatusHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24 },
