@@ -13,19 +13,17 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../../../utils/supabase'; // Adjust path if needed
+import { supabase } from '../../../utils/supabase';
 
 export default function ProviderAccountScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
 
-  // Dynamic Data States
   const [firstName, setFirstName] = useState<string>('First');
   const [lastName, setLastName] = useState<string>('Last');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
 
-  // Fetch Logged-In User Data (Same logic as Sender AccountScreen)
   useFocusEffect(
     useCallback(() => {
       const fetchUserData = async () => {
@@ -77,7 +75,6 @@ export default function ProviderAccountScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
       
-      {/* Custom Orange Header (Styled like Sender Account Screen) */}
       <View style={[styles.mainHeader, { paddingTop: insets.top + 20 }]}>
         <View style={styles.profilePicContainer}>
           {avatarUrl && !imageError ? (
@@ -103,7 +100,6 @@ export default function ProviderAccountScreen() {
             </TouchableOpacity>
           </View>
           
-          {/* Provider Specific Badges */}
           <Text style={styles.verifiedText}>Verified Provider</Text>
           <View style={styles.ratingRow}>
             <Text style={styles.ratingScore}>4.9</Text>
@@ -118,7 +114,6 @@ export default function ProviderAccountScreen() {
         </View>
       </View>
 
-      {/* Menu Content */}
       <ScrollView 
         showsVerticalScrollIndicator={false} 
         style={styles.mainContent} 
@@ -136,12 +131,19 @@ export default function ProviderAccountScreen() {
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem}>
+        <TouchableOpacity 
+          style={styles.menuItem} 
+          onPress={() => navigation.navigate('ManageVehicle')}
+        >
           <Text style={styles.menuText}>Manage Vehicle</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem}>
+        {/* UPDATED: Added navigation for Manage Travel Routes */}
+        <TouchableOpacity 
+          style={styles.menuItem}
+          onPress={() => navigation.navigate('ManageRoutes')}
+        >
           <Text style={styles.menuText}>Manage Travel Routes</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
@@ -157,18 +159,14 @@ export default function ProviderAccountScreen() {
           <Text style={styles.logoutText}>Log out</Text>
         </TouchableOpacity>
 
-        <Text style={styles.versionText}>Pack-N-Go v1.0.0</Text>
+        <Text style={styles.versionText}>Pack-N-Ship v1.0.0</Text>
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#FFFFFF' 
-  },
-  // --- Header Styles (Matched to Sender Screen) ---
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   mainHeader: {
     backgroundColor: '#FA7A25', 
     flexDirection: 'row', 
@@ -177,96 +175,28 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   profilePicContainer: {
-    width: 70, 
-    height: 70, 
-    borderRadius: 35, 
-    backgroundColor: '#4B5563',
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    marginRight: 16,
-    overflow: 'hidden', 
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 4,
-    bottom: -40,
+    width: 70, height: 70, borderRadius: 35, 
+    backgroundColor: '#4B5563', justifyContent: 'center', 
+    alignItems: 'center', marginRight: 16, overflow: 'hidden', 
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15, shadowRadius: 5, elevation: 4, bottom: -40,
   },
-  profileImage: { 
-    width: '100%', 
-    height: '100%' 
-  },
-  nameContainer: {
-    bottom: -45, // Dropped slightly lower to accommodate the rating stars
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  profileName: { 
-    fontSize: 20, 
-    fontWeight: '800', 
-    color: '#000', 
-  },
-  editIconBtn: {
-    marginLeft: 8,
-    padding: 4,
-  },
-  verifiedText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#059669', // Darker green to ensure it's readable on the orange background
-    marginBottom: 2,
-  },
-  ratingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  ratingScore: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#000',
-    marginRight: 6,
-  },
-  starsContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
-  
-  // --- Content Styles (Matched to Sender Screen) ---
-  mainContent: { 
-    paddingHorizontal: 20, 
-    paddingTop: 36, // Increased slightly to clear the taller info block 
-  },
-  sectionTitle: { 
-    fontSize: 23, 
-    fontWeight: '800', 
-    color: '#111827', 
-    marginBottom: 16 
-  },
+  profileImage: { width: '100%', height: '100%' },
+  nameContainer: { bottom: -45 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
+  profileName: { fontSize: 20, fontWeight: '800', color: '#000' },
+  editIconBtn: { marginLeft: 8, padding: 4 },
+  verifiedText: { fontSize: 12, fontWeight: '700', color: '#059669', marginBottom: 2 },
+  ratingRow: { flexDirection: 'row', alignItems: 'center' },
+  ratingScore: { fontSize: 13, fontWeight: '800', color: '#000', marginRight: 6 },
+  starsContainer: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  mainContent: { paddingHorizontal: 20, paddingTop: 36 },
+  sectionTitle: { fontSize: 23, fontWeight: '800', color: '#111827', marginBottom: 16 },
   menuItem: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    justifyContent: 'space-between',
-    paddingVertical: 16, 
-    borderBottomWidth: 1, 
-    borderColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 16, borderBottomWidth: 1, borderColor: '#F3F4F6',
   },
-  menuText: { 
-    fontSize: 20, 
-    color: '#374151' 
-  },
-  logoutText: {
-    fontSize: 20,
-    color: '#EF4444',
-  },
-  versionText: { 
-    textAlign: 'center', 
-    color: '#9CA3AF', 
-    fontSize: 11, 
-    fontWeight: '500', 
-    marginTop: 30 
-  },
+  menuText: { fontSize: 20, color: '#374151' },
+  logoutText: { fontSize: 20, color: '#EF4444' },
+  versionText: { textAlign: 'center', color: '#9CA3AF', fontSize: 11, fontWeight: '500', marginTop: 30 },
 });

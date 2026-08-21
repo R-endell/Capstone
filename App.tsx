@@ -1,5 +1,4 @@
 import React from 'react';
-import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -10,17 +9,31 @@ import LoginScreen from './src/modules/Authentication/LoginScreen';
 import RegisterScreen from './src/modules/Authentication/RegisterScreen';
 import IdentityVerificationScreen from './src/modules/Settings/IdentityVerificationScreen';
 import TwoFactorAuthScreen from './src/modules/Settings/TwoFactorAuthScreen';
+
+// Sender Screens
 import HomeScreen from './src/modules/Dashboard/Sender/HomeScreen';
 import AccountScreen from './src/modules/Dashboard/Sender/AccountScreen';
 import ExploreScreen from './src/modules/Dashboard/Sender/ExploreScreen';
 import MessagesScreen from './src/modules/Dashboard/Sender/MessagesScreen';
 import ActivityScreen from './src/modules/Dashboard/Sender/ActivityScreen';
 import EditProfileScreen from './src/modules/Dashboard/Sender/EditProfileScreen';
+import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProviderScreen';
+
+// Settings Screens
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
-import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
 
+// Provider Screens
+import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
+import JobsScreen from './src/modules/Dashboard/Provider/JobsScreen';
+import EarningsScreen from './src/modules/Dashboard/Provider/EarningsScreen';
+import TaskScreen from './src/modules/Dashboard/Provider/TaskScreen';
+import ProviderMessagesScreen from './src/modules/Dashboard/Provider/MessagesScreen';
+import ManageVehicleScreen from './src/modules/Dashboard/Provider/Manage/ManageVehicleScreen';
+import ManageRoutesScreen from './src/modules/Dashboard/Provider/Manage/ManageRoutesScreen';
+
+// Delivery Features
 import { ScheduleProvider } from './src/modules/Dashboard/Sender/Delivery/ScheduleContext';
 import DropoffTypeScreen from './src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen';
 import ShipmentSizeScreen from './src/modules/Dashboard/Sender/Delivery/ShipmentSizeScreen';
@@ -29,8 +42,6 @@ import ScheduleCalendarScreen from './src/modules/Dashboard/Sender/Delivery/Sche
 import LocationSelectScreen from './src/modules/Dashboard/Sender/Delivery/LocationSelectScreen';
 import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen';
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
-
-const DummyScreen = () => <View style={{ flex: 1, backgroundColor: '#fff' }} />;
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -45,6 +56,7 @@ export type RootStackParamList = {
   Settings: undefined;
   DisputeCenter: undefined;
   LegalPolicies: undefined;
+  RegisterProvider: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
@@ -53,6 +65,8 @@ export type RootStackParamList = {
   DropoffLocation: { type: 'dropoff'; initialCoords?: any };
   Booking: { mode: 'sendNow' | 'schedule' };
   DeliveryList: { status: 'Pending' | 'Accepted' };
+  ManageVehicle: undefined;
+  ManageRoutes: undefined;
 };
 
 export type MainTabParamList = {
@@ -124,10 +138,10 @@ function ProviderTabs() {
         headerShown: false,
       })}
     >
-      <ProviderTab.Screen name="Task" component={DummyScreen} />
-      <ProviderTab.Screen name="Earnings" component={DummyScreen} />
-      <ProviderTab.Screen name="Jobs" component={DummyScreen} />
-      <ProviderTab.Screen name="Messages" component={DummyScreen} />
+      <ProviderTab.Screen name="Task" component={TaskScreen} />
+      <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
+      <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+      <ProviderTab.Screen name="Messages" component={ProviderMessagesScreen} />
       <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
     </ProviderTab.Navigator>
   );
@@ -149,6 +163,7 @@ export default function App() {
           <Stack.Screen name="Settings" component={SettingsScreen} />
           <Stack.Screen name="DisputeCenter" component={DisputeCenterScreen} />
           <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+          <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
           <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
           <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
           <Stack.Screen name="AddItem" component={AddItemScreen} />
@@ -157,6 +172,9 @@ export default function App() {
           <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
           <Stack.Screen name="Booking" component={BookingScreen} />
           <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+          
+          <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
+          <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </ScheduleProvider>

@@ -10,7 +10,7 @@ import {
   Alert,
   StatusBar,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -69,26 +69,70 @@ export default function AccountScreen() {
   const [userEmail, setUserEmail] = useState<string>('john.doe@example.com');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
+  const [userRole, setUserRole] = useState<string>('Sender');
+  const [isProviderRegistered, setIsProviderRegistered] = useState(false);
+  const [userId, setUserId] = useState<number | null>(null);
   
   const [currentView, setCurrentView] = useState<'main' | 'payment' | 'history'>('main');
 
   useFocusEffect(
     useCallback(() => {
       const fetchUserData = async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          setUserEmail(user.email || 'john.doe@example.com');
-          
-          if (user.user_metadata?.first_name) {
-            setFirstName(user.user_metadata.first_name);
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+            setUserEmail(user.email || 'john.doe@example.com');
+            
+            // Get user data from your users table
+            const { data: userData, error: userError } = await supabase
+              .from('users')
+              .select('user_id, first_name, last_name, profile_photo')
+              .eq('auth_id', user.id)
+              .single();
+
+            if (userError) {
+              console.error('Error fetching user:', userError);
+              return;
+            }
+
+            if (userData) {
+              setUserId(userData.user_id);
+              
+              if (userData.first_name) setFirstName(userData.first_name);
+              if (userData.last_name) setLastName(userData.last_name);
+              if (userData.profile_photo) {
+                setAvatarUrl(userData.profile_photo);
+                setImageError(false);
+              }
+
+              // Check if user has Provider role using user_roles table
+              const { data: userRoles, error: rolesError } = await supabase
+                .from('user_roles')
+                .select(`
+                  role_id,
+                  roles!inner (role_name)
+                `)
+                .eq('user_id', userData.user_id);
+
+              if (rolesError) {
+                console.error('Error fetching roles:', rolesError);
+                return;
+              }
+
+              if (userRoles && userRoles.length > 0) {
+                const hasProviderRole = userRoles.some(
+                  (ur: any) => ur.roles?.role_name === 'Provider'
+                );
+                setIsProviderRegistered(hasProviderRole);
+                setUserRole(hasProviderRole ? 'Provider' : 'Sender');
+              } else {
+                setUserRole('Sender');
+                setIsProviderRegistered(false);
+              }
+            }
           }
-          if (user.user_metadata?.last_name) {
-            setLastName(user.user_metadata.last_name);
-          }
-          if (user.user_metadata?.avatar_url) {
-            setAvatarUrl(user.user_metadata.avatar_url);
-            setImageError(false); 
-          }
+        } catch (error) {
+          console.error('Error fetching user data:', error);
         }
       };
       fetchUserData();
@@ -119,6 +163,16 @@ export default function AccountScreen() {
 
   const handleSettingsPress = () => {
     navigation.navigate('Settings');
+  };
+
+  // Handle Switch to Provider Mode
+  const handleSwitchToProvider = () => {
+    if (isProviderRegistered) {
+      navigation.navigate('ProviderTabs');
+    } else {
+      // User is only Sender, navigate to registration
+      navigation.navigate('RegisterProvider');
+    }
   };
 
   // --- SUB-SCREEN: PAYMENT METHODS ---
@@ -265,13 +319,22 @@ export default function AccountScreen() {
       >
         <Text style={styles.sectionTitle}>My Account</Text>
         
-        {/* 👇 UPDATED: Now Navigates to the Provider Tab Stack */}
+        {/* Switch to Provider Mode / Register as Provider */}
         <TouchableOpacity 
           style={styles.menuItem} 
-          onPress={() => navigation.navigate('ProviderTabs')}
+          onPress={handleSwitchToProvider}
         >
-          <Text style={styles.menuText}>Switch to Provider Mode</Text>
-          <Ionicons name="swap-horizontal-outline" size={24} color="#000" />
+          <View style={styles.menuItemLeft}>
+            <Text style={styles.menuText}>
+              {isProviderRegistered ? 'Switch to Provider Mode' : 'Register as a Provider'}
+            </Text>
+            {isProviderRegistered && (
+              <View style={styles.providerBadge}>
+                <Text style={styles.providerBadgeText}>Active</Text>
+              </View>
+            )}
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('payment')}>
@@ -281,11 +344,6 @@ export default function AccountScreen() {
 
         <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('history')}>
           <Text style={styles.menuText}>View History</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.menuItem}>
-          <Text style={styles.menuText}>Register as a Provider</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
@@ -309,48 +367,142 @@ export default function AccountScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   // --- Main Screen Styles ---
-  mainHeader: { backgroundColor: '#FA7A25', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 100 },
-  profilePicContainer: { width: 70, height: 70, borderRadius: 35, backgroundColor: '#4B5563', justifyContent: 'center', alignItems: 'center', marginRight: 16, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 5, elevation: 4, bottom: -40 },
+  mainHeader: { 
+    backgroundColor: '#FA7A25', 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: 24, 
+    paddingBottom: 100 
+  },
+  profilePicContainer: { 
+    width: 70, 
+    height: 70, 
+    borderRadius: 35, 
+    backgroundColor: '#4B5563', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: 16, 
+    overflow: 'hidden', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 4 }, 
+    shadowOpacity: 0.15, 
+    shadowRadius: 5, 
+    elevation: 4, 
+    bottom: -40 
+  },
   profileImage: { width: '100%', height: '100%' },
   nameContainer: { flexDirection: 'row', alignItems: 'center', bottom: -40 },
   profileName: { fontSize: 20, fontWeight: '800', color: '#000' },
   editIconBtn: { marginLeft: 8, padding: 4 },
   mainContent: { paddingHorizontal: 20, paddingTop: 24 },
   sectionTitle: { fontSize: 23, fontWeight: '800', color: '#111827', marginBottom: 16 },
-  menuItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16, borderBottomWidth: 1, borderColor: '#F3F4F6' },
+  menuItem: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    paddingVertical: 16, 
+    borderBottomWidth: 1, 
+    borderColor: '#F3F4F6' 
+  },
+  menuItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  providerBadge: {
+    backgroundColor: '#10B981',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  providerBadgeText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '600',
+  },
   menuText: { fontSize: 20, color: '#374151' },
   logoutText: { fontSize: 20, color: '#EF4444' },
   versionText: { textAlign: 'center', color: '#9CA3AF', fontSize: 11, fontWeight: '500', marginTop: 30 },
   // --- Sub-Screen Shared Styles ---
-  subHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 140, backgroundColor: '#FA7A25' },
+  subHeader: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: 16, 
+    paddingBottom: 140, 
+    backgroundColor: '#FA7A25' 
+  },
   backBtn: { marginRight: 12, bottom: -60 },
   subHeaderTitle: { fontSize: 23, fontWeight: '800', color: '#000', bottom: -60 },
   subContent: { flex: 1, backgroundColor: '#FFFFFF', paddingHorizontal: 20 },
   // --- Payment Methods Styles ---
   paymentRowLeft: { flexDirection: 'row', alignItems: 'center' },
-  gcashIcon: { width: 24, height: 24, backgroundColor: '#007DFE', borderRadius: 4, justifyContent: 'center', alignItems: 'center', marginRight: 12, position: 'relative' },
+  gcashIcon: { 
+    width: 24, 
+    height: 24, 
+    backgroundColor: '#007DFE', 
+    borderRadius: 4, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: 12, 
+    position: 'relative' 
+  },
   gcashText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   gcashWifi: { position: 'absolute', top: 2, right: 2, opacity: 0.8 },
   // --- View History Styles ---
   historyScroll: { paddingTop: 24, paddingBottom: 40 },
   historyTitle: { fontSize: 24, fontWeight: '800', color: '#000', marginBottom: 12 },
-  historyHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  historyHeaderRow: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    marginBottom: 20 
+  },
   historySubtitle: { fontSize: 16, color: '#374151' },
   viewAllText: { fontSize: 12, color: '#FA7A25', fontWeight: '600' },
-  historyCard: { backgroundColor: '#FFFFFF', borderRadius: 12, padding: 16, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2, borderWidth: 1, borderColor: '#F3F4F6' },
+  historyCard: { 
+    backgroundColor: '#FFFFFF', 
+    borderRadius: 12, 
+    padding: 16, 
+    marginBottom: 16, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.05, 
+    shadowRadius: 5, 
+    elevation: 2, 
+    borderWidth: 1, 
+    borderColor: '#F3F4F6' 
+  },
   hCardType: { fontSize: 15, color: '#6B7280', marginBottom: 4 },
   hCardDate: { fontSize: 15, fontWeight: '800', color: '#000', marginBottom: 16 },
   hCardBody: { flexDirection: 'row', justifyContent: 'space-between' },
   hCardTimeline: { flex: 1, paddingRight: 10 },
   hTimelinePoint: { flexDirection: 'row', alignItems: 'flex-start' },
-  blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center', marginRight: 8, marginTop: 2 },
+  blueDot: { 
+    width: 14, 
+    height: 14, 
+    borderRadius: 7, 
+    borderWidth: 3, 
+    borderColor: '#0000CC', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: 8, 
+    marginTop: 2 
+  },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   hTimelineLine: { width: 1, height: 20, backgroundColor: '#D1D5DB', marginLeft: 6, marginVertical: 2 },
   hAddressWrapper: { flex: 1 },
   hAddressMain: { fontSize: 14, fontWeight: '700', color: '#000', marginBottom: 2 },
   hAddressSub: { fontSize: 8, color: '#6B7280', lineHeight: 11 },
   hCardProvider: { width: 100, alignItems: 'center' },
-  hAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#D97706', justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
+  hAvatar: { 
+    width: 40, 
+    height: 40, 
+    borderRadius: 20, 
+    backgroundColor: '#D97706', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 6 
+  },
   hProviderName: { fontSize: 10, fontWeight: '700', color: '#000', textAlign: 'center', marginBottom: 8 },
   hActionRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   hActionText: { fontSize: 9, color: '#000', marginRight: 4 },
