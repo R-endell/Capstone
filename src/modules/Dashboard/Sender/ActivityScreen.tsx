@@ -8,7 +8,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
-
+import { deleteDelivery } from './Delivery/scheduleService';
 
 const { width, height } = Dimensions.get('window');
 
@@ -19,60 +19,64 @@ export default function ActivityScreen({ navigation: navProp }: any) {
   const [showFullMap, setShowFullMap] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  
-  // State for the Package Detail Modal
   const [viewingPackage, setViewingPackage] = useState<any | null>(null);
-  
   const insets = useSafeAreaInsets();
+
+  // Cached user ID to avoid repeated auth lookups
+  const [userId, setUserId] = useState<number | null>(null);
+
+  const fetchUserRecord = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+    const { data: userRecord } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('auth_id', user.id)
+      .maybeSingle();
+    return userRecord?.user_id || null;
+  };
 
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
+      const currentUserId = userId || await fetchUserRecord();
+      if (!currentUserId) {
         setDeliveries([]);
         setIsLoading(false);
         return;
       }
+      if (!userId) setUserId(currentUserId);
 
-      const { data: userRecord } = await supabase
-        .from('users')
-        .select('user_id')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (!userRecord) {
-        setDeliveries([]);
-        setIsLoading(false);
-        return;
-      }
-
-      // Fetch Real Data with Full Joins
-      const { data: active } = await supabase
+      // Optimized query with indexes (ensure indexes are created in Supabase)
+      const { data: active, error } = await supabase
         .from('delivery_requests')
         .select(`
-          request_id, pickup_type, delivery_status, scheduled_time, estimated_cost, created_at,
+          request_id,
+          pickup_type,
+          delivery_status,
+          scheduled_time,
+          estimated_cost,
+          created_at,
           cargo_profiles ( cargo_id, cargo_pic, description, small_box_qty, medium_box_qty, large_box_qty, is_fragile ),
           pickup_location:locations!delivery_requests_pickup_location_id_fkey ( location_id, street_address, latitude, longitude ),
           dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( location_id, street_address, latitude, longitude )
         `)
-        .eq('sender_id', userRecord.user_id)
-        .in('delivery_status', ['Accepted', 'Pending', 'Finding Provider'])
+        .eq('sender_id', currentUserId)
+        .in('delivery_status', ['Accepted', 'Pending'])
         .order('created_at', { ascending: false });
+
+      if (error) throw error;
 
       if (active && active.length > 0) {
         const mappedDeliveries = active.map((item: any) => {
           const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
-          
           const parseAddr = (full: string) => {
             if (!full) return { main: 'Selected Location', sub: '' };
             const parts = full.split(', ');
             return { main: parts[0], sub: parts.slice(1).join(', ') || full };
           };
-
           const pickup = parseAddr(item.pickup_location?.street_address);
           const dropoff = parseAddr(item.dropoff_location?.street_address);
-
           return {
             request_id: item.request_id,
             pickup_type: item.pickup_type,
@@ -84,7 +88,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
             dropoff_sub: dropoff.sub,
             status: item.delivery_status === 'Pending' ? 'Waiting for Provider' : item.delivery_status,
             status_time: 'Recently updated',
-            provider_name: item.provider?.name || 'Assigning...',
+            provider_name: 'Assigning...',
             price: item.estimated_cost?.toFixed(2) || '0.00',
             coords: {
               pickup: { latitude: item.pickup_location?.latitude || 10.3157, longitude: item.pickup_location?.longitude || 123.8854 },
@@ -277,7 +281,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
         activeOpacity={0.8}
         onPress={() => setShowFullMap(true)}
       >
-        <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <MapView
             style={styles.map}
             initialRegion={{
@@ -396,7 +400,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
     return (
       <View style={styles.fullMapContainer}>
         <MapView
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
           initialRegion={{
             latitude: (selectedDelivery.coords.pickup.latitude + selectedDelivery.coords.dropoff.latitude) / 2,
             longitude: (selectedDelivery.coords.pickup.longitude + selectedDelivery.coords.dropoff.longitude) / 2,
@@ -696,7 +700,7 @@ const styles = StyleSheet.create({
   pageTitleDetail: { fontSize: 22, fontWeight: '700', color: '#000' },
   trackingId: { fontSize: 12, color: '#4B5563', marginBottom: 4 },
   detailMapCard: { width: '100%', height: 200, borderRadius: 16, overflow: 'hidden', marginBottom: 30, borderWidth: 1, borderColor: '#E5E7EB' },
-  map: { ...StyleSheet.absoluteFillObject },
+  map: { ...StyleSheet.absoluteFill },
   mapOverlayPill: { position: 'absolute', bottom: 16, left: 16, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 6, flexDirection: 'row', alignItems: 'center' },
   overlayPillText: { fontSize: 9, fontWeight: '600', color: '#000', marginLeft: 6 },
   packageStatusHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24 },

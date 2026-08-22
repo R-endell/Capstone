@@ -265,10 +265,10 @@ export default function AccountScreen() {
       >
         <Text style={styles.sectionTitle}>My Account</Text>
         
-        {/* 👇 UPDATED: Now Navigates to the Provider Tab Stack */}
+        {/* ✅ FIXED: Navigate to ProviderTabs with default screen */}
         <TouchableOpacity 
           style={styles.menuItem} 
-          onPress={() => navigation.navigate('ProviderTabs')}
+          onPress={() => navigation.navigate('ProviderTabs', { screen: 'Task' })}
         >
           <Text style={styles.menuText}>Switch to Provider Mode</Text>
           <Ionicons name="swap-horizontal-outline" size={24} color="#000" />

@@ -32,29 +32,7 @@ import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/Delivery
 
 const DummyScreen = () => <View style={{ flex: 1, backgroundColor: '#fff' }} />;
 
-export type RootStackParamList = {
-  Loading: undefined;
-  Login: undefined;
-  Register: undefined;
-  IdentityVerification: undefined;
-  TwoFactorAuth: undefined;
-  MainTabs: undefined;
-  ProviderTabs: undefined;
-  Account: undefined;
-  EditProfile: undefined;
-  Settings: undefined;
-  DisputeCenter: undefined;
-  LegalPolicies: undefined;
-  DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
-  ShipmentSize: undefined;
-  AddItem: { size: 'Small' | 'Medium' | 'Large' };
-  ScheduleCalendar: undefined;
-  PickupLocation: { type: 'pickup'; initialCoords?: any };
-  DropoffLocation: { type: 'dropoff'; initialCoords?: any };
-  Booking: { mode: 'sendNow' | 'schedule' };
-  DeliveryList: { status: 'Pending' | 'Accepted' };
-};
-
+// ---------- Navigation Param Lists ----------
 export type MainTabParamList = {
   Home: undefined;
   Explore: undefined;
@@ -71,10 +49,35 @@ export type ProviderTabParamList = {
   Account: undefined;
 };
 
+export type RootStackParamList = {
+  Loading: undefined;
+  Login: undefined;
+  Register: undefined;
+  IdentityVerification: undefined;
+  TwoFactorAuth: undefined;
+  // ✅ Allow a 'screen' parameter to navigate to a specific tab
+  MainTabs: { screen?: keyof MainTabParamList };
+  ProviderTabs: { screen?: keyof ProviderTabParamList };
+  Account: undefined;
+  EditProfile: undefined;
+  Settings: undefined;
+  DisputeCenter: undefined;
+  LegalPolicies: undefined;
+  DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
+  ShipmentSize: undefined;
+  AddItem: { size: 'Small' | 'Medium' | 'Large' };
+  ScheduleCalendar: undefined;
+  PickupLocation: { type: 'pickup'; initialCoords?: any };
+  DropoffLocation: { type: 'dropoff'; initialCoords?: any };
+  Booking: { mode: 'sendNow' | 'schedule' };
+  DeliveryList: { status: 'Pending' | 'Accepted' };
+};
+
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const ProviderTab = createBottomTabNavigator<ProviderTabParamList>();
 
+// ---------- Sender Tab Navigator ----------
 function MainTabs() {
   return (
     <Tab.Navigator
@@ -104,6 +107,7 @@ function MainTabs() {
   );
 }
 
+// ---------- Provider Tab Navigator ----------
 function ProviderTabs() {
   return (
     <ProviderTab.Navigator
@@ -133,6 +137,7 @@ function ProviderTabs() {
   );
 }
 
+// ---------- App ----------
 export default function App() {
   return (
     <ScheduleProvider>
