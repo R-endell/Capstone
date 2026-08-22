@@ -319,10 +319,10 @@ export default function AccountScreen() {
       >
         <Text style={styles.sectionTitle}>My Account</Text>
         
-        {/* Switch to Provider Mode / Register as Provider */}
+        {/* 👇 UPDATED: Now Navigates to the Provider Tab Stack */}
         <TouchableOpacity 
           style={styles.menuItem} 
-          onPress={handleSwitchToProvider}
+          onPress={() => navigation.navigate('ProviderTabs')}
         >
           <View style={styles.menuItemLeft}>
             <Text style={styles.menuText}>

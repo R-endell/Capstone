@@ -43,14 +43,17 @@ import LocationSelectScreen from './src/modules/Dashboard/Sender/Delivery/Locati
 import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen';
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
 
+const DummyScreen = () => <View style={{ flex: 1, backgroundColor: '#fff' }} />;
+
 export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
   Register: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
-  MainTabs: undefined;
-  ProviderTabs: undefined;
+  // ✅ Allow a 'screen' parameter to navigate to a specific tab
+  MainTabs: { screen?: keyof MainTabParamList };
+  ProviderTabs: { screen?: keyof ProviderTabParamList };
   Account: undefined;
   EditProfile: undefined;
   Settings: undefined;
@@ -69,26 +72,11 @@ export type RootStackParamList = {
   ManageRoutes: undefined;
 };
 
-export type MainTabParamList = {
-  Home: undefined;
-  Explore: undefined;
-  Messages: undefined;
-  Activity: undefined;
-  Account: undefined;
-};
-
-export type ProviderTabParamList = {
-  Task: undefined;
-  Earnings: undefined;
-  Jobs: undefined;
-  Messages: undefined;
-  Account: undefined;
-};
-
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const ProviderTab = createBottomTabNavigator<ProviderTabParamList>();
 
+// ---------- Sender Tab Navigator ----------
 function MainTabs() {
   return (
     <Tab.Navigator
@@ -118,6 +106,7 @@ function MainTabs() {
   );
 }
 
+// ---------- Provider Tab Navigator ----------
 function ProviderTabs() {
   return (
     <ProviderTab.Navigator
@@ -147,6 +136,7 @@ function ProviderTabs() {
   );
 }
 
+// ---------- App ----------
 export default function App() {
   return (
     <ScheduleProvider>

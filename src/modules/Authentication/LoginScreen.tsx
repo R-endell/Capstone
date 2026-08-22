@@ -7,7 +7,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as WebBrowser from 'expo-web-browser';
-import { makeRedirectUri } from 'expo-auth-session';
+import { makeRedirectUri } from 'expo-auth-session'; // ✅ Moved to top
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -55,7 +55,6 @@ export default function LoginScreen() {
     setPasswordError(validatePassword(text));
   };
 
-  // Smooth password toggle with animation
   const togglePasswordVisibility = () => {
     Animated.sequence([
       Animated.timing(passwordFadeAnim, {
@@ -75,41 +74,21 @@ export default function LoginScreen() {
     });
   };
 
-  // Get user-friendly error message
   const getFriendlyErrorMessage = (error: any) => {
     const message = error?.message || '';
-
-    if (message.includes('Invalid login credentials')) {
-      return 'Invalid email or password. Please try again.';
-    }
-    if (message.includes('Email not confirmed')) {
-      return 'Please verify your email address before logging in. Check your inbox.';
-    }
-    if (message.includes('Too many requests')) {
-      return 'Too many login attempts. Please try again later.';
-    }
-    if (message.includes('User not found')) {
-      return 'No account found with this email. Please sign up first.';
-    }
-    if (message.includes('network')) {
-      return 'Network error. Please check your internet connection.';
-    }
+    if (message.includes('Invalid login credentials')) return 'Invalid email or password. Please try again.';
+    if (message.includes('Email not confirmed')) return 'Please verify your email address before logging in. Check your inbox.';
+    if (message.includes('Too many requests')) return 'Too many login attempts. Please try again later.';
+    if (message.includes('User not found')) return 'No account found with this email. Please sign up first.';
+    if (message.includes('network')) return 'Network error. Please check your internet connection.';
     return 'Something went wrong. Please try again.';
   };
 
   const handleLogin = async () => {
-    // Validate before sending to Supabase
     const emailValidation = validateEmail(email);
     const passwordValidation = validatePassword(password);
-
-    if (emailValidation) {
-      setEmailError(emailValidation);
-      return;
-    }
-    if (passwordValidation) {
-      setPasswordError(passwordValidation);
-      return;
-    }
+    if (emailValidation) { setEmailError(emailValidation); return; }
+    if (passwordValidation) { setPasswordError(passwordValidation); return; }
 
     setLoading(true);
     try {
@@ -117,18 +96,14 @@ export default function LoginScreen() {
         email: email.trim(),
         password,
       });
-
       if (error) {
         Alert.alert('Login Failed', getFriendlyErrorMessage(error));
         return;
       }
-
-      // Success – navigate to main app
       navigation.reset({
         index: 0,
         routes: [{ name: 'MainTabs' }],
       });
-
     } catch (error: any) {
       Alert.alert('Error', getFriendlyErrorMessage(error));
     } finally {
@@ -136,52 +111,51 @@ export default function LoginScreen() {
     }
   };
 
+  // ✅ Google Login using Expo AuthSession proxy
   const handleGoogleLogin = async () => {
-    setLoading(true);
-    try {
-      // ✅ Use redirectTo with your app's URL scheme
-      const redirectTo = makeRedirectUri({
-        scheme: 'packnship',
-        path: 'auth/callback',
-      });
+  setLoading(true);
+  try {
+    // ✅ Hardcode the Expo AuthSession proxy URL
+    const redirectTo = 'https://auth.expo.io/@rendelljames/Capstone';
+    console.log('🔴 Redirect URL:', redirectTo);
 
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: redirectTo,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
         },
-      });
+      },
+    });
 
-      if (error) throw error;
+    if (error) throw error;
 
-      if (data?.url) {
-        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+    if (data?.url) {
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
 
-        if (result.type === 'success') {
-          // ✅ Supabase automatically handles the session
-          const { data: sessionData } = await supabase.auth.getSession();
-          if (sessionData?.session) {
-            navigation.reset({
-              index: 0,
-              routes: [{ name: 'MainTabs' }],
-            });
-          }
-        } else if (result.type === 'cancel') {
-          Alert.alert('Cancelled', 'Google login was cancelled.');
+      if (result.type === 'success') {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (sessionData?.session) {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'MainTabs' }],
+          });
+        } else {
+          Alert.alert('Error', 'Could not retrieve session.');
         }
-      } else {
-        Alert.alert('Error', 'Could not initiate Google login. Please try again.');
+      } else if (result.type === 'cancel') {
+        Alert.alert('Cancelled', 'Google login was cancelled.');
       }
-    } catch (error: any) {
-      Alert.alert('Google Login Failed', error.message || 'Something went wrong.');
-    } finally {
-      setLoading(false);
     }
-  };
+  } catch (error: any) {
+    console.error('Google login error:', error);
+    Alert.alert('Google Login Failed', error.message || 'Something went wrong.');
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -205,13 +179,11 @@ export default function LoginScreen() {
               <Text style={styles.logoSubText}>Logistics & Moving Services</Text>
             </View>
 
-            {/* Header */}
             <View style={styles.headerContainer}>
               <Text style={styles.header}>Welcome Back! 👋</Text>
               <Text style={styles.subHeader}>Log in to manage your deliveries and track packages.</Text>
             </View>
 
-            {/* Email Input */}
             <View style={styles.inputContainer}>
               <View style={styles.inputWrapper}>
                 <Ionicons name="mail-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
@@ -229,6 +201,7 @@ export default function LoginScreen() {
                 />
               </View>
               {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
+
               <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
                 <Ionicons name="lock-closed-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
                 <Animated.View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
@@ -263,7 +236,6 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Login Button */}
             <TouchableOpacity
               style={[styles.loginButton, loading && { opacity: 0.8 }]}
               onPress={handleLogin}
@@ -279,14 +251,12 @@ export default function LoginScreen() {
               )}
             </TouchableOpacity>
 
-            {/* Divider */}
             <View style={styles.dividerContainer}>
               <View style={styles.dividerLine} />
               <Text style={styles.dividerText}>or</Text>
               <View style={styles.dividerLine} />
             </View>
 
-            {/* Google Button */}
             <TouchableOpacity
               style={[styles.googleButton, loading && { opacity: 0.5 }]}
               onPress={handleGoogleLogin}
@@ -300,7 +270,6 @@ export default function LoginScreen() {
               <Text style={styles.googleText}>Continue With Google</Text>
             </TouchableOpacity>
 
-            {/* Sign Up Link */}
             <TouchableOpacity
               style={styles.signUpContainer}
               onPress={() => navigation.navigate('Register')}
@@ -319,6 +288,7 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
+  // ... (your existing styles remain exactly the same)
   container: { flex: 1, backgroundColor: '#F9FAFB' },
   keyboardAvoid: { flex: 1 },
   innerContainer: {

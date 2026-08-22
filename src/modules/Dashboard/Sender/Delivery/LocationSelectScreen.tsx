@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, StatusBar, Dimensions } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, StatusBar, Dimensions, ActivityIndicator } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Marker } from 'react-native-maps';
+import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
@@ -9,13 +9,14 @@ import { useSchedule } from './ScheduleContext';
 const { width } = Dimensions.get('window');
 
 export default function LocationSelectScreen({ route, navigation }: any) {
-  const { type, initialCoords } = route.params; // 'pickup' or 'dropoff'
+  const { type, initialCoords } = route.params;
   const { state, dispatch } = useSchedule();
   const mode = state.mode;
   const insets = useSafeAreaInsets();
+  const webViewRef = useRef<WebView>(null);
 
-  const [region, setRegion] = useState({
-    latitude: 10.3157, // Defaulted to Cebu City based on screenshots
+  const [region] = useState({
+    latitude: 10.3157,
     longitude: 123.8854,
     latitudeDelta: 0.005,
     longitudeDelta: 0.005,
@@ -28,12 +29,12 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   
   const [addressName, setAddressName] = useState<string>('Loading...');
   const [addressSub, setAddressSub] = useState<string>('');
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   const reverseGeocode = async (coords: { latitude: number; longitude: number }) => {
     try {
       const [addr] = await Location.reverseGeocodeAsync(coords);
       if (addr) {
-        // Try to separate a main point of interest name from the rest of the street address
         const mainName = addr.name || addr.street || 'Selected Location';
         const subParts = [addr.street !== addr.name ? addr.street : null, addr.city, addr.region]
           .filter(Boolean)
@@ -53,7 +54,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   useEffect(() => {
     if (type === 'dropoff' && initialCoords) {
-      setRegion(prev => ({ ...prev, ...initialCoords }));
       setMarkerCoord(initialCoords);
       reverseGeocode(initialCoords);
       return;
@@ -67,7 +67,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       }
       const loc = await Location.getCurrentPositionAsync({});
       const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-      setRegion(prev => ({ ...prev, ...newCoords }));
       setMarkerCoord(newCoords);
       reverseGeocode(newCoords);
     })();
@@ -91,9 +90,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  // UI Helpers based on type
   const isPickup = type === 'pickup';
-  const themeColor = isPickup ? '#0000CC' : '#C8102E'; // Blue for pickup, Red for dropoff
+  const themeColor = isPickup ? '#0000CC' : '#C8102E';
 
   const TypeIcon = ({ size = 20 }: { size?: number }) => {
     if (isPickup) {
@@ -106,37 +104,89 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return <Ionicons name="location" size={size * 1.2} color={themeColor} />;
   };
 
+  // OpenStreetMap HTML with interactive marker
+  const openStreetMapHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          body { margin: 0; padding: 0; }
+          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          var map = L.map('map').setView([${markerCoord.latitude}, ${markerCoord.longitude}], 15);
+          
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap',
+            maxZoom: 19
+          }).addTo(map);
+
+          var marker = L.marker([${markerCoord.latitude}, ${markerCoord.longitude}], {
+            draggable: true
+          }).addTo(map);
+
+          marker.on('dragend', function(e) {
+            var pos = marker.getLatLng();
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              latitude: pos.lat,
+              longitude: pos.lng
+            }));
+          });
+
+          map.on('click', function(e) {
+            var pos = e.latlng;
+            marker.setLatLng(pos);
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              latitude: pos.lat,
+              longitude: pos.lng
+            }));
+          });
+        </script>
+      </body>
+    </html>
+  `;
+
+  const handleMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.latitude && data.longitude) {
+        const newCoords = { latitude: data.latitude, longitude: data.longitude };
+        setMarkerCoord(newCoords);
+        reverseGeocode(newCoords);
+      }
+    } catch (error) {
+      console.log('Error parsing map message:', error);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
       
-      {/* Full Screen Map */}
-      <MapView
+      {/* Interactive Map via WebView (OpenStreetMap) */}
+      <WebView
+        ref={webViewRef}
         style={styles.map}
-        region={region}
-        onRegionChangeComplete={setRegion}
-        onPress={(e) => {
-          const coord = e.nativeEvent.coordinate;
-          setMarkerCoord(coord);
-          reverseGeocode(coord);
-        }}
-        showsUserLocation={true}
-      >
-        <Marker
-          draggable
-          coordinate={markerCoord}
-          onDragEnd={(e) => {
-            setMarkerCoord(e.nativeEvent.coordinate);
-            reverseGeocode(e.nativeEvent.coordinate);
-          }}
-        >
-          {/* Custom Marker matching screenshot */}
-          <View style={styles.customPinContainer}>
-             <View style={styles.customPinHead} />
-             <View style={styles.customPinStick} />
-          </View>
-        </Marker>
-      </MapView>
+        source={{ html: openStreetMapHtml }}
+        onMessage={handleMessage}
+        onLoadEnd={() => setMapLoaded(true)}
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
+        startInLoadingState={true}
+      />
+
+      {!mapLoaded && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#F27024" />
+          <Text style={styles.loadingText}>Loading map...</Text>
+        </View>
+      )}
 
       {/* Floating Top Search Bar Area */}
       <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
@@ -186,25 +236,21 @@ const styles = StyleSheet.create({
   map: { 
     flex: 1,
   },
-  customPinContainer: {
-    alignItems: 'center',
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
   },
-  customPinHead: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#E11D48',
-    borderWidth: 2,
-    borderColor: '#000',
-    zIndex: 2,
-  },
-  customPinStick: {
-    width: 2,
-    height: 15,
-    backgroundColor: '#000',
-    marginTop: -2,
-    zIndex: 1,
+  loadingText: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginTop: 12,
   },
   topOverlay: {
     position: 'absolute',
@@ -212,6 +258,7 @@ const styles = StyleSheet.create({
     right: 20,
     flexDirection: 'row',
     alignItems: 'center',
+    zIndex: 5,
   },
   backCircleBtn: {
     width: 44,
@@ -266,6 +313,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 10,
+    zIndex: 5,
   },
   sheetTitle: {
     fontSize: 18,

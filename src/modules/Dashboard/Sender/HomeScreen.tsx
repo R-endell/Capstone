@@ -1,71 +1,63 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, StatusBar, Alert
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Image,
+  StatusBar,
+  Alert,
+  Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 
 import { supabase } from '../../../utils/supabase';
 
-// Mock data – replace with real API calls later
+const { width } = Dimensions.get('window');
+
+// Mock providers – keep for now until we implement provider fetching
 const MOCK_PROVIDERS = [
   {
+    id: 'p1',
     name: 'Jun Joseph Pestaño',
     vehicle: 'Civic RS Turbo',
-    plate: 'NDA-024',
     rating: 4.8,
-    completedDeliveries: 12,
+    deliveries: 12,
+    initials: 'JP',
+    color: '#F27024',
   },
   {
+    id: 'p2',
     name: 'Maria Santos',
     vehicle: 'Toyota Vios',
-    plate: 'ABC-123',
     rating: 4.6,
-    completedDeliveries: 8,
+    deliveries: 8,
+    initials: 'MS',
+    color: '#3B82F6',
   },
   {
+    id: 'p3',
     name: 'FastTrack Logistics',
     vehicle: 'Van',
-    plate: 'FT-5678',
     rating: 4.9,
-    completedDeliveries: 25,
+    deliveries: 25,
+    initials: 'FL',
+    color: '#10B981',
   },
   {
+    id: 'p4',
     name: 'LBC Express',
     vehicle: 'Van',
-    plate: 'LBC-456',
     rating: 4.5,
-    completedDeliveries: 30,
-  },
-];
-
-const MOCK_COMPLETED = [
-  {
-    request_id: 2001,
-    pickup_type: 'Curb-side',
-    estimated_cost: 24.00,
-    scheduled_time: '2026-04-20T15:30:00',
-    pickup_location: { street_address: 'IT Park, Lahug, Cebu City' },
-    dropoff_location: { street_address: 'Ayala Center Cebu' },
-  },
-  {
-    request_id: 2002,
-    pickup_type: 'Door-to-door',
-    estimated_cost: 36.50,
-    scheduled_time: '2026-04-18T09:00:00',
-    pickup_location: { street_address: 'SM Seaside City Cebu' },
-    dropoff_location: { street_address: 'Mactan Airport, Lapu-Lapu City' },
-  },
-  {
-    request_id: 2003,
-    pickup_type: 'Curb-side',
-    estimated_cost: 18.75,
-    scheduled_time: '2026-04-15T11:00:00',
-    pickup_location: { street_address: 'Basilica del Santo Niño, Cebu City' },
-    dropoff_location: { street_address: 'Temple of Leah, Cebu City' },
+    deliveries: 30,
+    initials: 'LE',
+    color: '#8B5CF6',
   },
 ];
 
@@ -75,40 +67,242 @@ export default function HomeScreen() {
   const [lastName, setLastName] = useState('Last');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
+  const [recentDeliveries, setRecentDeliveries] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const fetchUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
-        if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
-        if (user.user_metadata?.avatar_url) setAvatarUrl(user.user_metadata.avatar_url);
+  const fetchUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
+      if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
+      if (user.user_metadata?.avatar_url) setAvatarUrl(user.user_metadata.avatar_url);
+    }
+    return user;
+  };
+
+  const fetchRecentDeliveries = async (userId: string) => {
+    try {
+      const { data: userRecord } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', userId)
+        .single();
+
+      if (!userRecord) return;
+
+      const { data, error } = await supabase
+        .from('delivery_requests')
+        .select(`
+          request_id,
+          pickup_type,
+          delivery_status,
+          scheduled_time,
+          estimated_cost,
+          created_at,
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey ( street_address ),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( street_address )
+        `)
+        .eq('sender_id', userRecord.user_id)
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        const mapped = data.map((item: any) => {
+          const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
+          const status = item.delivery_status;
+          const isDelivered = status === 'Completed' || status === 'Delivered';
+          const isTransit = status === 'In Transit' || status === 'Accepted';
+
+          const parseAddr = (addr: any) => {
+            if (!addr) return '';
+            return addr.street_address || '';
+          };
+          const origin = parseAddr(item.pickup_location);
+          const destination = parseAddr(item.dropoff_location);
+
+          return {
+            id: `PNS-${String(item.request_id).padStart(4, '0')}`,
+            date: scheduleDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+            startTime: scheduleDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+            endTime: isDelivered ? scheduleDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '--:--',
+            status: status === 'Completed' ? 'Delivered' : status === 'Accepted' ? 'In Transit' : status,
+            origin: origin || 'Pickup',
+            destination: destination || 'Dropoff',
+            progress: isDelivered ? 100 : isTransit ? 65 : 20,
+            type: item.pickup_type || 'Standard',
+            cost: item.estimated_cost || 0,
+          };
+        });
+        setRecentDeliveries(mapped);
+      } else {
+        setRecentDeliveries([]);
       }
-    };
-    fetchUser();
-  }, []);
+    } catch (error) {
+      console.error('Error fetching recent deliveries:', error);
+      setRecentDeliveries([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadData = async () => {
+    const user = await fetchUser();
+    if (user) {
+      await fetchRecentDeliveries(user.id);
+    } else {
+      setLoading(false);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [])
+  );
 
   const handleSendPackage = () => {
-  navigation.navigate('DropoffType', { mode: 'sendNow' });
+    navigation.navigate('DropoffType', { mode: 'sendNow' });
   };
 
   const handleScheduleDelivery = () => {
-  navigation.navigate('DropoffType', { mode: 'schedule' });
+    navigation.navigate('DropoffType', { mode: 'schedule' });
   };
 
   const handleViewProfile = () => {
-  navigation.navigate('Account');
-};
+    navigation.navigate('Account');
+  };
 
   const handleViewNotifications = () => {
     Alert.alert('Coming Soon', 'Notifications will be available in the next update.');
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'Delivered':
+        return { bg: '#ECFDF5', text: '#10B981', icon: 'checkmark-circle' };
+      case 'In Transit':
+        return { bg: '#FEF3C7', text: '#D97706', icon: 'car-sport' };
+      case 'Pending':
+        return { bg: '#F3F4F6', text: '#6B7280', icon: 'time-outline' };
+      default:
+        return { bg: '#F3F4F6', text: '#6B7280', icon: 'time-outline' };
+    }
+  };
+
+  const renderActivityCard = (item: any) => {
+    const statusColors = getStatusColor(item.status);
+
+    return (
+      <TouchableOpacity
+        key={item.id}
+        style={styles.activityCard}
+        activeOpacity={0.7}
+        onPress={() => navigation.navigate('MainTabs', { screen: 'Activity' })}
+      >
+        {/* Header */}
+        <View style={styles.activityHeader}>
+          <View style={styles.activityHeaderLeft}>
+            <View style={styles.activityIconContainer}>
+              <Ionicons name="cube-outline" size={18} color="#F27024" />
+            </View>
+            <View>
+              <Text style={styles.activityId}>{item.id}</Text>
+              <Text style={styles.activityDate}>{item.date}</Text>
+            </View>
+          </View>
+          <View style={[styles.statusPill, { backgroundColor: statusColors.bg }]}>
+            <Ionicons name="location-outline" size={14} color="#3B82F6" as const />
+            <Text style={[styles.statusPillText, { color: statusColors.text }]}>
+              {item.status}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.activityBody}>
+          <View style={styles.timelineColumn}>
+            {/* Pickup */}
+            <View style={styles.timelineItem}>
+              <View style={styles.timelineDotContainer}>
+                <View style={styles.timelineDotSolid} />
+                <View style={styles.timelineLineDashed} />
+              </View>
+              <View style={styles.timelineTextContainer}>
+                <View style={styles.timelineLabelRow}>
+                  <Ionicons name="arrow-up-circle" size={14} color="#3B82F6" />
+                  <Text style={[styles.timelineLabel, { color: '#3B82F6' }]}>PICKUP</Text>
+                </View>
+                <Text style={styles.timelineTime}>{item.startTime}</Text>
+                <Text style={styles.timelineLocation}>{item.origin}</Text>
+              </View>
+            </View>
+
+            {/* Dropoff */}
+            <View style={styles.timelineItem}>
+              <View style={styles.timelineDotContainer}>
+                <View style={styles.timelineDotHollow} />
+              </View>
+              <View style={styles.timelineTextContainer}>
+                <View style={styles.timelineLabelRow}>
+                  <Ionicons name="arrow-down-circle" size={14} color="#EF4444" />
+                  <Text style={[styles.timelineLabel, { color: '#EF4444' }]}>DROPOFF</Text>
+                </View>
+                <Text style={styles.timelineTime}>{item.endTime}</Text>
+                <Text style={styles.timelineLocation}>{item.destination}</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.packageColumn}>
+            <Image
+              source={require('../../../../assets/Pack-N-Ship-Packages.png')}
+              style={styles.packageImage}
+              resizeMode="contain"
+            />
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderProviderCard = (provider: any) => {
+    return (
+      <TouchableOpacity
+        key={provider.id}
+        style={styles.providerCard}
+        activeOpacity={0.7}
+        onPress={() => Alert.alert('Book Provider', `Booking ${provider.name}`)}
+      >
+        <View style={styles.providerCardTop}>
+          <View style={styles.providerAvatarWrapper}>
+            <View style={[styles.providerAvatarLarge, { backgroundColor: provider.color + '20' }]}>
+              <Text style={[styles.providerAvatarText, { color: provider.color }]}>
+                {provider.initials}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.providerInfoWrapper}>
+            <Text style={styles.providerNameLarge} numberOfLines={1}>{provider.name}</Text>
+            <Text style={styles.providerVehicle}>{provider.vehicle}</Text>
+          </View>
+          <View style={styles.ratingWrapper}>
+            <Ionicons name="star" size={14} color="#F59E0B" />
+            <Text style={styles.ratingNumber}>{provider.rating}</Text>
+          </View>
+        </View>
+        <TouchableOpacity style={styles.bookProviderBtn}>
+          <Text style={styles.bookProviderText}>Book Provider</Text>
+          <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+        </TouchableOpacity>
+      </TouchableOpacity>
+    );
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="light-content" backgroundColor="#F27024" />
 
-      {/* Header */}
       <View style={styles.headerSection}>
         <View style={styles.headerLeft}>
           <TouchableOpacity
@@ -142,7 +336,6 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* Banner */}
         <View style={styles.upperBanner}>
           <View style={styles.bannerTextContainer}>
             <Text style={styles.bannerTitle}>Ship Your Packages with Confidence</Text>
@@ -155,7 +348,6 @@ export default function HomeScreen() {
           />
         </View>
 
-        {/* Action Buttons */}
         <View style={styles.actionContainer}>
           <TouchableOpacity style={styles.actionCard} onPress={handleSendPackage}>
             <View style={styles.actionIconContainer}>
@@ -178,82 +370,48 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Completed Deliveries */}
         <View style={styles.sectionContainer}>
-          <Text style={styles.sectionHeading}>Completed Deliveries</Text>
-          {MOCK_COMPLETED.map((item) => (
-            <View key={item.request_id} style={styles.completedCard}>
-              <View style={styles.completedHeader}>
-                <View style={styles.completedHeaderLeft}>
-                  <Ionicons name="checkmark-circle" size={16} color="#10B981" />
-                  <Text style={styles.deliveryId}>#{item.request_id}</Text>
-                </View>
-                <Text style={styles.deliveryType}>{item.pickup_type}</Text>
-              </View>
-              <View style={styles.routeRow}>
-                <Ionicons name="location-outline" size={14} color="#3B82F6" />
-                <Text style={styles.addressText} numberOfLines={1}>
-                  {item.pickup_location?.street_address}
-                </Text>
-              </View>
-              <Ionicons
-                name="arrow-down"
-                size={12}
-                color="#D1D5DB"
-                style={styles.arrowIcon}
-              />
-              <View style={styles.routeRow}>
-                <Ionicons name="location-outline" size={14} color="#EF4444" />
-                <Text style={styles.addressText} numberOfLines={1}>
-                  {item.dropoff_location?.street_address}
-                </Text>
-              </View>
-              <View style={styles.completedFooter}>
-                <Text style={styles.dateText}>
-                  {new Date(item.scheduled_time).toLocaleDateString()}
-                </Text>
-                <Text style={styles.costText}>₱{item.estimated_cost.toFixed(2)}</Text>
-              </View>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Recent Activity</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Activity' })}>
+              <Text style={styles.seeAllText}>See All</Text>
+            </TouchableOpacity>
+          </View>
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#F27024" />
             </View>
-          ))}
+          ) : recentDeliveries.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="cube-outline" size={48} color="#D1D5DB" />
+              <Text style={styles.emptyText}>No recent deliveries</Text>
+              <Text style={styles.emptySubtext}>Start shipping to see activity here</Text>
+            </View>
+          ) : (
+            recentDeliveries.map(renderActivityCard)
+          )}
         </View>
 
-        {/* Recent Providers */}
         <View style={styles.sectionContainer}>
-          <Text style={styles.sectionHeading}>Recent Providers</Text>
-          {MOCK_PROVIDERS.map((provider, index) => (
-            <View key={index} style={styles.providerCard}>
-              <View style={styles.providerAvatar}>
-                <Ionicons name="person" size={28} color="#FFFFFF" />
-              </View>
-              <View style={styles.providerInfo}>
-                <Text style={styles.providerName}>{provider.name}</Text>
-                <Text style={styles.providerDetail}>
-                  <Ionicons name="car-sport-outline" size={12} color="#6B7280" /> {provider.vehicle} · {provider.plate}
-                </Text>
-                <View style={styles.ratingRow}>
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <Ionicons
-                      key={star}
-                      name={star <= Math.floor(provider.rating) ? 'star' : 'star-outline'}
-                      size={14}
-                      color="#F59E0B"
-                    />
-                  ))}
-                  <Text style={styles.ratingNumber}>{provider.rating}</Text>
-                  <Text style={styles.deliveryCount}>
-                    · {provider.completedDeliveries} deliveries
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity style={styles.callButton}>
-                <Ionicons name="call-outline" size={22} color="#F27024" />
-              </TouchableOpacity>
-            </View>
-          ))}
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Available Providers</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('MainTabs', { screen: 'Explore' })}>
+              <Text style={styles.seeAllText}>View All</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.providersScrollContent}
+            decelerationRate="fast"
+            snapToInterval={width * 0.75 + 16}
+            snapToAlignment="start"
+          >
+            {MOCK_PROVIDERS.map(renderProviderCard)}
+          </ScrollView>
         </View>
-        
-        {/* Bottom spacer for tab bar */}
+
         <View style={styles.bottomSpacer} />
       </ScrollView>
     </SafeAreaView>
@@ -263,7 +421,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F8FAFC',
   },
   scrollContent: {
     paddingBottom: 20,
@@ -272,7 +430,6 @@ const styles = StyleSheet.create({
     height: 80,
   },
 
-  // Header
   headerSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -335,7 +492,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
 
-  // Banner
   upperBanner: {
     backgroundColor: '#F27024',
     flexDirection: 'row',
@@ -366,7 +522,6 @@ const styles = StyleSheet.create({
     marginRight: -20,
   },
 
-  // Action Cards
   actionContainer: {
     paddingHorizontal: 24,
     paddingVertical: 20,
@@ -404,149 +559,271 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Section
   sectionContainer: {
     paddingHorizontal: 24,
-    marginTop: 8,
-    paddingBottom: 20,
+    marginTop: 16,
   },
-  sectionHeading: {
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  sectionTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: '#111827',
-    marginBottom: 16,
   },
-
-  // Completed Card
-  completedCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: '#10B981',
-    shadowColor: '#000',
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  completedHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  completedHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  deliveryId: {
+  seeAllText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#111827',
-    marginLeft: 6,
-  },
-  deliveryType: {
-    fontSize: 11,
-    color: '#6B7280',
     fontWeight: '600',
-  },
-  routeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  addressText: {
-    fontSize: 12,
-    color: '#374151',
-    marginLeft: 6,
-    flex: 1,
-  },
-  arrowIcon: {
-    marginLeft: 10,
-    marginVertical: 2,
-  },
-  completedFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
-  },
-  dateText: {
-    fontSize: 11,
-    color: '#6B7280',
-  },
-  costText: {
-    fontSize: 14,
-    fontWeight: '700',
     color: '#F27024',
   },
 
-  // Provider Card
-  providerCard: {
-    flexDirection: 'row',
+  loadingContainer: {
     alignItems: 'center',
+    justifyContent: 'center',
+    height: 150,
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 12,
+    elevation: 2,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 12,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginTop: 4,
+  },
+
+  activityCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 20,
     marginBottom: 12,
     shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-    borderLeftWidth: 4,
-    borderLeftColor: '#F27024',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 4,
   },
-  providerAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#CC5500',
-    justifyContent: 'center',
+  activityHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginRight: 14,
+    marginBottom: 16,
   },
-  providerInfo: {
-    flex: 1,
-  },
-  providerName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  providerDetail: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginBottom: 4,
-  },
-  ratingRow: {
+  activityHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  ratingNumber: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#111827',
-    marginLeft: 4,
-  },
-  deliveryCount: {
-    fontSize: 11,
-    color: '#6B7280',
-    marginLeft: 2,
-  },
-  callButton: {
+  activityIconContainer: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: 12,
     backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 8,
-    borderWidth: 1,
-    borderColor: '#FED7AA',
+    marginRight: 12,
+  },
+  activityId: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: 0.5,
+  },
+  activityDate: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  statusPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  activityBody: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    minHeight: 120,
+  },
+
+  timelineColumn: {
+    flex: 2,
+    justifyContent: 'center',
+    paddingRight: 12,
+  },
+  timelineItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 2,
+  },
+  timelineDotContainer: {
+    alignItems: 'center',
+    width: 16,
+    marginRight: 12,
+    paddingVertical: 2,
+  },
+  timelineDotSolid: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#F27024',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    shadowColor: '#F27024',
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  timelineDotHollow: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#FFFFFF',
+  },
+  timelineLineDashed: {
+    width: 2,
+    height: 20,
+    backgroundColor: '#D1D5DB',
+    marginVertical: 2,
+  },
+  timelineTextContainer: {
+    flex: 1,
+    paddingTop: 2,
+  },
+  timelineTime: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  timelineLocation: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 1,
+  },
+  timelineLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  timelineLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#3B82F6',
+    letterSpacing: 1,
+    marginLeft: 4,
+  },
+
+  packageColumn: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+  },
+  packageImage: {
+    width: 80,
+    height: 70,
+    opacity: 0.6,
+  },
+
+  providersScrollContent: {
+    paddingRight: 24,
+    gap: 16,
+  },
+  providerCard: {
+    width: width * 0.75,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 20,
+    marginRight: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  providerCardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  providerAvatarWrapper: {
+    marginRight: 14,
+  },
+  providerAvatarLarge: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  providerAvatarText: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  providerInfoWrapper: {
+    flex: 1,
+  },
+  providerNameLarge: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  providerVehicle: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
+  },
+  ratingWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  ratingNumber: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#D97706',
+    marginLeft: 4,
+  },
+  bookProviderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F27024',
+    paddingVertical: 14,
+    borderRadius: 30,
+    gap: 8,
+  },
+  bookProviderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });
