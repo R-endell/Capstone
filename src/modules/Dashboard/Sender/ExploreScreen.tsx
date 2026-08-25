@@ -1,19 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
   View, 
   Text, 
   TextInput, 
   TouchableOpacity, 
-  ScrollView, 
   StyleSheet, 
   Modal,
-  Image,
-  Dimensions
+  Dimensions,
+  FlatList,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../../../utils/supabase';
 const { height } = Dimensions.get('window');
 
 // Mock Data for Trips
@@ -56,7 +55,33 @@ const MOCK_TRIPS = [
     estimate: '₱20.00 - ₱36.00',
     timeLabel: 'Leaves in 14 mins',
     isTimeExact: false,
-  }
+  },
+  {
+    id: '4',
+    name: 'Maria Santos',
+    status: 'Active',
+    rating: 4.7,
+    type: 'Curb-side Drop-off',
+    pickup: 'SM Seaside Cebu',
+    dropoff: 'Ayala Center Cebu',
+    accepts: 'Small to Medium box',
+    estimate: '₱15.00 - ₱25.00',
+    timeLabel: 'Leaves in 5 mins',
+    isTimeExact: false,
+  },
+  {
+    id: '5',
+    name: 'FastTrack Logistics',
+    status: 'Active',
+    rating: 4.9,
+    type: 'Door-to-door',
+    pickup: 'Mactan Airport',
+    dropoff: 'IT Park',
+    accepts: 'Large box to XL',
+    estimate: '₱35.00 - ₱50.00',
+    timeLabel: 'Leaves in 30 mins',
+    isTimeExact: false,
+  },
 ];
 
 // Mock Data for the Bottom Sheet Shipment Items
@@ -66,19 +91,50 @@ const MOCK_SHIPMENT = [
   { id: 'm1', size: 'Medium', title: 'Medium Item #1', desc: 'Flat screen TV pls take care', fragile: true },
 ];
 
+type FilterState = {
+  status: 'all' | 'Active' | 'Offline';
+  type: 'all' | 'Door-to-door' | 'Curb-side Drop-off';
+};
+
 export default function ExploreScreen() {
   const navigation = useNavigation<any>();
   const [search, setSearch] = useState('');
   const [selectedProvider, setSelectedProvider] = useState<any>(null);
+  const [filterModalVisible, setFilterModalVisible] = useState(false);
+  const [filters, setFilters] = useState<FilterState>({
+    status: 'all',
+    type: 'all',
+  });
   const insets = useSafeAreaInsets();
 
-  const handleNavigateToHome = () => {
-    navigation.navigate('Home');
+  // Filter logic
+  const filteredTrips = useMemo(() => {
+    return MOCK_TRIPS.filter((trip) => {
+      // Search filter
+      const searchLower = search.toLowerCase();
+      const matchesSearch = 
+        trip.name.toLowerCase().includes(searchLower) ||
+        trip.pickup.toLowerCase().includes(searchLower) ||
+        trip.dropoff.toLowerCase().includes(searchLower) ||
+        trip.type.toLowerCase().includes(searchLower);
+
+      if (!matchesSearch) return false;
+
+      // Status filter
+      if (filters.status !== 'all' && trip.status !== filters.status) return false;
+
+      // Type filter
+      if (filters.type !== 'all' && trip.type !== filters.type) return false;
+
+      return true;
+    });
+  }, [search, filters]);
+
+  const resetFilters = () => {
+    setFilters({ status: 'all', type: 'all' });
   };
 
-  const handleNavigateToAccount = () => {
-    navigation.navigate('Account');
-  };
+  const hasActiveFilters = filters.status !== 'all' || filters.type !== 'all';
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -90,17 +146,56 @@ export default function ExploreScreen() {
           <View style={styles.searchBar}>
             <Ionicons name="search-outline" size={20} color="#9CA3AF" />
             <TextInput
-              placeholder="Search..."
+              placeholder="Search by name, pickup, dropoff..."
               placeholderTextColor="#9CA3AF"
               style={styles.searchInput}
               value={search}
               onChangeText={setSearch}
+              clearButtonMode="while-editing"
             />
+            {search.length > 0 && (
+              <TouchableOpacity onPress={() => setSearch('')}>
+                <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            )}
           </View>
-          <TouchableOpacity style={styles.filterBtn}>
-            <Ionicons name="options-outline" size={24} color="#374151" />
+          <TouchableOpacity 
+            style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]} 
+            onPress={() => setFilterModalVisible(true)}
+          >
+            <Ionicons 
+              name="options-outline" 
+              size={24} 
+              color={hasActiveFilters ? '#F27024' : '#374151'} 
+            />
+            {hasActiveFilters && <View style={styles.filterDot} />}
           </TouchableOpacity>
         </View>
+
+        {/* Active filters display */}
+        {hasActiveFilters && (
+          <View style={styles.activeFiltersRow}>
+            {filters.status !== 'all' && (
+              <View style={styles.filterChip}>
+                <Text style={styles.filterChipText}>Status: {filters.status}</Text>
+                <TouchableOpacity onPress={() => setFilters({ ...filters, status: 'all' })}>
+                  <Ionicons name="close-circle" size={14} color="#6B7280" />
+                </TouchableOpacity>
+              </View>
+            )}
+            {filters.type !== 'all' && (
+              <View style={styles.filterChip}>
+                <Text style={styles.filterChipText}>Type: {filters.type}</Text>
+                <TouchableOpacity onPress={() => setFilters({ ...filters, type: 'all' })}>
+                  <Ionicons name="close-circle" size={14} color="#6B7280" />
+                </TouchableOpacity>
+              </View>
+            )}
+            <TouchableOpacity onPress={resetFilters}>
+              <Text style={styles.clearAllText}>Clear All</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <Text style={styles.sectionTitle}>Active Trips Heading Your Way</Text>
         <Text style={styles.sectionSubtitle}>
@@ -108,46 +203,47 @@ export default function ExploreScreen() {
         </Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.listContainer} showsVerticalScrollIndicator={false}>
-        {MOCK_TRIPS.map((trip) => (
-          <View key={trip.id} style={styles.tripCard}>
-            
-            {/* Header: Avatar, Name, Badges, Type */}
+      <FlatList
+        data={filteredTrips}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.tripCard}>
+            {/* Header */}
             <View style={styles.cardHeader}>
               <View style={styles.avatarCircle}>
                 <Ionicons name="person" size={24} color="#FFF" />
               </View>
               <View style={styles.providerInfo}>
-                <Text style={styles.providerName}>{trip.name}</Text>
+                <Text style={styles.providerName}>{item.name}</Text>
                 <View style={styles.badgesRow}>
-                  <View style={[styles.statusBadge, trip.status === 'Active' ? styles.statusActive : styles.statusOffline]}>
-                    <Text style={styles.statusText}>{trip.status}</Text>
+                  <View style={[styles.statusBadge, item.status === 'Active' ? styles.statusActive : styles.statusOffline]}>
+                    <Text style={styles.statusText}>{item.status}</Text>
                   </View>
                   <Ionicons name="star" size={14} color="#FBBF24" style={{ marginLeft: 6, marginRight: 2 }} />
-                  <Text style={styles.ratingText}>{trip.rating}</Text>
+                  <Text style={styles.ratingText}>{item.rating}</Text>
                   <TouchableOpacity style={styles.chatIcon}>
                     <Ionicons name="chatbubbles-outline" size={14} color="#000" />
                   </TouchableOpacity>
                 </View>
               </View>
-              <Text style={styles.dropType}>{trip.type}</Text>
+              <Text style={styles.dropType}>{item.type}</Text>
             </View>
 
-            {/* Timeline & Mini Map */}
+            {/* Timeline */}
             <View style={styles.routeSection}>
               <View style={styles.timeline}>
                 <View style={styles.timelinePoint}>
                   <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
-                  <Text style={styles.timelineText} numberOfLines={1}>{trip.pickup}</Text>
+                  <Text style={styles.timelineText} numberOfLines={1}>{item.pickup}</Text>
                 </View>
                 <View style={styles.timelineLine} />
                 <View style={styles.timelinePoint}>
                   <Ionicons name="location" size={18} color="#E11D48" style={{ marginLeft: -1, marginRight: 7 }} />
-                  <Text style={styles.timelineText} numberOfLines={1}>{trip.dropoff}</Text>
+                  <Text style={styles.timelineText} numberOfLines={1}>{item.dropoff}</Text>
                 </View>
               </View>
 
-              {/* Mini Map Placeholder */}
+              {/* Mini Map */}
               <View style={styles.miniMap}>
                 <View style={styles.mapGridLineH} />
                 <View style={styles.mapGridLineV} />
@@ -157,33 +253,125 @@ export default function ExploreScreen() {
 
             <View style={styles.divider} />
 
-            {/* Footer details */}
+            {/* Footer */}
             <View style={styles.cardFooter}>
               <View style={styles.footerLeft}>
                 <Text style={styles.footerLabel}>Accepts</Text>
-                <Text style={styles.acceptsText}>{trip.accepts}</Text>
+                <Text style={styles.acceptsText}>{item.accepts}</Text>
                 <View style={styles.timeRow}>
-                  <Ionicons name={trip.isTimeExact ? "calendar-outline" : "timer-outline"} size={14} color="#000" />
-                  <Text style={styles.timeText}>{trip.timeLabel}</Text>
+                  <Ionicons name={item.isTimeExact ? "calendar-outline" : "timer-outline"} size={14} color="#000" />
+                  <Text style={styles.timeText}>{item.timeLabel}</Text>
                 </View>
               </View>
-
               <View style={styles.footerRight}>
                 <Text style={styles.footerLabel}>Estimate</Text>
-                <Text style={styles.estimateText}>{trip.estimate}</Text>
-                <TouchableOpacity onPress={() => setSelectedProvider(trip)}>
+                <Text style={styles.estimateText}>{item.estimate}</Text>
+                <TouchableOpacity onPress={() => setSelectedProvider(item)}>
                   <Text style={styles.bookBtnText}>Book this Provider</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
-        ))}
-        
-        {/* Bottom spacer for tab bar */}
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+        )}
+        contentContainerStyle={styles.listContainer}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Ionicons name="search-outline" size={48} color="#D1D5DB" />
+            <Text style={styles.emptyText}>No trips found</Text>
+            <Text style={styles.emptySubtext}>Try adjusting your search or filters</Text>
+          </View>
+        }
+      />
 
-      {/* MATCH MODAL (BOTTOM SHEET) */}
+      {/* FILTER MODAL */}
+      <Modal
+        visible={filterModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setFilterModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity 
+            style={StyleSheet.absoluteFill} 
+            onPress={() => setFilterModalVisible(false)} 
+            activeOpacity={1}
+          />
+          <View style={[styles.filterModal, { paddingBottom: insets.bottom + 20 }]}>
+            <View style={styles.filterModalHeader}>
+              <Text style={styles.filterModalTitle}>Filters</Text>
+              <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.filterSection}>
+              <Text style={styles.filterSectionTitle}>Status</Text>
+              <View style={styles.filterOptionsRow}>
+                {['all', 'Active', 'Offline'].map((status) => (
+                  <TouchableOpacity
+                    key={status}
+                    style={[
+                      styles.filterOption,
+                      filters.status === status && styles.filterOptionActive,
+                    ]}
+                    onPress={() => setFilters({ ...filters, status: status as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.filterOptionText,
+                        filters.status === status && styles.filterOptionTextActive,
+                      ]}
+                    >
+                      {status === 'all' ? 'All' : status}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.filterSection}>
+              <Text style={styles.filterSectionTitle}>Type</Text>
+              <View style={styles.filterOptionsRow}>
+                {['all', 'Door-to-door', 'Curb-side Drop-off'].map((type) => (
+                  <TouchableOpacity
+                    key={type}
+                    style={[
+                      styles.filterOption,
+                      filters.type === type && styles.filterOptionActive,
+                    ]}
+                    onPress={() => setFilters({ ...filters, type: type as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.filterOptionText,
+                        filters.type === type && styles.filterOptionTextActive,
+                      ]}
+                    >
+                      {type === 'all' ? 'All' : type}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <TouchableOpacity 
+              style={styles.applyFiltersBtn}
+              onPress={() => setFilterModalVisible(false)}
+            >
+              <Text style={styles.applyFiltersBtnText}>Apply Filters</Text>
+            </TouchableOpacity>
+
+            {hasActiveFilters && (
+              <TouchableOpacity onPress={resetFilters} style={styles.resetFiltersBtn}>
+                <Text style={styles.resetFiltersBtnText}>Reset Filters</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* BOTTOM SHEET MODAL (Match) */}
       <Modal
         visible={!!selectedProvider}
         transparent={true}
@@ -192,7 +380,6 @@ export default function ExploreScreen() {
       >
         <View style={styles.modalOverlay}>
           <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setSelectedProvider(null)} />
-          
           <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
             {selectedProvider && (
               <>
@@ -208,7 +395,6 @@ export default function ExploreScreen() {
                   <Text style={styles.shipmentHeader}>What's in your shipment?</Text>
                 </View>
 
-                {/* Size Selectors */}
                 <View style={styles.sizeSelectorRow}>
                   <View style={styles.sizeBox}>
                     <Ionicons name="cube-outline" size={24} color="#9CA3AF" />
@@ -226,7 +412,6 @@ export default function ExploreScreen() {
 
                 <Text style={styles.itemsCount}>Shipment Items (3)</Text>
 
-                {/* Items List */}
                 <ScrollView style={styles.itemsList} showsVerticalScrollIndicator={false}>
                   {MOCK_SHIPMENT.map((item, index) => (
                     <View key={index} style={styles.itemRowCard}>
@@ -245,7 +430,6 @@ export default function ExploreScreen() {
                   ))}
                 </ScrollView>
 
-                {/* Total & Action */}
                 <View style={styles.totalRow}>
                   <Text style={styles.totalLabel}>Estimated Total</Text>
                   <Text style={styles.totalPrice}>₱54.00</Text>
@@ -259,25 +443,6 @@ export default function ExploreScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
-        <TouchableOpacity 
-          style={styles.navItem} 
-          onPress={handleNavigateToHome}
-        >
-          <Ionicons name="home-outline" size={28} color="#6B7280" />
-          <Text style={styles.navLabel}>Home</Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.navItem} 
-          onPress={handleNavigateToAccount}
-        >
-          <Ionicons name="person-outline" size={28} color="#6B7280" />
-          <Text style={styles.navLabel}>Account</Text>
-        </TouchableOpacity>
-      </View>
     </SafeAreaView>
   );
 }
@@ -299,7 +464,7 @@ const styles = StyleSheet.create({
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 12,
   },
   searchBar: {
     flex: 1,
@@ -328,6 +493,44 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
+  },
+  filterBtnActive: {
+    borderColor: '#F27024',
+  },
+  filterDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#F27024',
+  },
+  activeFiltersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+    gap: 6,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 16,
+    gap: 4,
+  },
+  filterChipText: {
+    fontSize: 12,
+    color: '#374151',
+  },
+  clearAllText: {
+    fontSize: 12,
+    color: '#F27024',
+    fontWeight: '600',
   },
   sectionTitle: { 
     fontSize: 15, 
@@ -343,10 +546,7 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
-  bottomSpacer: {
-    height: 80,
+    paddingBottom: 100,
   },
   tripCard: {
     backgroundColor: '#FFFFFF',
@@ -513,13 +713,105 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FA7A25',
   },
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 60,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginTop: 12,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    marginTop: 4,
+  },
 
-  // --- Modal / Bottom Sheet Styles ---
+  // Filter Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'flex-end',
   },
+  filterModal: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+    maxHeight: height * 0.6,
+  },
+  filterModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  filterModalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  filterSection: {
+    marginBottom: 20,
+  },
+  filterSectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 10,
+  },
+  filterOptionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  filterOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+  },
+  filterOptionActive: {
+    borderColor: '#F27024',
+    backgroundColor: '#FFF7ED',
+  },
+  filterOptionText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  filterOptionTextActive: {
+    color: '#F27024',
+    fontWeight: '700',
+  },
+  applyFiltersBtn: {
+    backgroundColor: '#F27024',
+    borderRadius: 30,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  applyFiltersBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  resetFiltersBtn: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  resetFiltersBtnText: {
+    color: '#6B7280',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+
+  // Bottom Sheet
   bottomSheet: {
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 20,
@@ -653,30 +945,5 @@ const styles = StyleSheet.create({
     color: '#064E3B',
     fontSize: 15,
     fontWeight: '600',
-  },
-
-  // Bottom Navigation
-  bottomNav: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-    paddingVertical: 10,
-    paddingBottom: 10,
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-  },
-  navItem: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  navLabel: {
-    fontSize: 11,
-    color: '#6B7280',
-    marginTop: 2,
   },
 });

@@ -17,14 +17,17 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.rendelljames.Capstone"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-web-browser",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-status-bar",
+      "@react-native-community/datetimepicker"
     ]
   }
 }
