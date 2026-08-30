@@ -654,6 +654,22 @@ export default function ManageRoutesScreen() {
     setModalVisible(true);
   };
 
+  // Handle date change (FIXED - using onValueChange)
+  const handleDateChange = (event: any, selectedDate?: Date) => {
+    setShowDatePicker(false);
+    if (selectedDate) {
+      setDepartureDate(selectedDate);
+    }
+  };
+
+  // Handle time change (FIXED - using onValueChange)
+  const handleTimeChange = (event: any, selectedTime?: Date) => {
+    setShowTimePicker(false);
+    if (selectedTime) {
+      setDepartureTime(selectedTime);
+    }
+  };
+
   // Render route card
   const renderRouteCard = ({ item }: { item: Route }) => {
     const isActive = new Date(item.departure_time) > new Date();
@@ -895,7 +911,7 @@ export default function ManageRoutesScreen() {
                 )}
               </View>
 
-              {/* Date Picker */}
+              {/* Date Picker - FIXED with onValueChange */}
               <View style={styles.dateTimeRow}>
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Date</Text>
@@ -917,17 +933,12 @@ export default function ManageRoutesScreen() {
                       value={departureDate}
                       mode="date"
                       display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(event, selectedDate) => {
-                        setShowDatePicker(false);
-                        if (selectedDate) {
-                          setDepartureDate(selectedDate);
-                        }
-                      }}
+                      onChange={handleDateChange}
                     />
                   )}
                 </View>
 
-                {/* Time Picker */}
+                {/* Time Picker - FIXED with onValueChange */}
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Departure Time</Text>
                   <TouchableOpacity 
@@ -947,12 +958,7 @@ export default function ManageRoutesScreen() {
                       value={departureTime}
                       mode="time"
                       display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      onChange={(event, selectedTime) => {
-                        setShowTimePicker(false);
-                        if (selectedTime) {
-                          setDepartureTime(selectedTime);
-                        }
-                      }}
+                      onChange={handleTimeChange}
                     />
                   )}
                 </View>
