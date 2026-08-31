@@ -19,6 +19,8 @@ import MessagesScreen from './src/modules/Dashboard/Sender/MessagesScreen';
 import ActivityScreen from './src/modules/Dashboard/Sender/ActivityScreen';
 import EditProfileScreen from './src/modules/Dashboard/Sender/EditProfileScreen';
 import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProviderScreen';
+import PaymentMethodsScreen from './src/modules/Dashboard/Sender/PaymentMethodsScreen';
+import AddPaymentMethodScreen from './src/modules/Dashboard/Sender/AddPaymentMethodScreen';
 
 // Settings Screens
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
@@ -55,7 +57,6 @@ export type RootStackParamList = {
   Register: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
-  // ✅ Allow a 'screen' parameter to navigate to a specific tab
   MainTabs: { screen?: keyof MainTabParamList };
   ProviderTabs: { screen?: keyof ProviderTabParamList };
   Account: undefined;
@@ -64,6 +65,8 @@ export type RootStackParamList = {
   DisputeCenter: undefined;
   LegalPolicies: undefined;
   RegisterProvider: undefined;
+  PaymentMethods: undefined;
+  AddPaymentMethod: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
@@ -74,6 +77,22 @@ export type RootStackParamList = {
   DeliveryList: { status: 'Pending' | 'Accepted' };
   ManageVehicle: undefined;
   ManageRoutes: undefined;
+};
+
+export type MainTabParamList = {
+  Home: undefined;
+  Explore: undefined;
+  Messages: undefined;
+  Activity: undefined;
+  Account: undefined;
+};
+
+export type ProviderTabParamList = {
+  Task: undefined;
+  Earnings: undefined;
+  Jobs: undefined;
+  Messages: undefined;
+  Account: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -227,6 +246,8 @@ export default function App() {
           <Stack.Screen name="DisputeCenter" component={DisputeCenterScreen} />
           <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
           <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
           <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
           <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
           <Stack.Screen name="AddItem" component={AddItemScreen} />
@@ -235,7 +256,6 @@ export default function App() {
           <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
           <Stack.Screen name="Booking" component={BookingScreen} />
           <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-          
           <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
           <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
         </Stack.Navigator>

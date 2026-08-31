@@ -1,4 +1,3 @@
-// src/modules/Dashboard/Sender/AccountScreen.tsx
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -72,6 +71,8 @@ export default function AccountScreen() {
   const [userRole, setUserRole] = useState<string>('Sender');
   const [isProviderRegistered, setIsProviderRegistered] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
+  
+  const [currentView, setCurrentView] = useState<'main' | 'payment' | 'history'>('main');
 
   useFocusEffect(
     useCallback(() => {
@@ -135,6 +136,7 @@ export default function AccountScreen() {
   );
 
 
+
   // Handlers
   const handleLogoutConfirm = () => {
     Alert.alert(
@@ -164,9 +166,8 @@ export default function AccountScreen() {
 
   const handleSwitchToProvider = () => {
     if (isProviderRegistered) {
-      navigation.navigate('ProviderTabs');
+      navigation.navigate('ProviderTabs', { screen: 'Task' });
     } else {
-      // User is only Sender, navigate to registration
       navigation.navigate('RegisterProvider');
     }
   };
@@ -202,40 +203,18 @@ export default function AccountScreen() {
     );
   }
 
-  // --- SUB-SCREEN: PAYMENT METHODS ---
-  if (currentView === 'payment') {
-    return (
-      <View style={[styles.container, { paddingTop: insets.top, backgroundColor: '#FA7A25' }]}>
-        <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
-        <View style={styles.subHeader}>
-          <TouchableOpacity onPress={() => setCurrentView('main')} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={24} color="#000" />
-          </TouchableOpacity>
-          <Text style={styles.subHeaderTitle}>All Payment Methods</Text>
-        </View>
-        <View style={styles.subContent}>
-          <TouchableOpacity style={styles.menuItem}>
-            <View style={styles.paymentRowLeft}>
-              <View style={styles.gcashIcon}>
-                <Text style={styles.gcashText}>G</Text>
-                <Ionicons name="wifi" size={10} color="#FFF" style={styles.gcashWifi} />
-              </View>
-              <Text style={styles.menuText}>G cash</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color="#000" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
+  const handlePaymentMethodsPress = () => {
+    navigation.navigate('PaymentMethods');
+  };
 
-  // --- SUB-SCREEN: VIEW HISTORY ---
-  if (currentView === 'history') {
+  const [showHistory, setShowHistory] = useState(false);
+
+  if (showHistory) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, backgroundColor: '#FA7A25' }]}>
         <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
         <View style={styles.subHeader}>
-          <TouchableOpacity onPress={() => setCurrentView('main')} style={styles.backBtn}>
+          <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.subHeaderTitle}>View History</Text>
@@ -336,7 +315,6 @@ export default function AccountScreen() {
         </View>
       </View>
 
-      {/* Menu Content */}
       <ScrollView 
         showsVerticalScrollIndicator={false} 
         style={styles.mainContent} 
@@ -346,7 +324,7 @@ export default function AccountScreen() {
         
         <TouchableOpacity 
           style={styles.menuItem} 
-          onPress={() => navigation.navigate('ProviderTabs')}
+          onPress={handleSwitchToProvider}
         >
           <View style={styles.menuItemLeft}>
             <Text style={styles.menuText}>
