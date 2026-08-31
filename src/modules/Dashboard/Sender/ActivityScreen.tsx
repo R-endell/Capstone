@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+// src/modules/Dashboard/Sender/ActivityScreen.tsx
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions, 
-  Alert, ActivityIndicator, TextInput, Modal, Image 
+  Alert, ActivityIndicator, TextInput, Modal, Image, RefreshControl 
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
@@ -12,30 +13,142 @@ import { deleteDelivery } from './Delivery/scheduleService';
 
 const { width, height } = Dimensions.get('window');
 
+// Types
+interface DeliveryRequest {
+  request_id: number;
+  pickup_type: string;
+  delivery_status: string;
+  scheduled_time: string | null;
+  estimated_cost: number;
+  created_at: string;
+  sender_id: number;
+  cargo_id: number;
+  pickup_location_id: number;
+  dropoff_location_id: number;
+  rate_id: number;
+  cargo_profiles: {
+    cargo_id: number;
+    cargo_pic: string | null;
+    description: string;
+    small_box_qty: number;
+    medium_box_qty: number;
+    large_box_qty: number;
+    is_fragile: boolean;
+    total_weight_kg: number;
+  };
+  pickup_location: {
+    location_id: number;
+    street_address: string;
+    latitude: number;
+    longitude: number;
+    barangay: string;
+    city: string;
+    province: string;
+  };
+  dropoff_location: {
+    location_id: number;
+    street_address: string;
+    latitude: number;
+    longitude: number;
+    barangay: string;
+    city: string;
+    province: string;
+  };
+}
+
+interface Delivery {
+  delivery_id: number;
+  estimated_eta: string | null;
+  completed_at: string | null;
+  request_id: number;
+  provider_id: number;
+  route_id: number;
+  vehicle_id: number;
+  accepted_at: string;
+  provider?: {
+    user_id: number;
+    first_name: string;
+    last_name: string;
+    email: string;
+  };
+  vehicle?: {
+    vehicle_id: number;
+    vehicle_type: string;
+    plate_number: string;
+  };
+}
+
+interface MappedDelivery {
+  request_id: number;
+  pickup_type: string;
+  date: string;
+  time: string;
+  pickup_main: string;
+  pickup_sub: string;
+  dropoff_main: string;
+  dropoff_sub: string;
+  status: string;
+  status_time: string;
+  provider_name: string;
+  provider_id?: number;
+  price: string;
+  coords: {
+    pickup: { latitude: number; longitude: number };
+    dropoff: { latitude: number; longitude: number };
+  };
+  rawData: DeliveryRequest;
+  deliveryData?: Delivery;
+  isMatched: boolean;
+}
+
 export default function ActivityScreen({ navigation: navProp }: any) {
   const navigation = useNavigation<any>();
-  const [deliveries, setDeliveries] = useState<any[]>([]);
-  const [selectedDelivery, setSelectedDelivery] = useState<any | null>(null);
+  const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
+  const [selectedDelivery, setSelectedDelivery] = useState<MappedDelivery | null>(null);
   const [showFullMap, setShowFullMap] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [viewingPackage, setViewingPackage] = useState<any | null>(null);
+  const [userId, setUserId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'active' | 'completed'>('all');
   const insets = useSafeAreaInsets();
 
-  // Cached user ID to avoid repeated auth lookups
-  const [userId, setUserId] = useState<number | null>(null);
-
+  // Fetch user record
   const fetchUserRecord = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data: userRecord } = await supabase
-      .from('users')
-      .select('user_id')
-      .eq('auth_id', user.id)
-      .maybeSingle();
-    return userRecord?.user_id || null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+      const { data: userRecord } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+      return userRecord?.user_id || null;
+    } catch (error) {
+      console.error('Error fetching user:', error);
+      return null;
+    }
   };
 
+  // Fetch provider details for a delivery
+  const fetchProviderDetails = async (providerId: number) => {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('user_id, first_name, last_name, email')
+        .eq('user_id', providerId)
+        .single();
+      
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error('Error fetching provider:', error);
+      return null;
+    }
+  };
+
+  // Fetch deliveries for the sender
   const fetchData = async () => {
     setIsLoading(true);
     try {
@@ -47,73 +160,120 @@ export default function ActivityScreen({ navigation: navProp }: any) {
       }
       if (!userId) setUserId(currentUserId);
 
-      // Optimized query with indexes (ensure indexes are created in Supabase)
-      const { data: active, error } = await supabase
+      // Fetch delivery requests with their status
+      const { data: requests, error: requestsError } = await supabase
         .from('delivery_requests')
         .select(`
-          request_id,
-          pickup_type,
-          delivery_status,
-          scheduled_time,
-          estimated_cost,
-          created_at,
-          cargo_profiles ( cargo_id, cargo_pic, description, small_box_qty, medium_box_qty, large_box_qty, is_fragile ),
-          pickup_location:locations!delivery_requests_pickup_location_id_fkey ( location_id, street_address, latitude, longitude ),
-          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( location_id, street_address, latitude, longitude )
+          *,
+          cargo_profiles (*),
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey (*),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*)
         `)
         .eq('sender_id', currentUserId)
-        .in('delivery_status', ['Accepted', 'Pending'])
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (requestsError) throw requestsError;
 
-      if (active && active.length > 0) {
-        const mappedDeliveries = active.map((item: any) => {
-          const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
-          const parseAddr = (full: string) => {
-            if (!full) return { main: 'Selected Location', sub: '' };
-            const parts = full.split(', ');
-            return { main: parts[0], sub: parts.slice(1).join(', ') || full };
-          };
-          const pickup = parseAddr(item.pickup_location?.street_address);
-          const dropoff = parseAddr(item.dropoff_location?.street_address);
-          return {
-            request_id: item.request_id,
-            pickup_type: item.pickup_type,
-            date: scheduleDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
-            time: scheduleDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-            pickup_main: pickup.main,
-            pickup_sub: pickup.sub,
-            dropoff_main: dropoff.main,
-            dropoff_sub: dropoff.sub,
-            status: item.delivery_status === 'Pending' ? 'Waiting for Provider' : item.delivery_status,
-            status_time: 'Recently updated',
-            provider_name: 'Assigning...',
-            price: item.estimated_cost?.toFixed(2) || '0.00',
-            coords: {
-              pickup: { latitude: item.pickup_location?.latitude || 10.3157, longitude: item.pickup_location?.longitude || 123.8854 },
-              dropoff: { latitude: item.dropoff_location?.latitude || 10.3157, longitude: item.dropoff_location?.longitude || 123.8854 }
-            },
-            rawData: item 
-          };
-        });
-        setDeliveries(mappedDeliveries);
-      } else {
-        setDeliveries([]);
+      // Fetch deliveries for these requests
+      const requestIds = requests?.map((r: any) => r.request_id) || [];
+      let deliveriesData: Delivery[] = [];
+      
+      if (requestIds.length > 0) {
+        const { data: deliveries, error: deliveriesError } = await supabase
+          .from('deliveries')
+          .select('*')
+          .in('request_id', requestIds)
+          .order('accepted_at', { ascending: false });
+
+        if (!deliveriesError) {
+          deliveriesData = deliveries || [];
+        }
       }
+
+      // Map the data
+      const mappedDeliveries: MappedDelivery[] = (requests || []).map((item: any) => {
+        const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
+        const delivery = deliveriesData.find((d: any) => d.request_id === item.request_id);
+        
+        const parseAddr = (full: string) => {
+          if (!full) return { main: 'Selected Location', sub: '' };
+          const parts = full.split(', ');
+          return { main: parts[0], sub: parts.slice(1).join(', ') || full };
+        };
+        
+        const pickup = parseAddr(item.pickup_location?.street_address);
+        const dropoff = parseAddr(item.dropoff_location?.street_address);
+
+        let status = item.delivery_status;
+        let statusDisplay = status;
+        
+        if (status === 'Pending') {
+          statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
+        } else if (status === 'Accepted') {
+          statusDisplay = 'In Progress';
+        } else if (status === 'Completed') {
+          statusDisplay = 'Completed';
+        }
+
+        return {
+          request_id: item.request_id,
+          pickup_type: item.pickup_type,
+          date: scheduleDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+          time: scheduleDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+          pickup_main: pickup.main,
+          pickup_sub: pickup.sub,
+          dropoff_main: dropoff.main,
+          dropoff_sub: dropoff.sub,
+          status: statusDisplay,
+          status_time: delivery?.accepted_at ? new Date(delivery.accepted_at).toLocaleString() : 'Recently updated',
+          provider_name: delivery ? 'Provider Assigned' : 'Assigning...',
+          provider_id: delivery?.provider_id,
+          price: item.estimated_cost?.toFixed(2) || '0.00',
+          coords: {
+            pickup: { 
+              latitude: item.pickup_location?.latitude || 10.3157, 
+              longitude: item.pickup_location?.longitude || 123.8854 
+            },
+            dropoff: { 
+              latitude: item.dropoff_location?.latitude || 10.3157, 
+              longitude: item.dropoff_location?.longitude || 123.8854 
+            }
+          },
+          rawData: item,
+          deliveryData: delivery,
+          isMatched: !!delivery
+        };
+      });
+
+      // Fetch provider names for matched deliveries
+      const matchedDeliveries = mappedDeliveries.filter(d => d.isMatched);
+      for (const delivery of matchedDeliveries) {
+        if (delivery.provider_id) {
+          const provider = await fetchProviderDetails(delivery.provider_id);
+          if (provider) {
+            delivery.provider_name = `${provider.first_name} ${provider.last_name}`;
+          }
+        }
+      }
+
+      setDeliveries(mappedDeliveries);
     } catch (error) {
-      console.error(error);
+      console.error('Error fetching data:', error);
       setDeliveries([]);
     } finally {
       setIsLoading(false);
+      setRefreshing(false);
     }
   };
 
-  useEffect(() => {
-    const unsubscribe = navProp.addListener('focus', fetchData);
-    return unsubscribe;
-  }, []);
+  // Refresh on focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchData();
+    }, [userId])
+  );
 
+  // Handle edit
   const handleEdit = (rawData: any) => {
     if (!rawData) return;
     setSelectedDelivery(null);
@@ -123,6 +283,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
     });
   };
 
+  // Handle delete
   const handleDelete = (rawData: any) => {
     if (!rawData) return;
     Alert.alert(
@@ -152,21 +313,70 @@ export default function ActivityScreen({ navigation: navProp }: any) {
     );
   };
 
+  // Filter deliveries based on tab and search
   const filteredDeliveries = deliveries.filter((item) => {
+    // Tab filtering
+    if (activeTab === 'pending' && item.status !== 'Waiting for Provider') return false;
+    if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched') return false;
+    if (activeTab === 'completed' && item.status !== 'Completed') return false;
+    
+    // Search filtering
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase();
-
     const matchPickup = (item.pickup_main + " " + item.pickup_sub).toLowerCase().includes(query);
     const matchDropoff = (item.dropoff_main + " " + item.dropoff_sub).toLowerCase().includes(query);
     const matchId = String(item.request_id).toLowerCase().includes(query);
     const matchProvider = String(item.provider_name).toLowerCase().includes(query);
     const matchPackage = item.rawData?.cargo_profiles?.description?.toLowerCase().includes(query) || false;
-
     return matchPickup || matchDropoff || matchId || matchProvider || matchPackage;
   });
 
+  // Get status color
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'Waiting for Provider':
+        return '#F59E0B';
+      case 'Matched':
+        return '#3B82F6';
+      case 'In Progress':
+        return '#8B5CF6';
+      case 'Completed':
+        return '#22C55E';
+      default:
+        return '#6B7280';
+    }
+  };
+
+  // Render tab bar
+  const renderTabBar = () => (
+    <View style={styles.tabBar}>
+      {['all', 'pending', 'active', 'completed'].map((tab) => (
+        <TouchableOpacity
+          key={tab}
+          style={[styles.tabItem, activeTab === tab && styles.tabItemActive]}
+          onPress={() => setActiveTab(tab as any)}
+        >
+          <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
+            {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+          </Text>
+          {activeTab === tab && <View style={styles.tabIndicator} />}
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
+  // Render list view
   const renderListView = () => (
-    <ScrollView contentContainerStyle={styles.listContainer} showsVerticalScrollIndicator={false}>
+    <ScrollView 
+      contentContainerStyle={styles.listContainer} 
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={() => {
+          setRefreshing(true);
+          fetchData();
+        }} />
+      }
+    >
       <Text style={styles.pageTitle}>Active Delivery</Text>
 
       <View style={styles.searchBar}>
@@ -181,14 +391,25 @@ export default function ActivityScreen({ navigation: navProp }: any) {
         />
       </View>
 
+      {renderTabBar()}
+
       {isLoading ? (
         <ActivityIndicator size="large" color="#F27024" style={{ marginTop: 50 }} />
       ) : filteredDeliveries.length === 0 ? (
         <View style={styles.noResultsContainer}>
+          <Ionicons name="inbox-outline" size={60} color="#D1D5DB" />
           <Text style={styles.noResultsText}>
-            {deliveries.length === 0 ? "You have no active deliveries." : "No deliveries found matching"}
+            {deliveries.length === 0 ? "You have no deliveries yet." : "No deliveries found matching"}
           </Text>
           {searchQuery ? <Text style={styles.noResultsQuery}>"{searchQuery}"</Text> : null}
+          {deliveries.length === 0 && (
+            <TouchableOpacity 
+              style={styles.scheduleBtn}
+              onPress={() => navigation.navigate('ScheduleDelivery')}
+            >
+              <Text style={styles.scheduleBtnText}>Schedule a Delivery</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
         filteredDeliveries.map((item, index) => (
@@ -231,14 +452,25 @@ export default function ActivityScreen({ navigation: navProp }: any) {
               </View>
 
               <View style={styles.cardRightCol}>
-                <View style={styles.avatarPlaceholder}>
+                <View style={[styles.avatarPlaceholder, item.isMatched && styles.avatarMatched]}>
                   <Ionicons name="person" size={28} color="#FFF" />
                 </View>
                 <Text style={styles.providerName} numberOfLines={1}>{item.provider_name}</Text>
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity style={styles.circleBtn}><Ionicons name="call" size={14} color="#000" /></TouchableOpacity>
-                  <TouchableOpacity style={styles.circleBtn}><Ionicons name="chatbubbles" size={14} color="#000" /></TouchableOpacity>
-                </View>
+                {item.isMatched && (
+                  <View style={styles.actionButtons}>
+                    <TouchableOpacity style={styles.circleBtn}>
+                      <Ionicons name="call" size={14} color="#000" />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.circleBtn}>
+                      <Ionicons name="chatbubbles" size={14} color="#000" />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!item.isMatched && (
+                  <View style={styles.matchingIndicator}>
+                    <ActivityIndicator size="small" color="#F59E0B" />
+                  </View>
+                )}
               </View>
             </View>
 
@@ -246,7 +478,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
 
             <View style={styles.cardBottomRow}>
               <View style={styles.statusWrapper}>
-                <View style={[styles.greenDot, item.status === 'Waiting for Provider' && { backgroundColor: '#F59E0B' }]} />
+                <View style={[styles.statusDot, { backgroundColor: getStatusColor(item.status) }]} />
                 <View>
                   <Text style={styles.statusText}>{item.status}</Text>
                   <Text style={styles.statusTime}>{item.status_time}</Text>
@@ -254,26 +486,40 @@ export default function ActivityScreen({ navigation: navProp }: any) {
               </View>
               <Text style={styles.priceText}>₱{item.price}</Text>
             </View>
+
+            {item.isMatched && item.status === 'In Progress' && (
+              <TouchableOpacity 
+                style={styles.trackBtn}
+                onPress={() => setSelectedDelivery(item)}
+              >
+                <Ionicons name="navigate-outline" size={16} color="#FFF" />
+                <Text style={styles.trackBtnText}>Track Delivery</Text>
+              </TouchableOpacity>
+            )}
           </TouchableOpacity>
         ))
       )}
       
-      {/* Bottom spacer for tab bar */}
       <View style={styles.bottomSpacer} />
     </ScrollView>
   );
 
+  // Render detail view
   const renderDetailView = () => (
     <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
       <View style={styles.detailHeader}>
         <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn}>
+          <Ionicons name="expand-outline" size={20} color="#6B7280" />
+          <Text style={styles.fullMapBtnText}>Full Map</Text>
+        </TouchableOpacity>
       </View>
       
       <View style={styles.titleRow}>
-        <Text style={styles.pageTitleDetail}>Active Delivery</Text>
-        <Text style={styles.trackingId}>{selectedDelivery.request_id}</Text>
+        <Text style={styles.pageTitleDetail}>Delivery Details</Text>
+        <Text style={styles.trackingId}>#{selectedDelivery.request_id}</Text>
       </View>
 
       <TouchableOpacity 
@@ -309,7 +555,10 @@ export default function ActivityScreen({ navigation: navProp }: any) {
         
         <View style={styles.mapOverlayPill}>
           <Ionicons name="bicycle" size={14} color="#FA7A25" />
-          <Text style={styles.overlayPillText}>7 min{'\n'}2.9 km</Text>
+          <Text style={styles.overlayPillText}>
+            {selectedDelivery.isMatched ? 'In Transit' : 'Awaiting Match'}
+            {'\n'}~2.9 km
+          </Text>
         </View>
       </TouchableOpacity>
 
@@ -323,53 +572,120 @@ export default function ActivityScreen({ navigation: navProp }: any) {
       <View style={styles.statusTimeline}>
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <Ionicons name="checkmark-circle" size={24} color="#D1D5DB" />
+            <Ionicons name="checkmark-circle" size={24} color="#22C55E" />
             <View style={styles.statusLine} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={styles.statusStepTitle}>Waiting For Provider Match</Text>
-            <Text style={styles.statusStepTime}>Confirmed</Text>
+            <Text style={styles.statusStepTitle}>Order Confirmed</Text>
+            <Text style={styles.statusStepTime}>{selectedDelivery.date}</Text>
           </View>
         </View>
 
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <View style={[styles.greenDot, { width: 20, height: 20, borderRadius: 10 }]} />
-            <View style={styles.statusLine} />
+            <View style={[styles.statusDot, { 
+              width: 20, height: 20, borderRadius: 10,
+              backgroundColor: selectedDelivery.isMatched ? '#3B82F6' : '#F59E0B'
+            }]} />
+            <View style={[styles.statusLine, selectedDelivery.isMatched && styles.statusLineActive]} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, { color: '#000' }]}>{selectedDelivery.status}</Text>
-            <Text style={styles.statusStepTime}>{selectedDelivery.status_time}</Text>
+            <Text style={[styles.statusStepTitle, selectedDelivery.isMatched && { color: '#000' }]}>
+              {selectedDelivery.isMatched ? 'Provider Matched' : 'Finding Provider'}
+            </Text>
+            <Text style={styles.statusStepTime}>
+              {selectedDelivery.isMatched ? 'Provider assigned' : 'Searching for provider...'}
+            </Text>
           </View>
         </View>
 
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <View style={styles.pendingDot} />
-            <View style={styles.statusLine} />
+            <View style={[
+              styles.statusDot, 
+              { width: 20, height: 20, borderRadius: 10 },
+              selectedDelivery.status === 'In Progress' ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' }
+            ]} />
+            <View style={[
+              styles.statusLine,
+              selectedDelivery.status === 'In Progress' && styles.statusLineActive
+            ]} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={styles.pendingStepTitle}>Item Collected (QR Verified)</Text>
-            <Text style={styles.pendingStepTime}>Awaiting Pickup</Text>
+            <Text style={[
+              styles.statusStepTitle,
+              selectedDelivery.status === 'In Progress' ? { color: '#000' } : { color: '#9CA3AF' }
+            ]}>
+              Item Collected (QR Verified)
+            </Text>
+            <Text style={[
+              styles.statusStepTime,
+              selectedDelivery.status === 'In Progress' ? { color: '#6B7280' } : { color: '#D1D5DB' }
+            ]}>
+              {selectedDelivery.status === 'In Progress' ? 'In transit' : 'Pending pickup'}
+            </Text>
           </View>
         </View>
 
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <View style={styles.pendingDot} />
+            <View style={[
+              styles.statusDot, 
+              { width: 20, height: 20, borderRadius: 10 },
+              selectedDelivery.status === 'Completed' ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }
+            ]} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={styles.pendingStepTitle}>Delivered Successfully</Text>
-            <Text style={styles.pendingStepTime}>Awaiting Pickup</Text>
+            <Text style={[
+              styles.statusStepTitle,
+              selectedDelivery.status === 'Completed' ? { color: '#000' } : { color: '#9CA3AF' }
+            ]}>
+              Delivered Successfully
+            </Text>
+            <Text style={[
+              styles.statusStepTime,
+              selectedDelivery.status === 'Completed' ? { color: '#6B7280' } : { color: '#D1D5DB' }
+            ]}>
+              {selectedDelivery.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}
+            </Text>
           </View>
         </View>
       </View>
 
+      {/* Provider Info if matched */}
+      {selectedDelivery.isMatched && (
+        <View style={styles.providerInfoCard}>
+          <Text style={styles.providerInfoTitle}>Provider Details</Text>
+          <View style={styles.providerInfoRow}>
+            <View style={styles.providerAvatarSmall}>
+              <Ionicons name="person" size={24} color="#FFF" />
+            </View>
+            <View style={styles.providerInfoDetails}>
+              <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
+              <Text style={styles.providerInfoVehicle}>
+                {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • 
+                {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
+              </Text>
+            </View>
+            <View style={styles.providerContactButtons}>
+              <TouchableOpacity style={styles.providerContactBtn}>
+                <Ionicons name="call" size={20} color="#F27024" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.providerContactBtn}>
+                <Ionicons name="chatbubbles" size={20} color="#F27024" />
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
       <View style={styles.detailActionsRow}>
-        <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(selectedDelivery.rawData)}>
-          <Ionicons name="create-outline" size={16} color="#FFF" />
-          <Text style={styles.editBtnText}>Edit Details</Text>
-        </TouchableOpacity>
+        {!selectedDelivery.isMatched && (
+          <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(selectedDelivery.rawData)}>
+            <Ionicons name="create-outline" size={16} color="#FFF" />
+            <Text style={styles.editBtnText}>Edit Details</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(selectedDelivery.rawData)}>
           <Ionicons name="close-circle-outline" size={16} color="#FFF" />
           <Text style={styles.deleteBtnText}>Cancel Booking</Text>
@@ -378,6 +694,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
     </ScrollView>
   );
 
+  // Render full map view
   const renderFullMapView = () => {
     const cargo = selectedDelivery.rawData?.cargo_profiles || { 
       description: 'Standard Package', 
@@ -389,12 +706,36 @@ export default function ActivityScreen({ navigation: navProp }: any) {
     };
 
     const packages = [];
-    for (let i = 0; i < (cargo.small_box_qty || 0); i++) packages.push({ id: `S${i}`, size: 'Small', desc: cargo.description, fragile: cargo.is_fragile, pic: cargo.cargo_pic });
-    for (let i = 0; i < (cargo.medium_box_qty || 0); i++) packages.push({ id: `M${i}`, size: 'Medium', desc: cargo.description, fragile: cargo.is_fragile, pic: cargo.cargo_pic });
-    for (let i = 0; i < (cargo.large_box_qty || 0); i++) packages.push({ id: `L${i}`, size: 'Large', desc: cargo.description, fragile: cargo.is_fragile, pic: cargo.cargo_pic });
+    for (let i = 0; i < (cargo.small_box_qty || 0); i++) packages.push({ 
+      id: `S${i}`, 
+      size: 'Small', 
+      desc: cargo.description, 
+      fragile: cargo.is_fragile, 
+      pic: cargo.cargo_pic 
+    });
+    for (let i = 0; i < (cargo.medium_box_qty || 0); i++) packages.push({ 
+      id: `M${i}`, 
+      size: 'Medium', 
+      desc: cargo.description, 
+      fragile: cargo.is_fragile, 
+      pic: cargo.cargo_pic 
+    });
+    for (let i = 0; i < (cargo.large_box_qty || 0); i++) packages.push({ 
+      id: `L${i}`, 
+      size: 'Large', 
+      desc: cargo.description, 
+      fragile: cargo.is_fragile, 
+      pic: cargo.cargo_pic 
+    });
     
     if (packages.length === 0) {
-      packages.push({ id: 'P1', size: 'Standard', desc: cargo.description, fragile: cargo.is_fragile, pic: cargo.cargo_pic });
+      packages.push({ 
+        id: 'P1', 
+        size: 'Standard', 
+        desc: cargo.description || 'Package', 
+        fragile: cargo.is_fragile, 
+        pic: cargo.cargo_pic 
+      });
     }
 
     return (
@@ -427,6 +768,10 @@ export default function ActivityScreen({ navigation: navProp }: any) {
           <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
+          <View style={styles.statusPill}>
+            <View style={[styles.statusDot, { backgroundColor: getStatusColor(selectedDelivery.status) }]} />
+            <Text style={styles.statusPillText}>{selectedDelivery.status}</Text>
+          </View>
         </View>
 
         <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
@@ -456,19 +801,33 @@ export default function ActivityScreen({ navigation: navProp }: any) {
                     
                     <View style={styles.carDetailRow}>
                       <View style={{flex: 1}}>
-                        <Text style={styles.carText}>Car: Honda Civic RS Turbo</Text>
-                        <Text style={styles.carText}>Color: Sonic Gray Pearl</Text>
-                        <Text style={styles.carText}>Plate Number: NDA-1234</Text>
+                        <Text style={styles.carText}>
+                          Vehicle: {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Not assigned'}
+                        </Text>
+                        <Text style={styles.carText}>
+                          Plate: {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
+                        </Text>
+                        <Text style={styles.carText}>
+                          Status: {selectedDelivery.status}
+                        </Text>
                       </View>
-                      <View style={styles.contactIcons}>
-                        <View style={styles.contactIconCircle}><Ionicons name="chatbubbles" size={14} color="#000" /></View>
-                        <View style={styles.contactIconCircle}><Ionicons name="call" size={14} color="#000" /></View>
-                      </View>
+                      {selectedDelivery.isMatched && (
+                        <View style={styles.contactIcons}>
+                          <View style={styles.contactIconCircle}>
+                            <Ionicons name="chatbubbles" size={14} color="#000" />
+                          </View>
+                          <View style={styles.contactIconCircle}>
+                            <Ionicons name="call" size={14} color="#000" />
+                          </View>
+                        </View>
+                      )}
                     </View>
 
                     <View style={styles.timelineSmall}>
                       <View style={styles.timelinePointSmall}>
-                        <View style={[styles.blueDot, { width: 12, height: 12, marginRight: 6 }]}><View style={[styles.blueDotInner, { width: 4, height: 4 }]} /></View>
+                        <View style={[styles.blueDot, { width: 12, height: 12, marginRight: 6 }]}>
+                          <View style={[styles.blueDotInner, { width: 4, height: 4 }]} />
+                        </View>
                         <View style={{flex: 1}}>
                           <Text style={styles.timelineMainTextSmall}>{selectedDelivery.pickup_main}</Text>
                           <Text style={styles.timelineSubTextSmall} numberOfLines={1}>{selectedDelivery.pickup_sub}</Text>
@@ -495,7 +854,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
                 </View>
               </View>
 
-              {/* HORIZONTAL PACKAGE LIST SECTION */}
+              {/* Package List Section */}
               <View style={styles.packageSection}>
                 <Text style={styles.packageSectionTitle}>Shipment Items ({packages.length})</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ paddingLeft: 4 }}>
@@ -533,7 +892,7 @@ export default function ActivityScreen({ navigation: navProp }: any) {
           ? renderDetailView() 
           : renderListView()}
 
-      {/* PACKAGE DETAIL MODAL */}
+      {/* Package Detail Modal */}
       <Modal
         visible={!!viewingPackage}
         transparent={true}
@@ -548,7 +907,6 @@ export default function ActivityScreen({ navigation: navProp }: any) {
               <Ionicons name="close" size={24} color="#111827" />
             </TouchableOpacity>
 
-            {/* Package Image or Placeholder */}
             {viewingPackage?.pic ? (
               <Image source={{ uri: viewingPackage.pic }} style={styles.pkgModalImg} />
             ) : (
@@ -558,7 +916,6 @@ export default function ActivityScreen({ navigation: navProp }: any) {
               </View>
             )}
 
-            {/* Package Details */}
             <View style={styles.pkgModalInfo}>
               <View style={styles.pkgModalHeaderRow}>
                 <Text style={styles.pkgModalSize}>{viewingPackage?.size} Item</Text>
@@ -588,7 +945,7 @@ const styles = StyleSheet.create({
     flex: 1, 
     backgroundColor: '#FAFAFA' 
   },
-  // --- Shared Styles ---
+  // Shared Styles
   blueDot: {
     width: 14,
     height: 14,
@@ -604,15 +961,52 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: '#0000CC',
   },
-  greenDot: {
+  statusDot: {
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#22C55E',
     marginRight: 10,
   },
 
-  // --- List View Styles ---
+  // Tab Bar
+  tabBar: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  tabItem: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+    position: 'relative',
+  },
+  tabItemActive: {
+    backgroundColor: '#F27024',
+  },
+  tabText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  tabTextActive: {
+    color: '#FFFFFF',
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    left: '30%',
+    right: '30%',
+    height: 2,
+    backgroundColor: '#F27024',
+    borderRadius: 1,
+  },
+
+  // List View
   listContainer: {
     paddingHorizontal: 16,
     paddingBottom: 30,
@@ -647,12 +1041,25 @@ const styles = StyleSheet.create({
   noResultsText: {
     fontSize: 14,
     color: '#6B7280',
+    marginTop: 12,
   },
   noResultsQuery: {
     fontSize: 16,
     fontWeight: '600',
     color: '#111827',
+    marginTop: 8,
+  },
+  scheduleBtn: {
     marginTop: 20,
+    backgroundColor: '#F27024',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 25,
+  },
+  scheduleBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 14,
   },
   card: {
     backgroundColor: '#FFF',
@@ -678,24 +1085,72 @@ const styles = StyleSheet.create({
   addressMain: { fontSize: 11, fontWeight: '600', color: '#000', marginBottom: 2 },
   addressSub: { fontSize: 9, color: '#6B7280', lineHeight: 12 },
   cardRightCol: { width: 90, alignItems: 'center' },
-  avatarPlaceholder: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#D97706', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  avatarPlaceholder: { 
+    width: 50, 
+    height: 50, 
+    borderRadius: 25, 
+    backgroundColor: '#D97706', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 8 
+  },
+  avatarMatched: {
+    backgroundColor: '#22C55E',
+  },
   providerName: { fontSize: 11, fontWeight: '700', color: '#000', textAlign: 'center', marginBottom: 10 },
   actionButtons: { flexDirection: 'row', justifyContent: 'space-between', width: 60 },
   circleBtn: { width: 26, height: 26, borderRadius: 13, borderWidth: 1, borderColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  matchingIndicator: {
+    marginTop: 4,
+  },
   divider: { height: 1, backgroundColor: '#E5E7EB', marginTop: 16, marginBottom: 12 },
   cardBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   statusWrapper: { flexDirection: 'row', alignItems: 'center' },
   statusText: { fontSize: 11, fontWeight: '600', color: '#000' },
   statusTime: { fontSize: 9, color: '#6B7280' },
   priceText: { fontSize: 14, fontWeight: '800', color: '#000' },
+  trackBtn: {
+    marginTop: 12,
+    backgroundColor: '#F27024',
+    borderRadius: 20,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  trackBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 12,
+    marginLeft: 8,
+  },
   bottomSpacer: {
     height: 80,
   },
 
-  // --- Detail View Styles ---
+  // Detail View
   detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 10 },
-  detailHeader: { marginBottom: 16 },
+  detailHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center',
+    marginBottom: 16 
+  },
   backBtn: { width: 40, height: 40, justifyContent: 'center' },
+  fullMapBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  fullMapBtnText: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginLeft: 4,
+    fontWeight: '500',
+  },
   titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20 },
   pageTitleDetail: { fontSize: 22, fontWeight: '700', color: '#000' },
   trackingId: { fontSize: 12, color: '#4B5563', marginBottom: 4 },
@@ -710,12 +1165,66 @@ const styles = StyleSheet.create({
   statusStep: { flexDirection: 'row', marginBottom: 0 },
   statusIconContainer: { width: 30, alignItems: 'center', marginRight: 12 },
   statusLine: { width: 1, height: 30, backgroundColor: '#D1D5DB', marginVertical: 4 },
+  statusLineActive: { backgroundColor: '#3B82F6' },
   statusTextContainer: { flex: 1, paddingBottom: 24 },
   statusStepTitle: { fontSize: 13, fontWeight: '700', color: '#374151', marginBottom: 2 },
   statusStepTime: { fontSize: 10, color: '#6B7280' },
-  pendingDot: { width: 20, height: 20, borderRadius: 10, backgroundColor: '#F3F4F6' },
-  pendingStepTitle: { fontSize: 13, fontWeight: '500', color: '#9CA3AF', marginBottom: 2 },
-  pendingStepTime: { fontSize: 10, color: '#D1D5DB' },
+
+  // Provider Info
+  providerInfoCard: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  providerInfoTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#065F46',
+    marginBottom: 12,
+  },
+  providerInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  providerAvatarSmall: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#22C55E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  providerInfoDetails: {
+    flex: 1,
+  },
+  providerInfoName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000',
+  },
+  providerInfoVehicle: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2,
+  },
+  providerContactButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  providerContactBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F27024',
+  },
 
   detailActionsRow: {
     flexDirection: 'row',
@@ -757,10 +1266,49 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginLeft: 6 },
 
-  // --- Full Map View Styles ---
+  // Full Map View
   fullMapContainer: { flex: 1 },
-  topOverlay: { position: 'absolute', left: 20, zIndex: 10 },
-  backCircleBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4 },
+  topOverlay: { 
+    position: 'absolute', 
+    left: 20, 
+    right: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 10 
+  },
+  backCircleBtn: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: '#FFF', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.15, 
+    shadowRadius: 4, 
+    elevation: 4 
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  statusPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#000',
+    marginLeft: 6,
+  },
   bottomSheet: { position: 'absolute', bottom: -20, left: 0, right: 0, alignItems: 'center'},
   sheetCardMatched: { width: '100%', backgroundColor: '#FFF', padding: 20, paddingBottom: 0 },
   matchedDropType: { fontSize: 11, color: '#000', marginBottom: 12 },
@@ -790,7 +1338,7 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 11, color: '#000' },
   totalValue: { fontSize: 13, fontWeight: '700', color: '#000' },
 
-  // --- Horizontal Packages Section ---
+  // Package Section
   packageSection: {
     marginTop: 10,
     marginBottom: 30,
@@ -839,7 +1387,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#EF4444',
   },
 
-  // --- Package Details Modal ---
+  // Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',

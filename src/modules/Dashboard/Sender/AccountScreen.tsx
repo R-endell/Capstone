@@ -72,8 +72,6 @@ export default function AccountScreen() {
   const [userRole, setUserRole] = useState<string>('Sender');
   const [isProviderRegistered, setIsProviderRegistered] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
-  
-  const [currentView, setCurrentView] = useState<'main' | 'payment' | 'history'>('main');
 
   useFocusEffect(
     useCallback(() => {
@@ -83,7 +81,6 @@ export default function AccountScreen() {
           if (user) {
             setUserEmail(user.email || 'john.doe@example.com');
             
-            // Get user data from your users table
             const { data: userData, error: userError } = await supabase
               .from('users')
               .select('user_id, first_name, last_name, profile_photo')
@@ -97,7 +94,6 @@ export default function AccountScreen() {
 
             if (userData) {
               setUserId(userData.user_id);
-              
               if (userData.first_name) setFirstName(userData.first_name);
               if (userData.last_name) setLastName(userData.last_name);
               if (userData.profile_photo) {
@@ -105,7 +101,6 @@ export default function AccountScreen() {
                 setImageError(false);
               }
 
-              // Check if user has Provider role using user_roles table
               const { data: userRoles, error: rolesError } = await supabase
                 .from('user_roles')
                 .select(`
@@ -139,6 +134,8 @@ export default function AccountScreen() {
     }, [])
   );
 
+
+  // Handlers
   const handleLogoutConfirm = () => {
     Alert.alert(
       'Log Out',
@@ -165,7 +162,6 @@ export default function AccountScreen() {
     navigation.navigate('Settings');
   };
 
-  // Handle Switch to Provider Mode
   const handleSwitchToProvider = () => {
     if (isProviderRegistered) {
       navigation.navigate('ProviderTabs');
@@ -174,6 +170,37 @@ export default function AccountScreen() {
       navigation.navigate('RegisterProvider');
     }
   };
+
+  const handleRateProvider = (providerName: string) => {
+    Alert.alert(
+      'Rate Provider',
+      `How was your experience with ${providerName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Rate', onPress: () => console.log('Rate provider') },
+      ]
+    );
+  };
+
+  const handleReportIssue = (trackingId: string) => {
+    Alert.alert(
+      'Report Issue',
+      `Report an issue with delivery #${trackingId}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Submit Report', onPress: () => console.log('Report submitted') },
+      ]
+    );
+  };
+
+  // Loading state
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.centerContent]}>
+        <ActivityIndicator size="large" color="#FA7A25" />
+      </View>
+    );
+  }
 
   // --- SUB-SCREEN: PAYMENT METHODS ---
   if (currentView === 'payment') {
@@ -285,7 +312,6 @@ export default function AccountScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
       
-      {/* Custom Orange Header */}
       <View style={[styles.mainHeader, { paddingTop: insets.top + 20 }]}>
         <View style={styles.profilePicContainer}>
           {avatarUrl && !imageError ? (
@@ -301,7 +327,6 @@ export default function AccountScreen() {
         
         <View style={styles.nameContainer}>
           <Text style={styles.profileName}>{firstName} {lastName}</Text>
-          
           <TouchableOpacity 
             style={styles.editIconBtn}
             onPress={() => navigation.navigate('EditProfile')}
@@ -319,7 +344,6 @@ export default function AccountScreen() {
       >
         <Text style={styles.sectionTitle}>My Account</Text>
         
-        {/* 👇 UPDATED: Now Navigates to the Provider Tab Stack */}
         <TouchableOpacity 
           style={styles.menuItem} 
           onPress={() => navigation.navigate('ProviderTabs')}
@@ -337,12 +361,12 @@ export default function AccountScreen() {
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('payment')}>
-          <Text style={styles.menuText}>Payment Methods</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')}>
+  <Text style={styles.menuText}>Payment Methods</Text>
+  <Ionicons name="chevron-forward" size={20} color="#000" />
+</TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('history')}>
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)}>
           <Text style={styles.menuText}>View History</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
