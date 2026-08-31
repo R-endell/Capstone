@@ -1,5 +1,6 @@
-import React from 'react';
-import { View } from 'react-native';
+// App.tsx
+import React, { useEffect, useRef } from 'react';
+import { View, AppState } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -48,8 +49,6 @@ import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/Delivery
 
 // Import matching service
 import { startBackgroundMatcher, stopBackgroundMatcher } from './src/services/matchingService';
-
-const DummyScreen = () => <View style={{ flex: 1, backgroundColor: '#fff' }} />;
 
 export type RootStackParamList = {
   Loading: undefined;
