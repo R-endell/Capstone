@@ -397,21 +397,21 @@ export default function ActivityScreen() {
       
       <View style={styles.titleRow}>
         <Text style={styles.pageTitleDetail}>Delivery Details</Text>
-        <Text style={styles.trackingId}>#{selectedDelivery.request_id}</Text>
+        <Text style={styles.trackingId}>#{selectedDelivery?.request_id}</Text>
       </View>
 
       <TouchableOpacity style={styles.detailMapCard} activeOpacity={0.8} onPress={() => setShowFullMap(true)}>
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           <LeafletMap 
-            pickupLat={selectedDelivery.coords.pickup.latitude}
-            pickupLng={selectedDelivery.coords.pickup.longitude}
-            dropoffLat={selectedDelivery.coords.dropoff.latitude}
-            dropoffLng={selectedDelivery.coords.dropoff.longitude}
+            pickupLat={selectedDelivery?.coords.pickup.latitude}
+            pickupLng={selectedDelivery?.coords.pickup.longitude}
+            dropoffLat={selectedDelivery?.coords.dropoff.latitude}
+            dropoffLng={selectedDelivery?.coords.dropoff.longitude}
           />
         </View>
         <View style={styles.mapOverlayPill}>
           <Ionicons name="bicycle" size={14} color="#FA7A25" />
-          <Text style={styles.overlayPillText}>{selectedDelivery.status === 'Completed' ? 'Delivered' : (selectedDelivery.isMatched ? 'In Transit' : 'Awaiting Match')}</Text>
+          <Text style={styles.overlayPillText}>{selectedDelivery?.status === 'Completed' ? 'Delivered' : (selectedDelivery?.isMatched ? 'In Transit' : 'Awaiting Match')}</Text>
         </View>
       </TouchableOpacity>
 
@@ -422,43 +422,43 @@ export default function ActivityScreen() {
       <View style={styles.statusTimeline}>
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}><Ionicons name="checkmark-circle" size={24} color="#22C55E" /><View style={styles.statusLine} /></View>
-          <View style={styles.statusTextContainer}><Text style={styles.statusStepTitle}>Order Confirmed</Text><Text style={styles.statusStepTime}>{selectedDelivery.date}</Text></View>
+          <View style={styles.statusTextContainer}><Text style={styles.statusStepTitle}>Order Confirmed</Text><Text style={styles.statusStepTime}>{selectedDelivery?.date}</Text></View>
         </View>
 
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10, backgroundColor: selectedDelivery.isMatched ? '#3B82F6' : '#F59E0B' }]} />
-            <View style={[styles.statusLine, selectedDelivery.isMatched && styles.statusLineActive]} />
+            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10, backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
+            <View style={[styles.statusLine, selectedDelivery?.isMatched && styles.statusLineActive]} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, selectedDelivery.isMatched && { color: '#000' }]}>{selectedDelivery.isMatched ? 'Provider Matched' : 'Finding Provider'}</Text>
-            <Text style={styles.statusStepTime}>{selectedDelivery.isMatched ? 'Provider assigned' : 'Searching for provider...'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.statusStep}>
-          <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, (selectedDelivery.status === 'In Progress' || selectedDelivery.status === 'Completed') ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' } ]} />
-            <View style={[styles.statusLine, (selectedDelivery.status === 'In Progress' || selectedDelivery.status === 'Completed') && styles.statusLineActive]} />
-          </View>
-          <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, (selectedDelivery.status === 'In Progress' || selectedDelivery.status === 'Completed') ? { color: '#000' } : { color: '#9CA3AF' } ]}>Item Collected</Text>
-            <Text style={[styles.statusStepTime, (selectedDelivery.status === 'In Progress' || selectedDelivery.status === 'Completed') ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{(selectedDelivery.status === 'In Progress' || selectedDelivery.status === 'Completed') ? 'In transit' : 'Pending pickup'}</Text>
+            <Text style={[styles.statusStepTitle, selectedDelivery?.isMatched && { color: '#000' }]}>{selectedDelivery?.isMatched ? 'Provider Matched' : 'Finding Provider'}</Text>
+            <Text style={styles.statusStepTime}>{selectedDelivery?.isMatched ? 'Provider assigned' : 'Searching for provider...'}</Text>
           </View>
         </View>
 
         <View style={styles.statusStep}>
           <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, selectedDelivery.status === 'Completed' ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' } ]} />
+            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' } ]} />
+            <View style={[styles.statusLine, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') && styles.statusLineActive]} />
           </View>
           <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, selectedDelivery.status === 'Completed' ? { color: '#000' } : { color: '#9CA3AF' } ]}>Delivered Successfully</Text>
-            <Text style={[styles.statusStepTime, selectedDelivery.status === 'Completed' ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{selectedDelivery.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}</Text>
+            <Text style={[styles.statusStepTitle, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { color: '#000' } : { color: '#9CA3AF' } ]}>Item Collected</Text>
+            <Text style={[styles.statusStepTime, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{(selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? 'In transit' : 'Pending pickup'}</Text>
+          </View>
+        </View>
+
+        <View style={styles.statusStep}>
+          <View style={styles.statusIconContainer}>
+            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, selectedDelivery?.status === 'Completed' ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' } ]} />
+          </View>
+          <View style={styles.statusTextContainer}>
+            <Text style={[styles.statusStepTitle, selectedDelivery?.status === 'Completed' ? { color: '#000' } : { color: '#9CA3AF' } ]}>Delivered Successfully</Text>
+            <Text style={[styles.statusStepTime, selectedDelivery?.status === 'Completed' ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{selectedDelivery?.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}</Text>
           </View>
         </View>
       </View>
 
-      {selectedDelivery.isMatched && (
+      {selectedDelivery?.isMatched && (
         <View style={styles.providerInfoCard}>
           <Text style={styles.providerInfoTitle}>Provider Details</Text>
           <View style={styles.providerInfoRow}>
@@ -471,15 +471,15 @@ export default function ActivityScreen() {
         </View>
       )}
 
-      {selectedDelivery.status !== 'Completed' && (
+      {selectedDelivery?.status !== 'Completed' && (
         <View style={styles.detailActionsRow}>
-          {!selectedDelivery.isMatched && (
-            <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(selectedDelivery.rawData)}>
+          {!selectedDelivery?.isMatched && (
+            <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(selectedDelivery?.rawData)}>
               <Ionicons name="create-outline" size={16} color="#FFF" />
               <Text style={styles.editBtnText}>Edit Details</Text>
             </TouchableOpacity>
           )}
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(selectedDelivery.rawData)}>
+          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(selectedDelivery?.rawData)}>
             <Ionicons name="close-circle-outline" size={16} color="#FFF" />
             <Text style={styles.deleteBtnText}>Cancel Booking</Text>
           </TouchableOpacity>
@@ -492,14 +492,14 @@ export default function ActivityScreen() {
     return (
       <View style={styles.fullMapContainer}>
         <LeafletMap 
-          pickupLat={selectedDelivery.coords.pickup.latitude}
-          pickupLng={selectedDelivery.coords.pickup.longitude}
-          dropoffLat={selectedDelivery.coords.dropoff.latitude}
-          dropoffLng={selectedDelivery.coords.dropoff.longitude}
+          pickupLat={selectedDelivery?.coords.pickup.latitude}
+          pickupLng={selectedDelivery?.coords.pickup.longitude}
+          dropoffLat={selectedDelivery?.coords.dropoff.latitude}
+          dropoffLng={selectedDelivery?.coords.dropoff.longitude}
         />
         <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
           <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)}><Ionicons name="arrow-back" size={24} color="#000" /></TouchableOpacity>
-          <View style={styles.statusPill}><View style={[styles.statusDot, { backgroundColor: getStatusColor(selectedDelivery.status) }]} /><Text style={styles.statusPillText}>{selectedDelivery.status}</Text></View>
+          <View style={styles.statusPill}><View style={[styles.statusDot, { backgroundColor: getStatusColor(selectedDelivery?.status || '') }]} /><Text style={styles.statusPillText}>{selectedDelivery?.status}</Text></View>
         </View>
       </View>
     );

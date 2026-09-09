@@ -194,14 +194,6 @@ export default function AccountScreen() {
     );
   };
 
-  // Loading state
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.centerContent]}>
-        <ActivityIndicator size="large" color="#FA7A25" />
-      </View>
-    );
-  }
 
   const handlePaymentMethodsPress = () => {
     navigation.navigate('PaymentMethods');
