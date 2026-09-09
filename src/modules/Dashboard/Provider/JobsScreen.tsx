@@ -49,7 +49,7 @@ const InteractiveMap = ({
   lng: number; 
   zoom?: number;
   markers?: Array<{lat: number, lng: number, color?: string, label?: string}>;
-  onMapClick?: (lat: number, lng: number) => void;
+  onMapClick?: (lat: number, lng: number, address?: string) => void;
   onMapReady?: () => void;
   searchQuery?: string;
   showSearch?: boolean;
@@ -339,7 +339,7 @@ const InteractiveMap = ({
         onMapReady();
       }
       if (data.type === 'searchResult' && onMapClick) {
-        onMapClick(data.latitude, data.longitude);
+        onMapClick(data.latitude, data.longitude, data.display_name);
       }
     } catch (error) {
       console.error('Error parsing map message:', error);
@@ -404,7 +404,6 @@ export default function JobsScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [mapReady, setMapReady] = useState(false);
   
   // Provider data
   const [providerId, setProviderId] = useState<number | null>(null);
@@ -442,10 +441,10 @@ export default function JobsScreen() {
   
   // Location selection state
   const [selectingLocation, setSelectingLocation] = useState<'start' | 'end' | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [mapMarkers, setMapMarkers] = useState<Array<{lat: number, lng: number, color?: string, label?: string}>>([]);
   const [selectedCoords, setSelectedCoords] = useState<{lat: number, lng: number} | null>(null);
+  const [tempAddress, setTempAddress] = useState<string>(''); // Added for visual feedback before confirming
 
   // Get provider ID and data
   const getProviderData = async () => {
@@ -564,6 +563,8 @@ export default function JobsScreen() {
     setSelectingLocation(type);
     const location = type === 'start' ? startLocation : endLocation;
     setSelectedCoords({ lat: location.latitude, lng: location.longitude });
+    setTempAddress(location.street_address || ''); // Initialize temp address
+    
     setMapMarkers([{
       lat: location.latitude,
       lng: location.longitude,
@@ -574,7 +575,7 @@ export default function JobsScreen() {
   };
 
   // Handle map click in location picker
-  const handleMapClick = async (lat: number, lng: number) => {
+  const handleMapClick = async (lat: number, lng: number, addressFromSearch?: string) => {
     setSelectedCoords({ lat, lng });
     setMapMarkers([{
       lat,
@@ -583,70 +584,45 @@ export default function JobsScreen() {
       label: selectingLocation === 'start' ? 'Starting Point' : 'Destination'
     }]);
 
-    // Get address from coordinates
-    const address = await reverseGeocode(lat, lng);
-    if (address && selectingLocation) {
-      // Parse address components
-      const addressParts = address.split(',');
-      const streetAddress = addressParts[0]?.trim() || '';
-      
-      // Update location
-      if (selectingLocation === 'start') {
-        setStartLocation(prev => ({
-          ...prev,
-          latitude: lat,
-          longitude: lng,
-          street_address: streetAddress
-        }));
-      } else {
-        setEndLocation(prev => ({
-          ...prev,
-          latitude: lat,
-          longitude: lng,
-          street_address: streetAddress
-        }));
+    // Use passed search address or reverse geocode
+    if (addressFromSearch) {
+      setTempAddress(addressFromSearch);
+    } else {
+      const address = await reverseGeocode(lat, lng);
+      if (address) {
+        setTempAddress(address);
       }
     }
   };
 
   // Confirm location selection
   const confirmLocation = () => {
-    if (selectedCoords) {
-      handleMapClick(selectedCoords.lat, selectedCoords.lng);
-    }
-    setShowLocationModal(false);
-    setSelectingLocation(null);
-  };
-
-  // Search and select location
-  const handleSearchSelect = async (address: string) => {
-    const coords = await geocodeAddress(address);
-    if (coords && selectingLocation) {
-      setSelectedCoords(coords);
-      setMapMarkers([{
-        lat: coords.lat,
-        lng: coords.lng,
-        color: selectingLocation === 'start' ? '#3B82F6' : '#EF4444',
-        label: selectingLocation === 'start' ? 'Starting Point' : 'Destination'
-      }]);
+    if (selectedCoords && selectingLocation) {
+      // Parse address components from tempAddress
+      const addressParts = tempAddress.split(',');
+      const streetAddress = addressParts[0]?.trim() || `Location at ${selectedCoords.lat.toFixed(4)}`;
       
-      // Update location
+      // Update form state
       if (selectingLocation === 'start') {
         setStartLocation(prev => ({
           ...prev,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          street_address: address.split(',')[0] || address
+          latitude: selectedCoords.lat,
+          longitude: selectedCoords.lng,
+          street_address: streetAddress
         }));
       } else {
         setEndLocation(prev => ({
           ...prev,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          street_address: address.split(',')[0] || address
+          latitude: selectedCoords.lat,
+          longitude: selectedCoords.lng,
+          street_address: streetAddress
         }));
       }
     }
+    
+    setShowLocationModal(false);
+    setSelectingLocation(null);
+    setTempAddress('');
   };
 
   // Create or get location
@@ -1017,9 +993,9 @@ export default function JobsScreen() {
                   <DateTimePicker
                     value={departureDate}
                     mode="date"
-                    display="default"
+                    display={Platform.OS === 'ios' ? 'inline' : 'default'}
                     onChange={(event, selectedDate) => {
-                      setShowDatePicker(false);
+                      if (Platform.OS === 'android') setShowDatePicker(false);
                       if (selectedDate) setDepartureDate(selectedDate);
                     }}
                   />
@@ -1029,9 +1005,9 @@ export default function JobsScreen() {
                   <DateTimePicker
                     value={departureTime}
                     mode="time"
-                    display="default"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                     onChange={(event, selectedTime) => {
-                      setShowTimePicker(false);
+                      if (Platform.OS === 'android') setShowTimePicker(false);
                       if (selectedTime) setDepartureTime(selectedTime);
                     }}
                   />
@@ -1143,13 +1119,16 @@ export default function JobsScreen() {
                 <View style={styles.coordsDisplay}>
                   <Text style={styles.coordsLabel}>Selected Location</Text>
                   <Text style={styles.coordsValue}>
-                    {selectedCoords ? `${selectedCoords.lat.toFixed(6)}, ${selectedCoords.lng.toFixed(6)}` : 'Click on the map to select'}
+                    {tempAddress ? tempAddress : (selectedCoords ? `${selectedCoords.lat.toFixed(6)}, ${selectedCoords.lng.toFixed(6)}` : 'Click on the map to select')}
                   </Text>
                 </View>
                 <View style={styles.locationModalActions}>
                   <TouchableOpacity 
                     style={[styles.locationModalBtn, styles.cancelLocationBtn]}
-                    onPress={() => setShowLocationModal(false)}
+                    onPress={() => {
+                      setShowLocationModal(false);
+                      setTempAddress('');
+                    }}
                   >
                     <Text style={styles.cancelLocationText}>Cancel</Text>
                   </TouchableOpacity>
