@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions, 
-  Alert, ActivityIndicator, TextInput, Modal, Image, RefreshControl 
+  Alert, ActivityIndicator, TextInput, RefreshControl 
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -338,7 +338,8 @@ export default function ActivityScreen() {
         <ActivityIndicator size="large" color="#F27024" style={{ marginTop: 50 }} />
       ) : filteredDeliveries.length === 0 ? (
         <View style={styles.noResultsContainer}>
-          <Ionicons name="inbox-outline" size={60} color="#D1D5DB" />
+          {/* FIX: Changed "inbox-outline" to "cube-outline" */}
+          <Ionicons name="cube-outline" size={60} color="#D1D5DB" />
           <Text style={styles.noResultsText}>{deliveries.length === 0 ? "You have no deliveries yet." : "No deliveries found matching"}</Text>
           {searchQuery ? <Text style={styles.noResultsQuery}>"{searchQuery}"</Text> : null}
         </View>

@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/AccountScreen.tsx
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -71,6 +72,7 @@ export default function AccountScreen() {
   const [userRole, setUserRole] = useState<string>('Sender');
   const [isProviderRegistered, setIsProviderRegistered] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
+  const [imgKey, setImgKey] = useState<number>(Date.now()); // State to force image reload
   
   const [currentView, setCurrentView] = useState<'main' | 'payment' | 'history'>('main');
 
@@ -78,6 +80,9 @@ export default function AccountScreen() {
     useCallback(() => {
       const fetchUserData = async () => {
         try {
+          // Update key on focus to bypass React Native cache without breaking Supabase URLs
+          setImgKey(Date.now());
+          
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
             setUserEmail(user.email || 'john.doe@example.com');
@@ -97,9 +102,11 @@ export default function AccountScreen() {
               setUserId(userData.user_id);
               if (userData.first_name) setFirstName(userData.first_name);
               if (userData.last_name) setLastName(userData.last_name);
+              
               if (userData.profile_photo) {
+                // Ensure pure URL to avoid S3/Supabase 400 Bad Request errors
                 setAvatarUrl(userData.profile_photo);
-                setImageError(false);
+                setImageError(false); 
               }
 
               const { data: userRoles, error: rolesError } = await supabase
@@ -135,8 +142,6 @@ export default function AccountScreen() {
     }, [])
   );
 
-
-
   // Handlers
   const handleLogoutConfirm = () => {
     Alert.alert(
@@ -171,29 +176,6 @@ export default function AccountScreen() {
       navigation.navigate('RegisterProvider');
     }
   };
-
-  const handleRateProvider = (providerName: string) => {
-    Alert.alert(
-      'Rate Provider',
-      `How was your experience with ${providerName}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Rate', onPress: () => console.log('Rate provider') },
-      ]
-    );
-  };
-
-  const handleReportIssue = (trackingId: string) => {
-    Alert.alert(
-      'Report Issue',
-      `Report an issue with delivery #${trackingId}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Submit Report', onPress: () => console.log('Report submitted') },
-      ]
-    );
-  };
-
 
   const handlePaymentMethodsPress = () => {
     navigation.navigate('PaymentMethods');
@@ -287,9 +269,13 @@ export default function AccountScreen() {
         <View style={styles.profilePicContainer}>
           {avatarUrl && !imageError ? (
             <Image 
-              source={{ uri: avatarUrl }} 
+              key={`avatar-${imgKey}`} // Force refresh natively on screen focus
+              source={{ uri: avatarUrl, cache: 'reload' }} // Tell native iOS/Android to skip local cache
               style={styles.profileImage} 
-              onError={() => setImageError(true)}
+              onError={(e) => {
+                console.warn('Image load error details:', e.nativeEvent.error);
+                setImageError(true);
+              }}
             />
           ) : (
             <Ionicons name="person" size={40} color="#D1D5DB" />
@@ -332,9 +318,9 @@ export default function AccountScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')}>
-  <Text style={styles.menuText}>Payment Methods</Text>
-  <Ionicons name="chevron-forward" size={20} color="#000" />
-</TouchableOpacity>
+          <Text style={styles.menuText}>Payment Methods</Text>
+          <Ionicons name="chevron-forward" size={20} color="#000" />
+        </TouchableOpacity>
 
         <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)}>
           <Text style={styles.menuText}>View History</Text>

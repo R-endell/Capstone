@@ -1,15 +1,16 @@
 // src/modules/Dashboard/Provider/TaskScreen.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
-  View, Text, StyleSheet, SafeAreaView, ScrollView, TouchableOpacity,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Platform, StatusBar, ActivityIndicator, RefreshControl, Alert, AppState
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import { 
-  getProviderDeliveries, getPendingRequests, autoMatchAndCreateDeliveries,
+  getProviderDeliveries, findMatches,
   subscribeToNewRequests, subscribeToProviderRoutes, subscribeToDeliveryUpdates
 } from '../../../services/matchingService';
 
@@ -47,8 +48,6 @@ export default function TaskScreen() {
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
   const [isMatching, setIsMatching] = useState(false);
-  
-  const appStateRef = useRef(AppState.currentState);
 
   const getProviderData = async () => {
     try {
@@ -64,37 +63,35 @@ export default function TaskScreen() {
   const fetchDeliveries = async (pid: number) => {
     try {
       const deliveries = await getProviderDeliveries(pid);
-      // DEDUPLICATE: Prevent race conditions from displaying the same delivery twice
       const uniqueDeliveries = deliveries.filter((v: any, i: number, a: any[]) => a.findIndex(t => (t.request_id === v.request_id)) === i);
-      
       setActiveDeliveries(uniqueDeliveries.filter((d: any) => !d.completed_at));
       setCompletedDeliveries(uniqueDeliveries.filter((d: any) => d.completed_at));
     } catch (error) { console.error('Error fetching deliveries:', error); }
-  };
-
-  const fetchPendingRequests = async (pid: number) => {
-    try {
-      const { data, error } = await supabase
-        .from('delivery_requests')
-        .select('*, pickup_location:pickup_location_id(*), dropoff_location:dropoff_location_id(*), cargo:cargo_id(*), receiver:receiver_id(*)')
-        .eq('delivery_status', 'Pending')
-        .order('created_at', { ascending: false })
-        .limit(20);
-      if (error) throw error;
-      setPendingRequests(data || []);
-    } catch (error) { console.error('Error fetching pending requests:', error); }
   };
 
   const runMatching = async (showAlert: boolean = false) => {
     if (isMatching || !providerId) return;
     try {
       setIsMatching(true);
-      const matches = await autoMatchAndCreateDeliveries();
-      if (matches.length > 0) {
-        if (showAlert) Alert.alert('🎯 New Matches Found!', `${matches.length} delivery matches found.`, [{ text: 'Great!', onPress: () => loadData() }]);
-        await loadData();
+      const allMatches = await findMatches();
+      
+      // Filter only the matches that align perfectly with THIS provider's route
+      const myMatches = allMatches.filter(m => m.route.provider_id === providerId);
+      
+      // Extract request objects and deduplicate
+      const matchedRequests = myMatches.map(m => m.request);
+      const uniqueRequests = Array.from(new Map(matchedRequests.map(r => [r.request_id, r])).values());
+      
+      setPendingRequests(uniqueRequests);
+
+      if (uniqueRequests.length > 0 && showAlert) {
+        Alert.alert('🎯 New Matches Found!', `${uniqueRequests.length} delivery matches found for your route.`);
       }
-    } catch (error) { console.error(error); } finally { setIsMatching(false); }
+    } catch (error) { 
+      console.error(error); 
+    } finally { 
+      setIsMatching(false); 
+    }
   };
 
   const acceptDelivery = async (requestId: number) => {
@@ -136,43 +133,26 @@ export default function TaskScreen() {
       { text: 'Yes, Complete', onPress: async () => {
           try {
             setLoading(true);
-
-            // 1. Mark delivery as completed
             const { error: delError } = await supabase.from('deliveries').update({ completed_at: new Date().toISOString() }).eq('delivery_id', deliveryId);
             if (delError) throw delError;
 
-            // 2. Mark request as completed
             const { error: reqError } = await supabase.from('delivery_requests').update({ delivery_status: 'Completed' }).eq('request_id', requestId);
             if (reqError) throw reqError;
 
-            // 3. Mark escrow as completed and fetch the amount
-            const { data: escrowData, error: escError } = await supabase
-              .from('escrow_payments')
-              .update({ escrow_status: 'Completed' })
-              .eq('delivery_id', deliveryId)
-              .select('*')
-              .single();
+            const { data: escrowData, error: escError } = await supabase.from('escrow_payments').update({ escrow_status: 'Completed' }).eq('delivery_id', deliveryId).select('*').single();
               
-            if (escError) console.warn('Escrow update error:', escError.message);
-
-            // 4. Update the Provider's Wallet balance
             if (escrowData && escrowData.provider_id) {
               const { data: wallet } = await supabase.from('provider_wallet').select('*').eq('provider_id', escrowData.provider_id).single();
               if (wallet) {
-                await supabase.from('provider_wallet')
-                  .update({ balance: Number(wallet.balance) + Number(escrowData.amount) })
-                  .eq('wallet_id', wallet.wallet_id);
+                await supabase.from('provider_wallet').update({ balance: Number(wallet.balance) + Number(escrowData.amount) }).eq('wallet_id', wallet.wallet_id);
               }
             }
 
             Alert.alert('Success', 'Delivery completed! Payment has been released to your wallet.');
             await loadData();
           } catch (error: any) { 
-            console.error('Completion Error:', error);
-            Alert.alert('Completion Failed', error.message || 'Could not complete the delivery. Please check database permissions.'); 
-          } finally {
-            setLoading(false);
-          }
+            Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.'); 
+          } finally { setLoading(false); }
         }
       }
     ]);
@@ -183,8 +163,8 @@ export default function TaskScreen() {
       setLoading(true);
       const pid = await getProviderData();
       if (pid) {
-        await Promise.all([fetchDeliveries(pid), fetchPendingRequests(pid)]);
-        runMatching(false);
+        await fetchDeliveries(pid);
+        await runMatching(false);
       }
     } finally { setLoading(false); setRefreshing(false); }
   };
@@ -199,9 +179,7 @@ export default function TaskScreen() {
     const subs = [
       subscribeToNewRequests(async () => await runMatching(true)),
       subscribeToProviderRoutes(providerId, async () => await runMatching(false)),
-      subscribeToDeliveryUpdates(providerId, async () => {
-        await loadData();
-      })
+      subscribeToDeliveryUpdates(providerId, async () => await loadData())
     ];
     return () => subs.forEach(sub => sub?.unsubscribe?.());
   }, [providerId]);

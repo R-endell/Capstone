@@ -6,7 +6,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
-import { autoMatchAndCreateDeliveries } from '../../../../services/matchingService';
 import { supabase } from '../../../../utils/supabase';
 
 const { width } = Dimensions.get('window');
@@ -18,11 +17,11 @@ export default function BookingScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
 
   const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'no_match'>('review');
-  const [saving, setSaving] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [matchFound, setMatchFound] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
+  const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
   const pulseAnim1 = useRef(new Animated.Value(1)).current;
   const pulseAnim2 = useRef(new Animated.Value(1.1)).current; 
@@ -30,8 +29,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const notificationSlide = useRef(new Animated.Value(-100)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   
-  // Track active channel so we can kill it on cancel
   const matchChannelRef = useRef<any>(null);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -59,11 +58,9 @@ export default function BookingScreen({ route, navigation }: any) {
       }, 4000);
     }
     
-    // Cleanup unmount
     return () => {
-      if (matchChannelRef.current) {
-        supabase.removeChannel(matchChannelRef.current);
-      }
+      if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
   }, [bookingState, insets.top]);
 
@@ -78,7 +75,9 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       if (!savedRequest) throw new Error('Failed to save request');
+      setSavedRequestId(savedRequest.request_id);
 
+      // Listen for the Provider to hit "Accept" (which creates the delivery record)
       const matchChannel = supabase
         .channel(`match-listener-${savedRequest.request_id}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${savedRequest.request_id}` }, async (payload) => {
@@ -92,14 +91,15 @@ export default function BookingScreen({ route, navigation }: any) {
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
+          
+          if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
           supabase.removeChannel(matchChannel);
         }).subscribe();
         
       matchChannelRef.current = matchChannel;
 
-      await autoMatchAndCreateDeliveries();
-
-      setTimeout(() => {
+      // Give providers 60 seconds to review and accept the pending request on their Task Screen
+      searchTimeoutRef.current = setTimeout(() => {
         if (bookingState === 'finding') {
           setBookingState('no_match');
           setIsSearching(false);
@@ -119,10 +119,15 @@ export default function BookingScreen({ route, navigation }: any) {
     startMatching();
   };
 
-  const handleCancelBooking = () => {
-    if (matchChannelRef.current) {
-      supabase.removeChannel(matchChannelRef.current);
+  const handleCancelBooking = async () => {
+    if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    
+    if (savedRequestId) {
+      // Optional: Delete the pending request from DB so providers don't see a ghost request
+      await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
     }
+    
     setBookingState('review');
   }
 
@@ -249,7 +254,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
         {bookingState === 'finding' && (
           <View style={styles.sheetCardFinding}>
-            <Text style={styles.findingTitle}>{isSearching ? 'Searching for available providers...' : 'Processing your booking...'}</Text>
+            <Text style={styles.findingTitle}>{isSearching ? 'Waiting for provider to accept...' : 'Processing your booking...'}</Text>
             <View style={styles.progressContainer}>
               <Animated.View style={[styles.progressBar, { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) }]} />
             </View>
@@ -258,7 +263,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <Animated.View style={[styles.placeholderCardCenter, { transform: [{ scale: pulseAnim2 }] }]}><View style={styles.placeholderAvatar}><Ionicons name="person" size={28} color="#C2410C" /></View><View style={styles.placeholderLine} /><View style={styles.placeholderLineShort} /></Animated.View>
               <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim3 }] }]}><View style={styles.placeholderAvatar}><Ionicons name="person" size={24} color="#C2410C" /></View><View style={styles.placeholderLine} /><View style={styles.placeholderLineShort} /></Animated.View>
             </View>
-            <Text style={styles.searchStatusText}>Finding the best match for you...</Text>
+            <Text style={styles.searchStatusText}>Your request has been sent to nearby providers.</Text>
             <TouchableOpacity style={styles.textButton} onPress={handleCancelBooking}>
               <Text style={styles.textButtonText}>Cancel Booking</Text>
             </TouchableOpacity>
