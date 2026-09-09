@@ -255,9 +255,16 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     if (!userId) return;
-    const reqSub = supabase.channel('activity-req-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); }).subscribe();
-    const delSub = supabase.channel('activity-del-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); }).subscribe();
-    return () => { supabase.removeChannel(reqSub); supabase.removeChannel(delSub); };
+    
+    // Combine into a single dynamically named channel to prevent "already subscribed" collisions
+    const channel = supabase.channel(`activity-updates-${userId}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); })
+      .subscribe();
+
+    return () => { 
+      supabase.removeChannel(channel); 
+    };
   }, [userId]);
 
   useFocusEffect(useCallback(() => { fetchData(); }, [userId]));

@@ -29,6 +29,9 @@ export default function BookingScreen({ route, navigation }: any) {
   const pulseAnim3 = useRef(new Animated.Value(1)).current;
   const notificationSlide = useRef(new Animated.Value(-100)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
+  
+  // Track active channel so we can kill it on cancel
+  const matchChannelRef = useRef<any>(null);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -55,6 +58,13 @@ export default function BookingScreen({ route, navigation }: any) {
         Animated.timing(notificationSlide, { toValue: -150, duration: 300, useNativeDriver: true }).start(() => setShowNotification(false));
       }, 4000);
     }
+    
+    // Cleanup unmount
+    return () => {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+      }
+    };
   }, [bookingState, insets.top]);
 
   const startMatching = async () => {
@@ -84,6 +94,8 @@ export default function BookingScreen({ route, navigation }: any) {
           setIsSearching(false);
           supabase.removeChannel(matchChannel);
         }).subscribe();
+        
+      matchChannelRef.current = matchChannel;
 
       await autoMatchAndCreateDeliveries();
 
@@ -106,6 +118,13 @@ export default function BookingScreen({ route, navigation }: any) {
     setBookingState('finding');
     startMatching();
   };
+
+  const handleCancelBooking = () => {
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+    }
+    setBookingState('review');
+  }
 
   const handleConfirmAction = () => {
     dispatch({ type: 'RESET' });
@@ -240,7 +259,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim3 }] }]}><View style={styles.placeholderAvatar}><Ionicons name="person" size={24} color="#C2410C" /></View><View style={styles.placeholderLine} /><View style={styles.placeholderLineShort} /></Animated.View>
             </View>
             <Text style={styles.searchStatusText}>Finding the best match for you...</Text>
-            <TouchableOpacity style={styles.textButton} onPress={() => setBookingState('review')}>
+            <TouchableOpacity style={styles.textButton} onPress={handleCancelBooking}>
               <Text style={styles.textButtonText}>Cancel Booking</Text>
             </TouchableOpacity>
           </View>
@@ -287,7 +306,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={() => startMatching()}>
                 <Text style={styles.retryBtnText}>Try Again</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={() => setBookingState('review')}>
+              <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleCancelBooking}>
                 <Text style={styles.modifyBtnText}>Modify Details</Text>
               </TouchableOpacity>
             </View>
