@@ -1,8 +1,8 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions, 
-  Alert, ActivityIndicator, TextInput, RefreshControl 
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
+  Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -11,6 +11,9 @@ import { WebView } from 'react-native-webview';
 import { supabase } from '../../../utils/supabase';
 
 const { width, height } = Dimensions.get('window');
+
+/** Brand */
+const ORANGE = '#F27024';
 
 // --- LEAFLET MAP COMPONENT ---
 const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
@@ -131,6 +134,36 @@ export default function ActivityScreen() {
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'active' | 'completed'>('all');
   const insets = useSafeAreaInsets();
 
+  // Animations
+  const listAnim = useRef(new Animated.Value(0)).current;
+  const detailAnim = useRef(new Animated.Value(0)).current;
+
+  /* ------------------------------------------------------------------ */
+  /* Entrance animations                                                 */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!selectedDelivery) {
+      listAnim.setValue(0);
+      Animated.timing(listAnim, {
+        toValue: 1,
+        duration: 500,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      detailAnim.setValue(0);
+      Animated.timing(detailAnim, {
+        toValue: 1,
+        duration: 500,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [selectedDelivery, listAnim, detailAnim]);
+
+  /* ------------------------------------------------------------------ */
+  /* Data fetching                                                       */
+  /* ------------------------------------------------------------------ */
   const fetchUserRecord = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -172,7 +205,7 @@ export default function ActivityScreen() {
 
       const requestIds = requests?.map((r: any) => r.request_id) || [];
       let deliveriesData: Delivery[] = [];
-      
+
       if (requestIds.length > 0) {
         const { data: deliveries } = await supabase.from('deliveries').select('*').in('request_id', requestIds).order('accepted_at', { ascending: false });
         deliveriesData = deliveries || [];
@@ -181,19 +214,19 @@ export default function ActivityScreen() {
       const mappedDeliveries: MappedDelivery[] = (requests || []).map((item: any) => {
         const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
         const delivery = deliveriesData.find((d: any) => d.request_id === item.request_id);
-        
+
         const parseAddr = (full: string) => {
           if (!full) return { main: 'Selected Location', sub: '' };
           const parts = full.split(', ');
           return { main: parts[0], sub: parts.slice(1).join(', ') || full };
         };
-        
+
         const pickup = parseAddr(item.pickup_location?.street_address);
         const dropoff = parseAddr(item.dropoff_location?.street_address);
 
         let status = item.delivery_status;
         let statusDisplay = status;
-        
+
         if (status === 'Pending') {
           statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
         } else if (status === 'Accepted') {
@@ -255,20 +288,22 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     if (!userId) return;
-    
-    // Combine into a single dynamically named channel to prevent "already subscribed" collisions
+
     const channel = supabase.channel(`activity-updates-${userId}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); })
       .subscribe();
 
-    return () => { 
-      supabase.removeChannel(channel); 
+    return () => {
+      supabase.removeChannel(channel);
     };
   }, [userId]);
 
   useFocusEffect(useCallback(() => { fetchData(); }, [userId]));
 
+  /* ------------------------------------------------------------------ */
+  /* Handlers                                                            */
+  /* ------------------------------------------------------------------ */
   const handleEdit = (rawData: any) => {
     if (!rawData) return;
     setSelectedDelivery(null);
@@ -279,13 +314,14 @@ export default function ActivityScreen() {
     if (!rawData) return;
     Alert.alert('Cancel Delivery', 'Are you sure you want to cancel and delete this delivery?', [
       { text: 'Keep Delivery', style: 'cancel' },
-      { text: 'Yes, Cancel it', style: 'destructive', onPress: async () => {
+      {
+        text: 'Yes, Cancel it', style: 'destructive', onPress: async () => {
           try {
             await supabase.from('escrow_payments').delete().eq('delivery_id', rawData.request_id);
             await supabase.from('deliveries').delete().eq('request_id', rawData.request_id);
             await supabase.from('delivery_requests').delete().eq('request_id', rawData.request_id);
             setSelectedDelivery(null);
-            fetchData(); 
+            fetchData();
           } catch (error: any) { Alert.alert('Delete Failed', 'Could not delete delivery.'); }
         }
       }
@@ -298,10 +334,10 @@ export default function ActivityScreen() {
     if (activeTab === 'completed' && item.status !== 'Completed') return false;
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase();
-    return (item.pickup_main + " " + item.pickup_sub).toLowerCase().includes(query) || 
-           (item.dropoff_main + " " + item.dropoff_sub).toLowerCase().includes(query) || 
-           String(item.request_id).toLowerCase().includes(query) || 
-           String(item.provider_name).toLowerCase().includes(query);
+    return (item.pickup_main + " " + item.pickup_sub).toLowerCase().includes(query) ||
+      (item.dropoff_main + " " + item.dropoff_sub).toLowerCase().includes(query) ||
+      String(item.request_id).toLowerCase().includes(query) ||
+      String(item.provider_name).toLowerCase().includes(query);
   });
 
   const getStatusColor = (status: string) => {
@@ -314,200 +350,506 @@ export default function ActivityScreen() {
     }
   };
 
+  const getStatusBg = (status: string) => {
+    switch (status) {
+      case 'Waiting for Provider': return '#FEF3C7';
+      case 'Matched': return '#DBEAFE';
+      case 'In Progress': return '#EDE9FE';
+      case 'Completed': return '#DCFCE7';
+      default: return '#F3F4F6';
+    }
+  };
+
+  const getStatusIcon = (status: string): any => {
+    switch (status) {
+      case 'Waiting for Provider': return 'time-outline';
+      case 'Matched': return 'checkmark-circle-outline';
+      case 'In Progress': return 'car-sport-outline';
+      case 'Completed': return 'checkmark-done-circle';
+      default: return 'ellipse-outline';
+    }
+  };
+
+  const getTabCount = (tab: string) => {
+    if (tab === 'all') return deliveries.length;
+    if (tab === 'pending') return deliveries.filter(d => d.status === 'Waiting for Provider').length;
+    if (tab === 'active') return deliveries.filter(d => d.status === 'In Progress' || d.status === 'Matched').length;
+    if (tab === 'completed') return deliveries.filter(d => d.status === 'Completed').length;
+    return 0;
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Tab Bar                                                             */
+  /* ------------------------------------------------------------------ */
   const renderTabBar = () => (
-    <View style={styles.tabBar}>
-      {['all', 'pending', 'active', 'completed'].map((tab) => (
-        <TouchableOpacity key={tab} style={[styles.tabItem, activeTab === tab && styles.tabItemActive]} onPress={() => setActiveTab(tab as any)}>
-          <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>{tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1)}</Text>
-          {activeTab === tab && <View style={styles.tabIndicator} />}
-        </TouchableOpacity>
-      ))}
-    </View>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.tabBarScroll}
+    >
+      {(['all', 'pending', 'active', 'completed'] as const).map((tab) => {
+        const isActive = activeTab === tab;
+        const count = getTabCount(tab);
+        return (
+          <TouchableOpacity
+            key={tab}
+            style={[styles.tabItem, isActive && styles.tabItemActive]}
+            onPress={() => setActiveTab(tab)}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.tabText, isActive && styles.tabTextActive]}>
+              {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            </Text>
+            {count > 0 && (
+              <View style={[styles.tabCountBadge, isActive && styles.tabCountBadgeActive]}>
+                <Text style={[styles.tabCountText, isActive && styles.tabCountTextActive]}>
+                  {count}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 
+  /* ------------------------------------------------------------------ */
+  /* List View                                                           */
+  /* ------------------------------------------------------------------ */
   const renderListView = () => (
-    <ScrollView contentContainerStyle={styles.listContainer} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchData(); }} />}>
-      <Text style={styles.pageTitle}>Active Delivery</Text>
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={20} color="#9CA3AF" style={{ marginRight: 8 }} />
-        <TextInput placeholder="Search by location, package, ID..." placeholderTextColor="#9CA3AF" style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} clearButtonMode="while-editing" />
-      </View>
-      {renderTabBar()}
-
-      {isLoading ? (
-        <ActivityIndicator size="large" color="#F27024" style={{ marginTop: 50 }} />
-      ) : filteredDeliveries.length === 0 ? (
-        <View style={styles.noResultsContainer}>
-          {/* FIX: Changed "inbox-outline" to "cube-outline" */}
-          <Ionicons name="cube-outline" size={60} color="#D1D5DB" />
-          <Text style={styles.noResultsText}>{deliveries.length === 0 ? "You have no deliveries yet." : "No deliveries found matching"}</Text>
-          {searchQuery ? <Text style={styles.noResultsQuery}>"{searchQuery}"</Text> : null}
+    <ScrollView
+      contentContainerStyle={styles.listContainer}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => { setRefreshing(true); fetchData(); }}
+          tintColor={ORANGE}
+          colors={[ORANGE]}
+        />
+      }
+    >
+      <Animated.View style={{ opacity: listAnim }}>
+        {/* Header */}
+        <View style={styles.listHeader}>
+          <View>
+            <Text style={styles.pageTitle}>My Deliveries</Text>
+            <Text style={styles.pageSubtitle}>
+              {deliveries.length} {deliveries.length === 1 ? 'shipment' : 'shipments'} total
+            </Text>
+          </View>
         </View>
-      ) : (
-        filteredDeliveries.map((item, index) => (
-          <TouchableOpacity key={item.request_id || index} style={styles.card} onPress={() => setSelectedDelivery(item)} activeOpacity={0.9}>
-            <View style={styles.cardTopRow}>
-              <View style={styles.cardLeftCol}>
-                <Text style={styles.dropType}>{item.pickup_type}</Text>
-                <Text style={styles.dateTime}><Text style={styles.bold}>{item.date}</Text>   {item.time}</Text>
 
-                <View style={styles.timeline}>
-                  <View style={styles.timelineItem}>
-                    <View style={styles.iconWrapper}><View style={styles.blueDot}><View style={styles.blueDotInner} /></View></View>
-                    <View style={styles.addressWrapper}><Text style={styles.addressMain}>{item.pickup_main}</Text><Text style={styles.addressSub} numberOfLines={2}>{item.pickup_sub}</Text></View>
+        {/* Search */}
+        <View style={styles.searchBar}>
+          <Ionicons name="search-outline" size={18} color="#9CA3AF" />
+          <TextInput
+            placeholder="Search by location, package, ID..."
+            placeholderTextColor="#9CA3AF"
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            clearButtonMode="while-editing"
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Tabs */}
+        {renderTabBar()}
+
+        {/* Content */}
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={ORANGE} />
+            <Text style={styles.loadingText}>Loading deliveries...</Text>
+          </View>
+        ) : filteredDeliveries.length === 0 ? (
+          <View style={styles.noResultsContainer}>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="cube-outline" size={40} color={ORANGE} />
+            </View>
+            <Text style={styles.noResultsText}>
+              {deliveries.length === 0 ? 'No deliveries yet' : 'No deliveries found'}
+            </Text>
+            <Text style={styles.noResultsSubtext}>
+              {deliveries.length === 0
+                ? 'Start shipping to see your activity here'
+                : searchQuery
+                  ? `No results for "${searchQuery}"`
+                  : 'Try a different filter'}
+            </Text>
+          </View>
+        ) : (
+          filteredDeliveries.map((item, index) => (
+            <TouchableOpacity
+              key={item.request_id || index}
+              style={styles.card}
+              onPress={() => setSelectedDelivery(item)}
+              activeOpacity={0.9}
+            >
+              {/* Status accent bar */}
+              <View style={[styles.cardAccent, { backgroundColor: getStatusColor(item.status) }]} />
+
+              {/* Header */}
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderLeft}>
+                  <View style={[styles.cardTypeBadge, { backgroundColor: getStatusBg(item.status) }]}>
+                    <Ionicons name="cube-outline" size={12} color={getStatusColor(item.status)} />
+                    <Text style={[styles.cardTypeText, { color: getStatusColor(item.status) }]}>
+                      {item.pickup_type}
+                    </Text>
                   </View>
-                  <View style={styles.connectingLine} />
-                  <View style={[styles.timelineItem, { marginTop: 16 }]}>
-                    <View style={styles.iconWrapper}><Ionicons name="location" size={18} color="#E11D48" /></View>
-                    <View style={styles.addressWrapper}><Text style={styles.addressMain}>{item.dropoff_main}</Text><Text style={styles.addressSub} numberOfLines={2}>{item.dropoff_sub}</Text></View>
-                  </View>
+                  <Text style={styles.cardId}>#{item.request_id}</Text>
+                </View>
+                <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
+                  <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
+                  <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
+                    {item.status}
+                  </Text>
                 </View>
               </View>
 
-              <View style={styles.cardRightCol}>
-                <View style={[styles.avatarPlaceholder, item.isMatched && styles.avatarMatched]}><Ionicons name="person" size={28} color="#FFF" /></View>
-                <Text style={styles.providerName} numberOfLines={1}>{item.provider_name}</Text>
-                {!item.isMatched && <View style={styles.matchingIndicator}><ActivityIndicator size="small" color="#F59E0B" /></View>}
-              </View>
-            </View>
+              {/* Body */}
+              <View style={styles.cardBody}>
+                <View style={styles.cardLeftCol}>
+                  <Text style={styles.dateTime}>
+                    <Text style={styles.bold}>{item.date}</Text>   {item.time}
+                  </Text>
 
-            <View style={styles.divider} />
-            <View style={styles.cardBottomRow}>
-              <View style={styles.statusWrapper}>
-                <View style={[styles.statusDot, { backgroundColor: getStatusColor(item.status) }]} />
-                <View><Text style={styles.statusText}>{item.status}</Text><Text style={styles.statusTime}>{item.status_time}</Text></View>
-              </View>
-              <Text style={styles.priceText}>₱{item.price}</Text>
-            </View>
+                  <View style={styles.timeline}>
+                    <View style={styles.timelineItem}>
+                      <View style={styles.iconWrapper}>
+                        <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
+                      </View>
+                      <View style={styles.addressWrapper}>
+                        <Text style={styles.timelineLabel}>PICKUP</Text>
+                        <Text style={styles.addressMain} numberOfLines={1}>{item.pickup_main}</Text>
+                        <Text style={styles.addressSub} numberOfLines={2}>{item.pickup_sub}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.connectingLine} />
+                    <View style={[styles.timelineItem, { marginTop: 14 }]}>
+                      <View style={styles.iconWrapper}>
+                        <Ionicons name="location" size={16} color="#E11D48" />
+                      </View>
+                      <View style={styles.addressWrapper}>
+                        <Text style={[styles.timelineLabel, { color: '#E11D48' }]}>DROPOFF</Text>
+                        <Text style={styles.addressMain} numberOfLines={1}>{item.dropoff_main}</Text>
+                        <Text style={styles.addressSub} numberOfLines={2}>{item.dropoff_sub}</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
 
-            {item.isMatched && (item.status === 'In Progress' || item.status === 'Matched') && (
-              <TouchableOpacity style={styles.trackBtn} onPress={() => setSelectedDelivery(item)}>
-                <Ionicons name="navigate-outline" size={16} color="#FFF" />
-                <Text style={styles.trackBtnText}>Track Delivery</Text>
-              </TouchableOpacity>
-            )}
-          </TouchableOpacity>
-        ))
-      )}
-      <View style={styles.bottomSpacer} />
+                <View style={styles.cardRightCol}>
+                  <View style={[styles.avatarPlaceholder, item.isMatched && styles.avatarMatched]}>
+                    <Ionicons name="person" size={24} color="#FFF" />
+                    {item.isMatched && (
+                      <View style={styles.avatarVerifiedBadge}>
+                        <Ionicons name="checkmark" size={9} color="#FFF" />
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.providerName} numberOfLines={2}>{item.provider_name}</Text>
+                  {!item.isMatched && (
+                    <View style={styles.matchingIndicator}>
+                      <ActivityIndicator size="small" color="#F59E0B" />
+                      <Text style={styles.matchingText}>Finding...</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              {/* Footer */}
+              <View style={styles.divider} />
+              <View style={styles.cardFooter}>
+                <View style={styles.footerLeft}>
+                  <Text style={styles.footerLabel}>Total</Text>
+                  <Text style={styles.priceText}>₱{item.price}</Text>
+                </View>
+                {item.isMatched && (item.status === 'In Progress' || item.status === 'Matched') && (
+                  <TouchableOpacity
+                    style={styles.trackBtn}
+                    onPress={() => setSelectedDelivery(item)}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name="navigate-outline" size={14} color="#FFF" />
+                    <Text style={styles.trackBtnText}>Track</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </TouchableOpacity>
+          ))
+        )}
+        <View style={styles.bottomSpacer} />
+      </Animated.View>
     </ScrollView>
   );
 
+  /* ------------------------------------------------------------------ */
+  /* Detail View                                                         */
+  /* ------------------------------------------------------------------ */
   const renderDetailView = () => (
     <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
-      <View style={styles.detailHeader}>
-        <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backBtn}><Ionicons name="arrow-back" size={24} color="#000" /></TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn}>
-          <Ionicons name="expand-outline" size={20} color="#6B7280" />
-          <Text style={styles.fullMapBtnText}>Full Map</Text>
+      <Animated.View style={{ opacity: detailAnim }}>
+        {/* Header */}
+        <View style={styles.detailHeader}>
+          <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backBtn} activeOpacity={0.8}>
+            <Ionicons name="arrow-back" size={22} color="#111827" />
+          </TouchableOpacity>
+          <Text style={styles.detailHeaderTitle}>Delivery Details</Text>
+          <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn} activeOpacity={0.8}>
+            <Ionicons name="expand-outline" size={16} color={ORANGE} />
+            <Text style={styles.fullMapBtnText}>Map</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Tracking ID + Status */}
+        <View style={styles.titleRow}>
+          <View>
+            <Text style={styles.trackingLabel}>TRACKING ID</Text>
+            <Text style={styles.trackingId}>#PNS-{String(selectedDelivery?.request_id).padStart(4, '0')}</Text>
+          </View>
+          <View style={[styles.statusBadgeLarge, { backgroundColor: getStatusBg(selectedDelivery?.status || '') }]}>
+            <Ionicons
+              name={getStatusIcon(selectedDelivery?.status || '')}
+              size={14}
+              color={getStatusColor(selectedDelivery?.status || '')}
+            />
+            <Text style={[styles.statusBadgeLargeText, { color: getStatusColor(selectedDelivery?.status || '') }]}>
+              {selectedDelivery?.status}
+            </Text>
+          </View>
+        </View>
+
+        {/* Map Card */}
+        <TouchableOpacity
+          style={styles.detailMapCard}
+          activeOpacity={0.9}
+          onPress={() => setShowFullMap(true)}
+        >
+          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+            <LeafletMap
+              pickupLat={selectedDelivery?.coords.pickup.latitude}
+              pickupLng={selectedDelivery?.coords.pickup.longitude}
+              dropoffLat={selectedDelivery?.coords.dropoff.latitude}
+              dropoffLng={selectedDelivery?.coords.dropoff.longitude}
+            />
+          </View>
+          <View style={styles.mapOverlayPill}>
+            <Ionicons name="bicycle" size={13} color={ORANGE} />
+            <Text style={styles.overlayPillText}>
+              {selectedDelivery?.status === 'Completed'
+                ? 'Delivered'
+                : selectedDelivery?.isMatched
+                  ? 'In Transit'
+                  : 'Awaiting Match'}
+            </Text>
+          </View>
+          <View style={styles.mapExpandPill}>
+            <Ionicons name="expand-outline" size={13} color="#FFF" />
+          </View>
         </TouchableOpacity>
-      </View>
-      
-      <View style={styles.titleRow}>
-        <Text style={styles.pageTitleDetail}>Delivery Details</Text>
-        <Text style={styles.trackingId}>#{selectedDelivery?.request_id}</Text>
-      </View>
 
-      <TouchableOpacity style={styles.detailMapCard} activeOpacity={0.8} onPress={() => setShowFullMap(true)}>
-        <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-          <LeafletMap 
-            pickupLat={selectedDelivery?.coords.pickup.latitude}
-            pickupLng={selectedDelivery?.coords.pickup.longitude}
-            dropoffLat={selectedDelivery?.coords.dropoff.latitude}
-            dropoffLng={selectedDelivery?.coords.dropoff.longitude}
-          />
-        </View>
-        <View style={styles.mapOverlayPill}>
-          <Ionicons name="bicycle" size={14} color="#FA7A25" />
-          <Text style={styles.overlayPillText}>{selectedDelivery?.status === 'Completed' ? 'Delivered' : (selectedDelivery?.isMatched ? 'In Transit' : 'Awaiting Match')}</Text>
-        </View>
-      </TouchableOpacity>
-
-      <View style={styles.packageStatusHeader}>
-        <Text style={styles.packageStatusTitle}>Package Status</Text>
-      </View>
-
-      <View style={styles.statusTimeline}>
-        <View style={styles.statusStep}>
-          <View style={styles.statusIconContainer}><Ionicons name="checkmark-circle" size={24} color="#22C55E" /><View style={styles.statusLine} /></View>
-          <View style={styles.statusTextContainer}><Text style={styles.statusStepTitle}>Order Confirmed</Text><Text style={styles.statusStepTime}>{selectedDelivery?.date}</Text></View>
-        </View>
-
-        <View style={styles.statusStep}>
-          <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10, backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
-            <View style={[styles.statusLine, selectedDelivery?.isMatched && styles.statusLineActive]} />
-          </View>
-          <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, selectedDelivery?.isMatched && { color: '#000' }]}>{selectedDelivery?.isMatched ? 'Provider Matched' : 'Finding Provider'}</Text>
-            <Text style={styles.statusStepTime}>{selectedDelivery?.isMatched ? 'Provider assigned' : 'Searching for provider...'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.statusStep}>
-          <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' } ]} />
-            <View style={[styles.statusLine, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') && styles.statusLineActive]} />
-          </View>
-          <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { color: '#000' } : { color: '#9CA3AF' } ]}>Item Collected</Text>
-            <Text style={[styles.statusStepTime, (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{(selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') ? 'In transit' : 'Pending pickup'}</Text>
-          </View>
-        </View>
-
-        <View style={styles.statusStep}>
-          <View style={styles.statusIconContainer}>
-            <View style={[styles.statusDot, { width: 20, height: 20, borderRadius: 10 }, selectedDelivery?.status === 'Completed' ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' } ]} />
-          </View>
-          <View style={styles.statusTextContainer}>
-            <Text style={[styles.statusStepTitle, selectedDelivery?.status === 'Completed' ? { color: '#000' } : { color: '#9CA3AF' } ]}>Delivered Successfully</Text>
-            <Text style={[styles.statusStepTime, selectedDelivery?.status === 'Completed' ? { color: '#6B7280' } : { color: '#D1D5DB' } ]}>{selectedDelivery?.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}</Text>
-          </View>
-        </View>
-      </View>
-
-      {selectedDelivery?.isMatched && (
-        <View style={styles.providerInfoCard}>
-          <Text style={styles.providerInfoTitle}>Provider Details</Text>
-          <View style={styles.providerInfoRow}>
-            <View style={styles.providerAvatarSmall}><Ionicons name="person" size={24} color="#FFF" /></View>
-            <View style={styles.providerInfoDetails}>
-              <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
-              <Text style={styles.providerInfoVehicle}>{selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}</Text>
+        {/* Route Card */}
+        <View style={styles.routeCard}>
+          <View style={styles.routeTimeline}>
+            <View style={styles.routeItem}>
+              <View style={styles.routeIconWrapper}>
+                <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
+                <View style={styles.routeLine} />
+              </View>
+              <View style={styles.routeTextWrapper}>
+                <Text style={[styles.routeLabel, { color: '#0000CC' }]}>PICKUP</Text>
+                <Text style={styles.routeMain}>{selectedDelivery?.pickup_main}</Text>
+                <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.pickup_sub}</Text>
+              </View>
+            </View>
+            <View style={styles.routeItem}>
+              <View style={styles.routeIconWrapper}>
+                <Ionicons name="location" size={18} color="#E11D48" />
+              </View>
+              <View style={styles.routeTextWrapper}>
+                <Text style={[styles.routeLabel, { color: '#E11D48' }]}>DROPOFF</Text>
+                <Text style={styles.routeMain}>{selectedDelivery?.dropoff_main}</Text>
+                <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.dropoff_sub}</Text>
+              </View>
             </View>
           </View>
         </View>
-      )}
 
-      {selectedDelivery?.status !== 'Completed' && (
-        <View style={styles.detailActionsRow}>
-          {!selectedDelivery?.isMatched && (
-            <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(selectedDelivery?.rawData)}>
-              <Ionicons name="create-outline" size={16} color="#FFF" />
-              <Text style={styles.editBtnText}>Edit Details</Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(selectedDelivery?.rawData)}>
-            <Ionicons name="close-circle-outline" size={16} color="#FFF" />
-            <Text style={styles.deleteBtnText}>Cancel Booking</Text>
-          </TouchableOpacity>
+        {/* Package Status */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionHeaderTitle}>Package Status</Text>
         </View>
-      )}
+
+        <View style={styles.statusTimeline}>
+          <View style={styles.statusStep}>
+            <View style={styles.statusIconContainer}>
+              <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
+              <View style={[styles.statusLine, { backgroundColor: '#22C55E' }]} />
+            </View>
+            <View style={styles.statusTextContainer}>
+              <Text style={styles.statusStepTitle}>Order Confirmed</Text>
+              <Text style={styles.statusStepTime}>{selectedDelivery?.date}</Text>
+            </View>
+          </View>
+
+          <View style={styles.statusStep}>
+            <View style={styles.statusIconContainer}>
+              <View style={[styles.statusDotLarge, { backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
+              <View style={[styles.statusLine, selectedDelivery?.isMatched && { backgroundColor: '#3B82F6' }]} />
+            </View>
+            <View style={styles.statusTextContainer}>
+              <Text style={[styles.statusStepTitle, !selectedDelivery?.isMatched && { color: '#6B7280' }]}>
+                {selectedDelivery?.isMatched ? 'Provider Matched' : 'Finding Provider'}
+              </Text>
+              <Text style={styles.statusStepTime}>
+                {selectedDelivery?.isMatched ? 'Provider assigned' : 'Searching...'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.statusStep}>
+            <View style={styles.statusIconContainer}>
+              <View style={[
+                styles.statusDotLarge,
+                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
+                  ? { backgroundColor: '#8B5CF6' }
+                  : { backgroundColor: '#D1D5DB' }
+              ]} />
+              <View style={[
+                styles.statusLine,
+                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') && { backgroundColor: '#8B5CF6' }
+              ]} />
+            </View>
+            <View style={styles.statusTextContainer}>
+              <Text style={[
+                styles.statusStepTitle,
+                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
+                  ? { color: '#111827' }
+                  : { color: '#9CA3AF' }
+              ]}>
+                Item Collected
+              </Text>
+              <Text style={[
+                styles.statusStepTime,
+                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
+                  ? { color: '#6B7280' }
+                  : { color: '#D1D5DB' }
+              ]}>
+                {(selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
+                  ? 'In transit'
+                  : 'Pending pickup'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.statusStep}>
+            <View style={styles.statusIconContainer}>
+              <View style={[
+                styles.statusDotLarge,
+                selectedDelivery?.status === 'Completed'
+                  ? { backgroundColor: '#22C55E' }
+                  : { backgroundColor: '#D1D5DB' }
+              ]} />
+            </View>
+            <View style={styles.statusTextContainer}>
+              <Text style={[
+                styles.statusStepTitle,
+                selectedDelivery?.status === 'Completed'
+                  ? { color: '#111827' }
+                  : { color: '#9CA3AF' }
+              ]}>
+                Delivered Successfully
+              </Text>
+              <Text style={[
+                styles.statusStepTime,
+                selectedDelivery?.status === 'Completed'
+                  ? { color: '#6B7280' }
+                  : { color: '#D1D5DB' }
+              ]}>
+                {selectedDelivery?.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Provider Info */}
+        {selectedDelivery?.isMatched && (
+          <View style={styles.providerInfoCard}>
+            <View style={styles.providerInfoHeader}>
+              <Ionicons name="shield-checkmark" size={14} color="#10B981" />
+              <Text style={styles.providerInfoTitle}>ASSIGNED PROVIDER</Text>
+            </View>
+            <View style={styles.providerInfoRow}>
+              <View style={styles.providerAvatarSmall}>
+                <Ionicons name="person" size={22} color="#FFF" />
+              </View>
+              <View style={styles.providerInfoDetails}>
+                <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
+                <Text style={styles.providerInfoVehicle}>
+                  {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.providerContactBtn} activeOpacity={0.8}>
+                <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Actions */}
+        {selectedDelivery?.status !== 'Completed' && (
+          <View style={styles.detailActionsRow}>
+            {!selectedDelivery?.isMatched && (
+              <TouchableOpacity
+                style={styles.editBtn}
+                onPress={() => handleEdit(selectedDelivery?.rawData)}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="create-outline" size={16} color="#FFF" />
+                <Text style={styles.editBtnText}>Edit</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => handleDelete(selectedDelivery?.rawData)}
+              activeOpacity={0.9}
+            >
+              <Ionicons name="close-circle-outline" size={16} color="#FFF" />
+              <Text style={styles.deleteBtnText}>Cancel Booking</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </Animated.View>
     </ScrollView>
   );
 
+  /* ------------------------------------------------------------------ */
+  /* Full Map View                                                       */
+  /* ------------------------------------------------------------------ */
   const renderFullMapView = () => {
     return (
       <View style={styles.fullMapContainer}>
-        <LeafletMap 
+        <LeafletMap
           pickupLat={selectedDelivery?.coords.pickup.latitude}
           pickupLng={selectedDelivery?.coords.pickup.longitude}
           dropoffLat={selectedDelivery?.coords.dropoff.latitude}
           dropoffLng={selectedDelivery?.coords.dropoff.longitude}
         />
         <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
-          <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)}><Ionicons name="arrow-back" size={24} color="#000" /></TouchableOpacity>
-          <View style={styles.statusPill}><View style={[styles.statusDot, { backgroundColor: getStatusColor(selectedDelivery?.status || '') }]} /><Text style={styles.statusPillText}>{selectedDelivery?.status}</Text></View>
+          <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
+            <Ionicons name="arrow-back" size={22} color="#111827" />
+          </TouchableOpacity>
+          <View style={styles.statusPill}>
+            <View style={[styles.statusDotSmall, { backgroundColor: getStatusColor(selectedDelivery?.status || '') }]} />
+            <Text style={styles.statusPillText}>{selectedDelivery?.status}</Text>
+          </View>
         </View>
       </View>
     );
@@ -522,93 +864,510 @@ export default function ActivityScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAFA' },
+
+  /* ------------------------------------------------------------------ */
+  /* Shared                                                              */
+  /* ------------------------------------------------------------------ */
   blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
-  statusDot: { width: 12, height: 12, borderRadius: 6, marginRight: 10 },
-  tabBar: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 12, padding: 4, marginBottom: 16, borderWidth: 1, borderColor: '#E5E7EB' },
-  tabItem: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8, position: 'relative' },
-  tabItemActive: { backgroundColor: '#F27024' },
-  tabText: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
+  statusDotSmall: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+
+  /* ------------------------------------------------------------------ */
+  /* List Header                                                         */
+  /* ------------------------------------------------------------------ */
+  listHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 18,
+  },
+  pageTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.5,
+  },
+  pageSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+    marginTop: 4,
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Search                                                              */
+  /* ------------------------------------------------------------------ */
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
+
+  /* ------------------------------------------------------------------ */
+  /* Tab Bar                                                             */
+  /* ------------------------------------------------------------------ */
+  tabBarScroll: {
+    gap: 8,
+    paddingBottom: 4,
+    marginBottom: 16,
+  },
+  tabItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    gap: 6,
+  },
+  tabItemActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  tabText: { fontSize: 13, fontWeight: '700', color: '#6B7280' },
   tabTextActive: { color: '#FFFFFF' },
-  tabIndicator: { position: 'absolute', bottom: -1, left: '30%', right: '30%', height: 2, backgroundColor: '#F27024', borderRadius: 1 },
-  listContainer: { paddingHorizontal: 16, paddingBottom: 30, paddingTop: 25 },
-  pageTitle: { fontSize: 30, fontWeight: '700', color: '#000', marginBottom: 20 },
-  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16 },
-  searchInput: { flex: 1, fontSize: 14, color: '#000' },
-  noResultsContainer: { paddingTop: 40, alignItems: 'center' },
-  noResultsText: { fontSize: 14, color: '#6B7280', marginTop: 12 },
-  noResultsQuery: { fontSize: 16, fontWeight: '600', color: '#111827', marginTop: 8 },
-  scheduleBtn: { marginTop: 20, backgroundColor: '#F27024', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 25 },
-  scheduleBtnText: { color: '#FFFFFF', fontWeight: '600', fontSize: 14 },
-  card: { backgroundColor: '#FFF', borderRadius: 12, padding: 16, marginTop: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 },
-  cardTopRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  tabCountBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tabCountBadgeActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
+  tabCountText: { fontSize: 10, fontWeight: '800', color: '#6B7280' },
+  tabCountTextActive: { color: '#FFFFFF' },
+
+  /* ------------------------------------------------------------------ */
+  /* List                                                                */
+  /* ------------------------------------------------------------------ */
+  listContainer: { paddingHorizontal: 20, paddingBottom: 30, paddingTop: 20 },
+  bottomSpacer: { height: 80 },
+
+  loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
+  loadingText: { fontSize: 13, color: '#6B7280', marginTop: 12, fontWeight: '500' },
+
+  noResultsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+  },
+  emptyIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  noResultsText: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#111827',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  noResultsSubtext: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginTop: 6,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Card                                                                */
+  /* ------------------------------------------------------------------ */
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    paddingLeft: 20,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  cardAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cardTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    gap: 4,
+  },
+  cardTypeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
+  cardId: { fontSize: 12, fontWeight: '700', color: '#6B7280', letterSpacing: 0.3 },
+
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 4,
+  },
+  statusBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
+
+  cardBody: { flexDirection: 'row', justifyContent: 'space-between' },
   cardLeftCol: { flex: 1, paddingRight: 10 },
-  dropType: { fontSize: 10, color: '#6B7280', marginBottom: 4 },
-  dateTime: { fontSize: 13, color: '#000', marginBottom: 16 },
-  bold: { fontWeight: '700' },
+  dateTime: { fontSize: 13, color: '#111827', marginBottom: 14 },
+  bold: { fontWeight: '800' },
+
   timeline: { position: 'relative' },
   timelineItem: { flexDirection: 'row', alignItems: 'flex-start' },
-  iconWrapper: { width: 20, alignItems: 'center', marginRight: 8, marginTop: 2 },
-  connectingLine: { position: 'absolute', left: 9, top: 18, width: 1, height: 28, backgroundColor: '#D1D5DB' },
+  iconWrapper: { width: 20, alignItems: 'center', marginRight: 10, marginTop: 2 },
+  connectingLine: { position: 'absolute', left: 9, top: 18, width: 1, height: 26, backgroundColor: '#E5E7EB' },
+  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 3 },
   addressWrapper: { flex: 1 },
-  addressMain: { fontSize: 11, fontWeight: '600', color: '#000', marginBottom: 2 },
-  addressSub: { fontSize: 9, color: '#6B7280', lineHeight: 12 },
-  cardRightCol: { width: 90, alignItems: 'center' },
-  avatarPlaceholder: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#D97706', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  avatarMatched: { backgroundColor: '#22C55E' },
-  providerName: { fontSize: 11, fontWeight: '700', color: '#000', textAlign: 'center', marginBottom: 10 },
-  actionButtons: { flexDirection: 'row', justifyContent: 'space-between', width: 60 },
-  circleBtn: { width: 26, height: 26, borderRadius: 13, borderWidth: 1, borderColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  matchingIndicator: { marginTop: 4 },
-  divider: { height: 1, backgroundColor: '#E5E7EB', marginTop: 16, marginBottom: 12 },
-  cardBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  statusWrapper: { flexDirection: 'row', alignItems: 'center' },
-  statusText: { fontSize: 11, fontWeight: '600', color: '#000' },
-  statusTime: { fontSize: 9, color: '#6B7280' },
-  priceText: { fontSize: 14, fontWeight: '800', color: '#000' },
-  trackBtn: { marginTop: 12, backgroundColor: '#F27024', borderRadius: 20, paddingVertical: 8, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  trackBtnText: { color: '#FFFFFF', fontWeight: '600', fontSize: 12, marginLeft: 8 },
-  bottomSpacer: { height: 80 },
-  detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 10 },
-  detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  backBtn: { width: 40, height: 40, justifyContent: 'center' },
-  fullMapBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  fullMapBtnText: { fontSize: 12, color: '#6B7280', marginLeft: 4, fontWeight: '500' },
-  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20 },
-  pageTitleDetail: { fontSize: 22, fontWeight: '700', color: '#000' },
-  trackingId: { fontSize: 12, color: '#4B5563', marginBottom: 4 },
-  detailMapCard: { width: '100%', height: 200, borderRadius: 16, overflow: 'hidden', marginBottom: 30, borderWidth: 1, borderColor: '#E5E7EB' },
-  map: { ...StyleSheet.absoluteFill },
-  mapOverlayPill: { position: 'absolute', bottom: 16, left: 16, backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 6, flexDirection: 'row', alignItems: 'center' },
-  overlayPillText: { fontSize: 9, fontWeight: '600', color: '#000', marginLeft: 6 },
-  packageStatusHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24 },
-  packageStatusTitle: { fontSize: 20, fontWeight: '700', color: '#000' },
-  viewPackageText: { fontSize: 13, color: '#FA7A25', fontWeight: '600', marginBottom: 2 },
-  statusTimeline: { paddingLeft: 4 },
-  statusStep: { flexDirection: 'row', marginBottom: 0 },
-  statusIconContainer: { width: 30, alignItems: 'center', marginRight: 12 },
-  statusLine: { width: 1, height: 30, backgroundColor: '#D1D5DB', marginVertical: 4 },
-  statusLineActive: { backgroundColor: '#3B82F6' },
-  statusTextContainer: { flex: 1, paddingBottom: 24 },
-  statusStepTitle: { fontSize: 13, fontWeight: '700', color: '#374151', marginBottom: 2 },
-  statusStepTime: { fontSize: 10, color: '#6B7280' },
-  providerInfoCard: { backgroundColor: '#F0FDF4', borderRadius: 12, padding: 16, marginTop: 8, borderWidth: 1, borderColor: '#BBF7D0' },
-  providerInfoTitle: { fontSize: 13, fontWeight: '700', color: '#065F46', marginBottom: 12 },
+  addressMain: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
+  addressSub: { fontSize: 10, color: '#6B7280', lineHeight: 14 },
+
+  cardRightCol: { width: 92, alignItems: 'center' },
+  avatarPlaceholder: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#D97706',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+    borderWidth: 2,
+    borderColor: '#FFFBEB',
+    position: 'relative',
+  },
+  avatarMatched: { backgroundColor: '#22C55E', borderColor: '#DCFCE7' },
+  avatarVerifiedBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  providerName: { fontSize: 10, fontWeight: '700', color: '#111827', textAlign: 'center', marginBottom: 8, lineHeight: 13 },
+  matchingIndicator: { alignItems: 'center', gap: 4 },
+  matchingText: { fontSize: 9, color: '#F59E0B', fontWeight: '600' },
+
+  divider: { height: 1, backgroundColor: '#F3F4F6', marginTop: 14, marginBottom: 12 },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  footerLeft: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
+  footerLabel: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
+  priceText: { fontSize: 17, fontWeight: '800', color: '#111827' },
+  trackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: ORANGE,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  trackBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 0.2 },
+
+  /* ------------------------------------------------------------------ */
+  /* Detail                                                              */
+  /* ------------------------------------------------------------------ */
+  detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 12 },
+  detailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  backBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+  },
+  detailHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  fullMapBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF7ED',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+  },
+  fullMapBtnText: { fontSize: 12, color: ORANGE, fontWeight: '700' },
+
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  trackingLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1.2, marginBottom: 4 },
+  trackingId: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  statusBadgeLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    gap: 6,
+  },
+  statusBadgeLargeText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
+
+  detailMapCard: {
+    width: '100%',
+    height: 200,
+    borderRadius: 20,
+    overflow: 'hidden',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  mapOverlayPill: {
+    position: 'absolute',
+    bottom: 14,
+    left: 14,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  overlayPillText: { fontSize: 11, fontWeight: '700', color: '#111827' },
+  mapExpandPill: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(17,24,39,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  routeCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 2,
+  },
+  routeTimeline: { gap: 4 },
+  routeItem: { flexDirection: 'row', alignItems: 'flex-start' },
+  routeIconWrapper: { width: 22, alignItems: 'center', marginRight: 12, marginTop: 2 },
+  routeLine: { width: 1, height: 34, backgroundColor: '#E5E7EB', marginVertical: 2 },
+  routeTextWrapper: { flex: 1, paddingBottom: 14 },
+  routeLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 1, marginBottom: 3 },
+  routeMain: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 2 },
+  routeSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
+
+  sectionHeaderRow: { marginBottom: 18 },
+  sectionHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+
+  statusTimeline: { paddingLeft: 2, marginBottom: 20 },
+  statusStep: { flexDirection: 'row' },
+  statusIconContainer: { width: 28, alignItems: 'center', marginRight: 14 },
+  statusDotLarge: { width: 18, height: 18, borderRadius: 9, borderWidth: 3, borderColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 3, elevation: 1 },
+  statusLine: { width: 2, height: 34, backgroundColor: '#E5E7EB', marginVertical: 3, borderRadius: 1 },
+  statusTextContainer: { flex: 1, paddingBottom: 22 },
+  statusStepTitle: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 3 },
+  statusStepTime: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
+
+  providerInfoCard: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  providerInfoHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
+  providerInfoTitle: { fontSize: 10, fontWeight: '800', color: '#10B981', letterSpacing: 1 },
   providerInfoRow: { flexDirection: 'row', alignItems: 'center' },
-  providerAvatarSmall: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#22C55E', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  providerAvatarSmall: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
   providerInfoDetails: { flex: 1 },
-  providerInfoName: { fontSize: 14, fontWeight: '600', color: '#000' },
-  providerInfoVehicle: { fontSize: 12, color: '#6B7280', marginTop: 2 },
-  providerContactButtons: { flexDirection: 'row', gap: 8 },
-  providerContactBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#F27024' },
-  detailActionsRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 30, borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingTop: 24 },
-  editBtn: { backgroundColor: '#FA7A25', paddingVertical: 14, borderRadius: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
-  editBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginLeft: 6 },
-  deleteBtn: { backgroundColor: '#EF4444', paddingVertical: 14, borderRadius: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
-  deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, marginLeft: 6 },
+  providerInfoName: { fontSize: 14, fontWeight: '800', color: '#111827' },
+  providerInfoVehicle: { fontSize: 11, color: '#6B7280', marginTop: 3, fontWeight: '500' },
+  providerContactBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFE4D2',
+  },
+
+  detailActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    paddingTop: 22,
+  },
+  editBtn: {
+    backgroundColor: ORANGE,
+    paddingVertical: 14,
+    borderRadius: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    gap: 6,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  editBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+  deleteBtn: {
+    backgroundColor: '#EF4444',
+    paddingVertical: 14,
+    borderRadius: 50,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    gap: 6,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
+
+  /* ------------------------------------------------------------------ */
+  /* Full Map                                                            */
+  /* ------------------------------------------------------------------ */
   fullMapContainer: { flex: 1 },
-  topOverlay: { position: 'absolute', left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 },
-  backCircleBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 4 },
-  statusPillText: { fontSize: 12, fontWeight: '600', color: '#000', marginLeft: 6 },
+  topOverlay: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  backCircleBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 22,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  statusPillText: { fontSize: 12, fontWeight: '700', color: '#111827' },
 });

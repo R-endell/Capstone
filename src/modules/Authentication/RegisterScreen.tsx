@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Image,
@@ -14,6 +14,9 @@ import { Ionicons } from '@expo/vector-icons';
 
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
+
+/** Brand */
+const ORANGE = '#F27024';
 
 export default function RegisterScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -42,11 +45,106 @@ export default function RegisterScreen() {
   const [passwordError, setPasswordError] = useState('');
   const [confirmPasswordError, setConfirmPasswordError] = useState('');
 
-  // Animated value for smooth toggle
+  // Animated values
   const passwordFadeAnim = useRef(new Animated.Value(1)).current;
   const confirmPasswordFadeAnim = useRef(new Animated.Value(1)).current;
+  const logoAnim = useRef(new Animated.Value(0)).current;
+  const headerAnim = useRef(new Animated.Value(0)).current;
+  const avatarAnim = useRef(new Animated.Value(0)).current;
+  const formAnim = useRef(new Animated.Value(0)).current;
+  const buttonAnim = useRef(new Animated.Value(0)).current;
+  const footerAnim = useRef(new Animated.Value(0)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
+  const buttonScale = useRef(new Animated.Value(1)).current;
+  const avatarPulse = useRef(new Animated.Value(0)).current;
 
-  // Validation functions
+  /* ------------------------------------------------------------------ */
+  /* Entrance animations (staggered)                                     */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    const animate = (value: Animated.Value, delay: number, duration = 600) =>
+      Animated.timing(value, {
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+
+    Animated.parallel([
+      animate(logoAnim, 0),
+      animate(headerAnim, 120),
+      animate(avatarAnim, 240),
+      animate(formAnim, 360),
+      animate(buttonAnim, 480),
+      animate(footerAnim, 600),
+    ]).start();
+
+    const glow = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glowAnim, {
+          toValue: 1,
+          duration: 2600,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(glowAnim, {
+          toValue: 0,
+          duration: 2600,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    glow.start();
+
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(avatarPulse, {
+          toValue: 1,
+          duration: 1800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(avatarPulse, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+
+    return () => {
+      glow.stop();
+      pulse.stop();
+    };
+  }, [logoAnim, headerAnim, avatarAnim, formAnim, buttonAnim, footerAnim, glowAnim, avatarPulse]);
+
+  /* ------------------------------------------------------------------ */
+  /* Button press animation                                              */
+  /* ------------------------------------------------------------------ */
+  const animatePressIn = () => {
+    Animated.spring(buttonScale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 4,
+    }).start();
+  };
+  const animatePressOut = () => {
+    Animated.spring(buttonScale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 6,
+    }).start();
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Validation functions                                                */
+  /* ------------------------------------------------------------------ */
   const validateName = (name: string, field: string) => {
     if (!name) return `${field} is required`;
     if (name.length < 2) return `${field} must be at least 2 characters`;
@@ -55,7 +153,6 @@ export default function RegisterScreen() {
 
   const validatePhone = (phone: string) => {
     if (!phone) return 'Phone number is required';
-    // Allow PH numbers: 09xxxxxxxxx or +639xxxxxxxxx
     const phoneRegex = /^(09|\+639)\d{9}$/;
     if (!phoneRegex.test(phone.replace(/\s/g, ''))) {
       return 'Enter a valid PH number (e.g., 09XXXXXXXXX)';
@@ -86,7 +183,9 @@ export default function RegisterScreen() {
     return '';
   };
 
-  // Handlers with validation
+  /* ------------------------------------------------------------------ */
+  /* Handlers                                                            */
+  /* ------------------------------------------------------------------ */
   const handleFirstNameChange = (text: string) => {
     setFirstName(text);
     setFirstNameError(validateName(text, 'First name'));
@@ -98,7 +197,6 @@ export default function RegisterScreen() {
   };
 
   const handlePhoneChange = (text: string) => {
-    // Allow numbers and + only
     const cleaned = text.replace(/[^0-9+]/g, '');
     setPhone(cleaned);
     setPhoneError(validatePhone(cleaned));
@@ -122,7 +220,6 @@ export default function RegisterScreen() {
     setConfirmPasswordError(validateConfirmPassword(password, text));
   };
 
-  // Smooth toggle functions
   const togglePasswordVisibility = () => {
     Animated.sequence([
       Animated.timing(passwordFadeAnim, { toValue: 0.7, duration: 100, useNativeDriver: true, easing: Easing.ease }),
@@ -137,7 +234,6 @@ export default function RegisterScreen() {
     ]).start(() => setShowConfirmPassword(!showConfirmPassword));
   };
 
-  // Image picker
   const pickImage = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -163,7 +259,6 @@ export default function RegisterScreen() {
     }
   };
 
-  // Get user-friendly error message
   const getFriendlyErrorMessage = (error: any) => {
     const message = error?.message || '';
     if (message.includes('User already registered')) return 'This email is already registered. Please log in instead.';
@@ -174,7 +269,6 @@ export default function RegisterScreen() {
   };
 
   const handleSignUp = async () => {
-    // Validate all fields
     const firstNameValidation = validateName(firstName, 'First name');
     const lastNameValidation = validateName(lastName, 'Last name');
     const phoneValidation = validatePhone(phone);
@@ -193,7 +287,6 @@ export default function RegisterScreen() {
     let avatarUrl = '';
 
     try {
-      // Upload avatar if selected
       if (imageBase64) {
         const fileName = `${Date.now()}_${firstName.toLowerCase()}.jpg`;
         const { error: uploadError } = await supabase.storage
@@ -210,7 +303,6 @@ export default function RegisterScreen() {
         avatarUrl = publicUrl;
       }
 
-      // Sign up user
       const { error: signUpError } = await supabase.auth.signUp({
         email: email.trim(),
         password,
@@ -240,8 +332,48 @@ export default function RegisterScreen() {
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Interpolations                                                      */
+  /* ------------------------------------------------------------------ */
+  const fadeUp = (value: Animated.Value, distance = 20) => ({
+    opacity: value,
+    transform: [
+      {
+        translateY: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [distance, 0],
+        }),
+      },
+    ],
+  });
+
+  const glowScale = glowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.12],
+  });
+  const glowOpacity = glowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.06, 0.12],
+  });
+  const avatarScale = avatarPulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.04],
+  });
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      {/* Ambient background glows */}
+      <View style={styles.backgroundLayer} pointerEvents="none">
+        <Animated.View
+          style={[
+            styles.glow,
+            styles.glowTop,
+            { transform: [{ scale: glowScale }], opacity: glowOpacity },
+          ]}
+        />
+        <View style={[styles.glow, styles.glowBottom]} />
+      </View>
+
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardAvoid}
@@ -250,7 +382,7 @@ export default function RegisterScreen() {
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
 
             {/* Logo */}
-            <View style={styles.logoSection}>
+            <Animated.View style={[styles.logoSection, fadeUp(logoAnim, 14)]}>
               <Image
                 source={require('../../../assets/Pack-N-Ship-Logo2.png')}
                 style={styles.logoImage}
@@ -259,35 +391,43 @@ export default function RegisterScreen() {
               <Text style={styles.logoText}>
                 Pack-<Text style={styles.logoTextOrange}>N-Ship</Text>
               </Text>
-            </View>
+            </Animated.View>
 
-            <View style={styles.headerContainer}>
+            {/* Header */}
+            <Animated.View style={[styles.headerContainer, fadeUp(headerAnim)]}>
               <Text style={styles.header}>Create Account 🚀</Text>
               <Text style={styles.subHeader}>Start shipping your packages securely today.</Text>
-            </View>
+            </Animated.View>
 
             {/* Avatar Picker */}
-            <View style={styles.imageUploadSection}>
-              <TouchableOpacity style={styles.imagePicker} onPress={pickImage}>
-                {imageUri ? (
-                  <Image source={{ uri: imageUri }} style={styles.profilePreview} />
-                ) : (
-                  <View style={styles.imagePlaceholder}>
-                    <Ionicons name="camera" size={32} color="#9CA3AF" />
+            <Animated.View style={[styles.imageUploadSection, fadeUp(avatarAnim, 14)]}>
+              <Animated.View style={{ transform: [{ scale: avatarScale }] }}>
+                <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.85}>
+                  {imageUri ? (
+                    <Image source={{ uri: imageUri }} style={styles.profilePreview} />
+                  ) : (
+                    <View style={styles.imagePlaceholder}>
+                      <Ionicons name="camera" size={32} color="#9CA3AF" />
+                    </View>
+                  )}
+                  <View style={styles.uploadBadge}>
+                    <Ionicons name="add" size={16} color="#FFF" />
                   </View>
-                )}
-                <View style={styles.uploadBadge}>
-                  <Ionicons name="add" size={16} color="#FFF" />
-                </View>
-              </TouchableOpacity>
+                </TouchableOpacity>
+              </Animated.View>
               <Text style={styles.uploadText}>Upload Profile Picture</Text>
-            </View>
+            </Animated.View>
 
             {/* Input Fields */}
-            <View style={styles.inputContainer}>
+            <Animated.View style={[styles.inputContainer, fadeUp(formAnim)]}>
               {/* First Name */}
               <View style={[styles.inputWrapper, focusedInput === 'firstName' && styles.inputFocused, firstNameError && styles.inputError]}>
-                <Ionicons name="person-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="person-outline"
+                  size={20}
+                  color={focusedInput === 'firstName' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <TextInput
                   style={styles.input}
                   placeholder="First Name"
@@ -302,7 +442,12 @@ export default function RegisterScreen() {
 
               {/* Last Name */}
               <View style={[styles.inputWrapper, focusedInput === 'lastName' && styles.inputFocused, lastNameError && styles.inputError]}>
-                <Ionicons name="person-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="person-outline"
+                  size={20}
+                  color={focusedInput === 'lastName' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <TextInput
                   style={styles.input}
                   placeholder="Last Name"
@@ -317,7 +462,12 @@ export default function RegisterScreen() {
 
               {/* Phone */}
               <View style={[styles.inputWrapper, focusedInput === 'phone' && styles.inputFocused, phoneError && styles.inputError]}>
-                <Ionicons name="call-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="call-outline"
+                  size={20}
+                  color={focusedInput === 'phone' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <TextInput
                   style={styles.input}
                   placeholder="Phone Number (e.g., 09123456789)"
@@ -333,7 +483,12 @@ export default function RegisterScreen() {
 
               {/* Email */}
               <View style={[styles.inputWrapper, focusedInput === 'email' && styles.inputFocused, emailError && styles.inputError]}>
-                <Ionicons name="mail-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="mail-outline"
+                  size={20}
+                  color={focusedInput === 'email' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <TextInput
                   style={styles.input}
                   placeholder="Email Address"
@@ -348,9 +503,14 @@ export default function RegisterScreen() {
               </View>
               {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
 
-              {/* Password with smooth toggle */}
+              {/* Password */}
               <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
-                <Ionicons name="lock-closed-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color={focusedInput === 'password' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <Animated.View style={{ flex: 1, opacity: passwordFadeAnim }}>
                   <TextInput
                     style={styles.input}
@@ -364,14 +524,19 @@ export default function RegisterScreen() {
                   />
                 </Animated.View>
                 <TouchableOpacity style={styles.eyeButton} onPress={togglePasswordVisibility}>
-                  <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={22} color="#6B7280" />
+                  <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={22} color="#6B7280" />
                 </TouchableOpacity>
               </View>
               {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
 
-              {/* Confirm Password with smooth toggle */}
+              {/* Confirm Password */}
               <View style={[styles.inputWrapper, focusedInput === 'confirmPassword' && styles.inputFocused, confirmPasswordError && styles.inputError]}>
-                <Ionicons name="lock-closed-outline" size={20} color="#9CA3AF" style={styles.inputIcon} />
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color={focusedInput === 'confirmPassword' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
                 <Animated.View style={{ flex: 1, opacity: confirmPasswordFadeAnim }}>
                   <TextInput
                     style={styles.input}
@@ -385,32 +550,47 @@ export default function RegisterScreen() {
                   />
                 </Animated.View>
                 <TouchableOpacity style={styles.eyeButton} onPress={toggleConfirmPasswordVisibility}>
-                  <Ionicons name={showConfirmPassword ? "eye-off-outline" : "eye-outline"} size={22} color="#6B7280" />
+                  <Ionicons name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'} size={22} color="#6B7280" />
                 </TouchableOpacity>
               </View>
               {confirmPasswordError ? <Text style={styles.errorText}>{confirmPasswordError}</Text> : null}
-            </View>
+            </Animated.View>
 
             {/* Sign Up Button */}
-            <TouchableOpacity
-              style={[styles.button, loading && { opacity: 0.8 }]}
-              onPress={handleSignUp}
-              disabled={loading}
+            <Animated.View
+              style={[
+                { width: '100%' },
+                fadeUp(buttonAnim),
+                { transform: [{ scale: buttonScale }] },
+              ]}
             >
-              {loading ? (
-                <View style={styles.loadingContainer}>
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                  <Text style={styles.buttonText}>Creating account...</Text>
-                </View>
-              ) : (
-                <Text style={styles.buttonText}>Create Account</Text>
-              )}
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.button, loading && { opacity: 0.8 }]}
+                onPress={handleSignUp}
+                onPressIn={animatePressIn}
+                onPressOut={animatePressOut}
+                disabled={loading}
+                activeOpacity={0.9}
+              >
+                {loading ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <Text style={styles.buttonText}>Creating account...</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.buttonText}>Create Account</Text>
+                )}
+              </TouchableOpacity>
+            </Animated.View>
 
             {/* Login Link */}
-            <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.linkContainer}>
-              <Text style={styles.link}>Already have an account? <Text style={styles.linkBold}>Log In</Text></Text>
-            </TouchableOpacity>
+            <Animated.View style={[{ width: '100%' }, fadeUp(footerAnim, 10)]}>
+              <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.linkContainer}>
+                <Text style={styles.link}>
+                  Already have an account? <Text style={styles.linkBold}>Log In</Text>
+                </Text>
+              </TouchableOpacity>
+            </Animated.View>
 
           </ScrollView>
         </TouchableWithoutFeedback>
@@ -422,6 +602,30 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
   keyboardAvoid: { flex: 1 },
+
+  backgroundLayer: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  glow: {
+    position: 'absolute',
+    borderRadius: 999,
+    backgroundColor: ORANGE,
+  },
+  glowTop: {
+    width: 360,
+    height: 360,
+    top: -160,
+    right: -140,
+  },
+  glowBottom: {
+    width: 300,
+    height: 300,
+    bottom: -140,
+    left: -120,
+    opacity: 0.05,
+  },
+
   innerContainer: {
     paddingHorizontal: 28,
     paddingTop: 10,
@@ -441,8 +645,9 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     fontStyle: 'italic',
     color: '#111827',
+    letterSpacing: -0.4,
   },
-  logoTextOrange: { color: '#F27024' },
+  logoTextOrange: { color: ORANGE },
   headerContainer: {
     width: '100%',
     marginBottom: 16,
@@ -493,7 +698,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     right: 0,
-    backgroundColor: '#F27024',
+    backgroundColor: ORANGE,
     width: 26,
     height: 26,
     borderRadius: 13,
@@ -501,6 +706,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: '#FFFFFF',
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 3,
   },
   uploadText: {
     fontSize: 12,
@@ -537,10 +747,11 @@ const styles = StyleSheet.create({
     color: '#111827',
   },
   inputFocused: {
-    borderColor: '#F27024',
-    shadowColor: '#F27024',
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
     shadowOpacity: 0.1,
     shadowRadius: 6,
+    elevation: 2,
   },
   inputError: {
     borderColor: '#EF4444',
@@ -557,18 +768,18 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   button: {
-    backgroundColor: '#F27024',
+    backgroundColor: ORANGE,
     padding: 16,
     borderRadius: 16,
     alignItems: 'center',
     width: '100%',
     marginTop: 8,
     marginBottom: 16,
-    shadowColor: '#F27024',
-    shadowOffset: { width: 0, height: 4 },
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowRadius: 12,
+    elevation: 6,
   },
   buttonText: {
     color: '#FFFFFF',
@@ -592,7 +803,7 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   linkBold: {
-    color: '#F27024',
+    color: ORANGE,
     fontWeight: '700',
   },
 });

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Image,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Switch, StatusBar
+  KeyboardAvoidingView, Platform, ActivityIndicator, Switch, StatusBar,
+  Animated, Easing,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -11,6 +12,9 @@ import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 
+/** Brand */
+const ORANGE = '#FA7A25';
+
 export default function EditProfileScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -18,18 +22,49 @@ export default function EditProfileScreen() {
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  
+
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
-  
+
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isGoogleLinked, setIsGoogleLinked] = useState(true);
+  const [focusedInput, setFocusedInput] = useState<string | null>(null);
 
+  // Animations
+  const headerAnim = useRef(new Animated.Value(0)).current;
+  const avatarAnim = useRef(new Animated.Value(0)).current;
+  const formAnim = useRef(new Animated.Value(0)).current;
+  const linkedAnim = useRef(new Animated.Value(0)).current;
+
+  /* ------------------------------------------------------------------ */
+  /* Entrance animation                                                  */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    const animate = (value: Animated.Value, delay: number, duration = 600) =>
+      Animated.timing(value, {
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+
+    Animated.parallel([
+      animate(headerAnim, 0),
+      animate(avatarAnim, 150),
+      animate(formAnim, 300),
+      animate(linkedAnim, 450),
+    ]).start();
+  }, [headerAnim, avatarAnim, formAnim, linkedAnim]);
+
+  /* ------------------------------------------------------------------ */
+  /* Fetch user data                                                     */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const fetchUserData = async () => {
       const { data: { user }, error } = await supabase.auth.getUser();
-      
+
       if (error) {
         Alert.alert('Error', 'Could not load user data.');
       } else if (user) {
@@ -45,14 +80,17 @@ export default function EditProfileScreen() {
     fetchUserData();
   }, []);
 
+  /* ------------------------------------------------------------------ */
+  /* Handlers                                                            */
+  /* ------------------------------------------------------------------ */
   const pickImage = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'], // Fixed: Replaced deprecated ImagePicker.MediaTypeOptions.Images
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.5,
-        base64: true, 
+        base64: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
@@ -60,7 +98,7 @@ export default function EditProfileScreen() {
         setImageBase64(result.assets[0].base64 || null);
       }
     } catch (error) {
-      Alert.alert("Error", "Could not pick an image.");
+      Alert.alert('Error', 'Could not pick an image.');
     }
   };
 
@@ -81,12 +119,12 @@ export default function EditProfileScreen() {
       if (imageBase64) {
         const fileExt = 'jpg';
         const fileName = `${Date.now()}_${firstName.toLowerCase()}.${fileExt}`;
-        
+
         const { error: uploadError } = await supabase.storage
           .from('avatars')
-          .upload(fileName, decode(imageBase64), { 
+          .upload(fileName, decode(imageBase64), {
             contentType: 'image/jpeg',
-            upsert: true 
+            upsert: true,
           });
 
         if (uploadError) throw uploadError;
@@ -94,7 +132,7 @@ export default function EditProfileScreen() {
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
           .getPublicUrl(fileName);
-          
+
         finalAvatarUrl = publicUrl;
       }
 
@@ -104,14 +142,13 @@ export default function EditProfileScreen() {
           last_name: lastName,
           phone: phone,
           avatar_url: finalAvatarUrl,
-        }
+        },
       });
 
       if (updateError) throw updateError;
 
       Alert.alert('Success', 'Your profile has been updated!');
-      navigation.goBack(); 
-      
+      navigation.goBack();
     } catch (error: any) {
       Alert.alert('Update Error', error.message || 'Could not save profile changes.');
     } finally {
@@ -119,111 +156,221 @@ export default function EditProfileScreen() {
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Interpolations                                                      */
+  /* ------------------------------------------------------------------ */
+  const fadeUp = (value: Animated.Value, distance = 24) => ({
+    opacity: value,
+    transform: [
+      {
+        translateY: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [distance, 0],
+        }),
+      },
+    ],
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* Loading                                                             */
+  /* ------------------------------------------------------------------ */
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#F27024" />
+        <ActivityIndicator size="large" color={ORANGE} />
+        <Text style={styles.loadingText}>Loading profile...</Text>
       </View>
     );
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Render                                                              */
+  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
-      
-      <View style={[styles.header, { paddingTop: insets.top + 20 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#000" />
+      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+
+      {/* Header */}
+      <Animated.View
+        style={[
+          styles.header,
+          { paddingTop: insets.top + 16 },
+          fadeUp(headerAnim, -14),
+        ]}
+      >
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backButton}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
-      </View>
+        <View style={{ width: 42 }} />
+      </Animated.View>
 
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          
-          <View style={styles.imageUploadSection}>
-            <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.8}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Avatar */}
+          <Animated.View style={[styles.imageUploadSection, fadeUp(avatarAnim, 20)]}>
+            <TouchableOpacity
+              style={styles.imagePicker}
+              onPress={pickImage}
+              activeOpacity={0.85}
+            >
               {imageUri ? (
                 <Image source={{ uri: imageUri }} style={styles.profilePreview} />
               ) : (
                 <View style={styles.imagePlaceholder}>
-                  <Ionicons name="person" size={50} color="#D1D5DB" />
+                  <Ionicons name="person" size={48} color="#FFFFFF" />
                 </View>
               )}
+              <View style={styles.cameraBadge}>
+                <Ionicons name="camera" size={14} color="#FFFFFF" />
+              </View>
             </TouchableOpacity>
-          </View>
+            <Text style={styles.uploadHint}>Tap to change photo</Text>
+          </Animated.View>
 
-          <View style={styles.formContainer}>
+          {/* Form */}
+          <Animated.View style={[styles.formContainer, fadeUp(formAnim, 20)]}>
+            {/* Name */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Name</Text>
-              <TextInput 
-                style={styles.input}
-                value={fullName}
-                onChangeText={setFullName}
-                placeholderTextColor="#9CA3AF"
-                placeholder="Jonel Jumao-as"
-              />
+              <Text style={styles.label}>Full Name</Text>
+              <View
+                style={[
+                  styles.inputWrapper,
+                  focusedInput === 'name' && styles.inputWrapperFocused,
+                ]}
+              >
+                <Ionicons
+                  name="person-outline"
+                  size={18}
+                  color={focusedInput === 'name' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={fullName}
+                  onChangeText={setFullName}
+                  placeholderTextColor="#9CA3AF"
+                  placeholder="Juan Dela Cruz"
+                  onFocus={() => setFocusedInput('name')}
+                  onBlur={() => setFocusedInput(null)}
+                />
+              </View>
             </View>
 
+            {/* Phone */}
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Mobile Number</Text>
-              <TextInput 
-                style={styles.input}
-                value={phone}
-                onChangeText={setPhone}
-                keyboardType="phone-pad"
-                placeholderTextColor="#9CA3AF"
-                placeholder="09123456567"
-              />
+              <View
+                style={[
+                  styles.inputWrapper,
+                  focusedInput === 'phone' && styles.inputWrapperFocused,
+                ]}
+              >
+                <Ionicons
+                  name="call-outline"
+                  size={18}
+                  color={focusedInput === 'phone' ? ORANGE : '#9CA3AF'}
+                  style={styles.inputIcon}
+                />
+                <TextInput
+                  style={styles.input}
+                  value={phone}
+                  onChangeText={setPhone}
+                  keyboardType="phone-pad"
+                  placeholderTextColor="#9CA3AF"
+                  placeholder="09123456789"
+                  onFocus={() => setFocusedInput('phone')}
+                  onBlur={() => setFocusedInput(null)}
+                />
+              </View>
             </View>
 
+            {/* Email */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Enter your email address</Text>
-              <TextInput 
-                style={styles.input}
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                placeholderTextColor="#9CA3AF"
-                placeholder="jonelfogi@gmail.com"
-              />
+              <Text style={styles.label}>Email Address</Text>
+              <View
+                style={[
+                  styles.inputWrapper,
+                  focusedInput === 'email' && styles.inputWrapperFocused,
+                  styles.inputWrapperDisabled,
+                ]}
+              >
+                <Ionicons name="mail-outline" size={18} color="#9CA3AF" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, { color: '#9CA3AF' }]}
+                  value={email}
+                  editable={false}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  placeholderTextColor="#9CA3AF"
+                  placeholder="you@example.com"
+                />
+                <Ionicons name="lock-closed-outline" size={14} color="#9CA3AF" style={{ marginRight: 14 }} />
+              </View>
+              <Text style={styles.helperText}>Email cannot be changed</Text>
             </View>
 
-            <TouchableOpacity 
-              style={styles.saveButton} 
+            {/* Save Button */}
+            <TouchableOpacity
+              style={[styles.saveButton, saving && { opacity: 0.8 }]}
               onPress={handleSaveProfile}
               disabled={saving}
+              activeOpacity={0.9}
             >
               {saving ? (
-                <ActivityIndicator color="#F27024" />
+                <View style={styles.savingContainer}>
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <Text style={styles.saveButtonText}>Saving...</Text>
+                </View>
               ) : (
-                <Text style={styles.saveButtonText}>Save</Text>
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <Text style={styles.saveButtonText}>Save Changes</Text>
+                </>
               )}
             </TouchableOpacity>
-          </View>
+          </Animated.View>
 
-          <View style={styles.linkedAccountsSection}>
-            <Text style={styles.linkedTitle}>Linked accounts</Text>
-            
-            <View style={styles.linkedRow}>
-              <View style={styles.linkedLeft}>
-                <Image 
-                  source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/768px-Google_%22G%22_logo.svg.png' }} 
-                  style={styles.googleIcon} 
+          {/* Linked Accounts */}
+          <Animated.View style={[styles.linkedAccountsSection, fadeUp(linkedAnim, 20)]}>
+            <Text style={styles.sectionTitle}>Linked Accounts</Text>
+
+            <View style={styles.linkedCard}>
+              <View style={styles.linkedRow}>
+                <View style={styles.linkedLeft}>
+                  <View style={styles.googleIconWrapper}>
+                    <Image
+                      source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/768px-Google_%22G%22_logo.svg.png' }}
+                      style={styles.googleIcon}
+                    />
+                  </View>
+                  <View>
+                    <Text style={styles.linkedText}>Google</Text>
+                    <Text style={styles.linkedSubtext}>
+                      {isGoogleLinked ? 'Connected' : 'Not connected'}
+                    </Text>
+                  </View>
+                </View>
+                <Switch
+                  trackColor={{ false: '#E5E7EB', true: '#22C55E' }}
+                  thumbColor={'#FFFFFF'}
+                  ios_backgroundColor="#E5E7EB"
+                  onValueChange={() => setIsGoogleLinked(prev => !prev)}
+                  value={isGoogleLinked}
                 />
-                <Text style={styles.linkedText}>Google</Text>
               </View>
-              <Switch
-                trackColor={{ false: '#D1D5DB', true: '#22C55E' }}
-                thumbColor={'#FFFFFF'}
-                ios_backgroundColor="#D1D5DB"
-                onValueChange={() => setIsGoogleLinked(prev => !prev)}
-                value={isGoogleLinked}
-              />
             </View>
-            <View style={styles.bottomDivider} />
-          </View>
+          </Animated.View>
 
           <View style={styles.bottomSpacer} />
         </ScrollView>
@@ -233,128 +380,273 @@ export default function EditProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#FFFFFF' 
+  container: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
   },
-  loadingContainer: { 
-    flex: 1, 
-    justifyContent: 'center', 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF'
+    backgroundColor: '#FFFFFF',
+    gap: 12,
   },
+  loadingText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Header                                                              */
+  /* ------------------------------------------------------------------ */
   header: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#FA7A25',
-    paddingHorizontal: 20, 
-    paddingBottom: 100,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: ORANGE,
+    paddingHorizontal: 20,
+    paddingBottom: 30,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 6,
   },
-  backButton: { 
-    marginRight: 12,
-    bottom: -36,
+  backButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
   },
-  headerTitle: { 
-    fontSize: 23, 
-    fontWeight: '800', 
-    color: '#000', 
-    bottom: -36,
+  headerTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
   },
-  scrollContent: { 
-    paddingBottom: 100 
+
+  /* ------------------------------------------------------------------ */
+  /* Scroll                                                              */
+  /* ------------------------------------------------------------------ */
+  scrollContent: {
+    paddingBottom: 60,
   },
   bottomSpacer: {
-    height: 80,
+    height: 40,
   },
-  imageUploadSection: { 
-    alignItems: 'center', 
-    marginTop: 30,
-    marginBottom: 20 
+
+  /* ------------------------------------------------------------------ */
+  /* Avatar                                                              */
+  /* ------------------------------------------------------------------ */
+  imageUploadSection: {
+    alignItems: 'center',
+    marginTop: -46,
+    marginBottom: 24,
+    
   },
   imagePicker: {
-    width: 90, 
-    height: 90, 
-    borderRadius: 45, 
-    backgroundColor: '#4B5563',
-    justifyContent: 'center', 
-    alignItems: 'center', 
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: ORANGE,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
+    overflow: 'visible',
   },
-  profilePreview: { 
-    width: 100, 
-    height: 100, 
-    borderRadius: 50 
+  profilePreview: {
+    width: 102,
+    height: 102,
+    borderRadius: 51,
+    
   },
-  imagePlaceholder: { 
-    justifyContent: 'center', 
-    alignItems: 'center' 
+  imagePlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+  cameraBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+  },
+  uploadHint: {
+    marginTop: 12,
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Form                                                                */
+  /* ------------------------------------------------------------------ */
   formContainer: {
-    paddingHorizontal: 30,
+    paddingHorizontal: 24,
   },
-  inputGroup: { 
-    marginBottom: 16 
+  inputGroup: {
+    marginBottom: 18,
   },
-  label: { 
-    fontSize: 20, 
-    color: '#000', 
-    fontWeight: '600',
-    marginBottom: 4 
+  label: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: '700',
+    marginBottom: 8,
+    letterSpacing: 0.2,
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  inputWrapperFocused: {
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  inputWrapperDisabled: {
+    backgroundColor: '#F9FAFB',
+  },
+  inputIcon: {
+    paddingLeft: 14,
+    paddingRight: 4,
   },
   input: {
-    borderBottomWidth: 1, 
-    borderColor: '#E5E7EB', 
-    paddingVertical: 8,
-    fontSize: 14, 
-    color: '#6B7280', 
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '500',
   },
+  helperText: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    marginTop: 6,
+    marginLeft: 4,
+    fontWeight: '500',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Save Button                                                         */
+  /* ------------------------------------------------------------------ */
   saveButton: {
-    paddingVertical: 20, 
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 10,
+    backgroundColor: ORANGE,
+    paddingVertical: 16,
+    borderRadius: 16,
+    marginTop: 8,
+    marginBottom: 8,
+    gap: 8,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 5,
   },
-  saveButtonText: { 
-    color: '#FA7A25',
-    fontWeight: '500', 
-    fontSize: 14 
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 15,
+    letterSpacing: 0.2,
   },
+  savingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Linked Accounts                                                     */
+  /* ------------------------------------------------------------------ */
   linkedAccountsSection: {
-    marginTop: 10,
-    paddingHorizontal: 20,
+    paddingHorizontal: 24,
+    marginTop: 24,
   },
-  linkedTitle: {
-    fontSize: 13,
-    color: '#000',
-    marginBottom: 16,
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 12,
+    letterSpacing: -0.2,
+  },
+  linkedCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 2,
   },
   linkedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingBottom: 16,
   },
   linkedLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
+  googleIconWrapper: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#F9FAFB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
   googleIcon: {
-    width: 20,
-    height: 20,
-    marginRight: 10,
+    width: 22,
+    height: 22,
     resizeMode: 'contain',
   },
   linkedText: {
-    fontSize: 13,
-    color: '#374151',
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '700',
   },
-  bottomDivider: {
-    height: 1,
-    backgroundColor: '#E5E7EB',
-    width: '100%',
+  linkedSubtext: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 2,
+    fontWeight: '500',
   },
 });
