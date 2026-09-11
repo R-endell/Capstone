@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/BookingScreen.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
@@ -7,14 +8,15 @@ import {
   ActivityIndicator, 
   Dimensions, 
   Animated, 
-  StatusBar 
+  StatusBar,
+  Alert
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
+import { autoMatchAndCreateDeliveries } from '../../../../services/matchingService';
 
 const { width } = Dimensions.get('window');
 
@@ -24,9 +26,10 @@ export default function BookingScreen({ route, navigation }: any) {
   const mode = routeMode || state.mode;
   const insets = useSafeAreaInsets();
 
-  const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched'>('review');
+  const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'matched_with_alert'>('review');
   const [saving, setSaving] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
+  const [matchFound, setMatchFound] = useState(false);
 
   const matchedProvider = {
     name: 'Jun Joseph Pestaño',
@@ -39,7 +42,7 @@ export default function BookingScreen({ route, navigation }: any) {
     cost: state.estimatedCost ? state.estimatedCost.toFixed(2) : '24.00'
   };
 
-  // Animation values for finding state
+  // Animation values
   const pulseAnim1 = useRef(new Animated.Value(1)).current;
   const pulseAnim2 = useRef(new Animated.Value(1.1)).current; 
   const pulseAnim3 = useRef(new Animated.Value(1)).current;
@@ -61,7 +64,7 @@ export default function BookingScreen({ route, navigation }: any) {
       createPulse(pulseAnim3, 400).start();
     }
     
-    if (bookingState === 'matched') {
+    if (bookingState === 'matched' || bookingState === 'matched_with_alert') {
       setShowNotification(true);
       Animated.spring(notificationSlide, {
         toValue: insets.top + 10,
@@ -82,42 +85,78 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const handleBook = () => {
     setBookingState('finding');
+    // Simulate finding a match
     setTimeout(() => {
-      setBookingState('matched');
-    }, 4000); 
+      // Check if we actually found a match (this would come from the matching service)
+      const matchFound = Math.random() > 0.5; // Simulate match found
+      if (matchFound) {
+        setMatchFound(true);
+        setBookingState('matched');
+      } else {
+        setMatchFound(false);
+        setBookingState('matched_with_alert');
+      }
+    }, 4000);
   };
 
   const handleConfirmAction = async () => {
     setSaving(true);
     try {
+      let savedRequest = null;
+      
       if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
+        savedRequest = { request_id: state.editIds.requestId };
       } else {
-        await saveScheduleToDB(state, mode);
+        savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
       }
+      
+      // After saving, try to match with a provider
+      if (savedRequest) {
+        const matches = await autoMatchAndCreateDeliveries();
+        
+        if (matches.length > 0) {
+          // A match was found!
+          setMatchFound(true);
+          Alert.alert(
+            '🎉 Match Found!',
+            `Your delivery has been automatically matched with a provider. They will pick up your package soon.`,
+            [{ text: 'Awesome!' }]
+          );
+        } else {
+          // No immediate match found
+          Alert.alert(
+            '📦 Delivery Scheduled',
+            'We\'ll notify you once a provider is matched with your delivery.',
+            [{ text: 'OK' }]
+          );
+        }
+      }
+      
       dispatch({ type: 'RESET' });
       navigation.navigate('MainTabs');
     } catch (err) {
       console.error('Failed to save:', err);
+      Alert.alert('Error', 'Failed to schedule delivery. Please try again.');
     } finally {
       setSaving(false);
     }
   };
 
-  // Safe parsing for addresses to split main name and sub-address
+  // Parse address
   const parseAddress = (fullAddress: string | undefined) => {
-  if (!fullAddress) return { main: 'Selected Location', sub: 'Coordinates' };
-  const parts = fullAddress.split(', ');
-  return {
-    main: parts[0],
-    sub: parts.slice(1).join(', ') || fullAddress
+    if (!fullAddress) return { main: 'Selected Location', sub: 'Coordinates' };
+    const parts = fullAddress.split(', ');
+    return {
+      main: parts[0],
+      sub: parts.slice(1).join(', ') || fullAddress
+    };
   };
-};
 
   const pickup = parseAddress(state.pickupLocation?.address);
   const dropoff = parseAddress(state.dropoffLocation?.address);
 
-  // Map Region centered between pickup and dropoff
+  // Map Region
   const mapRegion = state.pickupLocation ? {
     latitude: (state.pickupLocation.latitude + (state.dropoffLocation?.latitude || state.pickupLocation.latitude)) / 2,
     longitude: (state.pickupLocation.longitude + (state.dropoffLocation?.longitude || state.pickupLocation.longitude)) / 2,
@@ -129,71 +168,57 @@ export default function BookingScreen({ route, navigation }: any) {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
       
-      {/* OpenStreetMap via WebView - NO API KEY NEEDED */}
+      {/* Map */}
+      <WebView
+        style={styles.map}
+        source={{ html: `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+              <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+              <style>
+                body { margin: 0; padding: 0; }
+                #map { height: 100vh; width: 100vw; background: #E5E7EB; }
+              </style>
+            </head>
+            <body>
+              <div id="map"></div>
+              <script>
+                var map = L.map('map').setView([${mapRegion.latitude}, ${mapRegion.longitude}], 14);
+                
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                  attribution: '© OpenStreetMap',
+                  maxZoom: 19
+                }).addTo(map);
 
-{/* Pickup & Dropoff Markers as Overlay */}
-<View pointerEvents="none" style={styles.mapOverlay}>
-  <View style={[styles.mapMarkerPickup, { top: '35%', left: '30%' }]}>
-    <View style={styles.mapMarkerPickupDot} />
-  </View>
-  <View style={[styles.mapMarkerDropoff, { top: '55%', left: '60%' }]}>
-    <View style={styles.mapMarkerDropoffDot} />
-  </View>
-</View>
+                L.marker([${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}])
+                  .bindPopup('📍 Pickup')
+                  .addTo(map)
+                  .openPopup();
 
-<WebView
-  style={styles.map}
-  source={{ html: `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map').setView([${mapRegion.latitude}, ${mapRegion.longitude}], 14);
-          
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap',
-            maxZoom: 19
-          }).addTo(map);
+                L.marker([${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}])
+                  .bindPopup('📍 Dropoff')
+                  .addTo(map);
 
-          // Add pickup marker
-          L.marker([${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}])
-            .bindPopup('📍 Pickup')
-            .addTo(map)
-            .openPopup();
+                L.polyline([
+                  [${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}],
+                  [${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}]
+                ], {
+                  color: '#111827',
+                  weight: 4,
+                  dashArray: '10, 10'
+                }).addTo(map);
+              </script>
+            </body>
+          </html>
+        `}}
+        scrollEnabled={false}
+        zoomEnabled={false}
+      />
 
-          // Add dropoff marker
-          L.marker([${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}])
-            .bindPopup('📍 Dropoff')
-            .addTo(map);
-
-          // Draw a line between pickup and dropoff
-          L.polyline([
-            [${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}],
-            [${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}]
-          ], {
-            color: '#111827',
-            weight: 4,
-            dashArray: '10, 10'
-          }).addTo(map);
-        </script>
-      </body>
-    </html>
-  `}}
-  scrollEnabled={false}
-  zoomEnabled={false}
-/>
-
-      {/* Mock Push Notification (Matched State) overlays the top pill */}
+      {/* Notification */}
       {showNotification && (
         <Animated.View style={[styles.pushNotification, { transform: [{ translateY: notificationSlide }] }]}>
           <View style={styles.pushIconPlaceholder}>
@@ -201,22 +226,25 @@ export default function BookingScreen({ route, navigation }: any) {
           </View>
           <View style={styles.pushTextContainer}>
             <View style={styles.pushHeaderRow}>
-              <Text style={styles.pushTitle}>Provider has been matched! you have a picked up scheduled on A...</Text>
+              <Text style={styles.pushTitle}>
+                {matchFound ? 'Provider has been matched!' : 'Provider matching in progress...'}
+              </Text>
               <Text style={styles.pushTime}>10:00 AM</Text>
             </View>
-            <Text style={styles.pushSub}>Open Pack-N-Ship for more details.</Text>
+            <Text style={styles.pushSub}>
+              {matchFound ? 'Your delivery has been confirmed. Track your package now.' : 'We\'re finding the best provider for you.'}
+            </Text>
           </View>
         </Animated.View>
       )}
 
-      {/* Floating Top Search UI (Rendered in all states, covered natively by push notif on matched) */}
+      {/* Top Overlay */}
       <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
         <TouchableOpacity style={styles.backCircleBtn} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color="#000" />
         </TouchableOpacity>
         
         <View style={styles.pillsContainer}>
-          {/* Custom Bracket Connection Line */}
           <View style={styles.pillConnectorLine} />
 
           <View style={styles.locationPill}>
@@ -237,10 +265,10 @@ export default function BookingScreen({ route, navigation }: any) {
         </View>
       </View>
 
-      {/* Bottom Sheet area */}
+      {/* Bottom Sheet */}
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
         
-        {/* --- STATE 1: REVIEW --- */}
+        {/* REVIEW STATE */}
         {bookingState === 'review' && (
           <View style={styles.sheetCard}>
             <Text style={styles.sheetHeaderTitle}>
@@ -278,7 +306,7 @@ export default function BookingScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* --- STATE 2: FINDING --- */}
+        {/* FINDING STATE */}
         {bookingState === 'finding' && (
           <View style={styles.sheetCardFinding}>
             <Text style={styles.findingTitle}>
@@ -338,14 +366,15 @@ export default function BookingScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* --- STATE 3: MATCHED --- */}
-        {bookingState === 'matched' && (
+        {/* MATCHED STATE */}
+        {(bookingState === 'matched' || bookingState === 'matched_with_alert') && (
           <View style={styles.sheetCardMatched}>
-            <Text style={styles.matchedTitle}>Provider has been matched!</Text>
+            <Text style={styles.matchedTitle}>
+              {matchFound ? 'Provider has been matched!' : 'No provider available yet'}
+            </Text>
             
             <View style={styles.matchedInnerCard}>
               <View style={styles.matchedRow}>
-                {/* Left Column: Avatar & QR */}
                 <View style={styles.matchedLeftCol}>
                   <View style={styles.matchedAvatarBox}>
                     <View style={styles.matchedAvatarCircle}>
@@ -356,21 +385,27 @@ export default function BookingScreen({ route, navigation }: any) {
                        <View style={styles.placeholderLineShort} />
                     </View>
                   </View>
-                  {/* Mock QR Code grid */}
                   <View style={styles.qrCodeBox}>
                      <Ionicons name="qr-code-outline" size={60} color="#000" />
                   </View>
                 </View>
 
-                {/* Right Column: Details */}
                 <View style={styles.matchedRightCol}>
-                  <Text style={styles.matchedName}>{matchedProvider.name}</Text>
+                  <Text style={styles.matchedName}>
+                    {matchFound ? matchedProvider.name : 'Searching for provider...'}
+                  </Text>
                   
                   <View style={styles.carDetailRow}>
                     <View style={{flex: 1}}>
-                      <Text style={styles.carText}>Car: {matchedProvider.vehicle}</Text>
-                      <Text style={styles.carText}>Color: {matchedProvider.color}</Text>
-                      <Text style={styles.carText}>Plate Number: {matchedProvider.plate}</Text>
+                      <Text style={styles.carText}>
+                        {matchFound ? `Car: ${matchedProvider.vehicle}` : 'Waiting for match...'}
+                      </Text>
+                      <Text style={styles.carText}>
+                        {matchFound ? `Color: ${matchedProvider.color}` : ''}
+                      </Text>
+                      <Text style={styles.carText}>
+                        {matchFound ? `Plate Number: ${matchedProvider.plate}` : ''}
+                      </Text>
                     </View>
                     <View style={styles.contactIcons}>
                       <View style={styles.contactIconCircle}><Ionicons name="chatbubbles" size={14} color="#000" /></View>
@@ -397,11 +432,13 @@ export default function BookingScreen({ route, navigation }: any) {
                   </View>
 
                   <Text style={styles.scheduledForText}>Scheduled for:</Text>
-                  <Text style={styles.scheduledTimeText}>{matchedProvider.schedule}</Text>
+                  <Text style={styles.scheduledTimeText}>
+                    {matchFound ? matchedProvider.schedule : 'Pending match...'}
+                  </Text>
 
                   <View style={styles.totalRow}>
                     <Text style={styles.totalLabel}>Total</Text>
-                    <Text style={styles.totalValue}>₱{matchedProvider.cost}</Text>
+                    <Text style={styles.totalValue}>₱{matchFound ? matchedProvider.cost : '0.00'}</Text>
                   </View>
                 </View>
               </View>
@@ -412,7 +449,9 @@ export default function BookingScreen({ route, navigation }: any) {
                 {saving ? (
                   <ActivityIndicator color="#F97316" />
                 ) : (
-                  <Text style={styles.confirmTextButtonLabel}>Confirm</Text>
+                  <Text style={styles.confirmTextButtonLabel}>
+                    {matchFound ? 'Confirm' : 'Continue'}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -430,36 +469,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3F4F6',
   },
   map: {
-  ...StyleSheet.absoluteFill,
- },
-  mapPinPickup: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: '#0000CC',
-    justifyContent: 'center',
-    alignItems: 'center',
+    ...StyleSheet.absoluteFill,
   },
-  mapPinPickupInner: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#FFF',
-  },
-  mapPinDropoff: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#E11D48',
-    borderWidth: 2,
-    borderColor: '#FFF',
-  },
-  
-  // Floating Top UI
   topOverlay: {
     position: 'absolute',
     left: 20,
-    right: 40, // Keeps space on the right for the bracket
+    right: 40,
     flexDirection: 'row',
     alignItems: 'flex-start',
     zIndex: 10,
@@ -482,12 +497,11 @@ const styles = StyleSheet.create({
     flex: 1,
     position: 'relative',
   },
-  // Custom bracket connecting the two pills
   pillConnectorLine: {
     position: 'absolute',
-    right: -15, // Extends past the right edge of the pills
-    top: 23, // Centers roughly on the top pill
-    bottom: 33, // Centers roughly on the bottom pill
+    right: -15,
+    top: 23,
+    bottom: 33,
     width: 30,
     borderTopWidth: 2,
     borderBottomWidth: 2,
@@ -538,8 +552,6 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginTop: 2,
   },
-
-  // Push Notification (State 3)
   pushNotification: {
     position: 'absolute',
     left: 10,
@@ -585,8 +597,6 @@ const styles = StyleSheet.create({
     color: '#D1D5DB',
     marginTop: 4,
   },
-
-  // Bottom Sheet
   bottomSheet: {
     position: 'absolute',
     bottom: 0,
@@ -613,8 +623,6 @@ const styles = StyleSheet.create({
     color: '#000',
     marginBottom: 16,
   },
-  
-  // Timeline Components
   timelineContainer: {
     marginLeft: 8,
   },
@@ -693,8 +701,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-
-  // Finding State Styles
   sheetCardFinding: {
     width: '100%',
     backgroundColor: '#FFF',
@@ -777,8 +783,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14,
   },
-
-  // Matched State Styles
   sheetCardMatched: {
     width: '100%',
     backgroundColor: '#FFF',
@@ -921,55 +925,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14,
   },
-  mapOverlay: {
-  position: 'absolute',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 5,
-  pointerEvents: 'none',
-},
-mapMarkerPickup: {
-  position: 'absolute',
-  width: 20,
-  height: 20,
-  borderRadius: 10,
-  backgroundColor: '#3B82F6',
-  justifyContent: 'center',
-  alignItems: 'center',
-  borderWidth: 3,
-  borderColor: '#FFF',
-  shadowColor: '#000',
-  shadowOpacity: 0.3,
-  shadowRadius: 4,
-  elevation: 4,
-},
-mapMarkerPickupDot: {
-  width: 8,
-  height: 8,
-  borderRadius: 4,
-  backgroundColor: '#FFF',
-},
-mapMarkerDropoff: {
-  position: 'absolute',
-  width: 20,
-  height: 20,
-  borderRadius: 10,
-  backgroundColor: '#EF4444',
-  justifyContent: 'center',
-  alignItems: 'center',
-  borderWidth: 3,
-  borderColor: '#FFF',
-  shadowColor: '#000',
-  shadowOpacity: 0.3,
-  shadowRadius: 4,
-  elevation: 4,
-},
-mapMarkerDropoffDot: {
-  width: 8,
-  height: 8,
-  borderRadius: 4,
-  backgroundColor: '#FFF',
-},
 });

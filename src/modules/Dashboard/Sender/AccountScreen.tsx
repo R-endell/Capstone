@@ -1,4 +1,3 @@
-// src/modules/Dashboard/Sender/AccountScreen.tsx
 import React, { useState, useCallback } from 'react';
 import {
   View,
@@ -83,7 +82,6 @@ export default function AccountScreen() {
           if (user) {
             setUserEmail(user.email || 'john.doe@example.com');
             
-            // Get user data from your users table
             const { data: userData, error: userError } = await supabase
               .from('users')
               .select('user_id, first_name, last_name, profile_photo')
@@ -97,7 +95,6 @@ export default function AccountScreen() {
 
             if (userData) {
               setUserId(userData.user_id);
-              
               if (userData.first_name) setFirstName(userData.first_name);
               if (userData.last_name) setLastName(userData.last_name);
               if (userData.profile_photo) {
@@ -105,7 +102,6 @@ export default function AccountScreen() {
                 setImageError(false);
               }
 
-              // Check if user has Provider role using user_roles table
               const { data: userRoles, error: rolesError } = await supabase
                 .from('user_roles')
                 .select(`
@@ -139,6 +135,9 @@ export default function AccountScreen() {
     }, [])
   );
 
+
+
+  // Handlers
   const handleLogoutConfirm = () => {
     Alert.alert(
       'Log Out',
@@ -165,50 +164,57 @@ export default function AccountScreen() {
     navigation.navigate('Settings');
   };
 
-  // Handle Switch to Provider Mode
   const handleSwitchToProvider = () => {
     if (isProviderRegistered) {
-      navigation.navigate('ProviderTabs');
+      navigation.navigate('ProviderTabs', { screen: 'Task' });
     } else {
-      // User is only Sender, navigate to registration
       navigation.navigate('RegisterProvider');
     }
   };
 
-  // --- SUB-SCREEN: PAYMENT METHODS ---
-  if (currentView === 'payment') {
+  const handleRateProvider = (providerName: string) => {
+    Alert.alert(
+      'Rate Provider',
+      `How was your experience with ${providerName}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Rate', onPress: () => console.log('Rate provider') },
+      ]
+    );
+  };
+
+  const handleReportIssue = (trackingId: string) => {
+    Alert.alert(
+      'Report Issue',
+      `Report an issue with delivery #${trackingId}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Submit Report', onPress: () => console.log('Report submitted') },
+      ]
+    );
+  };
+
+  // Loading state
+  if (loading) {
     return (
-      <View style={[styles.container, { paddingTop: insets.top, backgroundColor: '#FA7A25' }]}>
-        <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
-        <View style={styles.subHeader}>
-          <TouchableOpacity onPress={() => setCurrentView('main')} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={24} color="#000" />
-          </TouchableOpacity>
-          <Text style={styles.subHeaderTitle}>All Payment Methods</Text>
-        </View>
-        <View style={styles.subContent}>
-          <TouchableOpacity style={styles.menuItem}>
-            <View style={styles.paymentRowLeft}>
-              <View style={styles.gcashIcon}>
-                <Text style={styles.gcashText}>G</Text>
-                <Ionicons name="wifi" size={10} color="#FFF" style={styles.gcashWifi} />
-              </View>
-              <Text style={styles.menuText}>G cash</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color="#000" />
-          </TouchableOpacity>
-        </View>
+      <View style={[styles.container, styles.centerContent]}>
+        <ActivityIndicator size="large" color="#FA7A25" />
       </View>
     );
   }
 
-  // --- SUB-SCREEN: VIEW HISTORY ---
-  if (currentView === 'history') {
+  const handlePaymentMethodsPress = () => {
+    navigation.navigate('PaymentMethods');
+  };
+
+  const [showHistory, setShowHistory] = useState(false);
+
+  if (showHistory) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, backgroundColor: '#FA7A25' }]}>
         <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
         <View style={styles.subHeader}>
-          <TouchableOpacity onPress={() => setCurrentView('main')} style={styles.backBtn}>
+          <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={24} color="#000" />
           </TouchableOpacity>
           <Text style={styles.subHeaderTitle}>View History</Text>
@@ -285,7 +291,6 @@ export default function AccountScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
       
-      {/* Custom Orange Header */}
       <View style={[styles.mainHeader, { paddingTop: insets.top + 20 }]}>
         <View style={styles.profilePicContainer}>
           {avatarUrl && !imageError ? (
@@ -301,7 +306,6 @@ export default function AccountScreen() {
         
         <View style={styles.nameContainer}>
           <Text style={styles.profileName}>{firstName} {lastName}</Text>
-          
           <TouchableOpacity 
             style={styles.editIconBtn}
             onPress={() => navigation.navigate('EditProfile')}
@@ -311,7 +315,6 @@ export default function AccountScreen() {
         </View>
       </View>
 
-      {/* Menu Content */}
       <ScrollView 
         showsVerticalScrollIndicator={false} 
         style={styles.mainContent} 
@@ -319,10 +322,9 @@ export default function AccountScreen() {
       >
         <Text style={styles.sectionTitle}>My Account</Text>
         
-        {/* 👇 UPDATED: Now Navigates to the Provider Tab Stack */}
         <TouchableOpacity 
           style={styles.menuItem} 
-          onPress={() => navigation.navigate('ProviderTabs')}
+          onPress={handleSwitchToProvider}
         >
           <View style={styles.menuItemLeft}>
             <Text style={styles.menuText}>
@@ -337,12 +339,12 @@ export default function AccountScreen() {
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('payment')}>
-          <Text style={styles.menuText}>Payment Methods</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
+        <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')}>
+  <Text style={styles.menuText}>Payment Methods</Text>
+  <Ionicons name="chevron-forward" size={20} color="#000" />
+</TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={() => setCurrentView('history')}>
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)}>
           <Text style={styles.menuText}>View History</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
