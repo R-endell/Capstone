@@ -2,12 +2,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
-  Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing,
+  Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import QRCode from 'react-native-qrcode-svg';
 import { supabase } from '../../../utils/supabase';
 
 const { width, height } = Dimensions.get('window');
@@ -64,6 +65,7 @@ const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
       scrollEnabled={false}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
+      androidLayerType="hardware"
     />
   );
 };
@@ -99,6 +101,15 @@ interface Delivery {
   vehicle?: any;
 }
 
+interface QrRow {
+  pickup_qr: string;
+  pickup_pin: string;
+  pickup_verified: boolean;
+  dropoff_qr: string;
+  dropoff_pin: string;
+  dropoff_verified: boolean;
+}
+
 interface MappedDelivery {
   request_id: number;
   pickup_type: string;
@@ -120,6 +131,7 @@ interface MappedDelivery {
   rawData: DeliveryRequest;
   deliveryData?: Delivery;
   isMatched: boolean;
+  qr?: QrRow | null;
 }
 
 export default function ActivityScreen() {
@@ -127,6 +139,7 @@ export default function ActivityScreen() {
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
   const [selectedDelivery, setSelectedDelivery] = useState<MappedDelivery | null>(null);
   const [showFullMap, setShowFullMap] = useState(false);
+  const [showPickupQR, setShowPickupQR] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -145,18 +158,12 @@ export default function ActivityScreen() {
     if (!selectedDelivery) {
       listAnim.setValue(0);
       Animated.timing(listAnim, {
-        toValue: 1,
-        duration: 500,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
+        toValue: 1, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true,
       }).start();
     } else {
       detailAnim.setValue(0);
       Animated.timing(detailAnim, {
-        toValue: 1,
-        duration: 500,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
+        toValue: 1, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true,
       }).start();
     }
   }, [selectedDelivery, listAnim, detailAnim]);
@@ -180,9 +187,7 @@ export default function ActivityScreen() {
     try {
       const { data } = await supabase.from('users').select('user_id, first_name, last_name, email').eq('user_id', providerId).single();
       return data;
-    } catch (error) {
-      return null;
-    }
+    } catch (error) { return null; }
   };
 
   const fetchData = async () => {
@@ -205,10 +210,24 @@ export default function ActivityScreen() {
 
       const requestIds = requests?.map((r: any) => r.request_id) || [];
       let deliveriesData: Delivery[] = [];
+      const qrByDeliveryId: Record<number, any> = {};
 
       if (requestIds.length > 0) {
-        const { data: deliveries } = await supabase.from('deliveries').select('*').in('request_id', requestIds).order('accepted_at', { ascending: false });
+        const { data: deliveries } = await supabase
+          .from('deliveries')
+          .select('*')
+          .in('request_id', requestIds)
+          .order('accepted_at', { ascending: false });
         deliveriesData = deliveries || [];
+
+        const deliveryIds = deliveriesData.map(d => d.delivery_id);
+        if (deliveryIds.length > 0) {
+          const { data: qrs } = await supabase
+            .from('qr_verifications')
+            .select('*')
+            .in('delivery_id', deliveryIds);
+          (qrs || []).forEach((q: any) => { qrByDeliveryId[q.delivery_id] = q; });
+        }
       }
 
       const mappedDeliveries: MappedDelivery[] = (requests || []).map((item: any) => {
@@ -231,9 +250,13 @@ export default function ActivityScreen() {
           statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
         } else if (status === 'Accepted') {
           statusDisplay = 'In Progress';
+        } else if (status === 'In Transit') {
+          statusDisplay = 'In Transit';
         } else if (status === 'Completed') {
           statusDisplay = 'Completed';
         }
+
+        const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
 
         return {
           request_id: item.request_id,
@@ -255,7 +278,15 @@ export default function ActivityScreen() {
           },
           rawData: item,
           deliveryData: delivery,
-          isMatched: !!delivery
+          isMatched: !!delivery,
+          qr: qrRow ? {
+            pickup_qr: qrRow.pickup_qr,
+            pickup_pin: qrRow.pickup_pin,
+            pickup_verified: qrRow.pickup_verified,
+            dropoff_qr: qrRow.dropoff_qr,
+            dropoff_pin: qrRow.dropoff_pin,
+            dropoff_verified: qrRow.dropoff_verified,
+          } : null,
         };
       });
 
@@ -277,29 +308,67 @@ export default function ActivityScreen() {
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Refresh selected delivery when its data changes                     */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
-    if (selectedDelivery) {
-      const updatedMatch = deliveries.find(d => d.request_id === selectedDelivery.request_id);
-      if (updatedMatch && updatedMatch.status !== selectedDelivery.status) {
-        setSelectedDelivery(updatedMatch);
-      }
+    if (!selectedDelivery) return;
+    const updatedMatch = deliveries.find(d => d.request_id === selectedDelivery.request_id);
+    if (!updatedMatch) return;
+
+    const statusChanged = updatedMatch.status !== selectedDelivery.status;
+    const qrChanged =
+      (updatedMatch.qr?.pickup_verified ?? false) !==
+      (selectedDelivery.qr?.pickup_verified ?? false);
+    const completedChanged =
+      (updatedMatch.deliveryData?.completed_at ?? null) !==
+      (selectedDelivery.deliveryData?.completed_at ?? null);
+
+    if (statusChanged || qrChanged || completedChanged) {
+      setSelectedDelivery(updatedMatch);
     }
   }, [deliveries]);
 
+  /* ------------------------------------------------------------------ */
+  /* Realtime + polling fallback                                         */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!userId) return;
 
-    const channel = supabase.channel(`activity-updates-${userId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); })
+    const channel = supabase
+      .channel(`activity-updates-${userId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` },
+        () => { fetchData(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'deliveries' },
+        () => { fetchData(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'qr_verifications' },
+        () => { fetchData(); },
+      )
       .subscribe();
+
+    // Fallback polling every 8s while there's at least one non-completed matched delivery
+    const hasActive = deliveries.some(d => d.status !== 'Completed' && d.isMatched);
+    let interval: any = null;
+    if (hasActive) {
+      interval = setInterval(() => { fetchData(); }, 8000);
+    }
 
     return () => {
       supabase.removeChannel(channel);
+      if (interval) clearInterval(interval);
     };
-  }, [userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, deliveries.length]);
 
-  useFocusEffect(useCallback(() => { fetchData(); }, [userId]));
+  useFocusEffect(useCallback(() => { fetchData(); /* eslint-disable-next-line */ }, [userId]));
 
   /* ------------------------------------------------------------------ */
   /* Handlers                                                            */
@@ -330,7 +399,7 @@ export default function ActivityScreen() {
 
   const filteredDeliveries = deliveries.filter((item) => {
     if (activeTab === 'pending' && item.status !== 'Waiting for Provider') return false;
-    if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched') return false;
+    if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched' && item.status !== 'In Transit') return false;
     if (activeTab === 'completed' && item.status !== 'Completed') return false;
     if (!searchQuery.trim()) return true;
     const query = searchQuery.toLowerCase();
@@ -345,6 +414,7 @@ export default function ActivityScreen() {
       case 'Waiting for Provider': return '#F59E0B';
       case 'Matched': return '#3B82F6';
       case 'In Progress': return '#8B5CF6';
+      case 'In Transit': return '#0EA5E9';
       case 'Completed': return '#22C55E';
       default: return '#6B7280';
     }
@@ -355,6 +425,7 @@ export default function ActivityScreen() {
       case 'Waiting for Provider': return '#FEF3C7';
       case 'Matched': return '#DBEAFE';
       case 'In Progress': return '#EDE9FE';
+      case 'In Transit': return '#E0F2FE';
       case 'Completed': return '#DCFCE7';
       default: return '#F3F4F6';
     }
@@ -365,6 +436,7 @@ export default function ActivityScreen() {
       case 'Waiting for Provider': return 'time-outline';
       case 'Matched': return 'checkmark-circle-outline';
       case 'In Progress': return 'car-sport-outline';
+      case 'In Transit': return 'cube-outline';
       case 'Completed': return 'checkmark-done-circle';
       default: return 'ellipse-outline';
     }
@@ -373,7 +445,7 @@ export default function ActivityScreen() {
   const getTabCount = (tab: string) => {
     if (tab === 'all') return deliveries.length;
     if (tab === 'pending') return deliveries.filter(d => d.status === 'Waiting for Provider').length;
-    if (tab === 'active') return deliveries.filter(d => d.status === 'In Progress' || d.status === 'Matched').length;
+    if (tab === 'active') return deliveries.filter(d => d.status === 'In Progress' || d.status === 'Matched' || d.status === 'In Transit').length;
     if (tab === 'completed') return deliveries.filter(d => d.status === 'Completed').length;
     return 0;
   };
@@ -382,11 +454,7 @@ export default function ActivityScreen() {
   /* Tab Bar                                                             */
   /* ------------------------------------------------------------------ */
   const renderTabBar = () => (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.tabBarScroll}
-    >
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
       {(['all', 'pending', 'active', 'completed'] as const).map((tab) => {
         const isActive = activeTab === tab;
         const count = getTabCount(tab);
@@ -430,7 +498,6 @@ export default function ActivityScreen() {
       }
     >
       <Animated.View style={{ opacity: listAnim }}>
-        {/* Header */}
         <View style={styles.listHeader}>
           <View>
             <Text style={styles.pageTitle}>My Deliveries</Text>
@@ -440,7 +507,6 @@ export default function ActivityScreen() {
           </View>
         </View>
 
-        {/* Search */}
         <View style={styles.searchBar}>
           <Ionicons name="search-outline" size={18} color="#9CA3AF" />
           <TextInput
@@ -458,10 +524,8 @@ export default function ActivityScreen() {
           )}
         </View>
 
-        {/* Tabs */}
         {renderTabBar()}
 
-        {/* Content */}
         {isLoading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={ORANGE} />
@@ -491,10 +555,8 @@ export default function ActivityScreen() {
               onPress={() => setSelectedDelivery(item)}
               activeOpacity={0.9}
             >
-              {/* Status accent bar */}
               <View style={[styles.cardAccent, { backgroundColor: getStatusColor(item.status) }]} />
 
-              {/* Header */}
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeft}>
                   <View style={[styles.cardTypeBadge, { backgroundColor: getStatusBg(item.status) }]}>
@@ -513,7 +575,6 @@ export default function ActivityScreen() {
                 </View>
               </View>
 
-              {/* Body */}
               <View style={styles.cardBody}>
                 <View style={styles.cardLeftCol}>
                   <Text style={styles.dateTime}>
@@ -564,14 +625,13 @@ export default function ActivityScreen() {
                 </View>
               </View>
 
-              {/* Footer */}
               <View style={styles.divider} />
               <View style={styles.cardFooter}>
                 <View style={styles.footerLeft}>
                   <Text style={styles.footerLabel}>Total</Text>
                   <Text style={styles.priceText}>₱{item.price}</Text>
                 </View>
-                {item.isMatched && (item.status === 'In Progress' || item.status === 'Matched') && (
+                {item.isMatched && (item.status === 'In Progress' || item.status === 'Matched' || item.status === 'In Transit') && (
                   <TouchableOpacity
                     style={styles.trackBtn}
                     onPress={() => setSelectedDelivery(item)}
@@ -593,242 +653,277 @@ export default function ActivityScreen() {
   /* ------------------------------------------------------------------ */
   /* Detail View                                                         */
   /* ------------------------------------------------------------------ */
-  const renderDetailView = () => (
-    <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
-      <Animated.View style={{ opacity: detailAnim }}>
-        {/* Header */}
-        <View style={styles.detailHeader}>
-          <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backBtn} activeOpacity={0.8}>
-            <Ionicons name="arrow-back" size={22} color="#111827" />
-          </TouchableOpacity>
-          <Text style={styles.detailHeaderTitle}>Delivery Details</Text>
-          <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn} activeOpacity={0.8}>
-            <Ionicons name="expand-outline" size={16} color={ORANGE} />
-            <Text style={styles.fullMapBtnText}>Map</Text>
-          </TouchableOpacity>
-        </View>
+  const renderDetailView = () => {
+    // ✅ Local derived booleans so the timeline updates as soon as the QR flips,
+    // even before the "status" column catches up.
+    const pickupVerified =
+      selectedDelivery?.qr?.pickup_verified === true ||
+      selectedDelivery?.status === 'In Transit' ||
+      selectedDelivery?.status === 'Completed';
 
-        {/* Tracking ID + Status */}
-        <View style={styles.titleRow}>
-          <View>
-            <Text style={styles.trackingLabel}>TRACKING ID</Text>
-            <Text style={styles.trackingId}>#PNS-{String(selectedDelivery?.request_id).padStart(4, '0')}</Text>
-          </View>
-          <View style={[styles.statusBadgeLarge, { backgroundColor: getStatusBg(selectedDelivery?.status || '') }]}>
-            <Ionicons
-              name={getStatusIcon(selectedDelivery?.status || '')}
-              size={14}
-              color={getStatusColor(selectedDelivery?.status || '')}
-            />
-            <Text style={[styles.statusBadgeLargeText, { color: getStatusColor(selectedDelivery?.status || '') }]}>
-              {selectedDelivery?.status}
-            </Text>
-          </View>
-        </View>
+    const isCompleted =
+      selectedDelivery?.status === 'Completed' ||
+      !!selectedDelivery?.deliveryData?.completed_at;
 
-        {/* Map Card */}
-        <TouchableOpacity
-          style={styles.detailMapCard}
-          activeOpacity={0.9}
-          onPress={() => setShowFullMap(true)}
-        >
-          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-            <LeafletMap
-              pickupLat={selectedDelivery?.coords.pickup.latitude}
-              pickupLng={selectedDelivery?.coords.pickup.longitude}
-              dropoffLat={selectedDelivery?.coords.dropoff.latitude}
-              dropoffLng={selectedDelivery?.coords.dropoff.longitude}
-            />
-          </View>
-          <View style={styles.mapOverlayPill}>
-            <Ionicons name="bicycle" size={13} color={ORANGE} />
-            <Text style={styles.overlayPillText}>
-              {selectedDelivery?.status === 'Completed'
-                ? 'Delivered'
-                : selectedDelivery?.isMatched
-                  ? 'In Transit'
-                  : 'Awaiting Match'}
-            </Text>
-          </View>
-          <View style={styles.mapExpandPill}>
-            <Ionicons name="expand-outline" size={13} color="#FFF" />
-          </View>
-        </TouchableOpacity>
+    const showPickupQRButton =
+      !!selectedDelivery?.isMatched &&
+      !!selectedDelivery?.qr &&
+      !selectedDelivery?.qr?.pickup_verified &&
+      !isCompleted;
 
-        {/* Route Card */}
-        <View style={styles.routeCard}>
-          <View style={styles.routeTimeline}>
-            <View style={styles.routeItem}>
-              <View style={styles.routeIconWrapper}>
-                <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
-                <View style={styles.routeLine} />
-              </View>
-              <View style={styles.routeTextWrapper}>
-                <Text style={[styles.routeLabel, { color: '#0000CC' }]}>PICKUP</Text>
-                <Text style={styles.routeMain}>{selectedDelivery?.pickup_main}</Text>
-                <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.pickup_sub}</Text>
-              </View>
-            </View>
-            <View style={styles.routeItem}>
-              <View style={styles.routeIconWrapper}>
-                <Ionicons name="location" size={18} color="#E11D48" />
-              </View>
-              <View style={styles.routeTextWrapper}>
-                <Text style={[styles.routeLabel, { color: '#E11D48' }]}>DROPOFF</Text>
-                <Text style={styles.routeMain}>{selectedDelivery?.dropoff_main}</Text>
-                <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.dropoff_sub}</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-
-        {/* Package Status */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionHeaderTitle}>Package Status</Text>
-        </View>
-
-        <View style={styles.statusTimeline}>
-          <View style={styles.statusStep}>
-            <View style={styles.statusIconContainer}>
-              <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
-              <View style={[styles.statusLine, { backgroundColor: '#22C55E' }]} />
-            </View>
-            <View style={styles.statusTextContainer}>
-              <Text style={styles.statusStepTitle}>Order Confirmed</Text>
-              <Text style={styles.statusStepTime}>{selectedDelivery?.date}</Text>
-            </View>
-          </View>
-
-          <View style={styles.statusStep}>
-            <View style={styles.statusIconContainer}>
-              <View style={[styles.statusDotLarge, { backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
-              <View style={[styles.statusLine, selectedDelivery?.isMatched && { backgroundColor: '#3B82F6' }]} />
-            </View>
-            <View style={styles.statusTextContainer}>
-              <Text style={[styles.statusStepTitle, !selectedDelivery?.isMatched && { color: '#6B7280' }]}>
-                {selectedDelivery?.isMatched ? 'Provider Matched' : 'Finding Provider'}
-              </Text>
-              <Text style={styles.statusStepTime}>
-                {selectedDelivery?.isMatched ? 'Provider assigned' : 'Searching...'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.statusStep}>
-            <View style={styles.statusIconContainer}>
-              <View style={[
-                styles.statusDotLarge,
-                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
-                  ? { backgroundColor: '#8B5CF6' }
-                  : { backgroundColor: '#D1D5DB' }
-              ]} />
-              <View style={[
-                styles.statusLine,
-                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed') && { backgroundColor: '#8B5CF6' }
-              ]} />
-            </View>
-            <View style={styles.statusTextContainer}>
-              <Text style={[
-                styles.statusStepTitle,
-                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
-                  ? { color: '#111827' }
-                  : { color: '#9CA3AF' }
-              ]}>
-                Item Collected
-              </Text>
-              <Text style={[
-                styles.statusStepTime,
-                (selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
-                  ? { color: '#6B7280' }
-                  : { color: '#D1D5DB' }
-              ]}>
-                {(selectedDelivery?.status === 'In Progress' || selectedDelivery?.status === 'Completed')
-                  ? 'In transit'
-                  : 'Pending pickup'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.statusStep}>
-            <View style={styles.statusIconContainer}>
-              <View style={[
-                styles.statusDotLarge,
-                selectedDelivery?.status === 'Completed'
-                  ? { backgroundColor: '#22C55E' }
-                  : { backgroundColor: '#D1D5DB' }
-              ]} />
-            </View>
-            <View style={styles.statusTextContainer}>
-              <Text style={[
-                styles.statusStepTitle,
-                selectedDelivery?.status === 'Completed'
-                  ? { color: '#111827' }
-                  : { color: '#9CA3AF' }
-              ]}>
-                Delivered Successfully
-              </Text>
-              <Text style={[
-                styles.statusStepTime,
-                selectedDelivery?.status === 'Completed'
-                  ? { color: '#6B7280' }
-                  : { color: '#D1D5DB' }
-              ]}>
-                {selectedDelivery?.status === 'Completed' ? 'Completed' : 'Awaiting delivery'}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Provider Info */}
-        {selectedDelivery?.isMatched && (
-          <View style={styles.providerInfoCard}>
-            <View style={styles.providerInfoHeader}>
-              <Ionicons name="shield-checkmark" size={14} color="#10B981" />
-              <Text style={styles.providerInfoTitle}>ASSIGNED PROVIDER</Text>
-            </View>
-            <View style={styles.providerInfoRow}>
-              <View style={styles.providerAvatarSmall}>
-                <Ionicons name="person" size={22} color="#FFF" />
-              </View>
-              <View style={styles.providerInfoDetails}>
-                <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
-                <Text style={styles.providerInfoVehicle}>
-                  {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
-                </Text>
-              </View>
-              <TouchableOpacity style={styles.providerContactBtn} activeOpacity={0.8}>
-                <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* Actions */}
-        {selectedDelivery?.status !== 'Completed' && (
-          <View style={styles.detailActionsRow}>
-            {!selectedDelivery?.isMatched && (
-              <TouchableOpacity
-                style={styles.editBtn}
-                onPress={() => handleEdit(selectedDelivery?.rawData)}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="create-outline" size={16} color="#FFF" />
-                <Text style={styles.editBtnText}>Edit</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={styles.deleteBtn}
-              onPress={() => handleDelete(selectedDelivery?.rawData)}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="close-circle-outline" size={16} color="#FFF" />
-              <Text style={styles.deleteBtnText}>Cancel Booking</Text>
+    return (
+      <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
+        <Animated.View style={{ opacity: detailAnim }}>
+          <View style={styles.detailHeader}>
+            <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backBtn} activeOpacity={0.8}>
+              <Ionicons name="arrow-back" size={22} color="#111827" />
+            </TouchableOpacity>
+            <Text style={styles.detailHeaderTitle}>Delivery Details</Text>
+            <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn} activeOpacity={0.8}>
+              <Ionicons name="expand-outline" size={16} color={ORANGE} />
+              <Text style={styles.fullMapBtnText}>Map</Text>
             </TouchableOpacity>
           </View>
-        )}
-      </Animated.View>
-    </ScrollView>
-  );
+
+          <View style={styles.titleRow}>
+            <View>
+              <Text style={styles.trackingLabel}>TRACKING ID</Text>
+              <Text style={styles.trackingId}>#PNS-{String(selectedDelivery?.request_id).padStart(4, '0')}</Text>
+            </View>
+            <View style={[styles.statusBadgeLarge, { backgroundColor: getStatusBg(selectedDelivery?.status || '') }]}>
+              <Ionicons
+                name={getStatusIcon(selectedDelivery?.status || '')}
+                size={14}
+                color={getStatusColor(selectedDelivery?.status || '')}
+              />
+              <Text style={[styles.statusBadgeLargeText, { color: getStatusColor(selectedDelivery?.status || '') }]}>
+                {selectedDelivery?.status}
+              </Text>
+            </View>
+          </View>
+
+          {/* Pickup QR CTA */}
+          {showPickupQRButton && (
+            <TouchableOpacity
+              style={styles.pickupQRCard}
+              onPress={() => setShowPickupQR(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.pickupQRIconBox}>
+                <Ionicons name="qr-code" size={22} color="#FFF" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pickupQRTitle}>Show Pickup QR</Text>
+                <Text style={styles.pickupQRDesc}>
+                  Provider will scan this to confirm item pickup
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#FFF" />
+            </TouchableOpacity>
+          )}
+
+          {pickupVerified && !isCompleted && (
+            <View style={styles.pickupVerifiedBanner}>
+              <Ionicons name="checkmark-circle" size={18} color="#22C55E" />
+              <Text style={styles.pickupVerifiedText}>Item collected by provider</Text>
+            </View>
+          )}
+
+          {/* Map Card */}
+          <TouchableOpacity
+            style={styles.detailMapCard}
+            activeOpacity={0.9}
+            onPress={() => setShowFullMap(true)}
+          >
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              <LeafletMap
+                pickupLat={selectedDelivery?.coords.pickup.latitude}
+                pickupLng={selectedDelivery?.coords.pickup.longitude}
+                dropoffLat={selectedDelivery?.coords.dropoff.latitude}
+                dropoffLng={selectedDelivery?.coords.dropoff.longitude}
+              />
+            </View>
+            <View style={styles.mapOverlayPill}>
+              <Ionicons name="bicycle" size={13} color={ORANGE} />
+              <Text style={styles.overlayPillText}>
+                {isCompleted
+                  ? 'Delivered'
+                  : pickupVerified
+                    ? 'In Transit'
+                    : selectedDelivery?.isMatched
+                      ? 'Assigned'
+                      : 'Awaiting Match'}
+              </Text>
+            </View>
+            <View style={styles.mapExpandPill}>
+              <Ionicons name="expand-outline" size={13} color="#FFF" />
+            </View>
+          </TouchableOpacity>
+
+          {/* Route Card */}
+          <View style={styles.routeCard}>
+            <View style={styles.routeTimeline}>
+              <View style={styles.routeItem}>
+                <View style={styles.routeIconWrapper}>
+                  <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
+                  <View style={styles.routeLine} />
+                </View>
+                <View style={styles.routeTextWrapper}>
+                  <Text style={[styles.routeLabel, { color: '#0000CC' }]}>PICKUP</Text>
+                  <Text style={styles.routeMain}>{selectedDelivery?.pickup_main}</Text>
+                  <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.pickup_sub}</Text>
+                </View>
+              </View>
+              <View style={styles.routeItem}>
+                <View style={styles.routeIconWrapper}>
+                  <Ionicons name="location" size={18} color="#E11D48" />
+                </View>
+                <View style={styles.routeTextWrapper}>
+                  <Text style={[styles.routeLabel, { color: '#E11D48' }]}>DROPOFF</Text>
+                  <Text style={styles.routeMain}>{selectedDelivery?.dropoff_main}</Text>
+                  <Text style={styles.routeSub} numberOfLines={2}>{selectedDelivery?.dropoff_sub}</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionHeaderTitle}>Package Status</Text>
+          </View>
+
+          <View style={styles.statusTimeline}>
+            {/* Step 1: Order Confirmed */}
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
+                <View style={[styles.statusLine, { backgroundColor: '#22C55E' }]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={styles.statusStepTitle}>Order Confirmed</Text>
+                <Text style={styles.statusStepTime}>{selectedDelivery?.date}</Text>
+              </View>
+            </View>
+
+            {/* Step 2: Provider Matched */}
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <View style={[styles.statusDotLarge, { backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
+                <View style={[styles.statusLine, selectedDelivery?.isMatched && { backgroundColor: '#3B82F6' }]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={[styles.statusStepTitle, !selectedDelivery?.isMatched && { color: '#6B7280' }]}>
+                  {selectedDelivery?.isMatched ? 'Provider Matched' : 'Finding Provider'}
+                </Text>
+                <Text style={styles.statusStepTime}>
+                  {selectedDelivery?.isMatched ? 'Provider assigned' : 'Searching...'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 3: Item Collected — now driven by pickupVerified */}
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <View style={[
+                  styles.statusDotLarge,
+                  pickupVerified
+                    ? { backgroundColor: '#8B5CF6' }
+                    : { backgroundColor: '#D1D5DB' }
+                ]} />
+                <View style={[
+                  styles.statusLine,
+                  pickupVerified && { backgroundColor: '#8B5CF6' }
+                ]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={[
+                  styles.statusStepTitle,
+                  pickupVerified ? { color: '#111827' } : { color: '#9CA3AF' }
+                ]}>
+                  Item Collected
+                </Text>
+                <Text style={[
+                  styles.statusStepTime,
+                  pickupVerified ? { color: '#6B7280' } : { color: '#D1D5DB' }
+                ]}>
+                  {pickupVerified ? 'Verified by QR' : 'Waiting for QR verification'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 4: Delivered */}
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <View style={[
+                  styles.statusDotLarge,
+                  isCompleted ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }
+                ]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={[
+                  styles.statusStepTitle,
+                  isCompleted ? { color: '#111827' } : { color: '#9CA3AF' }
+                ]}>
+                  Delivered Successfully
+                </Text>
+                <Text style={[
+                  styles.statusStepTime,
+                  isCompleted ? { color: '#6B7280' } : { color: '#D1D5DB' }
+                ]}>
+                  {isCompleted ? 'Completed' : 'Awaiting delivery'}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {selectedDelivery?.isMatched && (
+            <View style={styles.providerInfoCard}>
+              <View style={styles.providerInfoHeader}>
+                <Ionicons name="shield-checkmark" size={14} color="#10B981" />
+                <Text style={styles.providerInfoTitle}>ASSIGNED PROVIDER</Text>
+              </View>
+              <View style={styles.providerInfoRow}>
+                <View style={styles.providerAvatarSmall}>
+                  <Ionicons name="person" size={22} color="#FFF" />
+                </View>
+                <View style={styles.providerInfoDetails}>
+                  <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
+                  <Text style={styles.providerInfoVehicle}>
+                    {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
+                  </Text>
+                </View>
+                <TouchableOpacity style={styles.providerContactBtn} activeOpacity={0.8}>
+                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {!isCompleted && (
+            <View style={styles.detailActionsRow}>
+              {!selectedDelivery?.isMatched && (
+                <TouchableOpacity
+                  style={styles.editBtn}
+                  onPress={() => handleEdit(selectedDelivery?.rawData)}
+                  activeOpacity={0.9}
+                >
+                  <Ionicons name="create-outline" size={16} color="#FFF" />
+                  <Text style={styles.editBtnText}>Edit</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={styles.deleteBtn}
+                onPress={() => handleDelete(selectedDelivery?.rawData)}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="close-circle-outline" size={16} color="#FFF" />
+                <Text style={styles.deleteBtnText}>Cancel Booking</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </Animated.View>
+      </ScrollView>
+    );
+  };
 
   /* ------------------------------------------------------------------ */
   /* Full Map View                                                       */
@@ -855,9 +950,67 @@ export default function ActivityScreen() {
     );
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Pickup QR Modal (Sender side)                                       */
+  /* ------------------------------------------------------------------ */
+  const renderPickupQRModal = () => (
+    <Modal
+      visible={showPickupQR}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setShowPickupQR(false)}
+    >
+      <View style={styles.qrOverlay}>
+        <View style={styles.qrCard}>
+          <View style={styles.qrHeader}>
+            <Text style={styles.qrTitle}>Pickup QR</Text>
+            <TouchableOpacity onPress={() => setShowPickupQR(false)}>
+              <Ionicons name="close" size={24} color="#111827" />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.qrSubtitle}>
+            Show this QR to your provider so they can verify pickup.
+          </Text>
+
+          {selectedDelivery?.qr?.pickup_qr ? (
+            <View style={styles.qrCodeWrap}>
+              <QRCode
+                value={selectedDelivery.qr.pickup_qr}
+                size={220}
+                color="#111827"
+                backgroundColor="#FFFFFF"
+              />
+            </View>
+          ) : (
+            <View style={styles.qrCodeWrap}>
+              <ActivityIndicator color={ORANGE} />
+              <Text style={{ marginTop: 8, color: '#6B7280', fontSize: 12 }}>Generating QR...</Text>
+            </View>
+          )}
+
+          <View style={styles.pinBox}>
+            <Text style={styles.pinBoxLabel}>Or share this 6‑digit PIN</Text>
+            <Text style={styles.pinBoxValue}>
+              {selectedDelivery?.qr?.pickup_pin || '------'}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.qrDoneBtn}
+            onPress={() => setShowPickupQR(false)}
+            activeOpacity={0.9}
+          >
+            <Text style={styles.qrDoneBtnText}>Done</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={showFullMap ? [] : ['top']}>
       {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
+      {renderPickupQRModal()}
     </SafeAreaView>
   );
 }
@@ -865,200 +1018,71 @@ export default function ActivityScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAFA' },
 
-  /* ------------------------------------------------------------------ */
-  /* Shared                                                              */
-  /* ------------------------------------------------------------------ */
+  /* Shared */
   blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   statusDotSmall: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
 
-  /* ------------------------------------------------------------------ */
-  /* List Header                                                         */
-  /* ------------------------------------------------------------------ */
-  listHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 18,
-  },
-  pageTitle: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.5,
-  },
-  pageSubtitle: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 4,
-  },
+  /* List Header */
+  listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 },
+  pageTitle: { fontSize: 26, fontWeight: '800', color: '#111827', letterSpacing: -0.5 },
+  pageSubtitle: { fontSize: 13, color: '#6B7280', fontWeight: '500', marginTop: 4 },
 
-  /* ------------------------------------------------------------------ */
-  /* Search                                                              */
-  /* ------------------------------------------------------------------ */
+  /* Search */
   searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 16,
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
+    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14,
+    paddingHorizontal: 14, paddingVertical: 12, marginBottom: 16, gap: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 1,
   },
   searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
 
-  /* ------------------------------------------------------------------ */
-  /* Tab Bar                                                             */
-  /* ------------------------------------------------------------------ */
-  tabBarScroll: {
-    gap: 8,
-    paddingBottom: 4,
-    marginBottom: 16,
-  },
+  /* Tab Bar */
+  tabBarScroll: { gap: 8, paddingBottom: 4, marginBottom: 16 },
   tabItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    gap: 6,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 22,
+    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB', gap: 6,
   },
   tabItemActive: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 3,
+    backgroundColor: ORANGE, borderColor: ORANGE,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
   tabText: { fontSize: 13, fontWeight: '700', color: '#6B7280' },
   tabTextActive: { color: '#FFFFFF' },
-  tabCountBadge: {
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 5,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  tabCountBadge: { minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#F3F4F6', paddingHorizontal: 5, justifyContent: 'center', alignItems: 'center' },
   tabCountBadgeActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
   tabCountText: { fontSize: 10, fontWeight: '800', color: '#6B7280' },
   tabCountTextActive: { color: '#FFFFFF' },
 
-  /* ------------------------------------------------------------------ */
-  /* List                                                                */
-  /* ------------------------------------------------------------------ */
+  /* List */
   listContainer: { paddingHorizontal: 20, paddingBottom: 30, paddingTop: 20 },
   bottomSpacer: { height: 80 },
-
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   loadingText: { fontSize: 13, color: '#6B7280', marginTop: 12, fontWeight: '500' },
+  noResultsContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, paddingHorizontal: 24 },
+  emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  noResultsText: { fontSize: 17, fontWeight: '700', color: '#111827', marginTop: 4, textAlign: 'center' },
+  noResultsSubtext: { fontSize: 13, color: '#6B7280', marginTop: 6, textAlign: 'center', lineHeight: 18 },
 
-  noResultsContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-    paddingHorizontal: 24,
-  },
-  emptyIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  noResultsText: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  noResultsSubtext: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginTop: 6,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-
-  /* ------------------------------------------------------------------ */
-  /* Card                                                                */
-  /* ------------------------------------------------------------------ */
+  /* Card */
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    paddingLeft: 20,
-    marginBottom: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    overflow: 'hidden',
-    position: 'relative',
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 14,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
+    borderWidth: 1, borderColor: '#F3F4F6', overflow: 'hidden', position: 'relative',
   },
-  cardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
+  cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  cardTypeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    gap: 4,
-  },
+  cardTypeBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, gap: 4 },
   cardTypeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   cardId: { fontSize: 12, fontWeight: '700', color: '#6B7280', letterSpacing: 0.3 },
-
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 4,
-  },
+  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, gap: 4 },
   statusBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
-
   cardBody: { flexDirection: 'row', justifyContent: 'space-between' },
   cardLeftCol: { flex: 1, paddingRight: 10 },
   dateTime: { fontSize: 13, color: '#111827', marginBottom: 14 },
   bold: { fontWeight: '800' },
-
   timeline: { position: 'relative' },
   timelineItem: { flexDirection: 'row', alignItems: 'flex-start' },
   iconWrapper: { width: 20, alignItems: 'center', marginRight: 10, marginTop: 2 },
@@ -1067,169 +1091,96 @@ const styles = StyleSheet.create({
   addressWrapper: { flex: 1 },
   addressMain: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
   addressSub: { fontSize: 10, color: '#6B7280', lineHeight: 14 },
-
   cardRightCol: { width: 92, alignItems: 'center' },
   avatarPlaceholder: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#D97706',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-    borderWidth: 2,
-    borderColor: '#FFFBEB',
-    position: 'relative',
+    width: 52, height: 52, borderRadius: 26, backgroundColor: '#D97706',
+    justifyContent: 'center', alignItems: 'center', marginBottom: 8,
+    borderWidth: 2, borderColor: '#FFFBEB', position: 'relative',
   },
   avatarMatched: { backgroundColor: '#22C55E', borderColor: '#DCFCE7' },
   avatarVerifiedBadge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#10B981',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
+    position: 'absolute', bottom: -2, right: -2, width: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#10B981', justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: '#FFFFFF',
   },
   providerName: { fontSize: 10, fontWeight: '700', color: '#111827', textAlign: 'center', marginBottom: 8, lineHeight: 13 },
   matchingIndicator: { alignItems: 'center', gap: 4 },
   matchingText: { fontSize: 9, color: '#F59E0B', fontWeight: '600' },
-
   divider: { height: 1, backgroundColor: '#F3F4F6', marginTop: 14, marginBottom: 12 },
   cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   footerLeft: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
   footerLabel: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
   priceText: { fontSize: 17, fontWeight: '800', color: '#111827' },
   trackBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: ORANGE,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 6,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, gap: 6,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
   },
   trackBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 0.2 },
 
-  /* ------------------------------------------------------------------ */
-  /* Detail                                                              */
-  /* ------------------------------------------------------------------ */
+  /* Detail */
   detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 12 },
-  detailHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
+  detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
+    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#E5E7EB',
   },
   detailHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
   fullMapBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFF7ED',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF7ED',
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, gap: 4,
+    borderWidth: 1, borderColor: '#FFE4D2',
   },
   fullMapBtnText: { fontSize: 12, color: ORANGE, fontWeight: '700' },
 
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 18,
-  },
+  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   trackingLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1.2, marginBottom: 4 },
   trackingId: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
-  statusBadgeLarge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 14,
-    gap: 6,
-  },
+  statusBadgeLarge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, gap: 6 },
   statusBadgeLargeText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
 
+  /* Pickup QR card */
+  pickupQRCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: ORANGE, borderRadius: 18, padding: 14, marginBottom: 14, gap: 12,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 10, elevation: 4,
+  },
+  pickupQRIconBox: {
+    width: 42, height: 42, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  pickupQRTitle: { color: '#FFF', fontSize: 14, fontWeight: '800', marginBottom: 2 },
+  pickupQRDesc: { color: '#FFE0C7', fontSize: 11, lineHeight: 15 },
+
+  pickupVerifiedBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#DCFCE7', borderRadius: 14, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: '#BBF7D0',
+  },
+  pickupVerifiedText: { color: '#166534', fontWeight: '700', fontSize: 12 },
+
   detailMapCard: {
-    width: '100%',
-    height: 200,
-    borderRadius: 20,
-    overflow: 'hidden',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+    width: '100%', height: 200, borderRadius: 20, overflow: 'hidden', marginBottom: 20,
+    borderWidth: 1, borderColor: '#E5E7EB',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 3,
   },
   mapOverlayPill: {
-    position: 'absolute',
-    bottom: 14,
-    left: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+    position: 'absolute', bottom: 14, left: 14, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: '#FFE4D2', borderRadius: 10,
+    paddingHorizontal: 10, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 6,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2,
   },
   overlayPillText: { fontSize: 11, fontWeight: '700', color: '#111827' },
   mapExpandPill: {
-    position: 'absolute',
-    top: 14,
-    right: 14,
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: 'rgba(17,24,39,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    position: 'absolute', top: 14, right: 14, width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(17,24,39,0.7)', justifyContent: 'center', alignItems: 'center',
   },
 
   routeCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-    elevation: 2,
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 24,
+    borderWidth: 1, borderColor: '#F3F4F6',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 10, elevation: 2,
   },
   routeTimeline: { gap: 4 },
   routeItem: { flexDirection: 'row', alignItems: 'flex-start' },
@@ -1253,121 +1204,83 @@ const styles = StyleSheet.create({
   statusStepTime: { fontSize: 11, color: '#6B7280', fontWeight: '500' },
 
   providerInfoCard: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
+    backgroundColor: '#F0FDF4', borderRadius: 20, padding: 16, marginBottom: 20,
+    borderWidth: 1, borderColor: '#BBF7D0',
   },
   providerInfoHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
   providerInfoTitle: { fontSize: 10, fontWeight: '800', color: '#10B981', letterSpacing: 1 },
   providerInfoRow: { flexDirection: 'row', alignItems: 'center' },
   providerAvatarSmall: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#10B981',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
+    width: 46, height: 46, borderRadius: 23, backgroundColor: '#10B981',
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    borderWidth: 2, borderColor: '#FFFFFF',
   },
   providerInfoDetails: { flex: 1 },
   providerInfoName: { fontSize: 14, fontWeight: '800', color: '#111827' },
   providerInfoVehicle: { fontSize: 11, color: '#6B7280', marginTop: 3, fontWeight: '500' },
   providerContactBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: '#FFE4D2',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#FFE4D2',
   },
 
   detailActionsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
-    paddingTop: 22,
+    flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 8,
+    borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 22,
   },
   editBtn: {
-    backgroundColor: ORANGE,
-    paddingVertical: 14,
-    borderRadius: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    gap: 6,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 3,
+    backgroundColor: ORANGE, paddingVertical: 14, borderRadius: 50,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 6,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 3,
   },
   editBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
   deleteBtn: {
-    backgroundColor: '#EF4444',
-    paddingVertical: 14,
-    borderRadius: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    gap: 6,
-    shadowColor: '#EF4444',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 3,
+    backgroundColor: '#EF4444', paddingVertical: 14, borderRadius: 50,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flex: 1, gap: 6,
+    shadowColor: '#EF4444', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 3,
   },
   deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 
-  /* ------------------------------------------------------------------ */
-  /* Full Map                                                            */
-  /* ------------------------------------------------------------------ */
+  /* Full Map */
   fullMapContainer: { flex: 1 },
   topOverlay: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    zIndex: 10,
+    position: 'absolute', left: 20, right: 20,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10,
   },
   backCircleBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    elevation: 5,
+    width: 46, height: 46, borderRadius: 23, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 5,
   },
   statusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.18,
-    shadowRadius: 6,
-    elevation: 5,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 22,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 5,
   },
   statusPillText: { fontSize: 12, fontWeight: '700', color: '#111827' },
+
+  /* Pickup QR Modal */
+  qrOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  qrCard: {
+    width: '100%', maxWidth: 360, backgroundColor: '#FFF', borderRadius: 24, padding: 22, alignItems: 'center',
+  },
+  qrHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  qrTitle: { fontSize: 18, fontWeight: '800', color: '#111827' },
+  qrSubtitle: { fontSize: 12, color: '#6B7280', textAlign: 'center', marginBottom: 18, lineHeight: 17 },
+  qrCodeWrap: {
+    width: 240, height: 240, backgroundColor: '#FFF', borderRadius: 16,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: '#E5E7EB',
+    marginBottom: 18,
+  },
+  pinBox: {
+    width: '100%', backgroundColor: '#FFF7ED', borderRadius: 14, padding: 14,
+    alignItems: 'center', marginBottom: 18, borderWidth: 1, borderColor: '#FFE4D2',
+  },
+  pinBoxLabel: { fontSize: 11, color: '#9A3412', fontWeight: '700', marginBottom: 6, letterSpacing: 0.3 },
+  pinBoxValue: { fontSize: 28, fontWeight: '900', color: '#111827', letterSpacing: 8 },
+  qrDoneBtn: {
+    width: '100%', backgroundColor: '#111827', paddingVertical: 14, borderRadius: 30, alignItems: 'center',
+  },
+  qrDoneBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
 });
