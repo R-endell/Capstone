@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import QRCode from 'react-native-qrcode-svg';
 import { supabase } from '../../../utils/supabase';
+import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
 const { width, height } = Dimensions.get('window');
 
@@ -145,6 +146,7 @@ export default function ActivityScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'active' | 'completed'>('all');
+  const [openingChat, setOpeningChat] = useState(false);
   const insets = useSafeAreaInsets();
 
   // Animations
@@ -354,7 +356,6 @@ export default function ActivityScreen() {
       )
       .subscribe();
 
-    // Fallback polling every 8s while there's at least one non-completed matched delivery
     const hasActive = deliveries.some(d => d.status !== 'Completed' && d.isMatched);
     let interval: any = null;
     if (hasActive) {
@@ -395,6 +396,36 @@ export default function ActivityScreen() {
         }
       }
     ]);
+  };
+
+  /**
+   * ✅ Message Provider
+   * Uses getOrCreateChatRoom(delivery_id) — matches chat_rooms schema
+   * (room_id, delivery_id) only. Then navigates to Messages tab and
+   * auto-opens the room via `openRoomId`.
+   */
+  const handleMessageProvider = async (item: MappedDelivery) => {
+    try {
+      if (!item.deliveryData?.delivery_id) {
+        return Alert.alert('Please wait', 'Provider details are still loading.');
+      }
+      setOpeningChat(true);
+      const roomId = await getOrCreateChatRoom(item.deliveryData.delivery_id);
+      if (!roomId) {
+        setOpeningChat(false);
+        return Alert.alert('Error', 'Could not open chat. Please try again.');
+      }
+
+      navigation.navigate('MainTabs', {
+        screen: 'Messages',
+        params: { openRoomId: roomId },
+      });
+    } catch (err: any) {
+      console.error('Error opening chat:', err);
+      Alert.alert('Error', 'Could not open chat.');
+    } finally {
+      setOpeningChat(false);
+    }
   };
 
   const filteredDeliveries = deliveries.filter((item) => {
@@ -654,8 +685,6 @@ export default function ActivityScreen() {
   /* Detail View                                                         */
   /* ------------------------------------------------------------------ */
   const renderDetailView = () => {
-    // ✅ Local derived booleans so the timeline updates as soon as the QR flips,
-    // even before the "status" column catches up.
     const pickupVerified =
       selectedDelivery?.qr?.pickup_verified === true ||
       selectedDelivery?.status === 'In Transit' ||
@@ -820,14 +849,12 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 3: Item Collected — now driven by pickupVerified */}
+            {/* Step 3: Item Collected */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[
                   styles.statusDotLarge,
-                  pickupVerified
-                    ? { backgroundColor: '#8B5CF6' }
-                    : { backgroundColor: '#D1D5DB' }
+                  pickupVerified ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' }
                 ]} />
                 <View style={[
                   styles.statusLine,
@@ -891,10 +918,33 @@ export default function ActivityScreen() {
                     {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.providerContactBtn} activeOpacity={0.8}>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                <TouchableOpacity
+                  style={styles.providerContactBtn}
+                  activeOpacity={0.8}
+                  onPress={() => handleMessageProvider(selectedDelivery)}
+                  disabled={openingChat}
+                >
+                  {openingChat ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  )}
                 </TouchableOpacity>
               </View>
+
+              {/* Text button row (nice discovery) */}
+              <TouchableOpacity
+                style={styles.messageProviderRow}
+                activeOpacity={0.85}
+                onPress={() => handleMessageProvider(selectedDelivery)}
+                disabled={openingChat}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={14} color={ORANGE} />
+                <Text style={styles.messageProviderText}>
+                  {openingChat ? 'Opening chat...' : 'Message Provider'}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color={ORANGE} />
+              </TouchableOpacity>
             </View>
           )}
 
@@ -1223,6 +1273,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1.5, borderColor: '#FFE4D2',
   },
+  messageProviderRow: {
+    marginTop: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BBF7D0',
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12,
+  },
+  messageProviderText: { flex: 1, color: ORANGE, fontWeight: '700', fontSize: 13, marginLeft: 8 },
 
   detailActionsRow: {
     flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 8,
