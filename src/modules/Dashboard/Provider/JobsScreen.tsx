@@ -1,81 +1,47 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  View, Text, StyleSheet, Image, TouchableOpacity, Switch, 
-  SafeAreaView, Platform, Modal, Alert, ActivityIndicator, 
-  ScrollView, TextInput, RefreshControl, Dimensions 
+// src/modules/Dashboard/Provider/JobsScreen.tsx
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import {
+  View, Text, StyleSheet, Image, TouchableOpacity, Switch,
+  Platform, Modal, Alert, ActivityIndicator, ScrollView,
+  Animated, Easing, Dimensions,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
+const ORANGE = '#FA7A25';
+const { width } = Dimensions.get('window');
+
 // Types
-interface Location {
-  location_id?: number;
-  street_address: string;
-  barangay: string;
-  city: string;
-  province: string;
-  zip_code: string;
-  latitude: number;
-  longitude: number;
-}
+interface Location { location_id?: number; street_address: string; barangay: string; city: string; province: string; zip_code: string; latitude: number; longitude: number; }
+interface Vehicle { vehicle_id: number; vehicle_type: string; plate_number: string; max_volume_liters: number; max_weight_kg: number; cargo_length_cm: number; cargo_width_cm: number; cargo_height_cm: number; verification_status: string; }
 
-interface Vehicle {
-  vehicle_id: number;
-  vehicle_type: string;
-  plate_number: string;
-  max_volume_liters: number;
-  max_weight_kg: number;
-  cargo_length_cm: number;
-  cargo_width_cm: number;
-  cargo_height_cm: number;
-  verification_status: string;
-}
+const pad = (n: number) => String(n).padStart(2, '0');
 
-// Map component with interactive features
-const InteractiveMap = ({ 
-  lat, 
-  lng, 
-  zoom = 13,
-  markers = [],
-  onMapClick,
-  onMapReady,
-  searchQuery = '',
-  showSearch = true
-}: { 
-  lat: number; 
-  lng: number; 
-  zoom?: number;
-  markers?: Array<{lat: number, lng: number, color?: string, label?: string}>;
-  onMapClick?: (lat: number, lng: number) => void;
-  onMapReady?: () => void;
-  searchQuery?: string;
-  showSearch?: boolean;
-}) => {
-  const webViewRef = useRef<WebView>(null);
-  const [mapInitialized, setMapInitialized] = useState(false);
+const toLocalIsoString = (date: Date, time: Date) => {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
+  const hh = time.getHours();
+  const mm = time.getMinutes();
+  return `${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:00`;
+};
 
-  // Build marker scripts
-  const markerScripts = markers.map((m, index) => `
-    var marker${index} = L.circleMarker([${m.lat}, ${m.lng}], {
-      radius: 10,
-      fillColor: "${m.color || '#3B82F6'}",
-      color: "#FFFFFF",
-      weight: 2,
-      opacity: 1,
-      fillOpacity: 1
-    }).addTo(map);
-    
-    ${m.label ? `
-      marker${index}.bindPopup("<b>${m.label}</b>").openPopup();
-    ` : ''}
-    
-    // Store marker for later use
-    window.markers = window.markers || [];
-    window.markers.push(marker${index});
-  `).join('');
+// --- MAP COMPONENT ---
+const InteractiveMap = ({
+  onLocationSelect,
+  startLat, startLng, endLat, endLng,
+  startName = 'Starting Point',
+  endName = 'Destination',
+  mode = 'view',
+  centerLat,
+  centerLng,
+}: any) => {
+  const lat = startLat ?? endLat ?? centerLat ?? 10.3157;
+  const lng = startLng ?? endLng ?? centerLng ?? 123.8854;
 
   const mapHtml = `
     <!DOCTYPE html>
@@ -83,355 +49,93 @@ const InteractiveMap = ({
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
         <style>
-          html, body, #map { 
-            margin: 0; 
-            padding: 0; 
-            width: 100%; 
-            height: 100%; 
-            background: #E5E7EB; 
-          }
-          .search-container {
-            position: absolute;
-            top: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            width: 90%;
-            max-width: 400px;
-          }
-          .search-container input {
-            width: 100%;
-            padding: 12px 16px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-            outline: none;
-          }
-          .search-results {
-            position: absolute;
-            top: 60px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            width: 90%;
-            max-width: 400px;
-            max-height: 200px;
-            overflow-y: auto;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-          }
-          .search-result-item {
-            padding: 10px 16px;
-            border-bottom: 1px solid #E5E7EB;
-            cursor: pointer;
-          }
-          .search-result-item:hover {
-            background: #F3F4F6;
-          }
-          .search-result-item:last-child {
-            border-bottom: none;
-          }
-          .result-label {
-            font-weight: 500;
-            color: #111827;
-          }
-          .result-address {
-            font-size: 12px;
-            color: #6B7280;
-          }
-          .clear-search {
-            position: absolute;
-            right: 12px;
-            top: 50%;
-            transform: translateY(-50%);
-            cursor: pointer;
-            color: #9CA3AF;
-            font-size: 18px;
-          }
-          .coords-info {
-            position: absolute;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            background: rgba(255,255,255,0.9);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 12px;
-            color: #374151;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          }
+          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
+          .marker-start { background: #3B82F6; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
+          .marker-end { background: #EF4444; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
+          .marker-temp { background: #F59E0B; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: white; z-index: 999; }
+          .popup-content { padding: 4px; }
+          .popup-content h4 { margin: 0; font-size: 13px; font-weight: bold; color: #111827; }
+          .popup-content p { margin: 2px 0 0 0; font-size: 11px; color: #6B7280; }
+          .select-instruction { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.75); color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; z-index: 2000; text-align: center; white-space: nowrap; }
         </style>
       </head>
       <body>
         <div id="map"></div>
-        
-        <div class="coords-info" id="coordsInfo">
-          Click on map to select location
-        </div>
-
+        ${mode !== 'view' ? `<div class="select-instruction">Tap on the map to set ${mode === 'select_start' ? 'START' : 'END'} location</div>` : ''}
         <script>
-          // Initialize map
-          var map = L.map('map', {
-            zoomControl: true,
-            attributionControl: true,
-          }).setView([${lat}, ${lng}], ${zoom});
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${lat}, ${lng}], 14);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '© OpenStreetMap contributors'
-          }).addTo(map);
-
-          // Add scale control
-          L.control.scale().addTo(map);
-
-          // Track markers
-          var markers = [];
-
-          // Add initial markers
-          ${markerScripts}
-
-          // Function to add a marker
-          function addMarker(lat, lng, color, label) {
-            // Remove existing marker at the same position (for single selection)
-            if (window.currentMarker) {
-              map.removeLayer(window.currentMarker);
-            }
-            
-            var marker = L.circleMarker([lat, lng], {
-              radius: 10,
-              fillColor: color || '#3B82F6',
-              color: "#FFFFFF",
-              weight: 2,
-              opacity: 1,
-              fillOpacity: 1
-            }).addTo(map);
-            
-            if (label) {
-              marker.bindPopup(label).openPopup();
-            }
-            
-            window.currentMarker = marker;
-            return marker;
-          }
-
-          // Function to remove all markers
-          function clearMarkers() {
-            if (window.currentMarker) {
-              map.removeLayer(window.currentMarker);
-              window.currentMarker = null;
-            }
-          }
-
-          // Handle map clicks
-          map.on('click', function(e) {
-            var lat = e.latlng.lat;
-            var lng = e.latlng.lng;
-            
-            // Update coordinates info
-            document.getElementById('coordsInfo').innerHTML = 
-              '📍 Selected: ' + lat.toFixed(6) + ', ' + lng.toFixed(6);
-            
-            // Notify React Native
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'mapClick',
-              latitude: lat,
-              longitude: lng
-            }));
-          });
-
-          // Search function
-          function searchLocation(query) {
-            if (!query || query.length < 2) {
-              document.getElementById('searchResults').style.display = 'none';
-              return;
-            }
-            
-            fetch('https://nominatim.openstreetmap.org/search?format=json&q=' + encodeURIComponent(query) + '&limit=5')
-              .then(response => response.json())
-              .then(data => {
-                var resultsContainer = document.getElementById('searchResults');
-                resultsContainer.innerHTML = '';
-                resultsContainer.style.display = 'block';
-                
-                if (data.length === 0) {
-                  resultsContainer.innerHTML = '<div class="search-result-item">No results found</div>';
-                  return;
-                }
-                
-                data.forEach(function(item) {
-                  var div = document.createElement('div');
-                  div.className = 'search-result-item';
-                  div.innerHTML = 
-                    '<div class="result-label">' + item.display_name.split(',')[0] + '</div>' +
-                    '<div class="result-address">' + item.display_name + '</div>';
-                  div.onclick = function() {
-                    var lat = parseFloat(item.lat);
-                    var lng = parseFloat(item.lon);
-                    map.setView([lat, lng], 16);
-                    addMarker(lat, lng, '#3B82F6', item.display_name);
-                    document.getElementById('searchInput').value = item.display_name;
-                    document.getElementById('searchResults').style.display = 'none';
-                    
-                    window.ReactNativeWebView.postMessage(JSON.stringify({
-                      type: 'searchResult',
-                      latitude: lat,
-                      longitude: lng,
-                      display_name: item.display_name,
-                      address: item.display_name
-                    }));
-                  };
-                  resultsContainer.appendChild(div);
-                });
-              })
-              .catch(error => {
-                console.error('Search error:', error);
-              });
-          }
-
-          // Setup search
-          ${showSearch ? `
-            var searchContainer = document.createElement('div');
-            searchContainer.className = 'search-container';
-            searchContainer.innerHTML = 
-              '<input id="searchInput" type="text" placeholder="Search for a location..." />' +
-              '<span class="clear-search" onclick="document.getElementById(\\'searchInput\\').value=\\'\\'; document.getElementById(\\'searchResults\\').style.display=\\'none\\';">✕</span>';
-            document.body.appendChild(searchContainer);
-            
-            var resultsContainer = document.createElement('div');
-            resultsContainer.id = 'searchResults';
-            resultsContainer.className = 'search-results';
-            resultsContainer.style.display = 'none';
-            document.body.appendChild(resultsContainer);
-            
-            document.getElementById('searchInput').addEventListener('input', function(e) {
-              searchLocation(e.target.value);
+          var tempMarker = null;
+          ${startLat && startLng ? `
+            L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${startName}</h4><p>Starting Point</p></div>');
+          ` : ''}
+          ${endLat && endLng ? `
+            L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${endName}</h4><p>Destination</p></div>');
+          ` : ''}
+          ${startLat && startLng && endLat && endLng ? `
+            L.polyline([[${startLat}, ${startLng}], [${endLat}, ${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.8, dashArray: '8, 8' }).addTo(map);
+            map.fitBounds(L.latLngBounds([[${startLat}, ${startLng}], [${endLat}, ${endLng}]]), { padding: [40, 40] });
+          ` : ''}
+          ${mode !== 'view' ? `
+            map.on('click', function(e) {
+              if (tempMarker) map.removeLayer(tempMarker);
+              tempMarker = L.marker([e.latlng.lat, e.latlng.lng], { icon: L.divIcon({className: 'marker-temp', html: '?', iconSize: [20, 20], iconAnchor: [10, 10]}) })
+                .addTo(map).bindPopup('<div class="popup-content"><p>📍 Selected location</p></div>').openPopup();
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'location_select', lat: e.latlng.lat, lng: e.latlng.lng }));
             });
           ` : ''}
-
-          // Handle resize
-          setTimeout(function() {
-            map.invalidateSize();
-          }, 500);
-
-          // Notify that map is ready
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'mapReady'
-          }));
         </script>
       </body>
     </html>
   `;
 
-  const handleMessage = (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'mapClick' && onMapClick) {
-        onMapClick(data.latitude, data.longitude);
-      }
-      if (data.type === 'mapReady' && onMapReady) {
-        onMapReady();
-      }
-      if (data.type === 'searchResult' && onMapClick) {
-        onMapClick(data.latitude, data.longitude);
-      }
-    } catch (error) {
-      console.error('Error parsing map message:', error);
-    }
-  };
-
   return (
     <WebView
-      ref={webViewRef}
       originWhitelist={['*']}
       source={{ html: mapHtml }}
       style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
-      showsVerticalScrollIndicator={false}
-      showsHorizontalScrollIndicator={false}
-      onMessage={handleMessage}
-      javaScriptEnabled={true}
-      domStorageEnabled={true}
+      scrollEnabled={mode !== 'view'}
+      androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
+      useWebKit
+      onMessage={(event) => {
+        try {
+          const data = JSON.parse(event.nativeEvent.data);
+          if (data.type === 'location_select' && onLocationSelect) onLocationSelect(data.lat, data.lng);
+        } catch (error) {}
+      }}
     />
   );
 };
 
-// Geocoding service to convert address to coordinates
-const geocodeAddress = async (address: string): Promise<{lat: number, lng: number} | null> => {
-  try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&limit=1`
-    );
-    const data = await response.json();
-    if (data && data.length > 0) {
-      return {
-        lat: parseFloat(data[0].lat),
-        lng: parseFloat(data[0].lon)
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error('Geocoding error:', error);
-    return null;
-  }
-};
-
-// Reverse geocoding to get address from coordinates
 const reverseGeocode = async (lat: number, lng: number): Promise<string | null> => {
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`
-    );
+    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`);
     const data = await response.json();
-    if (data && data.display_name) {
-      return data.display_name;
-    }
+    if (data && data.display_name) return data.display_name.split(',')[0];
     return null;
-  } catch (error) {
-    console.error('Reverse geocoding error:', error);
-    return null;
-  }
+  } catch (error) { return null; }
 };
 
 export default function JobsScreen() {
+  const insets = useSafeAreaInsets();
   const [isOnline, setIsOnline] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [mapReady, setMapReady] = useState(false);
-  
-  // Provider data
+
   const [providerId, setProviderId] = useState<number | null>(null);
-  const [providerData, setProviderData] = useState<any>(null);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(null);
   const [existingRoutes, setExistingRoutes] = useState<any[]>([]);
-  
-  // Route form data
-  const [startLocation, setStartLocation] = useState<Location>({
-    street_address: 'IT Park Cebu City',
-    barangay: 'Apas',
-    city: 'Cebu City',
-    province: 'Cebu',
-    zip_code: '6000',
-    latitude: 10.3188,
-    longitude: 123.9050
-  });
-  const [endLocation, setEndLocation] = useState<Location>({
-    street_address: 'SM City Cebu',
-    barangay: 'Cogon Ramos',
-    city: 'Cebu City',
-    province: 'Cebu',
-    zip_code: '6000',
-    latitude: 10.3396,
-    longitude: 123.9109
-  });
+
+  const [startLocation, setStartLocation] = useState<Location | null>(null);
+  const [endLocation, setEndLocation] = useState<Location | null>(null);
   const [departureDate, setDepartureDate] = useState(new Date());
   const [departureTime, setDepartureTime] = useState(new Date());
   const [routeFrequency, setRouteFrequency] = useState('One-time');
@@ -439,621 +143,499 @@ export default function JobsScreen() {
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [showVehicleSelector, setShowVehicleSelector] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  
-  // Location selection state
-  const [selectingLocation, setSelectingLocation] = useState<'start' | 'end' | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showLocationModal, setShowLocationModal] = useState(false);
-  const [mapMarkers, setMapMarkers] = useState<Array<{lat: number, lng: number, color?: string, label?: string}>>([]);
-  const [selectedCoords, setSelectedCoords] = useState<{lat: number, lng: number} | null>(null);
 
-  // Get provider ID and data
+  const [mapMode, setMapMode] = useState<'view' | 'select_start' | 'select_end'>('view');
+
+  // Animations
+  const headerAnim = useRef(new Animated.Value(0)).current;
+  const sheetAnim = useRef(new Animated.Value(0)).current;
+  const onlinePulse = useRef(new Animated.Value(0)).current;
+
+  /* ------------------------------------------------------------------ */
+  /* Entrance animation                                                  */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    const animate = (value: Animated.Value, delay: number, duration = 600) =>
+      Animated.timing(value, {
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+
+    Animated.parallel([
+      animate(headerAnim, 0),
+      animate(sheetAnim, 220),
+    ]).start();
+  }, [headerAnim, sheetAnim]);
+
+  /* ------------------------------------------------------------------ */
+  /* Online pulse                                                        */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!isOnline) return;
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(onlinePulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(onlinePulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [isOnline, onlinePulse]);
+
+  /* ------------------------------------------------------------------ */
+  /* Data                                                                */
+  /* ------------------------------------------------------------------ */
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        Alert.alert('Error', 'Please login first');
-        return null;
-      }
+      if (!user) return null;
 
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('user_id, first_name, last_name, email')
+        .select('user_id, is_active')
         .eq('auth_id', user.id)
         .single();
-
       if (userError) throw userError;
-      setProviderData(userData);
-
-      const { data: userRole, error: roleError } = await supabase
-        .from('user_roles')
-        .select('role_id, roles!inner (role_name)')
-        .eq('user_id', userData.user_id)
-        .single();
-
-      if (roleError || userRole?.roles?.role_name !== 'Provider') {
-        Alert.alert('Access Denied', 'You need to be a provider to access this screen');
-        return null;
-      }
 
       setProviderId(userData.user_id);
+      setIsOnline(userData.is_active || false);
       return userData.user_id;
-    } catch (error) {
-      console.error('Error getting provider data:', error);
-      Alert.alert('Error', 'Failed to load provider data');
-      return null;
-    }
+    } catch (error) { return null; }
   };
 
-  // Fetch vehicles
-  const fetchVehicles = async (providerId: number) => {
+  const fetchVehicles = async (pid: number) => {
     try {
-      const { data, error } = await supabase
-        .from('vehicles')
-        .select('*')
-        .eq('provider_id', providerId)
-        .eq('verification_status', 'Verified');
-
-      if (error) throw error;
+      const { data } = await supabase.from('vehicles').select('*').eq('provider_id', pid).eq('verification_status', 'Verified');
       setVehicles(data || []);
-      if (data && data.length > 0) {
-        setSelectedVehicle(data[0]);
-      }
-      return data;
-    } catch (error) {
-      console.error('Error fetching vehicles:', error);
-      return [];
-    }
+      if (data && data.length > 0) setSelectedVehicle(data[0]);
+    } catch (error) { console.error(error); }
   };
 
-  // Fetch existing routes
-  const fetchRoutes = async (providerId: number) => {
+  const fetchRoutes = async (pid: number) => {
     try {
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('provider_routes')
-        .select(`
-          *,
-          start_location:locations!provider_routes_start_location_id_fkey(*),
-          end_location:locations!provider_routes_end_location_id_fkey(*),
-          vehicle:vehicles(*)
-        `)
-        .eq('provider_id', providerId)
+        .select(`*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*)`)
+        .eq('provider_id', pid)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
       setExistingRoutes(data || []);
-      return data;
-    } catch (error) {
-      console.error('Error fetching routes:', error);
-      return [];
-    }
+    } catch (error) { console.error(error); }
   };
 
-  // Load all data
   const loadData = async () => {
+    setLoading(true);
+    const pid = await getProviderData();
+    if (pid) {
+      await Promise.all([fetchVehicles(pid), fetchRoutes(pid)]);
+    }
+    setLoading(false);
+  };
+
+  useFocusEffect(useCallback(() => { loadData(); }, []));
+
+  /* ------------------------------------------------------------------ */
+  /* Handlers                                                            */
+  /* ------------------------------------------------------------------ */
+  const toggleOnlineStatus = async (online: boolean) => {
+    if (!providerId) return;
+
+    if (!online && existingRoutes.length > 0) {
+      Alert.alert('Go Offline', 'Going offline will cancel your active route. Do you want to continue?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Go Offline', style: 'destructive', onPress: async () => {
+            await supabase.from('users').update({ is_active: false }).eq('user_id', providerId);
+            await deleteRoute(existingRoutes[0].route_id, true);
+            setIsOnline(false);
+          }
+        }
+      ]);
+    } else {
+      await supabase.from('users').update({ is_active: online }).eq('user_id', providerId);
+      setIsOnline(online);
+    }
+  };
+
+  const handleLocationSelect = async (lat: number, lng: number) => {
     try {
-      setLoading(true);
-      const pid = await getProviderData();
-      if (pid) {
-        await Promise.all([
-          fetchVehicles(pid),
-          fetchRoutes(pid)
-        ]);
+      const address = await reverseGeocode(lat, lng) || `Location at ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+      const { data: existing } = await supabase.from('locations').select('*').eq('latitude', lat).eq('longitude', lng).limit(1);
+      let location = existing && existing.length > 0 ? existing[0] : null;
+
+      if (!location) {
+        const { data: newLoc, error } = await supabase.from('locations').insert({
+          street_address: address, barangay: 'Unknown', city: 'Unknown', province: 'Unknown', zip_code: '0000', latitude: lat, longitude: lng,
+        }).select('*').single();
+        if (error) throw error;
+        location = newLoc;
+      }
+
+      if (mapMode === 'select_start') {
+        setStartLocation(location);
+        setMapMode('view');
+      } else if (mapMode === 'select_end') {
+        setEndLocation(location);
+        setMapMode('view');
       }
     } catch (error) {
-      console.error('Error loading data:', error);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      Alert.alert('Error', 'Failed to save location.');
     }
   };
 
-  useFocusEffect(
-    useCallback(() => {
-      loadData();
-    }, [])
-  );
-
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadData();
+  const resetForm = () => {
+    setStartLocation(null);
+    setEndLocation(null);
+    setMapMode('view');
+    setRouteFrequency('One-time');
+    setDepartureDate(new Date());
+    setDepartureTime(new Date());
   };
 
-  // Open location picker
-  const openLocationPicker = (type: 'start' | 'end') => {
-    setSelectingLocation(type);
-    const location = type === 'start' ? startLocation : endLocation;
-    setSelectedCoords({ lat: location.latitude, lng: location.longitude });
-    setMapMarkers([{
-      lat: location.latitude,
-      lng: location.longitude,
-      color: type === 'start' ? '#3B82F6' : '#EF4444',
-      label: type === 'start' ? 'Starting Point' : 'Destination'
-    }]);
-    setShowLocationModal(true);
-  };
-
-  // Handle map click in location picker
-  const handleMapClick = async (lat: number, lng: number) => {
-    setSelectedCoords({ lat, lng });
-    setMapMarkers([{
-      lat,
-      lng,
-      color: selectingLocation === 'start' ? '#3B82F6' : '#EF4444',
-      label: selectingLocation === 'start' ? 'Starting Point' : 'Destination'
-    }]);
-
-    // Get address from coordinates
-    const address = await reverseGeocode(lat, lng);
-    if (address && selectingLocation) {
-      // Parse address components
-      const addressParts = address.split(',');
-      const streetAddress = addressParts[0]?.trim() || '';
-      
-      // Update location
-      if (selectingLocation === 'start') {
-        setStartLocation(prev => ({
-          ...prev,
-          latitude: lat,
-          longitude: lng,
-          street_address: streetAddress
-        }));
-      } else {
-        setEndLocation(prev => ({
-          ...prev,
-          latitude: lat,
-          longitude: lng,
-          street_address: streetAddress
-        }));
-      }
-    }
-  };
-
-  // Confirm location selection
-  const confirmLocation = () => {
-    if (selectedCoords) {
-      handleMapClick(selectedCoords.lat, selectedCoords.lng);
-    }
-    setShowLocationModal(false);
-    setSelectingLocation(null);
-  };
-
-  // Search and select location
-  const handleSearchSelect = async (address: string) => {
-    const coords = await geocodeAddress(address);
-    if (coords && selectingLocation) {
-      setSelectedCoords(coords);
-      setMapMarkers([{
-        lat: coords.lat,
-        lng: coords.lng,
-        color: selectingLocation === 'start' ? '#3B82F6' : '#EF4444',
-        label: selectingLocation === 'start' ? 'Starting Point' : 'Destination'
-      }]);
-      
-      // Update location
-      if (selectingLocation === 'start') {
-        setStartLocation(prev => ({
-          ...prev,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          street_address: address.split(',')[0] || address
-        }));
-      } else {
-        setEndLocation(prev => ({
-          ...prev,
-          latitude: coords.lat,
-          longitude: coords.lng,
-          street_address: address.split(',')[0] || address
-        }));
-      }
-    }
-  };
-
-  // Create or get location
-  const createLocation = async (location: Location): Promise<number | null> => {
-    try {
-      // Check if location exists
-      const { data: existing, error: checkError } = await supabase
-        .from('locations')
-        .select('location_id')
-        .eq('street_address', location.street_address)
-        .eq('barangay', location.barangay)
-        .eq('city', location.city)
-        .eq('province', location.province)
-        .maybeSingle();
-
-      if (checkError && checkError.code !== 'PGRST116') throw checkError;
-
-      if (existing) {
-        return existing.location_id;
-      }
-
-      // Create new location
-      const { data: newLocation, error: insertError } = await supabase
-        .from('locations')
-        .insert({
-          street_address: location.street_address,
-          barangay: location.barangay,
-          city: location.city,
-          province: location.province,
-          zip_code: location.zip_code,
-          latitude: location.latitude,
-          longitude: location.longitude
-        })
-        .select('location_id')
-        .single();
-
-      if (insertError) throw insertError;
-      return newLocation.location_id;
-    } catch (error) {
-      console.error('Error creating location:', error);
-      return null;
-    }
-  };
-
-  // Create route
   const createRoute = async () => {
-    if (!providerId || !selectedVehicle) {
-      Alert.alert('Error', 'Please select a vehicle');
-      return;
-    }
+    if (!providerId || !selectedVehicle) return Alert.alert('Error', 'Please select a vehicle');
+    if (!startLocation || !endLocation) return Alert.alert('Error', 'Please set both Start and End locations on the map.');
 
-    if (!startLocation.street_address || !endLocation.street_address) {
-      Alert.alert('Error', 'Please fill in all location details');
-      return;
-    }
-
+    setSubmitting(true);
     try {
-      setSubmitting(true);
+      const departureValue = toLocalIsoString(departureDate, departureTime);
 
-      const startLocId = await createLocation(startLocation);
-      const endLocId = await createLocation(endLocation);
+      const { error } = await supabase.from('provider_routes').insert({
+        departure_time: departureValue,
+        route_frequency: routeFrequency,
+        start_location_id: startLocation.location_id,
+        end_location_id: endLocation.location_id,
+        provider_id: providerId,
+        vehicle_id: selectedVehicle.vehicle_id,
+      });
+      if (error) throw error;
 
-      if (!startLocId || !endLocId) {
-        Alert.alert('Error', 'Failed to create locations');
-        return;
-      }
-
-      const departureDateTime = new Date(departureDate);
-      departureDateTime.setHours(departureTime.getHours());
-      departureDateTime.setMinutes(departureTime.getMinutes());
-      departureDateTime.setSeconds(0);
-
-      const { data: route, error: routeError } = await supabase
-        .from('provider_routes')
-        .insert({
-          departure_time: departureDateTime.toISOString(),
-          route_frequency: routeFrequency,
-          start_location_id: startLocId,
-          end_location_id: endLocId,
-          provider_id: providerId,
-          vehicle_id: selectedVehicle.vehicle_id
-        })
-        .select('*')
-        .single();
-
-      if (routeError) throw routeError;
-
-      Alert.alert(
-        'Success',
-        'Your route has been posted successfully!',
-        [{ text: 'OK', onPress: () => {
-          setModalVisible(false);
-          loadData();
-        }}]
-      );
-
+      setModalVisible(false);
+      await supabase.from('users').update({ is_active: true }).eq('user_id', providerId);
+      setIsOnline(true);
+      loadData();
     } catch (error) {
-      console.error('Error creating route:', error);
-      Alert.alert('Error', 'Failed to post route. Please try again.');
+      console.error(error);
+      Alert.alert('Error', 'Failed to post route.');
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Toggle online status
-  const toggleOnlineStatus = async (online: boolean) => {
-    setIsOnline(online);
-  };
-
-  // Render route card
-  const renderRouteCard = (route: any) => {
-    const start = route.start_location;
-    const end = route.end_location;
-    const depTime = new Date(route.departure_time);
-    
-    return (
-      <View key={route.route_id} style={styles.routeCard}>
-        <View style={styles.routeHeader}>
-          <Text style={styles.routeDate}>
-            {depTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-          </Text>
-          <Text style={styles.routeTime}>
-            {depTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-          </Text>
-          <View style={styles.routeFrequencyBadge}>
-            <Text style={styles.routeFrequencyText}>{route.route_frequency}</Text>
-          </View>
-        </View>
-        
-        <View style={styles.routeLocations}>
-          <View style={styles.routeLocationItem}>
-            <View style={styles.routeDotStart} />
-            <Text style={styles.routeLocationText}>{start.street_address}, {start.barangay}</Text>
-          </View>
-          <View style={styles.routeLine} />
-          <View style={styles.routeLocationItem}>
-            <View style={styles.routeDotEnd} />
-            <Text style={styles.routeLocationText}>{end.street_address}, {end.barangay}</Text>
-          </View>
-        </View>
-        
-        <View style={styles.routeFooter}>
-          <Text style={styles.routeVehicle}>
-            <Ionicons name="car-sport" size={14} color="#6B7280" />
-            {' '}{route.vehicle?.plate_number || 'N/A'}
-          </Text>
-          <TouchableOpacity 
-            onPress={() => deleteRoute(route.route_id)}
-            style={styles.deleteRouteBtn}
-          >
-            <Ionicons name="trash-outline" size={18} color="#EF4444" />
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  };
-
-  // Delete route
-  const deleteRoute = async (routeId: number) => {
-    Alert.alert(
-      'Delete Route',
-      'Are you sure you want to delete this route?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase
-                .from('provider_routes')
-                .delete()
-                .eq('route_id', routeId);
-
-              if (error) throw error;
-              setExistingRoutes(existingRoutes.filter(r => r.route_id !== routeId));
-              Alert.alert('Success', 'Route deleted successfully');
-            } catch (error) {
-              console.error('Error deleting route:', error);
-              Alert.alert('Error', 'Failed to delete route');
-            }
-          }
+  const deleteRoute = async (routeId: number, silent: boolean = false) => {
+    if (silent) {
+      await supabase.from('provider_routes').delete().eq('route_id', routeId);
+      setExistingRoutes(existingRoutes.filter(r => r.route_id !== routeId));
+      return;
+    }
+    Alert.alert('Cancel Route', 'Are you sure you want to cancel your active route?', [
+      { text: 'Keep Route', style: 'cancel' },
+      {
+        text: 'Cancel Route', style: 'destructive', onPress: async () => {
+          await supabase.from('provider_routes').delete().eq('route_id', routeId);
+          setExistingRoutes(existingRoutes.filter(r => r.route_id !== routeId));
         }
-      ]
-    );
+      }
+    ]);
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Interpolations                                                      */
+  /* ------------------------------------------------------------------ */
+  const fadeUp = (value: Animated.Value, distance = 24) => ({
+    opacity: value,
+    transform: [{
+      translateY: value.interpolate({
+        inputRange: [0, 1],
+        outputRange: [distance, 0],
+      }),
+    }],
+  });
+
+  const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
+  const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
+
+  /* ------------------------------------------------------------------ */
+  /* Loading                                                             */
+  /* ------------------------------------------------------------------ */
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#F27024" />
-          <Text style={styles.loadingText}>Loading jobs...</Text>
+          <ActivityIndicator size="large" color={ORANGE} />
+          <Text style={styles.loadingText}>Loading...</Text>
         </View>
       </SafeAreaView>
     );
   }
 
+  const hasActiveRoute = existingRoutes.length > 0;
+  const activeRoute = hasActiveRoute ? existingRoutes[0] : null;
+
+  /* ------------------------------------------------------------------ */
+  /* Render                                                              */
+  /* ------------------------------------------------------------------ */
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Jobs</Text>
-          <Image 
-            source={require('../../../../assets/Car-Grey.png')}
-            style={styles.carImage}
-            resizeMode="contain"
-          />
-        </View>
 
+        {/* Header */}
+        <Animated.View style={[styles.header, fadeUp(headerAnim, -14)]}>
+          <View>
+            <Text style={styles.headerGreeting}>
+              {isOnline ? 'You are online' : 'You are offline'}
+            </Text>
+            <Text style={styles.headerTitle}>Jobs</Text>
+          </View>
+
+          {/* Online status pill */}
+          <View style={[styles.statusPill, isOnline ? styles.statusPillOnline : styles.statusPillOffline]}>
+            <Animated.View
+              style={[
+                styles.statusPillDot,
+                isOnline && { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
+                { backgroundColor: isOnline ? '#FFFFFF' : '#9CA3AF' },
+              ]}
+            />
+            <Text style={[styles.statusPillText, { color: isOnline ? '#FFFFFF' : '#6B7280' }]}>
+              {isOnline ? 'LIVE' : 'OFFLINE'}
+            </Text>
+          </View>
+
+          <Image source={require('../../../../assets/Car-Grey.png')} style={styles.vanImage} />
+        </Animated.View>
+
+        {/* Map */}
         <View style={styles.mapContainer}>
-          <InteractiveMap 
-            lat={10.3188} 
-            lng={123.9050} 
-            zoom={13}
-            markers={[
-              { lat: startLocation.latitude, lng: startLocation.longitude, color: '#3B82F6', label: 'Start' },
-              { lat: endLocation.latitude, lng: endLocation.longitude, color: '#EF4444', label: 'End' }
-            ]}
+          <InteractiveMap
+            key={`${isOnline ? 'online' : 'offline'}-${activeRoute?.route_id ?? 'none'}`}
+            startLat={isOnline && hasActiveRoute ? activeRoute.start_location.latitude : null}
+            startLng={isOnline && hasActiveRoute ? activeRoute.start_location.longitude : null}
+            endLat={isOnline && hasActiveRoute ? activeRoute.end_location.latitude : null}
+            endLng={isOnline && hasActiveRoute ? activeRoute.end_location.longitude : null}
+            centerLat={10.3157}
+            centerLng={123.8854}
+            mode="view"
           />
         </View>
 
-        <ScrollView 
-          style={styles.bottomOverlay}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-          }
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.statusRow}>
-            <View style={styles.vehicleInfo}>
-              <Ionicons name="car-sport" size={36} color="#000" />
+        {/* Bottom Sheet */}
+        <Animated.View style={[styles.bottomSheet, fadeUp(sheetAnim, 40)]}>
+          {/* Drag handle */}
+          <View style={styles.dragHandle} />
+
+          {/* Vehicle Row */}
+          <View style={styles.vehicleRow}>
+            <View style={styles.vehicleInfoLeft}>
+              <View style={styles.vehicleIconBox}>
+                <Ionicons name="car-sport" size={22} color={ORANGE} />
+              </View>
               <View style={styles.vehicleTextContainer}>
-                <Text style={styles.vehicleName}>
-                  {selectedVehicle ? `${selectedVehicle.vehicle_type} ${selectedVehicle.plate_number}` : 'No Vehicle'}
+                <Text style={styles.vehicleNameText}>
+                  {selectedVehicle ? `${selectedVehicle.vehicle_type}` : 'No Verified Vehicle'}
                 </Text>
-                <Text style={styles.vehiclePlate}>
-                  {selectedVehicle ? `Max: ${selectedVehicle.max_weight_kg}kg` : 'Add a vehicle first'}
+                <Text style={styles.vehiclePlateText}>
+                  {selectedVehicle ? selectedVehicle.plate_number : 'Please add a vehicle'}
                 </Text>
               </View>
             </View>
 
             <View style={styles.toggleContainer}>
-              <Text style={styles.toggleText}>{isOnline ? 'Go offline' : 'Go online'}</Text>
+              <Text style={styles.toggleText}>
+                {isOnline ? 'Online' : 'Offline'}
+              </Text>
               <Switch
-                trackColor={{ false: '#D1D5DB', true: '#34C759' }}
-                thumbColor={'#ffffff'}
-                ios_backgroundColor="#D1D5DB"
+                trackColor={{ false: '#E5E7EB', true: '#34C759' }}
+                thumbColor={'#FFFFFF'}
+                ios_backgroundColor="#E5E7EB"
                 onValueChange={toggleOnlineStatus}
                 value={isOnline}
-                style={{ transform: [{ scaleX: 0.9 }, { scaleY: 0.9 }] }}
               />
             </View>
           </View>
 
-          {existingRoutes.length > 0 && (
-            <View style={styles.routesSection}>
-              <Text style={styles.routesTitle}>Your Active Routes</Text>
-              {existingRoutes.slice(0, 3).map(renderRouteCard)}
-              {existingRoutes.length > 3 && (
-                <TouchableOpacity style={styles.viewMoreBtn}>
-                  <Text style={styles.viewMoreText}>View all {existingRoutes.length} routes</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          <TouchableOpacity 
-            style={styles.travelCard} 
-            activeOpacity={0.9}
-            onPress={() => {
-              if (vehicles.length === 0) {
-                Alert.alert('No Vehicle', 'Please add a verified vehicle first');
-                return;
-              }
-              setModalVisible(true);
-            }}
-          >
-            <View style={styles.addIconContainer}>
-              <Ionicons name="add" size={28} color="#000" />
-            </View>
-            <View style={styles.travelTextContainer}>
-              <Text style={styles.travelTitle}>Travel & Earn</Text>
-              <Text style={styles.travelDescription}>
-                Register your One off trip route to pick up packages on your way and maximize your earnings.
-              </Text>
-            </View>
-          </TouchableOpacity>
-        </ScrollView>
-
-        {/* Post Route Modal */}
-        <Modal
-          animationType="slide"
-          transparent={true}
-          visible={modalVisible}
-          onRequestClose={() => setModalVisible(false)}
-        >
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <TouchableOpacity 
-                  style={styles.modalBackButton}
-                  onPress={() => setModalVisible(false)}
-                >
-                  <Ionicons name="arrow-back" size={28} color="#000" />
-                </TouchableOpacity>
-                <Text style={styles.modalTitle}>Post Your Route</Text>
+          {/* Dynamic Content */}
+          <View style={styles.dynamicContentArea}>
+            {!isOnline ? (
+              <View style={styles.offlineContainer}>
+                <View style={styles.offlineIconBox}>
+                  <Ionicons name="moon-outline" size={24} color="#6B7280" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.offlineTextMain}>You are offline</Text>
+                  <Text style={styles.offlineTextSub}>Turn on to receive delivery offers.</Text>
+                </View>
               </View>
+            ) : !hasActiveRoute ? (
+              <TouchableOpacity
+                style={styles.travelEarnBtn}
+                activeOpacity={0.9}
+                onPress={() => {
+                  if (vehicles.length === 0) return Alert.alert('No Vehicle', 'Please add a verified vehicle first.');
+                  resetForm();
+                  setModalVisible(true);
+                }}
+              >
+                <View style={styles.travelEarnIconBox}>
+                  <Ionicons name="add" size={24} color="#FFFFFF" />
+                </View>
+                <View style={styles.travelEarnTextCol}>
+                  <Text style={styles.travelEarnTitle}>Travel & Earn</Text>
+                  <Text style={styles.travelEarnDesc}>
+                    Post your trip route to pick up packages along the way.
+                  </Text>
+                </View>
+                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.activeRouteBanner}>
+                <View style={styles.activeRouteIconBox}>
+                  <Ionicons name="location" size={20} color="#FFFFFF" />
+                </View>
+                <View style={styles.travelEarnTextCol}>
+                  <Text style={styles.activeRouteTitle} numberOfLines={1}>
+                    {activeRoute.end_location?.city || 'Destination'}
+                  </Text>
+                  <Text style={styles.activeRouteDesc} numberOfLines={1}>
+                    Matching parcels on this path
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => deleteRoute(activeRoute.route_id)} style={styles.activeRouteCloseBtn}>
+                  <Ionicons name="close-circle" size={26} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </Animated.View>
 
-              <ScrollView showsVerticalScrollIndicator={false}>
-                {/* Location picker buttons */}
-                <View style={styles.locationPickerRow}>
-                  <TouchableOpacity 
-                    style={[styles.locationPickerBtn, styles.startBtn]}
-                    onPress={() => openLocationPicker('start')}
-                  >
-                    <Ionicons name="radio-button-on" size={18} color="#3B82F6" />
-                    <View style={styles.locationPickerText}>
-                      <Text style={styles.locationPickerLabel}>Starting Point</Text>
-                      <Text style={styles.locationPickerValue} numberOfLines={1}>
-                        {startLocation.street_address || 'Select location on map'}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+        {/* Add Route Modal */}
+        <Modal animationType="slide" transparent={true} visible={modalVisible}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
+
+                <View style={styles.modalHeader}>
+                  <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCloseBtn}>
+                    <Ionicons name="close" size={22} color="#111827" />
                   </TouchableOpacity>
+                  <Text style={styles.modalTitle}>Post Your Route</Text>
+                  <View style={{ width: 40 }} />
+                </View>
 
-                  <TouchableOpacity 
-                    style={[styles.locationPickerBtn, styles.endBtn]}
-                    onPress={() => openLocationPicker('end')}
+                <View style={styles.modalMapContainer}>
+                  <InteractiveMap
+                    onLocationSelect={handleLocationSelect}
+                    startLat={startLocation?.latitude}
+                    startLng={startLocation?.longitude}
+                    endLat={endLocation?.latitude}
+                    endLng={endLocation?.longitude}
+                    mode={mapMode}
+                  />
+                </View>
+
+                <View style={styles.locationSelectorsRow}>
+                  <TouchableOpacity
+                    style={[styles.locationSelectorBtn, startLocation && styles.locationSelected]}
+                    onPress={() => setMapMode('select_start')}
+                    activeOpacity={0.85}
                   >
-                    <Ionicons name="location" size={18} color="#EF4444" />
-                    <View style={styles.locationPickerText}>
-                      <Text style={styles.locationPickerLabel}>Destination</Text>
-                      <Text style={styles.locationPickerValue} numberOfLines={1}>
-                        {endLocation.street_address || 'Select location on map'}
-                      </Text>
+                    <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: '#3B82F6' }]}>
+                      <Ionicons name="radio-button-on" size={14} color={startLocation ? '#FFFFFF' : '#6B7280'} />
                     </View>
-                    <Ionicons name="chevron-forward" size={20} color="#6B7280" />
+                    <Text style={[styles.locationSelectorText, startLocation && styles.locationSelectorTextSelected]}>
+                      {startLocation ? 'Start Set' : 'Set Start'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.locationSelectorBtn, endLocation && styles.locationSelected]}
+                    onPress={() => setMapMode('select_end')}
+                    activeOpacity={0.85}
+                  >
+                    <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: '#EF4444' }]}>
+                      <Ionicons name="location" size={14} color={endLocation ? '#FFFFFF' : '#6B7280'} />
+                    </View>
+                    <Text style={[styles.locationSelectorText, endLocation && styles.locationSelectorTextSelected]}>
+                      {endLocation ? 'End Set' : 'Set End'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
 
-                {/* Date & Time */}
+                <View style={styles.pickedLocationsDisplay}>
+                  <View style={styles.pickedRow}>
+                    <View style={[styles.pickedDot, { backgroundColor: '#3B82F6' }]} />
+                    <Text style={styles.pickedLocationText} numberOfLines={1}>
+                      <Text style={{ fontWeight: '700' }}>Start: </Text>
+                      {startLocation?.street_address || 'Tap "Set Start" and pick on map'}
+                    </Text>
+                  </View>
+                  <View style={styles.pickedRow}>
+                    <View style={[styles.pickedDot, { backgroundColor: '#EF4444' }]} />
+                    <Text style={styles.pickedLocationText} numberOfLines={1}>
+                      <Text style={{ fontWeight: '700' }}>End: </Text>
+                      {endLocation?.street_address || 'Tap "Set End" and pick on map'}
+                    </Text>
+                  </View>
+                </View>
+
                 <View style={styles.dateTimeRow}>
-                  <TouchableOpacity 
-                    style={styles.dateTimePicker}
-                    onPress={() => setShowDatePicker(true)}
-                  >
-                    <Text style={styles.pickerLabel}>Date</Text>
-                    <Text style={styles.pickerValue}>
-                      {departureDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </Text>
-                    <Ionicons name="calendar-outline" size={20} color="#6B7280" />
-                  </TouchableOpacity>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Date</Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                      <Text style={styles.pickerValue}>{departureDate.toLocaleDateString()}</Text>
+                    </TouchableOpacity>
+                    {showDatePicker && (
+                      <DateTimePicker
+                        value={departureDate}
+                        mode="date"
+                        display="default"
+                        onChange={(e, d) => {
+                          if (Platform.OS === 'android') setShowDatePicker(false);
+                          if (e.type === 'set' && d) {
+                            setDepartureDate(new Date(d.getFullYear(), d.getMonth(), d.getDate()));
+                          }
+                        }}
+                      />
+                    )}
+                  </View>
 
-                  <TouchableOpacity 
-                    style={styles.dateTimePicker}
-                    onPress={() => setShowTimePicker(true)}
-                  >
-                    <Text style={styles.pickerLabel}>Departure Time</Text>
-                    <Text style={styles.pickerValue}>
-                      {departureTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-                    </Text>
-                    <Ionicons name="time-outline" size={20} color="#6B7280" />
-                  </TouchableOpacity>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Time</Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <Text style={styles.pickerValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        display="default"
+                        onChange={(e, t) => {
+                          if (Platform.OS === 'android') setShowTimePicker(false);
+                          if (e.type === 'set' && t) {
+                            setDepartureTime(new Date(1970, 0, 1, t.getHours(), t.getMinutes()));
+                          }
+                        }}
+                      />
+                    )}
+                  </View>
                 </View>
 
-                {showDatePicker && (
-                  <DateTimePicker
-                    value={departureDate}
-                    mode="date"
-                    display="default"
-                    onChange={(event, selectedDate) => {
-                      setShowDatePicker(false);
-                      if (selectedDate) setDepartureDate(selectedDate);
-                    }}
-                  />
-                )}
-
-                {showTimePicker && (
-                  <DateTimePicker
-                    value={departureTime}
-                    mode="time"
-                    display="default"
-                    onChange={(event, selectedTime) => {
-                      setShowTimePicker(false);
-                      if (selectedTime) setDepartureTime(selectedTime);
-                    }}
-                  />
-                )}
-
-                {/* Route Frequency */}
                 <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>Route Frequency</Text>
+                  <Text style={styles.inputLabel}>Route Frequency</Text>
                   <View style={styles.frequencyOptions}>
                     {['One-time', 'Daily', 'Weekly', 'Custom'].map((freq) => (
                       <TouchableOpacity
                         key={freq}
-                        style={[
-                          styles.frequencyOption,
-                          routeFrequency === freq && styles.frequencyOptionSelected
-                        ]}
+                        style={[styles.frequencyOption, routeFrequency === freq && styles.frequencyOptionSelected]}
                         onPress={() => setRouteFrequency(freq)}
+                        activeOpacity={0.85}
                       >
-                        <Text style={[
-                          styles.frequencyText,
-                          routeFrequency === freq && styles.frequencyTextSelected
-                        ]}>
+                        <Text style={[styles.frequencyText, routeFrequency === freq && styles.frequencyTextSelected]}>
                           {freq}
                         </Text>
                       </TouchableOpacity>
@@ -1061,149 +643,72 @@ export default function JobsScreen() {
                   </View>
                 </View>
 
-                {/* Vehicle Selection */}
-                <TouchableOpacity
-                  style={styles.vehicleSelector}
-                  onPress={() => setShowVehicleSelector(true)}
-                >
-                  <View style={styles.vehicleSelectorLeft}>
-                    <Ionicons name="car-sport" size={24} color="#000" />
-                    <View>
-                      <Text style={styles.vehicleSelectorLabel}>Vehicle</Text>
-                      <Text style={styles.vehicleSelectorValue}>
+                <View style={styles.formGroup}>
+                  <Text style={styles.inputLabel}>Vehicle</Text>
+                  <TouchableOpacity
+                    style={styles.vehicleSelector}
+                    onPress={() => setShowVehicleSelector(true)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.vehicleSelectorLeft}>
+                      <View style={styles.vehicleSelectorIconBox}>
+                        <Ionicons name="car-sport" size={20} color={ORANGE} />
+                      </View>
+                      <Text style={styles.vehicleSelectorValue} numberOfLines={1}>
                         {selectedVehicle ? `${selectedVehicle.vehicle_type} - ${selectedVehicle.plate_number}` : 'Select a vehicle'}
                       </Text>
                     </View>
-                  </View>
-                  <Ionicons name="chevron-down" size={24} color="#6B7280" />
-                </TouchableOpacity>
-
-                <View style={styles.infoBanner}>
-                  <Ionicons name="information-circle" size={20} color="#000" style={styles.infoIcon} />
-                  <Text style={styles.infoText}>
-                    By posting your route, our system will prioritize showing you jobs that are within a 2km radius of your path.
-                  </Text>
+                    <Ionicons name="chevron-down" size={20} color="#6B7280" />
+                  </TouchableOpacity>
                 </View>
 
-                <TouchableOpacity 
-                  style={[styles.finishBtn, submitting && styles.disabledBtn]}
+                <TouchableOpacity
+                  style={[styles.submitBtn, submitting && { opacity: 0.7 }]}
                   onPress={createRoute}
                   disabled={submitting}
+                  activeOpacity={0.9}
                 >
                   {submitting ? (
-                    <ActivityIndicator color="#FFFFFF" />
+                    <ActivityIndicator color="#FFF" />
                   ) : (
-                    <Text style={styles.finishBtnText}>Post Route</Text>
+                    <>
+                      <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                      <Text style={styles.submitBtnText}>Post Route</Text>
+                    </>
                   )}
                 </TouchableOpacity>
+
               </ScrollView>
             </View>
           </View>
         </Modal>
 
-        {/* Location Picker Modal */}
-        <Modal
-          visible={showLocationModal}
-          animationType="slide"
-          transparent={true}
-          onRequestClose={() => setShowLocationModal(false)}
-        >
-          <View style={styles.modalBackdrop}>
-            <View style={[styles.modalContent, styles.locationModalContent]}>
-              <View style={styles.modalHeader}>
-                <TouchableOpacity 
-                  style={styles.modalBackButton}
-                  onPress={() => setShowLocationModal(false)}
-                >
-                  <Ionicons name="arrow-back" size={28} color="#000" />
-                </TouchableOpacity>
-                <Text style={styles.modalTitle}>
-                  {selectingLocation === 'start' ? 'Select Starting Point' : 'Select Destination'}
-                </Text>
-                <TouchableOpacity 
-                  style={styles.confirmLocationBtn}
-                  onPress={confirmLocation}
-                >
-                  <Text style={styles.confirmLocationText}>Confirm</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.locationModalMap}>
-                <InteractiveMap 
-                  lat={selectedCoords?.lat || 10.3188}
-                  lng={selectedCoords?.lng || 123.9050}
-                  zoom={14}
-                  markers={mapMarkers}
-                  onMapClick={handleMapClick}
-                  showSearch={true}
-                />
-              </View>
-
-              <View style={styles.locationModalFooter}>
-                <View style={styles.coordsDisplay}>
-                  <Text style={styles.coordsLabel}>Selected Location</Text>
-                  <Text style={styles.coordsValue}>
-                    {selectedCoords ? `${selectedCoords.lat.toFixed(6)}, ${selectedCoords.lng.toFixed(6)}` : 'Click on the map to select'}
-                  </Text>
-                </View>
-                <View style={styles.locationModalActions}>
-                  <TouchableOpacity 
-                    style={[styles.locationModalBtn, styles.cancelLocationBtn]}
-                    onPress={() => setShowLocationModal(false)}
-                  >
-                    <Text style={styles.cancelLocationText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.locationModalBtn, styles.confirmLocationBtnFull]}
-                    onPress={confirmLocation}
-                  >
-                    <Text style={styles.confirmLocationTextFull}>Confirm</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </View>
-        </Modal>
-
         {/* Vehicle Selector Modal */}
-        <Modal
-          visible={showVehicleSelector}
-          transparent={true}
-          animationType="slide"
-          onRequestClose={() => setShowVehicleSelector(false)}
-        >
-          <View style={styles.modalBackdrop}>
+        <Modal visible={showVehicleSelector} transparent={true} animationType="slide" onRequestClose={() => setShowVehicleSelector(false)}>
+          <View style={styles.modalOverlay}>
             <View style={styles.vehicleSelectorModal}>
+              <View style={styles.vehicleModalHandle} />
               <Text style={styles.vehicleSelectorModalTitle}>Select Vehicle</Text>
-              {vehicles.map((vehicle) => (
+              {vehicles.map((v) => (
                 <TouchableOpacity
-                  key={vehicle.vehicle_id}
-                  style={[
-                    styles.vehicleOption,
-                    selectedVehicle?.vehicle_id === vehicle.vehicle_id && styles.vehicleOptionSelected
-                  ]}
-                  onPress={() => {
-                    setSelectedVehicle(vehicle);
-                    setShowVehicleSelector(false);
-                  }}
+                  key={v.vehicle_id}
+                  style={[styles.vehicleOption, selectedVehicle?.vehicle_id === v.vehicle_id && styles.vehicleOptionSelected]}
+                  onPress={() => { setSelectedVehicle(v); setShowVehicleSelector(false); }}
+                  activeOpacity={0.85}
                 >
-                  <Ionicons name="car-sport" size={24} color={selectedVehicle?.vehicle_id === vehicle.vehicle_id ? '#F27024' : '#6B7280'} />
-                  <View style={styles.vehicleOptionDetails}>
-                    <Text style={styles.vehicleOptionName}>{vehicle.vehicle_type}</Text>
-                    <Text style={styles.vehicleOptionPlate}>{vehicle.plate_number}</Text>
+                  <View style={[styles.vehicleOptionIconBox, selectedVehicle?.vehicle_id === v.vehicle_id && { backgroundColor: '#FFF7ED' }]}>
+                    <Ionicons name="car-sport" size={22} color={selectedVehicle?.vehicle_id === v.vehicle_id ? ORANGE : '#6B7280'} />
                   </View>
-                  {selectedVehicle?.vehicle_id === vehicle.vehicle_id && (
-                    <Ionicons name="checkmark-circle" size={24} color="#34C759" />
+                  <View style={styles.vehicleOptionDetails}>
+                    <Text style={styles.vehicleOptionName}>{v.vehicle_type}</Text>
+                    <Text style={styles.vehicleOptionPlate}>{v.plate_number}</Text>
+                  </View>
+                  {selectedVehicle?.vehicle_id === v.vehicle_id && (
+                    <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
                   )}
                 </TouchableOpacity>
               ))}
-              {vehicles.length === 0 && (
-                <Text style={styles.noVehiclesText}>No verified vehicles found. Please add a vehicle first.</Text>
-              )}
-              <TouchableOpacity
-                style={styles.closeVehicleModal}
-                onPress={() => setShowVehicleSelector(false)}
-              >
+              <TouchableOpacity style={styles.closeVehicleModal} onPress={() => setShowVehicleSelector(false)} activeOpacity={0.9}>
                 <Text style={styles.closeVehicleModalText}>Close</Text>
               </TouchableOpacity>
             </View>
@@ -1216,401 +721,418 @@ export default function JobsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F27024',
-  },
-  container: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  loadingText: {
-    marginTop: 12,
-    color: '#6B7280',
-    fontSize: 14,
-  },
+  safeArea: { flex: 1, backgroundColor: ORANGE },
+  container: { flex: 1, backgroundColor: '#E5E7EB' },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', gap: 12 },
+  loadingText: { color: '#6B7280', fontSize: 13, fontWeight: '500' },
+
+  /* ------------------------------------------------------------------ */
+  /* Header                                                              */
+  /* ------------------------------------------------------------------ */
   header: {
-    backgroundColor: '#F27024',
-    height: 180,
+    backgroundColor: ORANGE,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'android' ? 26 : 14,
+    paddingBottom: 24,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 30 : 0,
     overflow: 'hidden',
+    zIndex: 10,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+  },
+  headerGreeting: {
+    color: '#FFE0C7',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+    marginBottom: 2,
   },
   headerTitle: {
     color: '#FFFFFF',
-    fontSize: 48,
-    fontWeight: '900',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+  },
+  statusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    gap: 6,
+    borderWidth: 1,
+    zIndex: 5,
+  },
+  statusPillOnline: {
+    backgroundColor: 'rgba(52,199,89,0.9)',
+    borderColor: 'rgba(255,255,255,0.4)',
+  },
+  statusPillOffline: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  statusPillDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  statusPillText: {
+    fontSize: 10,
+    fontWeight: '800',
     letterSpacing: 1,
   },
-  carImage: {
+  vanImage: {
     position: 'absolute',
-    right: -15,
-    bottom: -15,
-    width: 250,
-    height: 130,
+    right: -20,
+    bottom: -18,
+    width: 160,
+    height: 90,
+    opacity: 0.35,
     zIndex: 1,
   },
+
+  /* ------------------------------------------------------------------ */
+  /* Map                                                                 */
+  /* ------------------------------------------------------------------ */
   mapContainer: {
-    flex: 1,
+    position: 'absolute',
+    top: 100,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 1,
   },
-  bottomOverlay: {
+
+  /* ------------------------------------------------------------------ */
+  /* Bottom Sheet                                                        */
+  /* ------------------------------------------------------------------ */
+  bottomSheet: {
     position: 'absolute',
     bottom: 0,
     left: 0,
     right: 0,
-    maxHeight: '60%',
+    zIndex: 5,
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    paddingTop: 10,
     paddingHorizontal: 20,
-    paddingTop: 15,
-    paddingBottom: 25,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 10,
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    elevation: 12,
   },
-  statusRow: {
+  dragHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E5E7EB',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  vehicleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    paddingBottom: 12,
+    paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
   },
-  vehicleInfo: {
+  vehicleInfoLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
-  vehicleTextContainer: {
-    marginLeft: 12,
+  vehicleIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
   },
-  vehicleName: {
-    fontSize: 16,
-    fontWeight: '600',
+  vehicleTextContainer: { flex: 1 },
+  vehicleNameText: {
+    fontSize: 14,
+    fontWeight: '800',
     color: '#111827',
   },
-  vehiclePlate: {
-    fontSize: 13,
+  vehiclePlateText: {
+    fontSize: 11,
     color: '#6B7280',
     marginTop: 2,
+    fontWeight: '500',
+    letterSpacing: 0.3,
   },
   toggleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
   },
   toggleText: {
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '700',
     color: '#111827',
-    marginRight: 8,
   },
-  routesSection: {
-    marginBottom: 16,
+
+  /* ------------------------------------------------------------------ */
+  /* Dynamic Content                                                     */
+  /* ------------------------------------------------------------------ */
+  dynamicContentArea: {
+    marginTop: 14,
+    minHeight: 68,
+    justifyContent: 'center',
   },
-  routesTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#111827',
-    marginBottom: 10,
-  },
-  routeCard: {
+  offlineContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
+    borderRadius: 16,
+    padding: 14,
+    gap: 12,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: '#F3F4F6',
   },
-  routeHeader: {
-    flexDirection: 'row',
+  offlineIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
-  routeDate: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginRight: 8,
-  },
-  routeTime: {
-    fontSize: 12,
-    fontWeight: '600',
+  offlineTextMain: {
+    fontSize: 14,
+    fontWeight: '800',
     color: '#111827',
-    marginRight: 8,
+    marginBottom: 2,
   },
-  routeFrequencyBadge: {
-    backgroundColor: '#E5E7EB',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  routeFrequencyText: {
-    fontSize: 10,
+  offlineTextSub: {
+    fontSize: 11,
     color: '#6B7280',
-  },
-  routeLocations: {
-    marginVertical: 4,
-  },
-  routeLocationItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 2,
-  },
-  routeDotStart: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#3B82F6',
-    marginRight: 8,
-  },
-  routeDotEnd: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#EF4444',
-    marginRight: 8,
-  },
-  routeLine: {
-    width: 2,
-    height: 12,
-    backgroundColor: '#D1D5DB',
-    marginLeft: 3,
-    marginVertical: 2,
-  },
-  routeLocationText: {
-    fontSize: 13,
-    color: '#374151',
-    flex: 1,
-  },
-  routeFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-  },
-  routeVehicle: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  deleteRouteBtn: {
-    padding: 4,
-  },
-  viewMoreBtn: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  viewMoreText: {
-    color: '#F27024',
-    fontSize: 13,
     fontWeight: '500',
   },
-  travelCard: {
-    backgroundColor: '#222222',
-    borderRadius: 16,
+  travelEarnBtn: {
+    backgroundColor: '#111827',
+    borderRadius: 18,
     padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
   },
-  addIconContainer: {
-    width: 50,
-    height: 50,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 12,
+  travelEarnIconBox: {
+    width: 44,
+    height: 44,
+    backgroundColor: ORANGE,
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
   },
-  travelTextContainer: {
+  travelEarnTextCol: {
     flex: 1,
   },
-  travelTitle: {
+  travelEarnTitle: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 4,
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 3,
+    letterSpacing: -0.2,
   },
-  travelDescription: {
-    color: '#D1D5DB',
-    fontSize: 12,
-    lineHeight: 16,
+  travelEarnDesc: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '500',
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
+  activeRouteBanner: {
+    backgroundColor: '#34C759',
+    borderRadius: 18,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    shadowColor: '#34C759',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
   },
+  activeRouteIconBox: {
+    width: 44,
+    height: 44,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  activeRouteTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 3,
+    letterSpacing: -0.2,
+  },
+  activeRouteDesc: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '600',
+  },
+  activeRouteCloseBtn: {
+    padding: 4,
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Modal                                                               */
+  /* ------------------------------------------------------------------ */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   modalContent: {
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     padding: 20,
-    maxHeight: '90%',
-  },
-  locationModalContent: {
-    maxHeight: '100%',
-    height: '100%',
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
+    paddingTop: 16,
+    maxHeight: '92%',
   },
   modalHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  modalBackButton: {
-    padding: 4,
+  modalCloseBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000000',
-    flex: 1,
-    marginLeft: 8,
-  },
-  confirmLocationBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#F27024',
-    borderRadius: 20,
-  },
-  confirmLocationText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  locationModalMap: {
-    flex: 1,
-    borderRadius: 12,
-    overflow: 'hidden',
-    backgroundColor: '#E5E7EB',
-  },
-  locationModalFooter: {
-    paddingVertical: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-  },
-  coordsDisplay: {
-    marginBottom: 12,
-  },
-  coordsLabel: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginBottom: 4,
-  },
-  coordsValue: {
-    fontSize: 14,
+    fontSize: 17,
+    fontWeight: '800',
     color: '#111827',
-    fontWeight: '500',
+    letterSpacing: -0.2,
   },
-  locationModalActions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  locationModalBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  cancelLocationBtn: {
-    backgroundColor: '#F3F4F6',
-  },
-  cancelLocationText: {
-    color: '#6B7280',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  confirmLocationBtnFull: {
-    backgroundColor: '#F27024',
-  },
-  confirmLocationTextFull: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  locationPickerRow: {
-    gap: 12,
+  modalMapContainer: {
+    height: 200,
+    borderRadius: 16,
+    overflow: 'hidden',
     marginBottom: 16,
-  },
-  locationPickerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    padding: 14,
     borderWidth: 1,
     borderColor: '#E5E7EB',
   },
-  startBtn: {
+  locationSelectorsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    gap: 10,
+  },
+  locationSelectorBtn: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+  },
+  locationSelected: {
+    backgroundColor: '#F0F9FF',
     borderColor: '#3B82F6',
   },
-  endBtn: {
-    borderColor: '#EF4444',
+  locSelectorIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  locationPickerText: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  locationPickerLabel: {
-    fontSize: 12,
+  locationSelectorText: {
+    fontWeight: '700',
     color: '#6B7280',
+    fontSize: 13,
   },
-  locationPickerValue: {
-    fontSize: 14,
+  locationSelectorTextSelected: {
     color: '#111827',
+  },
+  pickedLocationsDisplay: {
+    marginBottom: 20,
+    padding: 14,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  pickedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pickedDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  pickedLocationText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#4B5563',
     fontWeight: '500',
-    marginTop: 2,
   },
-  formGroup: {
-    marginBottom: 16,
-  },
-  formLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#111827',
+
+  formGroup: { marginBottom: 20 },
+  inputLabel: {
     marginBottom: 8,
+    fontWeight: '700',
+    color: '#374151',
+    fontSize: 12,
+    letterSpacing: 0.2,
   },
   dateTimeRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
     gap: 12,
-    marginBottom: 16,
   },
-  dateTimePicker: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 8,
-    padding: 12,
+  inputGroup: { flex: 1 },
+  dateTimeButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
-  },
-  pickerLabel: {
-    fontSize: 12,
-    color: '#6B7280',
-    width: '100%',
-    marginBottom: 4,
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   pickerValue: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#111827',
-    flex: 1,
+    fontWeight: '600',
   },
+
   frequencyOptions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1618,130 +1140,155 @@ const styles = StyleSheet.create({
   },
   frequencyOption: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
+    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
   },
   frequencyOptionSelected: {
-    backgroundColor: '#F27024',
-    borderColor: '#F27024',
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
   },
   frequencyText: {
     fontSize: 13,
     color: '#6B7280',
+    fontWeight: '700',
   },
-  frequencyTextSelected: {
-    color: '#FFFFFF',
-  },
+  frequencyTextSelected: { color: '#FFFFFF' },
+
   vehicleSelector: {
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
   },
   vehicleSelectorLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
+    flex: 1,
+    marginRight: 8,
   },
-  vehicleSelectorLabel: {
-    fontSize: 12,
-    color: '#6B7280',
+  vehicleSelectorIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   vehicleSelectorValue: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#111827',
-    fontWeight: '500',
-  },
-  infoBanner: {
-    backgroundColor: '#F3F4F6',
-    borderRadius: 12,
-    padding: 12,
-    flexDirection: 'row',
-    marginBottom: 20,
-  },
-  infoIcon: {
-    marginRight: 8,
-    marginTop: 2,
-  },
-  infoText: {
+    fontWeight: '700',
     flex: 1,
-    fontSize: 12,
-    color: '#4B5563',
-    lineHeight: 18,
   },
-  finishBtn: {
-    backgroundColor: '#F27024',
-    borderRadius: 24,
-    paddingVertical: 14,
+
+  submitBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    width: '100%',
+    justifyContent: 'center',
+    backgroundColor: ORANGE,
+    borderRadius: 16,
+    paddingVertical: 16,
+    marginTop: 6,
+    marginBottom: 20,
+    gap: 8,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 5,
   },
-  disabledBtn: {
-    opacity: 0.6,
-  },
-  finishBtnText: {
+  submitBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: 'bold',
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
+
+  /* ------------------------------------------------------------------ */
+  /* Vehicle Selector Modal                                              */
+  /* ------------------------------------------------------------------ */
   vehicleSelectorModal: {
     backgroundColor: '#FFFFFF',
     padding: 20,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    paddingTop: 12,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+  },
+  vehicleModalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E5E7EB',
+    alignSelf: 'center',
+    marginBottom: 16,
   },
   vehicleSelectorModalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000000',
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
     marginBottom: 16,
+    letterSpacing: -0.2,
   },
   vehicleOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    marginBottom: 6,
     gap: 12,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
   },
   vehicleOptionSelected: {
-    backgroundColor: '#FEF3E8',
-    borderRadius: 8,
+    backgroundColor: '#FFF7ED',
+    borderColor: '#FFE4D2',
   },
-  vehicleOptionDetails: {
-    flex: 1,
+  vehicleOptionIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
+  vehicleOptionDetails: { flex: 1 },
   vehicleOptionName: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '700',
     color: '#111827',
   },
   vehicleOptionPlate: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#6B7280',
-  },
-  noVehiclesText: {
-    textAlign: 'center',
-    color: '#6B7280',
-    paddingVertical: 20,
+    marginTop: 2,
+    fontWeight: '500',
+    letterSpacing: 0.3,
   },
   closeVehicleModal: {
     marginTop: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 14,
     backgroundColor: '#F3F4F6',
   },
   closeVehicleModalText: {
     color: '#6B7280',
-    fontSize: 16,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

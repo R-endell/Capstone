@@ -1,560 +1,144 @@
 // src/services/matchingService.ts
 import { supabase } from '../utils/supabase';
 
-// ============ TYPES ============
-interface Location {
-  latitude: number;
-  longitude: number;
-  location_id?: number;
-  street_address?: string;
-  barangay?: string;
-  city?: string;
-  province?: string;
-  zip_code?: string;
+export interface Location { latitude: number; longitude: number; location_id?: number; street_address?: string; }
+export interface ProviderRoute { route_id: number; provider_id: number; vehicle_id: number; departure_time: string; start_location: Location; end_location: Location; }
+export interface DeliveryRequest { request_id: number; scheduled_time: string | null; estimated_cost: number; emergency_flag: boolean; sender_id: number; pickup_location: Location; dropoff_location: Location; }
+export interface MatchResult { request: DeliveryRequest; route: ProviderRoute; matchScore: number; }
+
+function calculateDistance(lat1: number | string, lon1: number | string, lat2: number | string, lon2: number | string): number {
+  const R = 6371; 
+  const numLat1 = Number(lat1);
+  const numLon1 = Number(lon1);
+  const numLat2 = Number(lat2);
+  const numLon2 = Number(lon2);
+
+  if (isNaN(numLat1) || isNaN(numLon1) || isNaN(numLat2) || isNaN(numLon2)) return Infinity;
+
+  const dLat = ((numLat2 - numLat1) * Math.PI) / 180; 
+  const dLon = ((numLon2 - numLon1) * Math.PI) / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos((numLat1 * Math.PI) / 180) * Math.cos((numLat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-interface ProviderRoute {
-  route_id: number;
-  provider_id: number;
-  vehicle_id: number;
-  start_location_id: number;
-  end_location_id: number;
-  departure_time: string;
-  route_frequency: string;
-  created_at: string;
-  start_location: Location;
-  end_location: Location;
-  vehicle?: any;
+async function getRoadPolyline(start: Location, end: Location): Promise<[number, number][]> {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?overview=full&geometries=geojson`;
+    const res = await fetch(url); 
+    const data = await res.json();
+    if (data.routes && data.routes.length > 0) return data.routes[0].geometry.coordinates.map(([lng, lat]: [number, number]) => [Number(lat), Number(lng)]);
+  } catch (err) { console.warn('OSRM error, using straight line fallback'); }
+  return [[Number(start.latitude), Number(start.longitude)], [Number(end.latitude), Number(end.longitude)]];
 }
 
-interface DeliveryRequest {
-  request_id: number;
-  pickup_type: string;
-  scheduled_time: string | null;
-  receiver_phone: string;
-  total_distance: number;
-  estimated_cost: number;
-  delivery_status: string;
-  emergency_flag: boolean;
-  created_at: string;
-  sender_id: number;
-  cargo_id: number;
-  receiver_id: number | null;
-  pickup_location_id: number;
-  dropoff_location_id: number;
-  rate_id: number;
-  pickup_location: Location;
-  dropoff_location: Location;
-  cargo?: any;
-  receiver?: any;
-}
+function findClosestPointOnRoute(target: Location, roadPoints: [number, number][]) {
+  let minDistance = Infinity; let closestIndex = -1;
+  if (!target || isNaN(Number(target.latitude))) return { minDistance: Infinity, index: -1 };
 
-interface MatchResult {
-  request: DeliveryRequest;
-  route: ProviderRoute;
-  matchScore: number;
-}
-
-// ============ HELPER FUNCTIONS ============
-
-// Haversine formula to calculate distance between two coordinates
-function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371; // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
-
-// Check if a point is within a certain radius of a route path
-function isPointNearRoute(
-  point: Location,
-  start: Location,
-  end: Location,
-  radiusKm: number = 2
-): boolean {
-  // Check if point is near start or end
-  const distToStart = calculateDistance(point.latitude, point.longitude, start.latitude, start.longitude);
-  const distToEnd = calculateDistance(point.latitude, point.longitude, end.latitude, end.longitude);
-  
-  if (distToStart <= radiusKm || distToEnd <= radiusKm) {
-    return true;
+  for (let i = 0; i < roadPoints.length; i++) {
+    const dist = calculateDistance(target.latitude, target.longitude, roadPoints[i][0], roadPoints[i][1]);
+    if (!isNaN(dist) && dist < minDistance) { minDistance = dist; closestIndex = i; }
   }
-  
-  // Check if point is near the path between start and end
-  const dx = end.latitude - start.latitude;
-  const dy = end.longitude - start.longitude;
-  const lineLength = Math.sqrt(dx*dx + dy*dy);
-  
-  if (lineLength === 0) return false;
-  
-  const t = Math.max(0, Math.min(1, 
-    ((point.latitude - start.latitude) * dx + (point.longitude - start.longitude) * dy) / (lineLength * lineLength)
-  ));
-  
-  const projX = start.latitude + t * dx;
-  const projY = start.longitude + t * dy;
-  
-  const distToLine = calculateDistance(point.latitude, point.longitude, projX, projY);
-  
-  return distToLine <= radiusKm;
+  return { minDistance, index: closestIndex };
 }
 
-// Check if two times are within a certain window
-function isTimeWithinWindow(time1: string, time2: string, windowMinutes: number = 30): boolean {
-  const date1 = new Date(time1);
-  const date2 = new Date(time2);
-  const diffMinutes = Math.abs((date1.getTime() - date2.getTime()) / 60000);
+function isAlongRouteInOrder(pickup: Location, dropoff: Location, roadPoints: [number, number][], radiusKm: number = 2.0): boolean {
+  const pickupMatch = findClosestPointOnRoute(pickup, roadPoints);
+  const dropoffMatch = findClosestPointOnRoute(dropoff, roadPoints);
+  
+  if (!(pickupMatch.minDistance <= radiusKm) || !(dropoffMatch.minDistance <= radiusKm) || pickupMatch.index > dropoffMatch.index) {
+    return false;
+  }
+  return true;
+}
+
+function isTimeWithinWindow(time1: string, time2: string, windowMinutes: number = 1440): boolean {
+  const diffMinutes = Math.abs((new Date(time1).getTime() - new Date(time2).getTime()) / 60000);
   return diffMinutes <= windowMinutes;
 }
 
-// ============ DATABASE FUNCTIONS ============
-
-// Get all pending delivery requests
-async function getPendingRequests(): Promise<DeliveryRequest[]> {
-  try {
-    const { data, error } = await supabase
-      .from('delivery_requests')
-      .select(`
-        *,
-        pickup_location:locations!delivery_requests_pickup_location_id_fkey(*),
-        dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*),
-        cargo:cargo_profiles(*),
-        receiver:receivers(*)
-      `)
-      .eq('delivery_status', 'Pending')
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      console.error('Error fetching pending requests:', error);
-      return [];
-    }
-    return data || [];
-  } catch (error) {
-    console.error('Error in getPendingRequests:', error);
-    return [];
-  }
+export async function getPendingRequests(): Promise<any[]> {
+  const { data } = await supabase.from('delivery_requests')
+    .select('*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)')
+    .eq('delivery_status', 'Pending');
+  return data || [];
 }
 
-// Get all active provider routes
 async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
-  try {
-    const now = new Date();
-    const oneWeekFromNow = new Date(now);
-    oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
+  const pastDay = new Date(); pastDay.setHours(pastDay.getHours() - 24);
+  const { data, error } = await supabase
+    .from('provider_routes')
+    .select('*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*), provider:users!provider_id(is_active)')
+    .gte('departure_time', pastDay.toISOString());
 
-    const { data, error } = await supabase
-      .from('provider_routes')
-      .select(`
-        *,
-        start_location:locations!provider_routes_start_location_id_fkey(*),
-        end_location:locations!provider_routes_end_location_id_fkey(*),
-        vehicle:vehicles(*)
-      `)
-      .gte('departure_time', now.toISOString())
-      .lte('departure_time', oneWeekFromNow.toISOString())
-      .order('departure_time', { ascending: true });
-
-    if (error) {
-      console.error('Error fetching provider routes:', error);
-      return [];
-    }
-    return data || [];
-  } catch (error) {
-    console.error('Error in getActiveProviderRoutes:', error);
+  if (error) {
+    console.error("Error fetching provider routes:", error);
     return [];
   }
+
+  // Strictly filter out any route where the provider is Offline (is_active === false)
+  return (data || []).filter((r: any) => r.provider?.is_active === true);
 }
 
-// Calculate match score for prioritizing matches
-function calculateMatchScore(request: DeliveryRequest, route: ProviderRoute): number {
-  let score = 0;
-
-  // Score based on distance proximity (closer is better)
-  const distToStart = calculateDistance(
-    request.pickup_location.latitude,
-    request.pickup_location.longitude,
-    route.start_location.latitude,
-    route.start_location.longitude
-  );
-  const distToEnd = calculateDistance(
-    request.dropoff_location.latitude,
-    request.dropoff_location.longitude,
-    route.end_location.latitude,
-    route.end_location.longitude
-  );
-  
-  // Lower distance = higher score
-  score += Math.max(0, 10 - distToStart) * 2;
-  score += Math.max(0, 10 - distToEnd) * 2;
-
-  // Score based on time proximity
-  if (request.scheduled_time) {
-    const timeMatch = isTimeWithinWindow(request.scheduled_time, route.departure_time, 15);
-    if (timeMatch) score += 5;
-  }
-
-  // Score based on emergency flag
-  score += request.emergency_flag ? 10 : 0;
-
-  return score;
-}
-
-// ============ EXPORTED FUNCTIONS ============
-
-// Find matches between providers and pending requests
 export async function findMatches(): Promise<MatchResult[]> {
-  try {
-    const [pendingRequests, providerRoutes] = await Promise.all([
-      getPendingRequests(),
-      getActiveProviderRoutes()
-    ]);
+  const [pendingRequests, providerRoutes] = await Promise.all([getPendingRequests(), getActiveProviderRoutes()]);
+  const matches: MatchResult[] = [];
+  const routePolylines = new Map<number, [number, number][]>();
 
-    const matches: MatchResult[] = [];
+  for (const route of providerRoutes) {
+    routePolylines.set(route.route_id, await getRoadPolyline(route.start_location, route.end_location));
+  }
 
-    for (const request of pendingRequests) {
-      for (const route of providerRoutes) {
-        // Skip if provider already has too many active deliveries
-        const { data: activeDeliveries } = await supabase
-          .from('deliveries')
-          .select('delivery_id')
-          .eq('provider_id', route.provider_id)
-          .is('completed_at', null);
+  for (const request of pendingRequests) {
+    if (!request.pickup_location || !request.dropoff_location) continue;
 
-        if (activeDeliveries && activeDeliveries.length >= 3) {
-          continue;
-        }
-
-        // Check if pickup location is near the route path
-        const isPickupNearRoute = isPointNearRoute(
-          request.pickup_location,
-          route.start_location,
-          route.end_location
-        );
-
-        // Check if dropoff location is near the route path
-        const isDropoffNearRoute = isPointNearRoute(
-          request.dropoff_location,
-          route.start_location,
-          route.end_location
-        );
-
-        // Check if scheduled time matches (within 30 minutes window)
-        const isTimeMatch = request.scheduled_time 
-          ? isTimeWithinWindow(request.scheduled_time, route.departure_time, 30)
-          : true; // If no scheduled time, it's a "Send Now" request
-
-        // If request matches the route path and time
-        if (isPickupNearRoute && isDropoffNearRoute && isTimeMatch) {
-          matches.push({
-            request,
-            route,
-            matchScore: calculateMatchScore(request, route)
-          });
-        }
+    for (const route of providerRoutes) {
+      const roadPoints = routePolylines.get(route.route_id) || [];
+      if (!isAlongRouteInOrder(request.pickup_location, request.dropoff_location, roadPoints, 2.0)) continue;
+      
+      const isTimeMatch = request.scheduled_time ? isTimeWithinWindow(request.scheduled_time, route.departure_time, 1440) : true;
+      if (isTimeMatch) {
+        matches.push({ request, route, matchScore: 100 });
       }
     }
-
-    // Sort matches by score (higher is better)
-    matches.sort((a, b) => b.matchScore - a.matchScore);
-
-    return matches;
-  } catch (error) {
-    console.error('Error finding matches:', error);
-    return [];
   }
+  return matches;
 }
 
-// Auto-match and create deliveries
 export async function autoMatchAndCreateDeliveries(): Promise<any[]> {
-  try {
-    const matches = await findMatches();
-    const processedMatches = [];
-    
-    for (const match of matches) {
-      // Check if request already has a delivery
-      const { data: existingDelivery } = await supabase
-        .from('deliveries')
-        .select('delivery_id')
-        .eq('request_id', match.request.request_id)
-        .maybeSingle();
-
-      if (existingDelivery) {
-        continue; // Skip if already matched
-      }
-
-      // Check if provider is available
-      const { data: providerDeliveries } = await supabase
-        .from('deliveries')
-        .select('*')
-        .eq('provider_id', match.route.provider_id)
-        .is('completed_at', null);
-
-      if (providerDeliveries && providerDeliveries.length >= 3) {
-        continue;
-      }
-
-      // Create delivery
-      const { data: delivery, error: deliveryError } = await supabase
-        .from('deliveries')
-        .insert({
-          request_id: match.request.request_id,
-          provider_id: match.route.provider_id,
-          vehicle_id: match.route.vehicle_id,
-          route_id: match.route.route_id,
-          accepted_at: new Date().toISOString(),
-          estimated_eta: new Date(Date.now() + 3600000).toISOString()
-        })
-        .select('*')
-        .single();
-
-      if (deliveryError) {
-        console.error('Error creating delivery:', deliveryError);
-        continue;
-      }
-
-      // Update delivery request status
-      await supabase
-        .from('delivery_requests')
-        .update({ 
-          delivery_status: 'Accepted',
-          scheduled_time: match.route.departure_time
-        })
-        .eq('request_id', match.request.request_id);
-
-      // Create escrow payment
-      await supabase
-        .from('escrow_payments')
-        .insert({
-          amount: match.request.estimated_cost,
-          delivery_id: delivery.delivery_id,
-          sender_id: match.request.sender_id,
-          provider_id: match.route.provider_id,
-          escrow_status: 'On hold',
-          emergency_frozen: false,
-          created_at: new Date().toISOString()
-        });
-
-      processedMatches.push({
-        delivery_id: delivery.delivery_id,
-        request_id: match.request.request_id,
-        provider_id: match.route.provider_id,
-        route_id: match.route.route_id
-      });
-    }
-
-    return processedMatches;
-  } catch (error) {
-    console.error('Error in autoMatchAndCreateDeliveries:', error);
-    return [];
-  }
+  // Propose model: We just find the matches and return them to the UI so the Provider can accept them.
+  const matches = await findMatches();
+  return matches.map(m => ({ request_id: m.request.request_id, route_id: m.route.route_id }));
 }
 
-// Get deliveries for a specific provider
 export async function getProviderDeliveries(providerId: number) {
-  try {
-    const { data, error } = await supabase
-      .from('deliveries')
-      .select(`
-        *,
-        delivery_requests:request_id(
-          *,
-          pickup_location:pickup_location_id(*),
-          dropoff_location:dropoff_location_id(*),
-          cargo:cargo_id(*),
-          receiver:receiver_id(*)
-        )
-      `)
-      .eq('provider_id', providerId)
-      .order('accepted_at', { ascending: false });
-
-    if (error) {
-      console.error('Error fetching provider deliveries:', error);
-      return [];
-    }
-    return data || [];
-  } catch (error) {
-    console.error('Error in getProviderDeliveries:', error);
-    return [];
-  }
+  const { data } = await supabase.from('deliveries').select('*, delivery_requests:request_id(*, pickup_location:pickup_location_id(*), dropoff_location:dropoff_location_id(*), cargo:cargo_id(*), receiver:receiver_id(*))').eq('provider_id', providerId).order('accepted_at', { ascending: false });
+  return data || [];
 }
 
-// ============ SUBSCRIPTION FUNCTIONS (FIXED) ============
-
-// Create a channel with callbacks properly configured
-function createChannel(channelName: string, filter: string, callback: (payload: any) => void) {
-  return supabase
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'delivery_requests',
-        filter: filter
-      },
-      callback
-    )
-    .subscribe((status) => {
-      console.log(`📡 Channel ${channelName} status: ${status}`);
-    });
+export function subscribeToNewRequests(callback: (payload: any) => void) {
+  return supabase.channel(`requests-${Date.now()}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'delivery_requests' }, callback).subscribe();
 }
 
-// Subscribe to new pending requests for real-time matching
-export function subscribeToNewRequests(
-  callback: (payload: any) => void
-) {
-  const channelName = `delivery-requests-${Date.now()}`;
-  return createChannel(
-    channelName,
-    `delivery_status=eq.Pending`,
-    callback
-  );
+export function subscribeToProviderRoutes(providerId: number, callback: (payload: any) => void) {
+  return supabase.channel(`routes-${providerId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, callback).subscribe();
 }
 
-// Subscribe to provider route updates
-export function subscribeToProviderRoutes(
-  providerId: number,
-  callback: (payload: any) => void
-) {
-  const channelName = `provider-routes-${providerId}-${Date.now()}`;
-  return supabase
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'provider_routes',
-        filter: `provider_id=eq.${providerId}`
-      },
-      callback
-    )
-    .subscribe((status) => {
-      console.log(`📡 Channel ${channelName} status: ${status}`);
-    });
+export function subscribeToDeliveryUpdates(providerId: number, callback: (payload: any) => void) {
+  return supabase.channel(`deliveries-${providerId}`).on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, callback).subscribe();
 }
 
-// Subscribe to delivery status changes for a specific provider
-export function subscribeToDeliveryUpdates(
-  providerId: number,
-  callback: (payload: any) => void
-) {
-  const channelName = `deliveries-${providerId}-${Date.now()}`;
-  return supabase
-    .channel(channelName)
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'deliveries',
-        filter: `provider_id=eq.${providerId}`
-      },
-      callback
-    )
-    .subscribe((status) => {
-      console.log(`📡 Channel ${channelName} status: ${status}`);
-    });
-}
+let globalMatchChannel: any = null;
+let globalMatchInterval: NodeJS.Timeout | null = null;
 
-// ============ BACKGROUND MATCHER ============
-
-let matcherInterval: NodeJS.Timeout | null = null;
-let subscriptions: any[] = [];
-
-// Start background matching service
 export function startBackgroundMatcher(): () => void {
-  console.log('🚀 Starting background matcher...');
-  
-  // Clear any existing subscriptions
-  stopBackgroundMatcher();
-
-  // Run initial match
-  autoMatchAndCreateDeliveries().then(matches => {
-    console.log(`📊 Initial matching found ${matches.length} matches`);
-  }).catch(error => {
-    console.error('❌ Initial matching error:', error);
-  });
-
-  // Set up interval to run every 30 seconds
-  matcherInterval = setInterval(async () => {
-    try {
-      const matches = await autoMatchAndCreateDeliveries();
-      if (matches.length > 0) {
-        console.log(`🎯 Background matcher found ${matches.length} new matches`);
-      }
-    } catch (error) {
-      console.error('❌ Background matcher error:', error);
-    }
-  }, 30000);
-
-  // Subscribe to new requests with proper channel creation
-  const newRequestSub = subscribeToNewRequests(async (payload) => {
-    console.log('📦 New request detected, running matching...');
-    try {
-      const matches = await autoMatchAndCreateDeliveries();
-      if (matches.length > 0) {
-        console.log(`🎯 Matched ${matches.length} requests instantly`);
-      }
-    } catch (error) {
-      console.error('❌ Error processing new request:', error);
-    }
-  });
-  
-  subscriptions.push(newRequestSub);
-
-  // Return cleanup function
-  return () => {
-    console.log('🛑 Cleaning up background matcher...');
-    stopBackgroundMatcher();
-  };
+  globalMatchChannel = supabase.channel('realtime-matcher')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'delivery_requests' }, () => autoMatchAndCreateDeliveries())
+    .subscribe();
+  return () => stopBackgroundMatcher();
 }
 
-// Stop background matcher
 export function stopBackgroundMatcher(): void {
-  if (matcherInterval) {
-    clearInterval(matcherInterval);
-    matcherInterval = null;
-  }
-  
-  // Unsubscribe all subscriptions
-  subscriptions.forEach(sub => {
-    try {
-      if (sub && typeof sub.unsubscribe === 'function') {
-        sub.unsubscribe();
-      }
-    } catch (error) {
-      console.error('Error unsubscribing:', error);
-    }
-  });
-  subscriptions = [];
-  
-  console.log('🛑 Background matcher stopped');
+  if (globalMatchChannel) { supabase.removeChannel(globalMatchChannel); globalMatchChannel = null; }
+  if (globalMatchInterval) { clearInterval(globalMatchInterval); globalMatchInterval = null; }
 }
-
-// Check if a provider is online and available
-export async function updateProviderStatus(providerId: number, isOnline: boolean) {
-  try {
-    const { error } = await supabase
-      .from('users')
-      .update({ 
-        is_active: isOnline 
-      })
-      .eq('user_id', providerId);
-
-    if (error) {
-      console.error('❌ Error updating provider status:', error);
-    } else {
-      console.log(`✅ Provider ${providerId} is now ${isOnline ? 'online' : 'offline'}`);
-    }
-  } catch (error) {
-    console.error('Error in updateProviderStatus:', error);
-  }
-}
-
-console.log('✅ Matching service loaded successfully!');
