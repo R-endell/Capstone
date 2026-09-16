@@ -13,6 +13,7 @@ import {
   Animated,
   Easing,
   Platform,
+  TextInput,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -35,11 +36,16 @@ export default function RegisterProviderScreen() {
   const [uploadingOrcr, setUploadingOrcr] = useState(false);
   const [uploadingLicense, setUploadingLicense] = useState(false);
 
+  // License details
+  const [licenseNumber, setLicenseNumber] = useState('');
+  const [licenseExpiry, setLicenseExpiry] = useState(''); // YYYY-MM-DD
+
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const introAnim = useRef(new Animated.Value(0)).current;
   const orcrAnim = useRef(new Animated.Value(0)).current;
   const licenseAnim = useRef(new Animated.Value(0)).current;
+  const detailsAnim = useRef(new Animated.Value(0)).current;
   const buttonAnim = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
@@ -58,9 +64,10 @@ export default function RegisterProviderScreen() {
       animate(introAnim, 150),
       animate(orcrAnim, 300),
       animate(licenseAnim, 450),
-      animate(buttonAnim, 600),
+      animate(detailsAnim, 600),
+      animate(buttonAnim, 750),
     ]).start();
-  }, [headerAnim, introAnim, orcrAnim, licenseAnim, buttonAnim]);
+  }, [headerAnim, introAnim, orcrAnim, licenseAnim, detailsAnim, buttonAnim]);
 
   const animatePressIn = () => {
     Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
@@ -146,7 +153,7 @@ export default function RegisterProviderScreen() {
           if (error.message?.includes('bucket not found')) {
             await supabase.storage.createBucket('provider-documents', { public: true });
 
-            const { data: retryData, error: retryError } = await supabase.storage
+            const { error: retryError } = await supabase.storage
               .from('provider-documents')
               .upload(fileName, arrayBuffer, {
                 contentType: `image/${fileExt}`,
@@ -187,23 +194,25 @@ export default function RegisterProviderScreen() {
       Alert.alert('Required', "Please upload both OR/CR and Driver's License.");
       return;
     }
+    if (!licenseNumber.trim()) {
+      Alert.alert('Required', "Please enter your Driver's License number.");
+      return;
+    }
+    if (!licenseExpiry.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry)) {
+      Alert.alert('Required', 'Please enter a valid license expiry date (YYYY-MM-DD).');
+      return;
+    }
 
     setLoading(true);
     try {
-      console.log('=== Starting Provider Registration ===');
+      console.log('=== Starting Provider Application ===');
 
       const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError) throw new Error('Authentication error: ' + authError.message);
+      if (!user) throw new Error('No user logged in');
 
-      if (authError) {
-        console.error('Auth error:', authError);
-        throw new Error('Authentication error: ' + authError.message);
-      }
-      if (!user) {
-        console.error('No user found');
-        throw new Error('No user logged in');
-      }
-
-      let { data: userData, error: userError } = await supabase
+      // Get or create users row
+      let { data: userData } = await supabase
         .from('users')
         .select('user_id, first_name, last_name, email')
         .eq('auth_id', user.id)
@@ -217,7 +226,7 @@ export default function RegisterProviderScreen() {
             first_name: user.user_metadata?.first_name || 'User',
             last_name: user.user_metadata?.last_name || '',
             email: user.email || '',
-            is_verified: true,
+            is_verified: false,   // NOT verified until admin approves
             is_active: true,
           })
           .select('user_id, first_name, last_name, email')
@@ -226,18 +235,14 @@ export default function RegisterProviderScreen() {
         if (createError) throw new Error('Failed to create user: ' + createError.message);
         userData = newUser;
       }
-
       if (!userData) throw new Error('Failed to get or create user');
 
-      const { data: roleData, error: roleError } = await supabase
+      // Get or create Provider role
+      let { data: providerRole } = await supabase
         .from('roles')
         .select('role_id, role_name')
         .eq('role_name', 'Provider')
         .maybeSingle();
-
-      if (roleError) throw new Error('Error fetching Provider role: ' + roleError.message);
-
-      let providerRole = roleData;
 
       if (!providerRole) {
         const { data: newRole, error: createRoleError } = await supabase
@@ -245,13 +250,13 @@ export default function RegisterProviderScreen() {
           .insert({ role_name: 'Provider' })
           .select('role_id, role_name')
           .maybeSingle();
-
         if (createRoleError) throw new Error('Failed to create Provider role: ' + createRoleError.message);
-        if (!newRole) throw new Error('Failed to create Provider role');
         providerRole = newRole;
       }
+      if (!providerRole) throw new Error('Failed to resolve Provider role');
 
-      const { data: existingRole, error: checkError } = await supabase
+      // Check if user already has Provider role
+      const { data: existingRole } = await supabase
         .from('user_roles')
         .select('*')
         .eq('user_id', userData.user_id)
@@ -259,49 +264,89 @@ export default function RegisterProviderScreen() {
         .maybeSingle();
 
       if (existingRole) {
+        // Check if a verification row already exists too
+        const { data: existingVerif } = await supabase
+          .from('provider_verifications')
+          .select('verification_id, verification_status')
+          .eq('provider_id', userData.user_id)
+          .maybeSingle();
+
+        const statusMsg = existingVerif?.verification_status
+          ? `Your application is currently: ${existingVerif.verification_status}.`
+          : 'You are already registered as a Provider.';
+
         Alert.alert(
           'Already Registered',
-          'You are already registered as a Provider!',
+          statusMsg,
           [{ text: 'OK', onPress: () => navigation.goBack() }]
         );
         setLoading(false);
         return;
       }
 
+      // Assign Provider role
       const { error: assignError } = await supabase
         .from('user_roles')
-        .insert({
-          user_id: userData.user_id,
-          role_id: providerRole.role_id,
-        });
-
+        .insert({ user_id: userData.user_id, role_id: providerRole.role_id });
       if (assignError) throw new Error('Failed to assign role: ' + assignError.message);
 
-      const { error: updateError } = await supabase.auth.updateUser({
+      // Submit verification row (Pending — admin reviews this)
+      const { error: verifError } = await supabase
+        .from('provider_verifications')
+        .insert({
+          provider_id: userData.user_id,
+          drivers_license_number: licenseNumber.trim(),
+          license_expiry_date: licenseExpiry.trim(),
+          selfie_photo: driversLicenseImage,
+          verification_status: 'Pending',
+        });
+
+      if (verifError) {
+        console.error('Verification insert error:', verifError);
+        throw new Error('Failed to submit verification: ' + verifError.message);
+      }
+
+      // Optional vehicle row (placeholder until real vehicle details collected)
+      const { error: vehicleError } = await supabase
+        .from('vehicles')
+        .insert({
+          provider_id: userData.user_id,
+          vehicle_type: 'Unspecified',
+          plate_number: `TEMP-${userData.user_id}-${Date.now()}`,
+          max_volume_liters: 0,
+          max_weight_kg: 0,
+          cargo_length_cm: 0,
+          cargo_width_cm: 0,
+          cargo_height_cm: 0,
+          vehicle_doc: orcrImage,
+          verification_status: 'Pending',
+        });
+      if (vehicleError) console.warn('Vehicle insert failed (non-blocking):', vehicleError);
+
+      // Update auth metadata (does not affect DB tables)
+      await supabase.auth.updateUser({
         data: {
           role: 'Provider',
           provider_documents: {
             orcr: orcrImage,
             drivers_license: driversLicenseImage,
+            license_number: licenseNumber.trim(),
             registered_at: new Date().toISOString(),
           },
         },
       });
 
-      if (updateError) console.warn('Failed to update auth metadata, but role was assigned');
-
       Alert.alert(
-        'Success! 🎉',
-        'You have been registered as a Provider! You can now switch to Provider mode.',
+        'Application Submitted',
+        'Your provider application is pending admin approval. You will be notified once verified.',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
 
     } catch (error: any) {
-      console.error('=== Registration Error ===');
-      console.error('Error:', error);
+      console.error('=== Registration Error ===', error);
       Alert.alert(
         'Registration Error',
-        error.message || 'Failed to register as provider. Please try again.'
+        error.message || 'Failed to submit application. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -309,6 +354,8 @@ export default function RegisterProviderScreen() {
   };
 
   const bothUploaded = !!orcrImage && !!driversLicenseImage;
+  const detailsFilled = licenseNumber.trim().length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry.trim());
+  const canSubmit = bothUploaded && detailsFilled;
 
   /* ------------------------------------------------------------------ */
   /* Render                                                              */
@@ -345,9 +392,9 @@ export default function RegisterProviderScreen() {
             <Ionicons name="shield-checkmark" size={22} color={ORANGE} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.introTitle}>Verify your identity</Text>
+            <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Upload clear photos of your documents to get verified and start accepting deliveries.
+              Submit your documents for admin review. You'll be notified once approved.
             </Text>
           </View>
         </Animated.View>
@@ -377,16 +424,29 @@ export default function RegisterProviderScreen() {
               License
             </Text>
           </View>
-          <View style={[styles.progressLine, bothUploaded && styles.progressLineDone]} />
+          <View style={[styles.progressLine, detailsFilled && styles.progressLineDone]} />
           <View style={styles.progressStep}>
-            <View style={[styles.progressDot, bothUploaded && styles.progressDotDone]}>
-              {bothUploaded ? (
+            <View style={[styles.progressDot, detailsFilled && styles.progressDotDone]}>
+              {detailsFilled ? (
                 <Ionicons name="checkmark" size={12} color="#FFFFFF" />
               ) : (
                 <Text style={styles.progressDotText}>3</Text>
               )}
             </View>
-            <Text style={[styles.progressLabel, bothUploaded && styles.progressLabelDone]}>
+            <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>
+              Details
+            </Text>
+          </View>
+          <View style={[styles.progressLine, canSubmit && styles.progressLineDone]} />
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, canSubmit && styles.progressDotDone]}>
+              {canSubmit ? (
+                <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+              ) : (
+                <Text style={styles.progressDotText}>4</Text>
+              )}
+            </View>
+            <Text style={[styles.progressLabel, canSubmit && styles.progressLabelDone]}>
               Ready
             </Text>
           </View>
@@ -498,11 +558,52 @@ export default function RegisterProviderScreen() {
           </TouchableOpacity>
         </Animated.View>
 
+        {/* License details */}
+        <Animated.View style={[styles.detailsSection, fadeUp(detailsAnim, 20)]}>
+          <View style={styles.uploadHeader}>
+            <View style={styles.uploadTitleRow}>
+              <View style={styles.uploadNumberBadge}>
+                <Text style={styles.uploadNumberText}>3</Text>
+              </View>
+              <View>
+                <Text style={styles.uploadTitle}>License Details</Text>
+                <Text style={styles.uploadSubtitle}>Enter the information on your license</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Driver's License Number</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. D06-11-009385"
+              placeholderTextColor="#9CA3AF"
+              value={licenseNumber}
+              onChangeText={setLicenseNumber}
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>License Expiry Date</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="YYYY-MM-DD (e.g. 2026-12-31)"
+              placeholderTextColor="#9CA3AF"
+              value={licenseExpiry}
+              onChangeText={setLicenseExpiry}
+              keyboardType="numbers-and-punctuation"
+              autoCorrect={false}
+            />
+          </View>
+        </Animated.View>
+
         {/* Info note */}
         <Animated.View style={[styles.infoNote, fadeUp(buttonAnim, 20)]}>
           <Ionicons name="information-circle-outline" size={16} color="#3B82F6" />
           <Text style={styles.infoNoteText}>
-            Your documents are stored securely and only used for verification purposes.
+            Your application will be reviewed by an admin. You'll be able to accept deliveries once approved.
           </Text>
         </Animated.View>
 
@@ -517,23 +618,23 @@ export default function RegisterProviderScreen() {
           <TouchableOpacity
             style={[
               styles.registerButton,
-              !bothUploaded && styles.registerButtonDisabled,
+              !canSubmit && styles.registerButtonDisabled,
             ]}
             onPress={handleRegisterProvider}
             onPressIn={animatePressIn}
             onPressOut={animatePressOut}
-            disabled={loading || !bothUploaded}
+            disabled={loading || !canSubmit}
             activeOpacity={0.9}
           >
             {loading ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="small" color="#FFF" />
-                <Text style={styles.registerButtonText}>Registering...</Text>
+                <Text style={styles.registerButtonText}>Submitting...</Text>
               </View>
             ) : (
               <>
                 <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
-                <Text style={styles.registerButtonText}>Register as Provider</Text>
+                <Text style={styles.registerButtonText}>Submit for Verification</Text>
               </>
             )}
           </TouchableOpacity>
@@ -661,7 +762,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 2,
     backgroundColor: '#E5E7EB',
-    marginHorizontal: 8,
+    marginHorizontal: 6,
     marginBottom: 20,
   },
   progressLineDone: { backgroundColor: '#10B981' },
@@ -800,6 +901,28 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     letterSpacing: 0.2,
+  },
+
+  /* Details section */
+  detailsSection: { marginBottom: 20 },
+  fieldGroup: { marginBottom: 14 },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 6,
+    letterSpacing: 0.2,
+  },
+  textInput: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '600',
   },
 
   /* Info note */

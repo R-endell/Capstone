@@ -22,6 +22,9 @@ import { supabase } from '../../../utils/supabase';
 /** Brand */
 const ORANGE = '#FA7A25';
 
+// Provider registration state
+type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
+
 // Mock Data for History View
 const MOCK_HISTORY = [
   {
@@ -32,7 +35,7 @@ const MOCK_HISTORY = [
     pickup: 'Landers Superstore Cebu',
     pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
     dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
+    dropoffSub: 'Gov. M. Cueno Ave Main Entrance',
     provider: 'Jun Joseph Pestaño',
     tracking: 'CXV34DA675FAS',
     price: '24.00',
@@ -45,7 +48,7 @@ const MOCK_HISTORY = [
     pickup: 'Landers Superstore Cebu',
     pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
     dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
+    dropoffSub: 'Gov. M. Cueno Ave Main Entrance',
     provider: 'Jun Joseph Pestaño',
     tracking: 'CXV34DA675FAS',
     price: '24.00',
@@ -58,7 +61,7 @@ const MOCK_HISTORY = [
     pickup: 'Landers Superstore Cebu',
     pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
     dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
+    dropoffSub: 'Gov. M. Cueno Ave Main Entrance',
     provider: 'Jun Joseph Pestaño',
     tracking: 'CXV34DA675FAS',
     price: '24.00',
@@ -75,7 +78,7 @@ export default function AccountScreen() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
   const [userRole, setUserRole] = useState<string>('Sender');
-  const [isProviderRegistered, setIsProviderRegistered] = useState(false);
+  const [providerState, setProviderState] = useState<ProviderState>('none');
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
@@ -142,7 +145,7 @@ export default function AccountScreen() {
   }, [showHistory, historyAnim]);
 
   /* ------------------------------------------------------------------ */
-  /* Fetch user data                                                     */
+  /* Fetch user data + provider verification state                       */
   /* ------------------------------------------------------------------ */
   useFocusEffect(
     useCallback(() => {
@@ -151,55 +154,89 @@ export default function AccountScreen() {
           setImgKey(Date.now());
 
           const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-            setUserEmail(user.email || 'john.doe@example.com');
+          if (!user) return;
 
-            const { data: userData, error: userError } = await supabase
-              .from('users')
-              .select('user_id, first_name, last_name, profile_photo')
-              .eq('auth_id', user.id)
-              .single();
+          setUserEmail(user.email || 'john.doe@example.com');
 
-            if (userError) {
-              console.error('Error fetching user:', userError);
-              return;
-            }
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('user_id, first_name, last_name, profile_photo')
+            .eq('auth_id', user.id)
+            .single();
 
-            if (userData) {
-              setUserId(userData.user_id);
-              if (userData.first_name) setFirstName(userData.first_name);
-              if (userData.last_name) setLastName(userData.last_name);
-
-              if (userData.profile_photo) {
-                setAvatarUrl(userData.profile_photo);
-                setImageError(false);
-              }
-
-              const { data: userRoles, error: rolesError } = await supabase
-                .from('user_roles')
-                .select(`
-                  role_id,
-                  roles!inner (role_name)
-                `)
-                .eq('user_id', userData.user_id);
-
-              if (rolesError) {
-                console.error('Error fetching roles:', rolesError);
-                return;
-              }
-
-              if (userRoles && userRoles.length > 0) {
-                const hasProviderRole = userRoles.some(
-                  (ur: any) => ur.roles?.role_name === 'Provider'
-                );
-                setIsProviderRegistered(hasProviderRole);
-                setUserRole(hasProviderRole ? 'Provider' : 'Sender');
-              } else {
-                setUserRole('Sender');
-                setIsProviderRegistered(false);
-              }
-            }
+          if (userError) {
+            console.error('Error fetching user:', userError);
+            return;
           }
+          if (!userData) return;
+
+          setUserId(userData.user_id);
+          if (userData.first_name) setFirstName(userData.first_name);
+          if (userData.last_name) setLastName(userData.last_name);
+
+          if (userData.profile_photo) {
+            setAvatarUrl(userData.profile_photo);
+            setImageError(false);
+          }
+
+          // ---- Check role ----
+          const { data: userRoles, error: rolesError } = await supabase
+            .from('user_roles')
+            .select(`
+              role_id,
+              roles!inner (role_name)
+            `)
+            .eq('user_id', userData.user_id);
+
+          if (rolesError) {
+            console.error('Error fetching roles:', rolesError);
+            return;
+          }
+
+          const hasProviderRole = (userRoles || []).some(
+            (ur: any) => ur.roles?.role_name === 'Provider'
+          );
+
+          if (!hasProviderRole) {
+            setUserRole('Sender');
+            setProviderState('none');
+            return;
+          }
+
+          // ---- Has Provider role → check verification status ----
+          setUserRole('Provider');
+
+          const { data: verif, error: verifError } = await supabase
+            .from('provider_verifications')
+            .select('verification_status, submitted_at')
+            .eq('provider_id', userData.user_id)
+            .order('submitted_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (verifError) {
+            console.error('Error fetching verification:', verifError);
+            // fallback: treat as pending if we can't tell
+            setProviderState('pending');
+            return;
+          }
+
+          if (!verif) {
+            // Has role but no verification row → treat as pending (incomplete)
+            setProviderState('pending');
+            return;
+          }
+
+          const status = (verif.verification_status || '').toLowerCase();
+
+          if (status === 'approved' || status === 'verified') {
+            setProviderState('approved');
+          } else if (status === 'rejected') {
+            setProviderState('rejected');
+          } else {
+            setProviderState('pending');
+          }
+
         } catch (error) {
           console.error('Error fetching user data:', error);
         }
@@ -237,12 +274,44 @@ export default function AccountScreen() {
     navigation.navigate('Settings');
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Provider-switch handler — THE KEY LOGIC                             */
+  /* ------------------------------------------------------------------ */
   const handleSwitchToProvider = () => {
-    if (isProviderRegistered) {
+    if (providerState === 'approved') {
+      // ✅ Verified — enter provider mode
       navigation.navigate('ProviderTabs', { screen: 'Task' });
-    } else {
-      navigation.navigate('RegisterProvider');
+      return;
     }
+
+    if (providerState === 'pending') {
+      // ⏳ Awaiting admin approval — block, inform
+      Alert.alert(
+        'Awaiting Approval',
+        'Your provider application is pending admin review. You will be able to switch to Provider Mode once it has been approved.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    if (providerState === 'rejected') {
+      // ❌ Rejected — offer re-apply
+      Alert.alert(
+        'Application Rejected',
+        'Your previous provider application was rejected by an admin. You can submit a new application with updated documents.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Re-apply',
+            onPress: () => navigation.navigate('RegisterProvider'),
+          },
+        ]
+      );
+      return;
+    }
+
+    // providerState === 'none' → not registered yet
+    navigation.navigate('RegisterProvider');
   };
 
   const handlePaymentMethodsPress = () => {
@@ -270,6 +339,27 @@ export default function AccountScreen() {
   });
 
   /* ------------------------------------------------------------------ */
+  /* Derived UI values                                                   */
+  /* ------------------------------------------------------------------ */
+  const providerMenuTitle = (() => {
+    switch (providerState) {
+      case 'approved': return 'Switch to Provider Mode';
+      case 'pending':  return 'Provider Application Pending';
+      case 'rejected': return 'Provider Application Rejected';
+      default:         return 'Register as a Provider';
+    }
+  })();
+
+  const providerMenuSubtext = (() => {
+    switch (providerState) {
+      case 'approved': return 'Manage delivery tasks';
+      case 'pending':  return 'Waiting for admin approval';
+      case 'rejected': return 'Tap to re-apply with new documents';
+      default:         return 'Earn by delivering packages';
+    }
+  })();
+
+  /* ------------------------------------------------------------------ */
   /* History Sub-Screen                                                  */
   /* ------------------------------------------------------------------ */
   if (showHistory) {
@@ -277,7 +367,6 @@ export default function AccountScreen() {
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-        {/* Header */}
         <View style={[styles.historyHeader, { paddingTop: insets.top + 16 }]}>
           <TouchableOpacity
             onPress={() => setShowHistory(false)}
@@ -311,7 +400,6 @@ export default function AccountScreen() {
                 <Text style={styles.hCardDate}>{item.date}   {item.time}</Text>
 
                 <View style={styles.hCardBody}>
-                  {/* Left: Timeline */}
                   <View style={styles.hCardTimeline}>
                     <View style={styles.hTimelinePoint}>
                       <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
@@ -330,7 +418,6 @@ export default function AccountScreen() {
                     </View>
                   </View>
 
-                  {/* Right: Provider */}
                   <View style={styles.hCardProvider}>
                     <View style={styles.hAvatar}>
                       <Ionicons name="person" size={22} color="#FFF" />
@@ -373,7 +460,6 @@ export default function AccountScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
       <Animated.View
         style={[
           styles.mainHeader,
@@ -422,14 +508,61 @@ export default function AccountScreen() {
         <Animated.View style={fadeUp(contentAnim, 20)}>
           {/* Role Badge */}
           <View style={styles.roleBadgeRow}>
-            <View style={[styles.roleBadge, isProviderRegistered ? styles.roleBadgeProvider : styles.roleBadgeSender]}>
+            <View
+              style={[
+                styles.roleBadge,
+                providerState === 'approved'
+                  ? styles.roleBadgeProvider
+                  : providerState === 'pending'
+                  ? styles.roleBadgePending
+                  : providerState === 'rejected'
+                  ? styles.roleBadgeRejected
+                  : styles.roleBadgeSender,
+              ]}
+            >
               <Ionicons
-                name={isProviderRegistered ? 'shield-checkmark' : 'cube-outline'}
+                name={
+                  providerState === 'approved'
+                    ? 'shield-checkmark'
+                    : providerState === 'pending'
+                    ? 'time-outline'
+                    : providerState === 'rejected'
+                    ? 'close-circle-outline'
+                    : 'cube-outline'
+                }
                 size={12}
-                color={isProviderRegistered ? '#10B981' : ORANGE}
+                color={
+                  providerState === 'approved'
+                    ? '#10B981'
+                    : providerState === 'pending'
+                    ? '#F59E0B'
+                    : providerState === 'rejected'
+                    ? '#EF4444'
+                    : ORANGE
+                }
               />
-              <Text style={[styles.roleBadgeText, { color: isProviderRegistered ? '#10B981' : ORANGE }]}>
-                {isProviderRegistered ? 'PROVIDER' : 'SENDER'}
+              <Text
+                style={[
+                  styles.roleBadgeText,
+                  {
+                    color:
+                      providerState === 'approved'
+                        ? '#10B981'
+                        : providerState === 'pending'
+                        ? '#F59E0B'
+                        : providerState === 'rejected'
+                        ? '#EF4444'
+                        : ORANGE,
+                  },
+                ]}
+              >
+                {providerState === 'approved'
+                  ? 'PROVIDER'
+                  : providerState === 'pending'
+                  ? 'PENDING'
+                  : providerState === 'rejected'
+                  ? 'REJECTED'
+                  : 'SENDER'}
               </Text>
             </View>
           </View>
@@ -438,33 +571,56 @@ export default function AccountScreen() {
 
           {/* Menu Card */}
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToProvider} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleSwitchToProvider}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FFF7ED' }]}>
                   <Ionicons name="swap-horizontal-outline" size={18} color={ORANGE} />
                 </View>
                 <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>
-                    {isProviderRegistered ? 'Switch to Provider Mode' : 'Register as a Provider'}
-                  </Text>
+                  <Text style={styles.menuText}>{providerMenuTitle}</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {isProviderRegistered ? 'Manage delivery tasks' : 'Earn by delivering packages'}
+                    {providerMenuSubtext}
                   </Text>
                 </View>
               </View>
-              {isProviderRegistered ? (
+
+              {providerState === 'approved' && (
                 <View style={styles.providerBadge}>
                   <View style={styles.providerBadgeDot} />
                   <Text style={styles.providerBadgeText}>Active</Text>
                 </View>
-              ) : (
+              )}
+
+              {providerState === 'pending' && (
+                <View style={styles.pendingBadge}>
+                  <Ionicons name="time-outline" size={10} color="#F59E0B" />
+                  <Text style={styles.pendingBadgeText}>Pending</Text>
+                </View>
+              )}
+
+              {providerState === 'rejected' && (
+                <View style={styles.rejectedBadge}>
+                  <Ionicons name="close-circle-outline" size={10} color="#EF4444" />
+                  <Text style={styles.rejectedBadgeText}>Rejected</Text>
+                </View>
+              )}
+
+              {providerState === 'none' && (
                 <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
               )}
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={handlePaymentMethodsPress} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handlePaymentMethodsPress}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#EFF6FF' }]}>
                   <Ionicons name="card-outline" size={18} color="#3B82F6" />
@@ -479,7 +635,11 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => setShowHistory(true)}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F0FDF4' }]}>
                   <Ionicons name="time-outline" size={18} color="#10B981" />
@@ -495,9 +655,12 @@ export default function AccountScreen() {
 
           <Text style={[styles.sectionTitle, { marginTop: 24 }]}>General</Text>
 
-          {/* General Menu */}
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSettingsPress} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleSettingsPress}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F3F4F6' }]}>
                   <Ionicons name="settings-outline" size={18} color="#6B7280" />
@@ -512,7 +675,11 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleLogoutConfirm}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FEF2F2' }]}>
                   <Ionicons name="log-out-outline" size={18} color="#EF4444" />
@@ -639,6 +806,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF7ED',
     borderColor: '#FFE4D2',
   },
+  roleBadgePending: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  roleBadgeRejected: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
   roleBadgeText: {
     fontSize: 10,
     fontWeight: '800',
@@ -730,6 +905,40 @@ const styles = StyleSheet.create({
   },
   providerBadgeText: {
     color: '#10B981',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  pendingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  pendingBadgeText: {
+    color: '#F59E0B',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  rejectedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  rejectedBadgeText: {
+    color: '#EF4444',
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
