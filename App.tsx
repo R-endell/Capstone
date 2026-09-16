@@ -114,13 +114,13 @@ function MainTabs() {
         },
         tabBarActiveTintColor: '#F27024',
         tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: { 
-          backgroundColor: '#FFFFFF', 
-          borderTopWidth: 1, 
-          borderTopColor: '#E5E7EB', 
-          height: 60, 
-          paddingBottom: 8, 
-          paddingTop: 2 
+        tabBarStyle: {
+          backgroundColor: '#FFFFFF',
+          borderTopWidth: 1,
+          borderTopColor: '#E5E7EB',
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 2,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
         headerShown: false,
@@ -151,13 +151,13 @@ function ProviderTabs() {
         },
         tabBarActiveTintColor: '#F27024',
         tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: { 
-          backgroundColor: '#FFFFFF', 
-          borderTopWidth: 1, 
-          borderTopColor: '#E5E7EB', 
-          height: 60, 
-          paddingBottom: 8, 
-          paddingTop: 2 
+        tabBarStyle: {
+          backgroundColor: '#FFFFFF',
+          borderTopWidth: 1,
+          borderTopColor: '#E5E7EB',
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 2,
         },
         tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
         headerShown: false,
@@ -179,7 +179,7 @@ export default function App() {
 
   useEffect(() => {
     console.log('🚀 App starting...');
-    
+
     // Start background matcher when app starts
     try {
       matcherCleanupRef.current = startBackgroundMatcher();
@@ -192,7 +192,7 @@ export default function App() {
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
         console.log('📱 App came to foreground, restarting matcher...');
-        
+
         // Stop existing matcher if any
         if (matcherCleanupRef.current) {
           try {
@@ -202,7 +202,7 @@ export default function App() {
           }
           matcherCleanupRef.current = null;
         }
-        
+
         // Start new matcher
         try {
           matcherCleanupRef.current = startBackgroundMatcher();

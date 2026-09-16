@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Alert, Image, RefreshControl,
+  Platform, ActivityIndicator, Alert, Image, RefreshControl,
+  Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
+
+const ORANGE = '#F27024';
 
 type Party = {
   user_id: number;
@@ -44,6 +47,25 @@ const formatChatTime = (timestamp: string) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
+/** Group messages by day for date separators */
+const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
+  if (!previous) return true;
+  const currDate = new Date(current.sent_at).toDateString();
+  const prevDate = new Date(previous.sent_at).toDateString();
+  return currDate !== prevDate;
+};
+
+const formatDateSeparator = (timestamp: string) => {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(now.getDate() - 1);
+
+  if (date.toDateString() === now.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+};
+
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -67,7 +89,68 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
 
-  /* ---------------- Current user ---------------- */
+  // Animations
+  const listHeaderAnim = useRef(new Animated.Value(0)).current;
+  const listAnim = useRef(new Animated.Value(0)).current;
+  const detailHeaderAnim = useRef(new Animated.Value(0)).current;
+  const detailAnim = useRef(new Animated.Value(0)).current;
+  const inputAnim = useRef(new Animated.Value(0)).current;
+  const sendScale = useRef(new Animated.Value(1)).current;
+
+  /* ------------------------------------------------------------------ */
+  /* Entrance animations                                                 */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    const animate = (value: Animated.Value, delay: number, duration = 500) =>
+      Animated.timing(value, {
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+
+    if (!selectedRoom) {
+      listHeaderAnim.setValue(0);
+      listAnim.setValue(0);
+      Animated.parallel([
+        animate(listHeaderAnim, 0),
+        animate(listAnim, 150),
+      ]).start();
+    } else {
+      detailHeaderAnim.setValue(0);
+      detailAnim.setValue(0);
+      inputAnim.setValue(0);
+      Animated.parallel([
+        animate(detailHeaderAnim, 0),
+        animate(detailAnim, 120),
+        animate(inputAnim, 240),
+      ]).start();
+    }
+  }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
+
+  const fadeUp = (value: Animated.Value, distance = 20) => ({
+    opacity: value,
+    transform: [
+      {
+        translateY: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [distance, 0],
+        }),
+      },
+    ],
+  });
+
+  const animateSendPressIn = () => {
+    Animated.spring(sendScale, { toValue: 0.9, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
+  };
+  const animateSendPressOut = () => {
+    Animated.spring(sendScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Current user                                                        */
+  /* ------------------------------------------------------------------ */
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
@@ -79,20 +162,20 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return userRecord?.user_id || null;
   };
 
-  /* ---------------- Fetch conversations ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Fetch conversations                                                 */
+  /* ------------------------------------------------------------------ */
   const fetchConversations = async () => {
     const userId = currentUserId.current || (await getCurrentUserId());
     if (!userId) { setLoading(false); setRefreshing(false); return; }
     currentUserId.current = userId;
 
     try {
-      // Deliveries where the user is the provider
       const { data: providerDeliveries } = await supabase
         .from('deliveries')
         .select('delivery_id')
         .eq('provider_id', userId);
 
-      // Deliveries whose parent request was sent by the user
       const { data: senderRequests } = await supabase
         .from('delivery_requests')
         .select('request_id')
@@ -119,7 +202,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         return;
       }
 
-      // Rooms for those deliveries
       const { data: rooms, error: roomError } = await supabase
         .from('chat_rooms')
         .select('room_id, delivery_id')
@@ -191,7 +273,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  /* ---------------- Fetch messages ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Fetch messages                                                      */
+  /* ------------------------------------------------------------------ */
   const fetchMessages = async (roomId: number, olderThan?: string) => {
     let query = supabase
       .from('chat_messages')
@@ -205,7 +289,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return data as ChatMessage[];
   };
 
-  /* ---------------- Open / close ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Open / close conversation                                           */
+  /* ------------------------------------------------------------------ */
   const openConversation = async (room: ChatRoom) => {
     setSelectedRoom(room);
     const msgs = await fetchMessages(room.room_id);
@@ -228,11 +314,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const closeConversation = () => {
     if (subscription.current) { subscription.current.unsubscribe(); subscription.current = null; }
+    Keyboard.dismiss();
     setSelectedRoom(null);
     setMessages([]);
   };
 
-  /* ---------------- Realtime for open room ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Realtime for open room                                              */
+  /* ------------------------------------------------------------------ */
   const subscribeToRoom = (roomId: number) => {
     if (subscription.current) subscription.current.unsubscribe();
     subscription.current = supabase
@@ -255,7 +344,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .subscribe();
   };
 
-  /* ---------------- Load older ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Load older                                                          */
+  /* ------------------------------------------------------------------ */
   const loadOlderMessages = async () => {
     if (loadMore || !hasMore || !selectedRoom) return;
     setLoadMore(true);
@@ -267,7 +358,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (older.length > 0) setMessages(prev => [...older.reverse(), ...prev]);
   };
 
-  /* ---------------- Send ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Send                                                                */
+  /* ------------------------------------------------------------------ */
   const sendMessage = async () => {
     const trimmed = newMessage.trim();
     if (!trimmed || !selectedRoom || !currentUserId.current) return;
@@ -312,7 +405,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  /* ---------------- Auto-open from route param ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Auto-open from route param                                          */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const tryAutoOpen = async () => {
       if (!openRoomIdParam) return;
@@ -332,7 +427,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRoomIdParam, conversations.length]);
 
-  /* ---------------- Lifecycle ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Lifecycle                                                           */
+  /* ------------------------------------------------------------------ */
   useFocusEffect(
     useCallback(() => {
       if (!selectedRoom) fetchConversations();
@@ -360,223 +457,865 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
   }, []);
 
-  /* ---------------- Renderers ---------------- */
-  const renderConversationItem = ({ item }: { item: ChatRoom }) => (
-    <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)}>
-      <View style={styles.avatar}>
-        {item.other.profile_photo ? (
-          <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
+  /* ------------------------------------------------------------------ */
+  /* Avatar helper                                                       */
+  /* ------------------------------------------------------------------ */
+  const renderAvatar = (party: Party, size: number, badgeColor?: string) => {
+    const initials = `${party.first_name?.charAt(0) || '?'}${party.last_name?.charAt(0) || ''}`;
+    return (
+      <View style={{ width: size, height: size, position: 'relative' }}>
+        {party.profile_photo ? (
+          <Image
+            source={{ uri: party.profile_photo }}
+            style={{
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              backgroundColor: '#F3F4F6',
+            }}
+          />
         ) : (
-          <Text style={styles.avatarText}>
-            {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
-          </Text>
-        )}
-      </View>
-      <View style={styles.chatInfo}>
-        <Text style={styles.chatName}>
-          {item.other.first_name} {item.other.last_name}
-        </Text>
-        <Text style={styles.chatLastMsg} numberOfLines={1}>
-          {item.latest_message || 'Say hi 👋'}
-        </Text>
-      </View>
-      <View style={styles.chatRight}>
-        {item.latest_sent_at && (
-          <Text style={styles.chatTime}>{formatChatTime(item.latest_sent_at)}</Text>
-        )}
-        {item.unread_count > 0 && (
-          <View style={styles.unreadBadge}>
-            <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+          <View
+            style={{
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              backgroundColor: ORANGE,
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+          >
+            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: size * 0.38 }}>
+              {initials}
+            </Text>
           </View>
         )}
-      </View>
-    </TouchableOpacity>
-  );
-
-  const renderMessageItem = ({ item }: { item: ChatMessage }) => {
-    const isMe = item.sender_id === currentUserId.current;
-    return (
-      <View style={[styles.msgBubble, isMe ? styles.myMsg : styles.theirMsg]}>
-        <Text style={styles.msgText}>{item.message}</Text>
-        <Text style={styles.msgTime}>
-          {new Date(item.sent_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
-          {isMe && <Text style={styles.msgStatus}>{' '}{item.is_read ? '✓✓' : '✓'}</Text>}
-        </Text>
+        {badgeColor && (
+          <View
+            style={[
+              styles.avatarBadge,
+              { backgroundColor: badgeColor },
+            ]}
+          >
+            <Ionicons name="checkmark" size={8} color="#FFFFFF" />
+          </View>
+        )}
       </View>
     );
   };
 
-  /* ---------------- Render ---------------- */
+  /* ------------------------------------------------------------------ */
+  /* Renderers                                                           */
+  /* ------------------------------------------------------------------ */
+  const renderConversationItem = ({ item }: { item: ChatRoom }) => (
+    <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
+      <View style={styles.avatarWrapper}>
+        {item.other.profile_photo ? (
+          <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
+        ) : (
+          <View style={styles.avatarFallback}>
+            <Text style={styles.avatarText}>
+              {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
+            </Text>
+          </View>
+        )}
+        {/* Online dot */}
+        <View style={styles.onlineDot} />
+      </View>
+
+      <View style={styles.chatInfo}>
+        <View style={styles.chatNameRow}>
+          <Text style={styles.chatName} numberOfLines={1}>
+            {item.other.first_name} {item.other.last_name}
+          </Text>
+          {item.latest_sent_at && (
+            <Text
+              style={[
+                styles.chatTime,
+                item.unread_count > 0 && styles.chatTimeUnread,
+              ]}
+            >
+              {formatChatTime(item.latest_sent_at)}
+            </Text>
+          )}
+        </View>
+        <View style={styles.chatMsgRow}>
+          <Text
+            style={[
+              styles.chatLastMsg,
+              item.unread_count > 0 && styles.chatLastMsgUnread,
+            ]}
+            numberOfLines={1}
+          >
+            {item.latest_message || 'Say hi 👋'}
+          </Text>
+          {item.unread_count > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
+  /**
+   * Messenger-style message row:
+   * - Own messages: bubble aligned right, NO avatar
+   * - Other messages: avatar on LEFT, bubble aligned left
+   * - Consecutive messages from same sender hide the avatar for a cleaner look
+   */
+  const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
+    const isMe = item.sender_id === currentUserId.current;
+    const previous = index > 0 ? messages[index - 1] : null;
+    const showDateSeparator = shouldShowDateSeparator(item, previous);
+
+    // Show avatar if this is the first message in a group from this sender
+    const prevSameSender = previous && previous.sender_id === item.sender_id;
+    const showAvatar = !isMe && !prevSameSender;
+
+    return (
+      <View>
+        {/* Date separator */}
+        {showDateSeparator && (
+          <View style={styles.dateSeparator}>
+            <View style={styles.dateSeparatorLine} />
+            <Text style={styles.dateSeparatorText}>
+              {formatDateSeparator(item.sent_at)}
+            </Text>
+            <View style={styles.dateSeparatorLine} />
+          </View>
+        )}
+
+        <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
+          {/* Other party's avatar (only on first message of group) */}
+          {!isMe && (
+            <View style={styles.msgAvatarSlot}>
+              {showAvatar ? (
+                renderAvatar(selectedRoom!.other, 32)
+              ) : (
+                <View style={{ width: 32 }} />
+              )}
+            </View>
+          )}
+
+          {/* Bubble */}
+          <View
+            style={[
+              styles.msgBubble,
+              isMe ? styles.myMsg : styles.theirMsg,
+            ]}
+          >
+            <Text style={[styles.msgText, isMe && styles.myMsgText]}>
+              {item.message}
+            </Text>
+            <View style={styles.msgMeta}>
+              <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>
+                {new Date(item.sent_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+              </Text>
+              {isMe && (
+                <Ionicons
+                  name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                  size={12}
+                  color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                  style={{ marginLeft: 4 }}
+                />
+              )}
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Loading                                                             */
+  /* ------------------------------------------------------------------ */
   if (loading) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
+        <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
         <View style={styles.listHeader}>
+          <Text style={styles.headerSub}>Inbox</Text>
           <Text style={styles.mainTitle}>Messages</Text>
-          <Text style={styles.subTitle}>Chats</Text>
         </View>
         <View style={styles.centerLoader}>
-          <ActivityIndicator size="large" color="#F27024" />
+          <ActivityIndicator size="large" color={ORANGE} />
+          <Text style={styles.loadingText}>Loading conversations...</Text>
         </View>
       </SafeAreaView>
     );
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Conversations List                                                  */
+  /* ------------------------------------------------------------------ */
   if (!selectedRoom) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <View style={styles.listHeader}>
-          <Text style={styles.mainTitle}>Messages</Text>
-          <Text style={styles.subTitle}>Chats</Text>
-        </View>
+        <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+
+        <Animated.View style={[styles.listHeader, fadeUp(listHeaderAnim, -14)]}>
+          <Text style={styles.headerSub}>Inbox</Text>
+          <View style={styles.listHeaderRow}>
+            <Text style={styles.mainTitle}>Messages</Text>
+            {conversations.length > 0 && (
+              <View style={styles.countPill}>
+                <Text style={styles.countPillText}>{conversations.length}</Text>
+              </View>
+            )}
+          </View>
+        </Animated.View>
 
         {conversations.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="chatbubbles-outline" size={60} color="#D1D5DB" />
-            <Text style={styles.emptyTitle}>No conversations</Text>
+          <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="chatbubbles-outline" size={40} color={ORANGE} />
+            </View>
+            <Text style={styles.emptyTitle}>No conversations yet</Text>
             <Text style={styles.emptySubtext}>
               Your messages with providers or senders will appear here.
             </Text>
-          </View>
+          </Animated.View>
         ) : (
-          <FlatList
-            data={conversations}
-            keyExtractor={(item) => item.room_id.toString()}
-            renderItem={renderConversationItem}
-            contentContainerStyle={styles.listContent}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchConversations} />}
-          />
+          <Animated.View style={{ flex: 1, opacity: listAnim }}>
+            <FlatList
+              data={conversations}
+              keyExtractor={(item) => item.room_id.toString()}
+              renderItem={renderConversationItem}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={fetchConversations}
+                  tintColor={ORANGE}
+                  colors={[ORANGE]}
+                />
+              }
+            />
+          </Animated.View>
         )}
       </SafeAreaView>
     );
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Conversation Detail                                                 */
+  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.detailContainer}>
-      <View style={[styles.detailHeader, { paddingTop: insets.top + 10 }]}>
-        <TouchableOpacity onPress={closeConversation} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color="#000" />
+      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+
+      {/* Header */}
+      <Animated.View
+        style={[styles.detailHeader, { paddingTop: insets.top + 12 }, fadeUp(detailHeaderAnim, -14)]}
+      >
+        <TouchableOpacity onPress={closeConversation} style={styles.backBtn} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
         </TouchableOpacity>
 
-        <View style={styles.headerAvatar}>
+        <View style={styles.headerAvatarWrapper}>
           {selectedRoom.other.profile_photo ? (
             <Image source={{ uri: selectedRoom.other.profile_photo }} style={styles.headerAvatarImage} />
           ) : (
-            <Ionicons name="person" size={24} color="#FFF" />
+            <View style={styles.headerAvatarFallback}>
+              <Text style={styles.headerAvatarInitials}>
+                {selectedRoom.other.first_name?.charAt(0) || '?'}
+                {selectedRoom.other.last_name?.charAt(0) || ''}
+              </Text>
+            </View>
           )}
         </View>
 
         <View style={styles.headerInfo}>
-          <Text style={styles.headerName}>
+          <Text style={styles.headerName} numberOfLines={1}>
             {selectedRoom.other.first_name} {selectedRoom.other.last_name}
           </Text>
-          <Text style={styles.headerSubtitle}>
-            {selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
-          </Text>
+          <View style={styles.headerRoleRow}>
+            <View
+              style={[
+                styles.headerRoleDot,
+                { backgroundColor: selectedRoom.role === 'sender' ? '#93C5FD' : '#86EFAC' },
+              ]}
+            />
+            <Text style={styles.headerSubtitle}>
+              {selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
+            </Text>
+          </View>
         </View>
 
-        <TouchableOpacity style={styles.callBtn}>
-          <Ionicons name="call" size={20} color="#000" />
+        <TouchableOpacity style={styles.headerIconBtn} activeOpacity={0.85}>
+          <Ionicons name="call-outline" size={18} color="#FFFFFF" />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item.message_id.toString()}
-        renderItem={renderMessageItem}
-        contentContainerStyle={styles.chatContent}
-        onEndReached={loadOlderMessages}
-        onEndReachedThreshold={0.2}
-        ListFooterComponent={loadMore ? <ActivityIndicator size="small" color="#F27024" /> : null}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-        onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
-      />
-
+      {/* Keyboard-aware body */}
       <KeyboardAvoidingView
+        style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
       >
-        <View style={[styles.inputBar, { paddingBottom: insets.bottom || 12 }]}>
-          <TouchableOpacity style={styles.iconBtn}>
-            <Ionicons name="add" size={28} color="#4B5563" />
+        {/* Messages */}
+        <Animated.View style={[styles.flex, { opacity: detailAnim }]}>
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            keyExtractor={(item) => item.message_id.toString()}
+            renderItem={renderMessageItem}
+            contentContainerStyle={styles.chatContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+            onEndReached={loadOlderMessages}
+            onEndReachedThreshold={0.2}
+            ListFooterComponent={
+              loadMore ? (
+                <View style={styles.loadingMore}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                </View>
+              ) : null
+            }
+            onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+            onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          />
+        </Animated.View>
+
+        {/* Input Bar */}
+        <Animated.View
+          style={[
+            styles.inputBar,
+            { paddingBottom: Math.max(insets.bottom, 12) },
+            fadeUp(inputAnim, 20),
+          ]}
+        >
+          <TouchableOpacity style={styles.attachBtn} activeOpacity={0.7}>
+            <Ionicons name="add" size={24} color="#6B7280" />
           </TouchableOpacity>
 
           <View style={styles.inputWrapper}>
             <TextInput
               style={styles.textInput}
-              placeholder="Type your message"
+              placeholder="Type your message..."
               placeholderTextColor="#9CA3AF"
               value={newMessage}
               onChangeText={setNewMessage}
               editable={!sending}
+              multiline
+              maxLength={500}
             />
           </View>
 
-          <TouchableOpacity style={styles.iconBtn}>
-            <Ionicons name="camera-outline" size={24} color="#4B5563" />
+          <TouchableOpacity style={styles.attachBtn} activeOpacity={0.7}>
+            <Ionicons name="camera-outline" size={22} color="#6B7280" />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.iconBtn, { opacity: sending ? 0.5 : 1 }]}
-            onPress={sendMessage}
-            disabled={sending || !newMessage.trim()}
-          >
-            <Ionicons
-              name="send-outline"
-              size={22}
-              color={newMessage.trim() ? '#F27024' : '#9CA3AF'}
-              style={{ transform: [{ rotate: '-45deg' }] }}
-            />
-          </TouchableOpacity>
-        </View>
+          <Animated.View style={{ transform: [{ scale: sendScale }] }}>
+            <TouchableOpacity
+              style={[
+                styles.sendBtn,
+                newMessage.trim() ? styles.sendBtnActive : styles.sendBtnDisabled,
+              ]}
+              onPress={sendMessage}
+              onPressIn={animateSendPressIn}
+              onPressOut={animateSendPressOut}
+              disabled={sending || !newMessage.trim()}
+              activeOpacity={0.9}
+            >
+              {sending ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="send" size={16} color="#FFFFFF" />
+              )}
+            </TouchableOpacity>
+          </Animated.View>
+        </Animated.View>
       </KeyboardAvoidingView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
-  listHeader: { paddingHorizontal: 20, paddingTop: 25, paddingBottom: 10 },
-  mainTitle: { fontSize: 30, fontWeight: '800', color: '#000', marginBottom: 20 },
-  subTitle: { fontSize: 15, color: '#000', fontWeight: '500' },
-  centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 16 },
-  emptySubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8 },
-  listContent: { paddingHorizontal: 20, paddingBottom: 20 },
+  container: { flex: 1, backgroundColor: '#F9FAFB' },
+  flex: { flex: 1 },
 
-  chatRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  avatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#D97706', justifyContent: 'center', alignItems: 'center', marginRight: 14 },
-  avatarImage: { width: 56, height: 56, borderRadius: 28 },
-  avatarText: { fontSize: 20, fontWeight: '700', color: '#FFFFFF' },
-  chatInfo: { flex: 1, paddingRight: 10 },
-  chatName: { fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 4 },
-  chatLastMsg: { fontSize: 13, color: '#6B7280' },
-  chatRight: { alignItems: 'flex-end' },
-  chatTime: { fontSize: 11, color: '#6B7280', marginBottom: 4 },
-  unreadBadge: { backgroundColor: '#F27024', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 2, minWidth: 20, alignItems: 'center' },
-  unreadBadgeText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
+  /* ------------------------------------------------------------------ */
+  /* List Header                                                         */
+  /* ------------------------------------------------------------------ */
+  listHeader: {
+    backgroundColor: ORANGE,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 6,
+  },
+  headerSub: {
+    fontSize: 11,
+    color: '#FFE0C7',
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  listHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  mainTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.4,
+  },
+  countPill: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  countPillText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
 
-  detailContainer: { flex: 1, backgroundColor: '#FFFFFF' },
-  detailHeader: { backgroundColor: '#FA7A25', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 100 },
-  backBtn: { paddingRight: 12, bottom: -50 },
-  headerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#D97706', justifyContent: 'center', alignItems: 'center', marginRight: 12, bottom: -50, overflow: 'hidden' },
-  headerAvatarImage: { width: 44, height: 44 },
+  centerLoader: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Empty State                                                         */
+  /* ------------------------------------------------------------------ */
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 40,
+  },
+  emptyIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
+    marginTop: 4,
+    letterSpacing: -0.2,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Conversation List                                                   */
+  /* ------------------------------------------------------------------ */
+  listContent: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 20,
+  },
+  chatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  avatarWrapper: {
+    position: 'relative',
+    marginRight: 14,
+  },
+  avatarFallback: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: ORANGE,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarImage: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#F3F4F6',
+  },
+  avatarText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  onlineDot: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#22C55E',
+    borderWidth: 2.5,
+    borderColor: '#FFFFFF',
+  },
+
+  chatInfo: {
+    flex: 1,
+    marginRight: 8,
+  },
+  chatNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  chatName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.2,
+    flex: 1,
+    marginRight: 8,
+  },
+  chatTime: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '600',
+  },
+  chatTimeUnread: {
+    color: ORANGE,
+    fontWeight: '800',
+  },
+  chatMsgRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  chatLastMsg: {
+    fontSize: 13,
+    color: '#6B7280',
+    flex: 1,
+    fontWeight: '500',
+  },
+  chatLastMsgUnread: {
+    color: '#111827',
+    fontWeight: '700',
+  },
+  unreadBadge: {
+    backgroundColor: ORANGE,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  unreadBadgeText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 11,
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Conversation Detail                                                 */
+  /* ------------------------------------------------------------------ */
+  detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
+  detailHeader: {
+    backgroundColor: ORANGE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    gap: 10,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  headerAvatarWrapper: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.5)',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerAvatarImage: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+  },
+  headerAvatarFallback: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerAvatarInitials: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
   headerInfo: { flex: 1 },
-  headerName: { fontSize: 18, fontWeight: '800', color: '#000', bottom: -50 },
-  headerSubtitle: { fontSize: 12, color: '#111827', marginTop: 2, bottom: -50 },
-  callBtn: { paddingLeft: 8, bottom: -50 },
+  headerName: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  headerRoleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 3,
+  },
+  headerRoleDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  headerSubtitle: {
+    fontSize: 11,
+    color: '#FFE0C7',
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
 
-  chatContent: { paddingHorizontal: 16, paddingVertical: 12 },
-  msgBubble: { maxWidth: '80%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 18, marginBottom: 8 },
-  myMsg: { backgroundColor: '#E5E7EB', alignSelf: 'flex-end', borderBottomRightRadius: 4 },
-  theirMsg: { backgroundColor: '#F3F4F6', alignSelf: 'flex-start', borderBottomLeftRadius: 4 },
-  msgText: { fontSize: 15, color: '#111827' },
-  msgTime: { fontSize: 10, color: '#6B7280', marginTop: 4, alignSelf: 'flex-end' },
-  msgStatus: { fontWeight: '600', color: '#10B981' },
+  /* ------------------------------------------------------------------ */
+  /* Messages — Messenger-style with chat heads                          */
+  /* ------------------------------------------------------------------ */
+  chatContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 16,
+    paddingBottom: 8,
+  },
 
-  inputBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 12, borderTopWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', backgroundColor: '#FFF' },
-  iconBtn: { paddingHorizontal: 8, justifyContent: 'center', alignItems: 'center' },
-  inputWrapper: { flex: 1, borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, marginHorizontal: 8, paddingHorizontal: 12, justifyContent: 'center' },
-  textInput: { height: 40, fontSize: 14, color: '#000' },
+  /* Date separator */
+  dateSeparator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 16,
+    paddingHorizontal: 24,
+    gap: 10,
+  },
+  dateSeparatorLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E7EB',
+  },
+  dateSeparatorText: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+
+  msgRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    marginBottom: 4,
+    paddingHorizontal: 4,
+  },
+  msgRowMe: {
+    justifyContent: 'flex-end',
+  },
+
+  /* The avatar slot on the left of received messages */
+  msgAvatarSlot: {
+    width: 32,
+    marginRight: 8,
+    justifyContent: 'flex-end',
+  },
+  avatarBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+
+  msgBubble: {
+    maxWidth: '78%',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  myMsg: {
+    backgroundColor: ORANGE,
+    borderBottomRightRadius: 6,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  theirMsg: {
+    backgroundColor: '#FFFFFF',
+    borderBottomLeftRadius: 6,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  msgText: {
+    fontSize: 14.5,
+    color: '#111827',
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  myMsgText: {
+    color: '#FFFFFF',
+  },
+  msgMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-end',
+    marginTop: 4,
+  },
+  msgTime: {
+    fontSize: 10,
+    color: '#9CA3AF',
+    fontWeight: '600',
+  },
+  myMsgTime: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+  loadingMore: {
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+
+  /* ------------------------------------------------------------------ */
+  /* Input Bar                                                           */
+  /* ------------------------------------------------------------------ */
+  inputBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderColor: '#F3F4F6',
+    alignItems: 'flex-end',
+    backgroundColor: '#FFFFFF',
+    gap: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  attachBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+  },
+  inputWrapper: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    maxHeight: 100,
+  },
+  textInput: {
+    minHeight: 36,
+    maxHeight: 90,
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '500',
+    paddingTop: Platform.OS === 'ios' ? 8 : 4,
+    paddingBottom: Platform.OS === 'ios' ? 8 : 4,
+  },
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendBtnActive: {
+    backgroundColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  sendBtnDisabled: {
+    backgroundColor: '#E5E7EB',
+  },
 });
