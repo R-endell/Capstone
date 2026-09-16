@@ -10,6 +10,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { dateToManilaIsoString, formatDateShort, formatTime } from '../../../../utils/dateUtils';
 
 const ORANGE = '#FA7A25';
 
@@ -20,17 +21,6 @@ interface Route {
   start_location_id: number; end_location_id: number; provider_id: number; vehicle_id: number;
   start_location?: Location; end_location?: Location; vehicle?: Vehicle;
 }
-
-const pad = (n: number) => String(n).padStart(2, '0');
-
-const toLocalIsoString = (date: Date, time: Date) => {
-  const y = date.getFullYear();
-  const m = date.getMonth() + 1;
-  const d = date.getDate();
-  const hh = time.getHours();
-  const mm = time.getMinutes();
-  return `${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${pad(mm)}:00`;
-};
 
 const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, startName = 'Starting Point', endName = 'Destination', mode = 'view' }: any) => {
   const centerLat = startLat || endLat || 10.3157;
@@ -92,8 +82,7 @@ const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, 
       originWhitelist={['*']}
       source={{ html: mapHtml }}
       style={{ flex: 1, backgroundColor: 'transparent' }}
-      // FIX: Scroll enabled MUST be true or panning won't work on mobile
-      scrollEnabled={true} 
+      scrollEnabled={true}
       androidLayerType="hardware"
       javaScriptEnabled
       domStorageEnabled
@@ -118,9 +107,9 @@ export default function ManageRoutesScreen() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  
+
   const [modalVisible, setModalVisible] = useState(false);
-  const [isMapFullscreen, setIsMapFullscreen] = useState(false); // New Fullscreen state
+  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
 
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
@@ -131,11 +120,10 @@ export default function ManageRoutesScreen() {
   const [startLocation, setStartLocation] = useState<Location | null>(null);
   const [endLocation, setEndLocation] = useState<Location | null>(null);
   const [mapMode, setMapMode] = useState<'view' | 'select_start' | 'select_end'>('view');
-  
+
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const listAnim = useRef(new Animated.Value(0)).current;
   const modalAnim = useRef(new Animated.Value(0)).current;
@@ -168,9 +156,6 @@ export default function ManageRoutesScreen() {
     }
   }, [modalVisible, modalAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Data                                                                */
-  /* ------------------------------------------------------------------ */
   const fetchUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
@@ -200,9 +185,6 @@ export default function ManageRoutesScreen() {
 
   useFocusEffect(useCallback(() => { fetchRoutes(); }, []));
 
-  /* ------------------------------------------------------------------ */
-  /* Location Select                                                     */
-  /* ------------------------------------------------------------------ */
   const handleLocationSelect = async (lat: number, lng: number) => {
     try {
       const { data: existing } = await supabase.from('locations').select('*').eq('latitude', lat).eq('longitude', lng).limit(1);
@@ -218,14 +200,14 @@ export default function ManageRoutesScreen() {
         location = newLoc;
       }
 
-      if (mapMode === 'select_start') { 
-        setStartLocation(location); 
+      if (mapMode === 'select_start') {
+        setStartLocation(location);
         setMapMode('view');
-        setIsMapFullscreen(false); // Close full screen on select
+        setIsMapFullscreen(false);
       }
-      else if (mapMode === 'select_end') { 
-        setEndLocation(location); 
-        setMapMode('view'); 
+      else if (mapMode === 'select_end') {
+        setEndLocation(location);
+        setMapMode('view');
         setIsMapFullscreen(false);
       }
     } catch (error) {
@@ -233,16 +215,14 @@ export default function ManageRoutesScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Submit (Add or Update)                                              */
-  /* ------------------------------------------------------------------ */
   const handleSubmit = async () => {
     if (!startLocation || !endLocation || !selectedVehicleId || !userId) {
       return Alert.alert('Required', 'Please fill all fields');
     }
     setSubmitting(true);
     try {
-      const departureValue = toLocalIsoString(departureDate, departureTime);
+      // ✅ Save as Manila-local timestamp (+08:00)
+      const departureValue = dateToManilaIsoString(departureDate, departureTime);
       const routeData = {
         departure_time: departureValue,
         route_frequency: selectedFrequency,
@@ -278,9 +258,6 @@ export default function ManageRoutesScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Delete                                                              */
-  /* ------------------------------------------------------------------ */
   const handleDelete = (route: Route) => {
     Alert.alert('Delete Route', 'Are you sure you want to delete this route?', [
       { text: 'Cancel', style: 'cancel' },
@@ -293,14 +270,21 @@ export default function ManageRoutesScreen() {
     ]);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Edit / Add / Reset                                                  */
-  /* ------------------------------------------------------------------ */
   const handleEdit = (route: Route) => {
     setEditingRoute(route);
-    const dt = new Date(route.departure_time);
-    setDepartureDate(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()));
-    setDepartureTime(new Date(1970, 0, 1, dt.getHours(), dt.getMinutes()));
+    // ✅ Parse ISO string to recover original Manila wall-clock time
+    const isoParts = route.departure_time.match(
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/,
+    );
+    if (isoParts) {
+      const [, y, m, d, hh, mm] = isoParts.map(Number);
+      setDepartureDate(new Date(y, m - 1, d));
+      setDepartureTime(new Date(1970, 0, 1, hh, mm));
+    } else {
+      const dt = new Date(route.departure_time);
+      setDepartureDate(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()));
+      setDepartureTime(new Date(1970, 0, 1, dt.getHours(), dt.getMinutes()));
+    }
     setSelectedFrequency(route.route_frequency || 'Daily');
     setSelectedVehicleId(route.vehicle_id || null);
     setStartLocation(route.start_location || null);
@@ -326,9 +310,6 @@ export default function ManageRoutesScreen() {
     setIsMapFullscreen(false);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{
@@ -344,11 +325,7 @@ export default function ManageRoutesScreen() {
     outputRange: [0.95, 1],
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Route Card                                                          */
-  /* ------------------------------------------------------------------ */
   const renderRouteCard = ({ item }: { item: Route }) => {
-    const dt = new Date(item.departure_time);
     const freqColor =
       item.route_frequency === 'Daily' ? { bg: '#DBEAFE', fg: '#2563EB' } :
       item.route_frequency === 'Weekly' ? { bg: '#EDE9FE', fg: '#7C3AED' } :
@@ -365,10 +342,10 @@ export default function ManageRoutesScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.routeDate}>
-                {dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                {formatDateShort(item.departure_time)}
               </Text>
               <Text style={styles.routeTime}>
-                {dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {formatTime(item.departure_time)}
               </Text>
             </View>
           </View>
@@ -428,14 +405,10 @@ export default function ManageRoutesScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
       <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
         <View style={styles.headerTopRow}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
@@ -453,7 +426,6 @@ export default function ManageRoutesScreen() {
         </View>
       </Animated.View>
 
-      {/* List */}
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={ORANGE} />
@@ -488,7 +460,6 @@ export default function ManageRoutesScreen() {
         </Animated.View>
       )}
 
-      {/* Fullscreen Map Modal */}
       {isMapFullscreen && (
         <Modal animationType="fade" transparent={false} visible={isMapFullscreen} onRequestClose={() => setIsMapFullscreen(false)}>
           <View style={{ flex: 1, backgroundColor: '#000' }}>
@@ -514,7 +485,6 @@ export default function ManageRoutesScreen() {
         </Modal>
       )}
 
-      {/* Add / Edit Modal */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -523,8 +493,7 @@ export default function ManageRoutesScreen() {
       >
         <View style={styles.modalOverlay}>
           <Animated.View style={[styles.modalContainer, { transform: [{ scale: modalScale }], opacity: modalAnim }]}>
-            
-            {/* Modal Header */}
+
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color="#111827" />
@@ -535,9 +504,8 @@ export default function ManageRoutesScreen() {
               <View style={{ width: 40 }} />
             </View>
 
-            {/* FIX: Replaced ScrollView with View to stop touch event hijacking on the map */}
             <View style={styles.modalScrollContent}>
-              
+
               <TouchableOpacity style={styles.modalMapContainer} onPress={() => setIsMapFullscreen(true)} activeOpacity={0.9}>
                 <View pointerEvents="none" style={StyleSheet.absoluteFill}>
                   <InteractiveMap
@@ -556,7 +524,6 @@ export default function ManageRoutesScreen() {
               </TouchableOpacity>
 
               <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-                {/* Location selectors */}
                 <View style={styles.locationSelectorsRow}>
                   <TouchableOpacity
                     style={[styles.locationSelectorBtn, startLocation && styles.locationSelected]}
@@ -582,7 +549,6 @@ export default function ManageRoutesScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Picked locations */}
                 <View style={styles.pickedLocationsDisplay}>
                   <View style={styles.pickedRow}>
                     <View style={[styles.pickedDot, { backgroundColor: '#3B82F6' }]} />
@@ -600,7 +566,6 @@ export default function ManageRoutesScreen() {
                   </View>
                 </View>
 
-                {/* Date + Time */}
                 <View style={styles.dateTimeRow}>
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Date</Text>
@@ -643,7 +608,6 @@ export default function ManageRoutesScreen() {
                   </View>
                 </View>
 
-                {/* Frequency */}
                 <View style={styles.formGroup}>
                   <Text style={styles.inputLabel}>Route Frequency</Text>
                   <View style={styles.frequencyOptions}>
@@ -661,7 +625,6 @@ export default function ManageRoutesScreen() {
                   </View>
                 </View>
 
-                {/* Vehicle */}
                 <View style={styles.formGroup}>
                   <Text style={styles.inputLabel}>Vehicle</Text>
                   {vehicles.length === 0 ? (
@@ -765,13 +728,11 @@ const styles = StyleSheet.create({
   deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', paddingVertical: 10, borderRadius: 12, gap: 6, borderWidth: 1, borderColor: '#FECACA' },
   deleteBtnText: { color: '#EF4444', fontSize: 13, fontWeight: '700' },
 
-  /* Full Screen Map Modal */
   fullscreenMapHeader: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', paddingHorizontal: 20, paddingTop: 20, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.9)' },
   fullscreenCloseBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4 },
   fullscreenInstructionBox: { flex: 1, marginLeft: 16, backgroundColor: '#FFF', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4 },
   fullscreenInstructionText: { fontWeight: '700', color: '#111827', textAlign: 'center' },
 
-  /* Modal Add Route */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   modalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 8, maxHeight: '94%', flex: 1, shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.15, shadowRadius: 20, elevation: 12 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },

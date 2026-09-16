@@ -65,14 +65,10 @@ export default function ManageVehicleScreen() {
   const [vehicleDoc, setVehicleDoc] = useState<string | null>(null);
   const [docFileName, setDocFileName] = useState<string | null>(null);
 
-  // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const listAnim = useRef(new Animated.Value(0)).current;
   const modalAnim = useRef(new Animated.Value(0)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animation                                                  */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
@@ -89,9 +85,6 @@ export default function ManageVehicleScreen() {
     ]).start();
   }, [headerAnim, listAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Modal animation                                                     */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (modalVisible) {
       modalAnim.setValue(0);
@@ -104,9 +97,6 @@ export default function ManageVehicleScreen() {
     }
   }, [modalVisible, modalAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Data                                                                */
-  /* ------------------------------------------------------------------ */
   const fetchUserId = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -139,9 +129,6 @@ export default function ManageVehicleScreen() {
 
   useFocusEffect(useCallback(() => { fetchVehicles(); }, []));
 
-  /* ------------------------------------------------------------------ */
-  /* Document Picker & Upload                                            */
-  /* ------------------------------------------------------------------ */
   const pickDocument = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -232,9 +219,6 @@ export default function ManageVehicleScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Submit / Edit / Delete                                              */
-  /* ------------------------------------------------------------------ */
   const handleSubmit = async () => {
     if (!vehicleType || !plateNumber || !maxVolume || !maxWeight ||
         !cargoLength || !cargoWidth || !cargoHeight) {
@@ -329,9 +313,6 @@ export default function ManageVehicleScreen() {
 
   const handleAdd = () => { resetForm(); setModalVisible(true); };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{
@@ -347,9 +328,6 @@ export default function ManageVehicleScreen() {
     outputRange: [0.95, 1],
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Render Vehicle Item                                                 */
-  /* ------------------------------------------------------------------ */
   const renderVehicleItem = ({ item }: { item: Vehicle }) => {
     const isVerified = item.verification_status === 'Verified';
     const isPending = item.verification_status === 'Pending';
@@ -362,10 +340,8 @@ export default function ManageVehicleScreen() {
 
     return (
       <View style={styles.vehicleCard}>
-        {/* Accent bar */}
         <View style={[styles.cardAccent, { backgroundColor: accentColor }]} />
 
-        {/* Header */}
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
             <View style={styles.vehicleIconBox}>
@@ -388,7 +364,6 @@ export default function ManageVehicleScreen() {
           </View>
         </View>
 
-        {/* Specs Row */}
         <View style={styles.specsRow}>
           <View style={styles.specItem}>
             <Ionicons name="water-outline" size={14} color={ORANGE} />
@@ -411,7 +386,6 @@ export default function ManageVehicleScreen() {
           </View>
         </View>
 
-        {/* Footer */}
         <View style={styles.cardFooter}>
           <TouchableOpacity
             style={styles.editBtn}
@@ -434,14 +408,10 @@ export default function ManageVehicleScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
       <Animated.View
         style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}
       >
@@ -469,7 +439,6 @@ export default function ManageVehicleScreen() {
         </View>
       </Animated.View>
 
-      {/* Content */}
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={ORANGE} />
@@ -504,7 +473,6 @@ export default function ManageVehicleScreen() {
         </Animated.View>
       )}
 
-      {/* Add/Edit Modal */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -518,7 +486,6 @@ export default function ManageVehicleScreen() {
               { transform: [{ scale: modalScale }], opacity: modalAnim },
             ]}
           >
-            {/* Modal Header */}
             <View style={styles.modalHeader}>
               <TouchableOpacity
                 onPress={() => { resetForm(); setModalVisible(false); }}
@@ -537,7 +504,6 @@ export default function ManageVehicleScreen() {
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.modalScrollContent}
             >
-              {/* Vehicle Type */}
               <View style={styles.formSection}>
                 <Text style={styles.sectionLabel}>Vehicle Type</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeGridScroll}>
@@ -556,7 +522,6 @@ export default function ManageVehicleScreen() {
                 </ScrollView>
               </View>
 
-              {/* Plate Number */}
               <View style={styles.formField}>
                 <Text style={styles.inputLabel}>Plate Number</Text>
                 <View style={styles.inputWrapper}>
@@ -572,7 +537,6 @@ export default function ManageVehicleScreen() {
                 </View>
               </View>
 
-              {/* Volume & Weight */}
               <View style={styles.rowInputs}>
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Volume (L)</Text>
@@ -604,7 +568,6 @@ export default function ManageVehicleScreen() {
                 </View>
               </View>
 
-              {/* Cargo Dimensions */}
               <Text style={styles.sectionLabel}>Cargo Dimensions (cm)</Text>
               <View style={styles.rowInputs}>
                 <View style={styles.thirdField}>
@@ -642,7 +605,6 @@ export default function ManageVehicleScreen() {
                 </View>
               </View>
 
-              {/* OR/CR Document */}
               <View style={styles.formField}>
                 <Text style={styles.inputLabel}>OR/CR Document (Optional)</Text>
                 <TouchableOpacity
@@ -688,7 +650,6 @@ export default function ManageVehicleScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Submit */}
               <TouchableOpacity
                 style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
                 onPress={handleSubmit}
@@ -717,9 +678,6 @@ export default function ManageVehicleScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
 
-  /* ------------------------------------------------------------------ */
-  /* Header                                                              */
-  /* ------------------------------------------------------------------ */
   header: {
     backgroundColor: ORANGE,
     paddingHorizontal: 20,
@@ -771,9 +729,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.3)',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* List                                                                */
-  /* ------------------------------------------------------------------ */
   listContent: {
     paddingHorizontal: 20,
     paddingTop: 20,
@@ -792,9 +747,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Empty                                                               */
-  /* ------------------------------------------------------------------ */
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -845,9 +797,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Vehicle Card                                                        */
-  /* ------------------------------------------------------------------ */
   vehicleCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
@@ -998,9 +947,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Modal                                                               */
-  /* ------------------------------------------------------------------ */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -1139,7 +1085,6 @@ const styles = StyleSheet.create({
   halfField: { flex: 1 },
   thirdField: { flex: 1 },
 
-  /* Upload */
   uploadBox: {
     borderWidth: 2,
     borderColor: '#E5E7EB',
@@ -1222,7 +1167,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  /* Submit */
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',

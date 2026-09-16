@@ -8,6 +8,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
+import { formatDate } from '../../../utils/dateUtils';
 
 const ORANGE = '#F27024';
 
@@ -34,36 +35,43 @@ type ChatMessage = {
   sent_at: string;
   sender_id: number;
   is_read: boolean;
+  /** Set only on optimistic (pre-insert) messages. Used for dedup + replacement. */
+  _temp_id?: number;
 };
 
+/** Chat-list compact timestamp: "5m", "Just now", "10:30 AM", "Mon", "Sep 16" */
 const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
   const now = new Date();
   const diff = now.getTime() - date.getTime();
+
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
-  if (diff < 86400000) return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-  if (diff < 604800000) return date.toLocaleDateString('en-US', { weekday: 'short' });
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (diff < 86400000) return formatDate(timestamp, 'h:mm a');
+  if (diff < 604800000) return formatDate(timestamp, 'EEE');
+  return formatDate(timestamp, 'MMM d');
 };
 
-/** Group messages by day for date separators */
+/** Compare calendar days in Manila time, not device-local */
 const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
   if (!previous) return true;
-  const currDate = new Date(current.sent_at).toDateString();
-  const prevDate = new Date(previous.sent_at).toDateString();
-  return currDate !== prevDate;
+  const currDay = formatDate(current.sent_at, 'yyyy-MM-dd');
+  const prevDay = formatDate(previous.sent_at, 'yyyy-MM-dd');
+  return currDay !== prevDay;
 };
 
+/** "Today" / "Yesterday" / "Monday, Sep 16" — all in Manila time */
 const formatDateSeparator = (timestamp: string) => {
-  const date = new Date(timestamp);
-  const now = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(now.getDate() - 1);
+  const day = formatDate(timestamp, 'yyyy-MM-dd');
+  const today = formatDate(new Date().toISOString(), 'yyyy-MM-dd');
 
-  if (date.toDateString() === now.toDateString()) return 'Today';
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  const y = new Date();
+  y.setDate(y.getDate() - 1);
+  const yesterday = formatDate(y.toISOString(), 'yyyy-MM-dd');
+
+  if (day === today) return 'Today';
+  if (day === yesterday) return 'Yesterday';
+  return formatDate(timestamp, 'EEEE, MMM d');
 };
 
 export default function MessagesScreen({ route: propsRoute }: any) {
@@ -89,7 +97,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
 
-  // Animations
   const listHeaderAnim = useRef(new Animated.Value(0)).current;
   const listAnim = useRef(new Animated.Value(0)).current;
   const detailHeaderAnim = useRef(new Animated.Value(0)).current;
@@ -97,9 +104,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const inputAnim = useRef(new Animated.Value(0)).current;
   const sendScale = useRef(new Animated.Value(1)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animations                                                 */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 500) =>
       Animated.timing(value, {
@@ -148,9 +152,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     Animated.spring(sendScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Current user                                                        */
-  /* ------------------------------------------------------------------ */
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
@@ -162,9 +163,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return userRecord?.user_id || null;
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Fetch conversations                                                 */
-  /* ------------------------------------------------------------------ */
   const fetchConversations = async () => {
     const userId = currentUserId.current || (await getCurrentUserId());
     if (!userId) { setLoading(false); setRefreshing(false); return; }
@@ -273,9 +271,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Fetch messages                                                      */
-  /* ------------------------------------------------------------------ */
   const fetchMessages = async (roomId: number, olderThan?: string) => {
     let query = supabase
       .from('chat_messages')
@@ -286,12 +281,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (olderThan) query = query.lt('sent_at', olderThan);
     const { data, error } = await query;
     if (error) { console.error(error); return []; }
-    return data as ChatMessage[];
+    return (data || []).map((m: any) => ({ ...m, _temp_id: undefined })) as ChatMessage[];
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Open / close conversation                                           */
-  /* ------------------------------------------------------------------ */
   const openConversation = async (room: ChatRoom) => {
     setSelectedRoom(room);
     const msgs = await fetchMessages(room.room_id);
@@ -319,9 +311,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setMessages([]);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Realtime for open room                                              */
-  /* ------------------------------------------------------------------ */
   const subscribeToRoom = (roomId: number) => {
     if (subscription.current) subscription.current.unsubscribe();
     subscription.current = supabase
@@ -330,12 +319,34 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `room_id=eq.${roomId}` },
         (payload) => {
           const newMsg = payload.new as ChatMessage;
-          setMessages(prev => (prev.some(m => m.message_id === newMsg.message_id) ? prev : [...prev, newMsg]));
+
+          setMessages(prev => {
+            // 1. Exact message already in state? Skip.
+            if (prev.some(m => m.message_id === newMsg.message_id)) return prev;
+
+            // 2. Match an optimistic temp by sender + content, replace it in place.
+            const tempIdx = prev.findIndex(
+              (m) =>
+                m._temp_id !== undefined &&
+                m.sender_id === newMsg.sender_id &&
+                m.message === newMsg.message,
+            );
+            if (tempIdx !== -1) {
+              const next = [...prev];
+              next[tempIdx] = { ...newMsg, _temp_id: undefined };
+              return next;
+            }
+
+            // 3. Genuinely new message from the other party.
+            return [...prev, newMsg];
+          });
+
           setConversations(prev =>
             prev.map(c => (c.room_id === roomId
               ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at }
               : c)),
           );
+
           if (newMsg.sender_id !== currentUserId.current) {
             supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id);
           }
@@ -344,9 +355,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .subscribe();
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Load older                                                          */
-  /* ------------------------------------------------------------------ */
   const loadOlderMessages = async () => {
     if (loadMore || !hasMore || !selectedRoom) return;
     setLoadMore(true);
@@ -358,9 +366,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (older.length > 0) setMessages(prev => [...older.reverse(), ...prev]);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Send                                                                */
-  /* ------------------------------------------------------------------ */
   const sendMessage = async () => {
     const trimmed = newMessage.trim();
     if (!trimmed || !selectedRoom || !currentUserId.current) return;
@@ -373,6 +378,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       sent_at: new Date().toISOString(),
       sender_id: currentUserId.current,
       is_read: false,
+      _temp_id: tempId,
     };
     setMessages(prev => [...prev, tempMsg]);
     setNewMessage('');
@@ -390,7 +396,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         .single();
       if (error) throw error;
 
-      setMessages(prev => prev.map(m => (m.message_id === tempId ? data : m)));
+      // Replace the optimistic temp in place with the DB row.
+      // If realtime already replaced it (by sender+content match above),
+      // the map simply finds nothing to change and returns unchanged.
+      setMessages(prev =>
+        prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)),
+      );
+
       setConversations(prev =>
         prev.map(c => (c.room_id === selectedRoom.room_id
           ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
@@ -399,15 +411,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     } catch (error: any) {
       console.error('Send error:', error);
       Alert.alert('Error', 'Unable to send message.');
-      setMessages(prev => prev.filter(m => m.message_id !== tempId));
+      setMessages(prev => prev.filter(m => m._temp_id !== tempId));
     } finally {
       setSending(false);
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Auto-open from route param                                          */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const tryAutoOpen = async () => {
       if (!openRoomIdParam) return;
@@ -427,9 +436,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRoomIdParam, conversations.length]);
 
-  /* ------------------------------------------------------------------ */
-  /* Lifecycle                                                           */
-  /* ------------------------------------------------------------------ */
   useFocusEffect(
     useCallback(() => {
       if (!selectedRoom) fetchConversations();
@@ -457,9 +463,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
   }, []);
 
-  /* ------------------------------------------------------------------ */
-  /* Avatar helper                                                       */
-  /* ------------------------------------------------------------------ */
   const renderAvatar = (party: Party, size: number, badgeColor?: string) => {
     const initials = `${party.first_name?.charAt(0) || '?'}${party.last_name?.charAt(0) || ''}`;
     return (
@@ -504,9 +507,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Renderers                                                           */
-  /* ------------------------------------------------------------------ */
   const renderConversationItem = ({ item }: { item: ChatRoom }) => (
     <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
       <View style={styles.avatarWrapper}>
@@ -519,7 +519,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </Text>
           </View>
         )}
-        {/* Online dot */}
         <View style={styles.onlineDot} />
       </View>
 
@@ -559,24 +558,16 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     </TouchableOpacity>
   );
 
-  /**
-   * Messenger-style message row:
-   * - Own messages: bubble aligned right, NO avatar
-   * - Other messages: avatar on LEFT, bubble aligned left
-   * - Consecutive messages from same sender hide the avatar for a cleaner look
-   */
   const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
     const isMe = item.sender_id === currentUserId.current;
     const previous = index > 0 ? messages[index - 1] : null;
     const showDateSeparator = shouldShowDateSeparator(item, previous);
 
-    // Show avatar if this is the first message in a group from this sender
     const prevSameSender = previous && previous.sender_id === item.sender_id;
     const showAvatar = !isMe && !prevSameSender;
 
     return (
       <View>
-        {/* Date separator */}
         {showDateSeparator && (
           <View style={styles.dateSeparator}>
             <View style={styles.dateSeparatorLine} />
@@ -588,7 +579,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         )}
 
         <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
-          {/* Other party's avatar (only on first message of group) */}
           {!isMe && (
             <View style={styles.msgAvatarSlot}>
               {showAvatar ? (
@@ -599,7 +589,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
           )}
 
-          {/* Bubble */}
           <View
             style={[
               styles.msgBubble,
@@ -611,7 +600,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </Text>
             <View style={styles.msgMeta}>
               <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>
-                {new Date(item.sent_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                {formatDate(item.sent_at, 'h:mm a')}
               </Text>
               {isMe && (
                 <Ionicons
@@ -628,9 +617,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Loading                                                             */
-  /* ------------------------------------------------------------------ */
   if (loading) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -647,9 +633,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Conversations List                                                  */
-  /* ------------------------------------------------------------------ */
   if (!selectedRoom) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -700,14 +683,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Conversation Detail                                                 */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.detailContainer}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
       <Animated.View
         style={[styles.detailHeader, { paddingTop: insets.top + 12 }, fadeUp(detailHeaderAnim, -14)]}
       >
@@ -750,18 +729,20 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Keyboard-aware body */}
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
       >
-        {/* Messages */}
         <Animated.View style={[styles.flex, { opacity: detailAnim }]}>
           <FlatList
             ref={flatListRef}
             data={messages}
-            keyExtractor={(item) => item.message_id.toString()}
+            keyExtractor={(item) =>
+              item._temp_id !== undefined
+                ? `temp-${item._temp_id}`
+                : `msg-${item.message_id}`
+            }
             renderItem={renderMessageItem}
             contentContainerStyle={styles.chatContent}
             showsVerticalScrollIndicator={false}
@@ -781,7 +762,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           />
         </Animated.View>
 
-        {/* Input Bar */}
         <Animated.View
           style={[
             styles.inputBar,
@@ -839,9 +819,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
   flex: { flex: 1 },
 
-  /* ------------------------------------------------------------------ */
-  /* List Header                                                         */
-  /* ------------------------------------------------------------------ */
   listHeader: {
     backgroundColor: ORANGE,
     paddingHorizontal: 20,
@@ -900,9 +877,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Empty State                                                         */
-  /* ------------------------------------------------------------------ */
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -934,9 +908,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Conversation List                                                   */
-  /* ------------------------------------------------------------------ */
   listContent: {
     paddingHorizontal: 20,
     paddingTop: 12,
@@ -1050,9 +1021,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Conversation Detail                                                 */
-  /* ------------------------------------------------------------------ */
   detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
   detailHeader: {
     backgroundColor: ORANGE,
@@ -1143,16 +1111,12 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.3)',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Messages — Messenger-style with chat heads                          */
-  /* ------------------------------------------------------------------ */
   chatContent: {
     paddingHorizontal: 12,
     paddingVertical: 16,
     paddingBottom: 8,
   },
 
-  /* Date separator */
   dateSeparator: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1182,7 +1146,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
 
-  /* The avatar slot on the left of received messages */
   msgAvatarSlot: {
     width: 32,
     marginRight: 8,
@@ -1255,9 +1218,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Input Bar                                                           */
-  /* ------------------------------------------------------------------ */
   inputBar: {
     flexDirection: 'row',
     paddingHorizontal: 12,

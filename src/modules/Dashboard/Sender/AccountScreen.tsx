@@ -280,7 +280,7 @@ export default function AccountScreen() {
   const handleSwitchToProvider = () => {
     if (providerState === 'approved') {
       // ✅ Verified — enter provider mode
-      navigation.navigate('ProviderTabs', { screen: 'Task' });
+      navigation.navigate('ProviderTabs', { screen: 'Jobs' });
       return;
     }
 

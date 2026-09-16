@@ -1,10 +1,33 @@
 // App.tsx
 import React, { useEffect, useRef } from 'react';
-import { View, AppState } from 'react-native';
+import { View, AppState, LogBox } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+
+/* ------------------------------------------------------------------ */
+/* Silence noisy library warnings                                      */
+/* ------------------------------------------------------------------ */
+// DateTimePicker still exports the legacy `onChange` API. It works fine,
+// but the library logs a deprecation warning we don't need to see.
+LogBox.ignoreLogs([
+  'DateTimePicker: `onChange` is deprecated',
+]);
+
+// Also silence it in the Metro terminal (LogBox only covers the app UI).
+// We snapshot the original warn first so nothing else is affected.
+const __origConsoleWarn = console.warn;
+console.warn = (...args: any[]) => {
+  const first = args[0];
+  if (
+    typeof first === 'string' &&
+    first.includes('DateTimePicker: `onChange` is deprecated')
+  ) {
+    return;
+  }
+  __origConsoleWarn(...args);
+};
 
 import LoadingScreen from './src/modules/Authentication/LoadingScreen';
 import LoginScreen from './src/modules/Authentication/LoginScreen';
@@ -46,6 +69,7 @@ import ScheduleCalendarScreen from './src/modules/Dashboard/Sender/Delivery/Sche
 import LocationSelectScreen from './src/modules/Dashboard/Sender/Delivery/LocationSelectScreen';
 import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen';
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
+import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen';
 
 // Import matching service
 import { startBackgroundMatcher, stopBackgroundMatcher } from './src/services/matchingService';
@@ -72,10 +96,11 @@ export type RootStackParamList = {
   ScheduleCalendar: undefined;
   PickupLocation: { type: 'pickup'; initialCoords?: any };
   DropoffLocation: { type: 'dropoff'; initialCoords?: any };
-  Booking: { mode: 'sendNow' | 'schedule' };
+  Booking: { mode: 'sendNow' | 'schedule'; pickedReceiver?: any };
   DeliveryList: { status: 'Pending' | 'Accepted' };
   ManageVehicle: undefined;
   ManageRoutes: undefined;
+  ReceiverPicker: { selectedReceiverId?: number | null };
 };
 
 export type MainTabParamList = {
@@ -180,7 +205,6 @@ export default function App() {
   useEffect(() => {
     console.log('🚀 App starting...');
 
-    // Start background matcher when app starts
     try {
       matcherCleanupRef.current = startBackgroundMatcher();
       console.log('✅ Background matcher started successfully');
@@ -188,12 +212,10 @@ export default function App() {
       console.error('❌ Failed to start background matcher:', error);
     }
 
-    // Handle app state changes - restart matcher when app comes to foreground
     const subscription = AppState.addEventListener('change', (nextAppState) => {
       if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
         console.log('📱 App came to foreground, restarting matcher...');
 
-        // Stop existing matcher if any
         if (matcherCleanupRef.current) {
           try {
             matcherCleanupRef.current();
@@ -203,7 +225,6 @@ export default function App() {
           matcherCleanupRef.current = null;
         }
 
-        // Start new matcher
         try {
           matcherCleanupRef.current = startBackgroundMatcher();
           console.log('✅ Background matcher restarted successfully');
@@ -214,7 +235,6 @@ export default function App() {
       appStateRef.current = nextAppState;
     });
 
-    // Cleanup on unmount
     return () => {
       console.log('🛑 App unmounting, cleaning up...');
       if (matcherCleanupRef.current) {
@@ -257,6 +277,15 @@ export default function App() {
           <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
           <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
           <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+
+          <Stack.Screen
+            name="ReceiverPicker"
+            component={ReceiverPickerScreen}
+            options={{
+              presentation: 'modal',
+              animation: 'slide_from_bottom',
+            }}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </ScheduleProvider>
