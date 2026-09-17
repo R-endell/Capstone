@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/MessagesScreen.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
@@ -35,11 +36,9 @@ type ChatMessage = {
   sent_at: string;
   sender_id: number;
   is_read: boolean;
-  /** Set only on optimistic (pre-insert) messages. Used for dedup + replacement. */
   _temp_id?: number;
 };
 
-/** Chat-list compact timestamp: "5m", "Just now", "10:30 AM", "Mon", "Sep 16" */
 const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
   const now = new Date();
@@ -52,7 +51,6 @@ const formatChatTime = (timestamp: string) => {
   return formatDate(timestamp, 'MMM d');
 };
 
-/** Compare calendar days in Manila time, not device-local */
 const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
   if (!previous) return true;
   const currDay = formatDate(current.sent_at, 'yyyy-MM-dd');
@@ -60,7 +58,6 @@ const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | n
   return currDay !== prevDay;
 };
 
-/** "Today" / "Yesterday" / "Monday, Sep 16" — all in Manila time */
 const formatDateSeparator = (timestamp: string) => {
   const day = formatDate(timestamp, 'yyyy-MM-dd');
   const today = formatDate(new Date().toISOString(), 'yyyy-MM-dd');
@@ -321,10 +318,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           const newMsg = payload.new as ChatMessage;
 
           setMessages(prev => {
-            // 1. Exact message already in state? Skip.
             if (prev.some(m => m.message_id === newMsg.message_id)) return prev;
 
-            // 2. Match an optimistic temp by sender + content, replace it in place.
             const tempIdx = prev.findIndex(
               (m) =>
                 m._temp_id !== undefined &&
@@ -336,8 +331,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               next[tempIdx] = { ...newMsg, _temp_id: undefined };
               return next;
             }
-
-            // 3. Genuinely new message from the other party.
             return [...prev, newMsg];
           });
 
@@ -396,9 +389,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         .single();
       if (error) throw error;
 
-      // Replace the optimistic temp in place with the DB row.
-      // If realtime already replaced it (by sender+content match above),
-      // the map simply finds nothing to change and returns unchanged.
       setMessages(prev =>
         prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)),
       );
@@ -443,13 +433,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }, [selectedRoom]),
   );
 
+  // FIX: This ensures the list immediately updates when ANY message arrives
   useEffect(() => {
     roomsSubscription.current = supabase
       .channel(`chat-rooms-list-${Date.now()}`)
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_rooms' },
-        () => { fetchConversations(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_rooms' }, () => fetchConversations())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
       .subscribe();
+      
     return () => {
       if (roomsSubscription.current) supabase.removeChannel(roomsSubscription.current);
     };
@@ -494,12 +486,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           </View>
         )}
         {badgeColor && (
-          <View
-            style={[
-              styles.avatarBadge,
-              { backgroundColor: badgeColor },
-            ]}
-          >
+          <View style={[styles.avatarBadge, { backgroundColor: badgeColor }]}>
             <Ionicons name="checkmark" size={8} color="#FFFFFF" />
           </View>
         )}
@@ -528,24 +515,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             {item.other.first_name} {item.other.last_name}
           </Text>
           {item.latest_sent_at && (
-            <Text
-              style={[
-                styles.chatTime,
-                item.unread_count > 0 && styles.chatTimeUnread,
-              ]}
-            >
+            <Text style={[styles.chatTime, item.unread_count > 0 && styles.chatTimeUnread]}>
               {formatChatTime(item.latest_sent_at)}
             </Text>
           )}
         </View>
         <View style={styles.chatMsgRow}>
-          <Text
-            style={[
-              styles.chatLastMsg,
-              item.unread_count > 0 && styles.chatLastMsgUnread,
-            ]}
-            numberOfLines={1}
-          >
+          <Text style={[styles.chatLastMsg, item.unread_count > 0 && styles.chatLastMsgUnread]} numberOfLines={1}>
             {item.latest_message || 'Say hi 👋'}
           </Text>
           {item.unread_count > 0 && (
@@ -562,7 +538,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const isMe = item.sender_id === currentUserId.current;
     const previous = index > 0 ? messages[index - 1] : null;
     const showDateSeparator = shouldShowDateSeparator(item, previous);
-
     const prevSameSender = previous && previous.sender_id === item.sender_id;
     const showAvatar = !isMe && !prevSameSender;
 
@@ -581,20 +556,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
           {!isMe && (
             <View style={styles.msgAvatarSlot}>
-              {showAvatar ? (
-                renderAvatar(selectedRoom!.other, 32)
-              ) : (
-                <View style={{ width: 32 }} />
-              )}
+              {showAvatar ? renderAvatar(selectedRoom!.other, 32) : <View style={{ width: 32 }} />}
             </View>
           )}
 
-          <View
-            style={[
-              styles.msgBubble,
-              isMe ? styles.myMsg : styles.theirMsg,
-            ]}
-          >
+          <View style={[styles.msgBubble, isMe ? styles.myMsg : styles.theirMsg]}>
             <Text style={[styles.msgText, isMe && styles.myMsgText]}>
               {item.message}
             </Text>
@@ -668,14 +634,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               renderItem={renderConversationItem}
               contentContainerStyle={styles.listContent}
               showsVerticalScrollIndicator={false}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={fetchConversations}
-                  tintColor={ORANGE}
-                  colors={[ORANGE]}
-                />
-              }
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchConversations} tintColor={ORANGE} colors={[ORANGE]} />}
             />
           </Animated.View>
         )}
@@ -687,9 +646,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     <View style={styles.detailContainer}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      <Animated.View
-        style={[styles.detailHeader, { paddingTop: insets.top + 12 }, fadeUp(detailHeaderAnim, -14)]}
-      >
+      <Animated.View style={[styles.detailHeader, { paddingTop: insets.top + 12 }, fadeUp(detailHeaderAnim, -14)]}>
         <TouchableOpacity onPress={closeConversation} style={styles.backBtn} activeOpacity={0.85}>
           <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
         </TouchableOpacity>
@@ -712,12 +669,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             {selectedRoom.other.first_name} {selectedRoom.other.last_name}
           </Text>
           <View style={styles.headerRoleRow}>
-            <View
-              style={[
-                styles.headerRoleDot,
-                { backgroundColor: selectedRoom.role === 'sender' ? '#93C5FD' : '#86EFAC' },
-              ]}
-            />
+            <View style={[styles.headerRoleDot, { backgroundColor: selectedRoom.role === 'sender' ? '#93C5FD' : '#86EFAC' }]} />
             <Text style={styles.headerSubtitle}>
               {selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
             </Text>
@@ -738,11 +690,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <FlatList
             ref={flatListRef}
             data={messages}
-            keyExtractor={(item) =>
-              item._temp_id !== undefined
-                ? `temp-${item._temp_id}`
-                : `msg-${item.message_id}`
-            }
+            keyExtractor={(item) => item._temp_id !== undefined ? `temp-${item._temp_id}` : `msg-${item.message_id}`}
             renderItem={renderMessageItem}
             contentContainerStyle={styles.chatContent}
             showsVerticalScrollIndicator={false}
@@ -750,25 +698,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             keyboardDismissMode="interactive"
             onEndReached={loadOlderMessages}
             onEndReachedThreshold={0.2}
-            ListFooterComponent={
-              loadMore ? (
-                <View style={styles.loadingMore}>
-                  <ActivityIndicator size="small" color={ORANGE} />
-                </View>
-              ) : null
-            }
+            ListFooterComponent={loadMore ? <View style={styles.loadingMore}><ActivityIndicator size="small" color={ORANGE} /></View> : null}
             onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
             onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
           />
         </Animated.View>
 
-        <Animated.View
-          style={[
-            styles.inputBar,
-            { paddingBottom: Math.max(insets.bottom, 12) },
-            fadeUp(inputAnim, 20),
-          ]}
-        >
+        <Animated.View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 20)]}>
           <TouchableOpacity style={styles.attachBtn} activeOpacity={0.7}>
             <Ionicons name="add" size={24} color="#6B7280" />
           </TouchableOpacity>
@@ -792,21 +728,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <Animated.View style={{ transform: [{ scale: sendScale }] }}>
             <TouchableOpacity
-              style={[
-                styles.sendBtn,
-                newMessage.trim() ? styles.sendBtnActive : styles.sendBtnDisabled,
-              ]}
+              style={[styles.sendBtn, newMessage.trim() ? styles.sendBtnActive : styles.sendBtnDisabled]}
               onPress={sendMessage}
               onPressIn={animateSendPressIn}
               onPressOut={animateSendPressOut}
               disabled={sending || !newMessage.trim()}
               activeOpacity={0.9}
             >
-              {sending ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Ionicons name="send" size={16} color="#FFFFFF" />
-              )}
+              {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="send" size={16} color="#FFFFFF" />}
             </TouchableOpacity>
           </Animated.View>
         </Animated.View>
@@ -820,462 +749,82 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
 
   listHeader: {
-    backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 24,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
+    backgroundColor: ORANGE, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 24,
+    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
   },
-  headerSub: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 4,
-  },
-  listHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  mainTitle: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.4,
-  },
-  countPill: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  countPillText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
-  },
+  headerSub: { fontSize: 11, color: '#FFE0C7', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 },
+  listHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  mainTitle: { fontSize: 26, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.4 },
+  countPill: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
+  countPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
 
-  centerLoader: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '500',
-  },
+  centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
+  loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
 
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  emptyIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  emptyTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#111827',
-    marginTop: 4,
-    letterSpacing: -0.2,
-  },
-  emptySubtext: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 18,
-    fontWeight: '500',
-  },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  emptyTitle: { fontSize: 17, fontWeight: '800', color: '#111827', marginTop: 4, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 18, fontWeight: '500' },
 
-  listContent: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 20,
-  },
-  chatRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    marginBottom: 6,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-  },
-  avatarWrapper: {
-    position: 'relative',
-    marginRight: 14,
-  },
-  avatarFallback: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: ORANGE,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarImage: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: '#F3F4F6',
-  },
-  avatarText: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
-  onlineDot: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#22C55E',
-    borderWidth: 2.5,
-    borderColor: '#FFFFFF',
-  },
+  listContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+  chatRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 12, marginBottom: 6, borderRadius: 16, backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 1, borderWidth: 1, borderColor: '#F3F4F6' },
+  avatarWrapper: { position: 'relative', marginRight: 14 },
+  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#F3F4F6' },
+  avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2.5, borderColor: '#FFFFFF' },
 
-  chatInfo: {
-    flex: 1,
-    marginRight: 8,
-  },
-  chatNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  chatName: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
-    flex: 1,
-    marginRight: 8,
-  },
-  chatTime: {
-    fontSize: 11,
-    color: '#9CA3AF',
-    fontWeight: '600',
-  },
-  chatTimeUnread: {
-    color: ORANGE,
-    fontWeight: '800',
-  },
-  chatMsgRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  chatLastMsg: {
-    fontSize: 13,
-    color: '#6B7280',
-    flex: 1,
-    fontWeight: '500',
-  },
-  chatLastMsgUnread: {
-    color: '#111827',
-    fontWeight: '700',
-  },
-  unreadBadge: {
-    backgroundColor: ORANGE,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    paddingHorizontal: 6,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  unreadBadgeText: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 11,
-  },
+  chatInfo: { flex: 1, marginRight: 8 },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  chatName: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  chatTimeUnread: { color: ORANGE, fontWeight: '800' },
+  chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  chatLastMsg: { fontSize: 13, color: '#6B7280', flex: 1, fontWeight: '500' },
+  chatLastMsgUnread: { color: '#111827', fontWeight: '700' },
+  unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
 
   detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
-  detailHeader: {
-    backgroundColor: ORANGE,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    gap: 10,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  headerAvatarWrapper: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    overflow: 'hidden',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.5)',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerAvatarImage: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-  },
-  headerAvatarFallback: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerAvatarInitials: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-  },
+  detailHeader: { backgroundColor: ORANGE, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 16, gap: 10, borderBottomLeftRadius: 24, borderBottomRightRadius: 24, shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
+  headerAvatarWrapper: { width: 42, height: 42, borderRadius: 21, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.5)', backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center' },
+  headerAvatarImage: { width: 42, height: 42, borderRadius: 21 },
+  headerAvatarFallback: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.25)', justifyContent: 'center', alignItems: 'center' },
+  headerAvatarInitials: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   headerInfo: { flex: 1 },
-  headerName: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.2,
-  },
-  headerRoleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 3,
-  },
-  headerRoleDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
-  headerIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
+  headerName: { fontSize: 15, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
+  headerRoleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  headerRoleDot: { width: 6, height: 6, borderRadius: 3 },
+  headerSubtitle: { fontSize: 11, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.2 },
+  headerIconBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
 
-  chatContent: {
-    paddingHorizontal: 12,
-    paddingVertical: 16,
-    paddingBottom: 8,
-  },
+  chatContent: { paddingHorizontal: 12, paddingVertical: 16, paddingBottom: 8 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
+  dateSeparatorLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
+  dateSeparatorText: { fontSize: 11, color: '#9CA3AF', fontWeight: '700', letterSpacing: 0.3 },
 
-  dateSeparator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 16,
-    paddingHorizontal: 24,
-    gap: 10,
-  },
-  dateSeparatorLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#E5E7EB',
-  },
-  dateSeparatorText: {
-    fontSize: 11,
-    color: '#9CA3AF',
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4, paddingHorizontal: 4 },
+  msgRowMe: { justifyContent: 'flex-end' },
+  msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
+  avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFFFFF' },
 
-  msgRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginBottom: 4,
-    paddingHorizontal: 4,
-  },
-  msgRowMe: {
-    justifyContent: 'flex-end',
-  },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
+  theirMsg: { backgroundColor: '#FFFFFF', borderBottomLeftRadius: 6, borderWidth: 1, borderColor: '#F3F4F6', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
+  msgText: { fontSize: 14.5, color: '#111827', lineHeight: 20, fontWeight: '500' },
+  myMsgText: { color: '#FFFFFF' },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4 },
+  msgTime: { fontSize: 10, color: '#9CA3AF', fontWeight: '600' },
+  myMsgTime: { color: 'rgba(255,255,255,0.85)' },
+  loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
-  msgAvatarSlot: {
-    width: 32,
-    marginRight: 8,
-    justifyContent: 'flex-end',
-  },
-  avatarBadge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-  },
-
-  msgBubble: {
-    maxWidth: '78%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  myMsg: {
-    backgroundColor: ORANGE,
-    borderBottomRightRadius: 6,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  theirMsg: {
-    backgroundColor: '#FFFFFF',
-    borderBottomLeftRadius: 6,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  msgText: {
-    fontSize: 14.5,
-    color: '#111827',
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  myMsgText: {
-    color: '#FFFFFF',
-  },
-  msgMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-end',
-    marginTop: 4,
-  },
-  msgTime: {
-    fontSize: 10,
-    color: '#9CA3AF',
-    fontWeight: '600',
-  },
-  myMsgTime: {
-    color: 'rgba(255,255,255,0.85)',
-  },
-  loadingMore: {
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-
-  inputBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderColor: '#F3F4F6',
-    alignItems: 'flex-end',
-    backgroundColor: '#FFFFFF',
-    gap: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  attachBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-  },
-  inputWrapper: {
-    flex: 1,
-    backgroundColor: '#F9FAFB',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    maxHeight: 100,
-  },
-  textInput: {
-    minHeight: 36,
-    maxHeight: 90,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '500',
-    paddingTop: Platform.OS === 'ios' ? 8 : 4,
-    paddingBottom: Platform.OS === 'ios' ? 8 : 4,
-  },
-  sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sendBtnActive: {
-    backgroundColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  sendBtnDisabled: {
-    backgroundColor: '#E5E7EB',
-  },
+  inputBar: { flexDirection: 'row', paddingHorizontal: 12, paddingTop: 12, borderTopWidth: 1, borderColor: '#F3F4F6', alignItems: 'flex-end', backgroundColor: '#FFFFFF', gap: 6, shadowColor: '#000', shadowOffset: { width: 0, height: -2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 3 },
+  attachBtn: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9FAFB' },
+  inputWrapper: { flex: 1, backgroundColor: '#F9FAFB', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 4, borderWidth: 1, borderColor: '#E5E7EB', maxHeight: 100 },
+  textInput: { minHeight: 36, maxHeight: 90, fontSize: 14, color: '#111827', fontWeight: '500', paddingTop: Platform.OS === 'ios' ? 8 : 4, paddingBottom: Platform.OS === 'ios' ? 8 : 4 },
+  sendBtn: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
+  sendBtnActive: { backgroundColor: ORANGE, shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3 },
+  sendBtnDisabled: { backgroundColor: '#E5E7EB' },
 });

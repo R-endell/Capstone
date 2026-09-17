@@ -10,7 +10,6 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { dateToManilaIsoString, formatDateShort, formatTime } from '../../../../utils/dateUtils';
 
 const ORANGE = '#FA7A25';
 
@@ -21,6 +20,33 @@ interface Route {
   start_location_id: number; end_location_id: number; provider_id: number; vehicle_id: number;
   start_location?: Location; end_location?: Location; vehicle?: Vehicle;
 }
+
+// --- BULLETPROOF TIMEZONE HELPER ---
+// This completely ignores the device timezone and locks the exact numbers you pick.
+const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  const hh = String(timeObj.getHours()).padStart(2, '0');
+  const mm = String(timeObj.getMinutes()).padStart(2, '0');
+  // Notice there is NO 'Z' at the end. Supabase will save this exactly as is.
+  return `${y}-${m}-${d}T${hh}:${mm}:00`;
+};
+
+// This safely parses the string back into a Date without shifting the timezone
+const parseNaiveIsoString = (isoString: string) => {
+  if (!isoString) return new Date();
+  const parts = isoString.split(/[-T:+Z]/);
+  if (parts.length < 5) return new Date();
+  
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10) - 1;
+  const d = parseInt(parts[2], 10);
+  const hh = parseInt(parts[3], 10);
+  const mm = parseInt(parts[4], 10);
+  
+  return new Date(y, m, d, hh, mm);
+};
 
 const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, startName = 'Starting Point', endName = 'Destination', mode = 'view' }: any) => {
   const centerLat = startLat || endLat || 10.3157;
@@ -219,10 +245,24 @@ export default function ManageRoutesScreen() {
     if (!startLocation || !endLocation || !selectedVehicleId || !userId) {
       return Alert.alert('Required', 'Please fill all fields');
     }
+
+    const now = new Date();
+    const combinedDateTime = new Date(
+      departureDate.getFullYear(),
+      departureDate.getMonth(),
+      departureDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes()
+    );
+
+    if (combinedDateTime < now) {
+      return Alert.alert('Invalid Time', 'You cannot schedule a route in the past. Please select a valid future date and time.');
+    }
+
     setSubmitting(true);
     try {
-      // ✅ Save as Manila-local timestamp (+08:00)
-      const departureValue = dateToManilaIsoString(departureDate, departureTime);
+      // ✅ Use the NAIVE string so Supabase saves exactly the digits we picked without shifting them
+      const departureValue = toNaiveIsoString(departureDate, departureTime);
       const routeData = {
         departure_time: departureValue,
         route_frequency: selectedFrequency,
@@ -272,19 +312,12 @@ export default function ManageRoutesScreen() {
 
   const handleEdit = (route: Route) => {
     setEditingRoute(route);
-    // ✅ Parse ISO string to recover original Manila wall-clock time
-    const isoParts = route.departure_time.match(
-      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/,
-    );
-    if (isoParts) {
-      const [, y, m, d, hh, mm] = isoParts.map(Number);
-      setDepartureDate(new Date(y, m - 1, d));
-      setDepartureTime(new Date(1970, 0, 1, hh, mm));
-    } else {
-      const dt = new Date(route.departure_time);
-      setDepartureDate(new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()));
-      setDepartureTime(new Date(1970, 0, 1, dt.getHours(), dt.getMinutes()));
-    }
+    
+    // ✅ Use the NAIVE parser to reconstruct exactly the local time we saved
+    const dt = parseNaiveIsoString(route.departure_time);
+    setDepartureDate(dt);
+    setDepartureTime(dt);
+
     setSelectedFrequency(route.route_frequency || 'Daily');
     setSelectedVehicleId(route.vehicle_id || null);
     setStartLocation(route.start_location || null);
@@ -326,6 +359,9 @@ export default function ManageRoutesScreen() {
   });
 
   const renderRouteCard = ({ item }: { item: Route }) => {
+    // ✅ Use the NAIVE parser to display exactly what is in the database
+    const dt = parseNaiveIsoString(item.departure_time);
+    
     const freqColor =
       item.route_frequency === 'Daily' ? { bg: '#DBEAFE', fg: '#2563EB' } :
       item.route_frequency === 'Weekly' ? { bg: '#EDE9FE', fg: '#7C3AED' } :
@@ -342,10 +378,10 @@ export default function ManageRoutesScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.routeDate}>
-                {formatDateShort(item.departure_time)}
+                {dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
               </Text>
               <Text style={styles.routeTime}>
-                {formatTime(item.departure_time)}
+                {dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </Text>
             </View>
           </View>
@@ -578,9 +614,12 @@ export default function ManageRoutesScreen() {
                         value={departureDate}
                         mode="date"
                         display="default"
+                        minimumDate={new Date()}
                         onChange={(e, d) => {
                           if (Platform.OS === 'android') setShowDatePicker(false);
-                          if (e.type === 'set' && d) setDepartureDate(new Date(d.getFullYear(), d.getMonth(), d.getDate()));
+                          if (e.type === 'set' && d) {
+                            setDepartureDate(d);
+                          }
                         }}
                       />
                     )}
@@ -601,7 +640,9 @@ export default function ManageRoutesScreen() {
                         display="default"
                         onChange={(e, t) => {
                           if (Platform.OS === 'android') setShowTimePicker(false);
-                          if (e.type === 'set' && t) setDepartureTime(new Date(1970, 0, 1, t.getHours(), t.getMinutes()));
+                          if (e.type === 'set' && t) {
+                            setDepartureTime(t);
+                          }
                         }}
                       />
                     )}
