@@ -10,7 +10,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { makeRedirectUri } from 'expo-auth-session';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 
@@ -176,9 +176,11 @@ export default function LoginScreen() {
         Alert.alert('Login Failed', getFriendlyErrorMessage(error));
         return;
       }
+      const lastMode = await AsyncStorage.getItem('last_mode');
+      const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
       navigation.reset({
         index: 0,
-        routes: [{ name: 'MainTabs' }],
+        routes: [{ name: route }],
       });
     } catch (error: any) {
       Alert.alert('Error', getFriendlyErrorMessage(error));
@@ -448,7 +450,7 @@ const styles = StyleSheet.create({
   keyboardAvoid: { flex: 1 },
 
   backgroundLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
   glow: {

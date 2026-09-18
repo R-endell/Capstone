@@ -1,10 +1,10 @@
 // src/modules/Dashboard/Provider/EarningsScreen.tsx
 import React, { useState, useCallback } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { 
   View, 
   Text, 
   StyleSheet, 
-  SafeAreaView, 
   FlatList, 
   TouchableOpacity, 
   Platform,
@@ -66,31 +66,32 @@ export default function EarningsScreen() {
         .from('users')
         .select('user_id')
         .eq('auth_id', user.id)
-        .single();
+        .maybeSingle();  
 
-      if (userError) {
+      if (userError || !userData) {
         console.error('Error fetching user:', userError);
         return null;
       }
 
       console.log('User ID:', userData.user_id);
 
-      // Check if user has Provider role
-      const { data: userRole, error: roleError } = await supabase
+      // Check if user has Provider role (may have multiple roles)
+      const { data: userRoles, error: roleError } = await supabase
         .from('user_roles')
         .select(`
           role_id,
           roles!inner (role_name)
         `)
-        .eq('user_id', userData.user_id)
-        .single();
+        .eq('user_id', userData.user_id);  // ✅ No .single() — get all roles
 
       if (roleError) {
         console.error('Error checking user role:', roleError);
-        // Try to get provider_id directly from provider_wallet
-      } else if (userRole?.roles?.role_name !== 'Provider') {
-        console.log('User does not have Provider role');
-        // Try to get provider_id directly from provider_wallet anyway
+      } else {
+        const roleNames = (userRoles || []).map((r: any) => r.roles?.role_name);
+        console.log('User roles:', roleNames);
+        if (!roleNames.includes('Provider')) {
+          console.log('User does not have Provider role');
+        }
       }
 
       // Get provider_id from provider_wallet
@@ -98,33 +99,38 @@ export default function EarningsScreen() {
         .from('provider_wallet')
         .select('provider_id')
         .eq('provider_id', userData.user_id)
-        .single();
+        .maybeSingle();  // ✅ Use maybeSingle — 0 rows is OK
 
       if (walletError) {
         console.error('Error fetching from provider_wallet:', walletError);
-        
-        // Try provider_routes as fallback
-        const { data: routeData, error: routeError } = await supabase
-          .from('provider_routes')
-          .select('provider_id')
-          .eq('provider_id', userData.user_id)
-          .single();
+      }
 
-        if (routeError) {
-          console.error('Error fetching from provider_routes:', routeError);
-          Alert.alert(
-            'Provider Account Not Found',
-            'You need to register as a provider first.'
-          );
-          return null;
-        }
-        
+      if (walletData) {
+        setProviderId(walletData.provider_id);
+        return walletData.provider_id;
+      }
+
+      // Fallback: try provider_routes
+      const { data: routeData, error: routeError } = await supabase
+        .from('provider_routes')
+        .select('provider_id')
+        .eq('provider_id', userData.user_id)
+        .maybeSingle();  // ✅ Use maybeSingle — 0 rows is OK
+
+      if (routeError) {
+        console.error('Error fetching from provider_routes:', routeError);
+      }
+
+      if (routeData) {
         setProviderId(routeData.provider_id);
         return routeData.provider_id;
       }
 
-      setProviderId(walletData.provider_id);
-      return walletData.provider_id;
+      // Last resort: assume user_id IS the provider_id (common pattern)
+      console.log('No wallet/routes found — defaulting to user_id as provider_id');
+      setProviderId(userData.user_id);
+      return userData.user_id;
+
     } catch (error) {
       console.error('Error in getProviderId:', error);
       return null;
@@ -138,7 +144,7 @@ export default function EarningsScreen() {
         .from('provider_wallet')
         .select('*')
         .eq('provider_id', providerId)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
       setWalletData(data);

@@ -12,7 +12,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../App';
-
+import { supabase } from '../../utils/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 /** Brand */
 const ORANGE = '#F27024';
 
@@ -47,11 +48,33 @@ export default function LoadingScreen() {
   /* Navigation                                                          */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
-    const timer = setTimeout(() => {
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'Login' }],
-      });
+    const timer = setTimeout(async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session) {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Login' }],
+          });
+          return;
+        }
+
+        // Restore the mode the user was last in
+        const lastMode = await AsyncStorage.getItem('last_mode');
+        const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+
+        navigation.reset({
+          index: 0,
+          routes: [{ name: route }],
+        });
+      } catch (error) {
+        console.error('Session restore error:', error);
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Login' }],
+        });
+      }
     }, SPLASH_DURATION);
 
     return () => clearTimeout(timer);
@@ -323,7 +346,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F9FAFB',
   },
   backgroundLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
   glow: {

@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
-
+import AsyncStorage from '@react-native-async-storage/async-storage';
 /** Brand */
 const ORANGE = '#FA7A25';
 
@@ -102,7 +102,8 @@ export default function ProviderAccountScreen() {
   /* ------------------------------------------------------------------ */
   /* Handlers                                                            */
   /* ------------------------------------------------------------------ */
-  const handleSwitchToSender = () => {
+  const handleSwitchToSender = async () => {
+    await AsyncStorage.setItem('last_mode', 'sender');
     navigation.navigate('MainTabs');
   };
 
@@ -116,6 +117,7 @@ export default function ProviderAccountScreen() {
           text: 'Log Out',
           style: 'destructive',
           onPress: async () => {
+            await AsyncStorage.removeItem('last_mode');   // 👈 add this
             await supabase.auth.signOut();
             navigation.reset({
               index: 0,

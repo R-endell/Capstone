@@ -261,6 +261,12 @@ export default function RegisterScreen() {
 
   const getFriendlyErrorMessage = (error: any) => {
     const message = error?.message || '';
+    const raw = JSON.stringify(error);  
+
+    if (raw.includes('users_phone_number_key') || message.includes('duplicate key')) {
+      return 'This phone number is already registered. Please log in or use a different number.';
+    }
+
     if (message.includes('User already registered')) return 'This email is already registered. Please log in instead.';
     if (message.includes('Password should be at least 6 characters')) return 'Password must be at least 6 characters.';
     if (message.includes('Invalid email')) return 'Please enter a valid email address.';
@@ -284,48 +290,96 @@ export default function RegisterScreen() {
     if (confirmValidation) { setConfirmPasswordError(confirmValidation); return; }
 
     setLoading(true);
-    let avatarUrl = '';
 
     try {
-      if (imageBase64) {
-        const fileName = `${Date.now()}_${firstName.toLowerCase()}.jpg`;
-        const { error: uploadError } = await supabase.storage
-          .from('avatars')
-          .upload(fileName, decode(imageBase64), {
-            contentType: 'image/jpeg',
-          });
+      // 🔎 PRE-CHECK: Is this phone number already taken?
+      const cleanedPhone = phone.trim();
+      const { data: existingPhone, error: phoneCheckError } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('phone_number', cleanedPhone)
+        .maybeSingle();
 
-        if (uploadError) throw uploadError;
-
-        const { data: { publicUrl } } = supabase.storage
-          .from('avatars')
-          .getPublicUrl(fileName);
-        avatarUrl = publicUrl;
+      if (phoneCheckError) {
+        console.error('Phone check error:', phoneCheckError);
       }
 
-      const { error: signUpError } = await supabase.auth.signUp({
+      if (existingPhone) {
+        setPhoneError('This phone number is already registered.');
+        Alert.alert(
+          'Phone Number Already Used',
+          'An account already exists with this phone number. Please log in or use a different number.',
+          [{ text: 'OK' }]
+        );
+        setLoading(false);
+        return;
+      }
+
+      // ✅ Also pre-check email (gives a nicer message than Supabase's default)
+      const { data: existingEmail } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('email', email.trim().toLowerCase())
+        .maybeSingle();
+
+      if (existingEmail) {
+        setEmailError('This email is already registered.');
+        Alert.alert(
+          'Email Already Used',
+          'An account already exists with this email. Please log in instead.',
+          [{ text: 'OK' }]
+        );
+        setLoading(false);
+        return;
+      }
+
+      // --- Rest of signup proceeds as before ---
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: email.trim(),
         password,
         options: {
           data: {
             first_name: firstName.trim(),
             last_name: lastName.trim(),
-            phone: phone.trim(),
-            avatar_url: avatarUrl,
+            phone: cleanedPhone,
+            avatar_url: '',
           },
           emailRedirectTo: 'packnship://auth/confirm',
-        }
+        },
       });
 
       if (signUpError) throw signUpError;
+
+      // (avatar upload after signup, as before)
+      if (imageBase64 && signUpData?.user) {
+        try {
+          const fileName = `${signUpData.user.id}_${Date.now()}.jpg`;
+          const { error: uploadError } = await supabase.storage
+            .from('avatars')
+            .upload(fileName, decode(imageBase64), {
+              contentType: 'image/jpeg',
+              upsert: true,
+            });
+
+          if (uploadError) throw uploadError;
+
+          const { data: { publicUrl } } = supabase.storage
+            .from('avatars')
+            .getPublicUrl(fileName);
+
+          await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
+        } catch (uploadErr: any) {
+          console.warn('Avatar upload failed:', uploadErr?.message);
+        }
+      }
 
       Alert.alert(
         'Registration Successful! 🎉',
         'Please check your email to verify your account before logging in.',
         [{ text: 'OK', onPress: () => navigation.navigate('Login') }]
       );
-
     } catch (error: any) {
+      console.error('🔴 SIGNUP ERROR:', error);
       Alert.alert('Signup Failed', getFriendlyErrorMessage(error));
     } finally {
       setLoading(false);
@@ -604,7 +658,7 @@ const styles = StyleSheet.create({
   keyboardAvoid: { flex: 1 },
 
   backgroundLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
   glow: {

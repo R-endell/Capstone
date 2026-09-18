@@ -11,6 +11,7 @@ import {
   StatusBar,
   Animated,
   Easing,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -18,52 +19,10 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /** Brand */
 const ORANGE = '#FA7A25';
-
-// Mock Data for History View
-const MOCK_HISTORY = [
-  {
-    id: 'h1',
-    type: 'Curb-side Drop-off',
-    date: 'April 25, 2026',
-    time: '6:40 PM',
-    pickup: 'Landers Superstore Cebu',
-    pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
-    dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
-    provider: 'Jun Joseph Pestaño',
-    tracking: 'CXV34DA675FAS',
-    price: '24.00',
-  },
-  {
-    id: 'h2',
-    type: 'Curb-side Drop-off',
-    date: 'April 25, 2026',
-    time: '6:40 PM',
-    pickup: 'Landers Superstore Cebu',
-    pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
-    dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
-    provider: 'Jun Joseph Pestaño',
-    tracking: 'CXV34DA675FAS',
-    price: '24.00',
-  },
-  {
-    id: 'h3',
-    type: 'Curb-side Drop-off',
-    date: 'April 25, 2026',
-    time: '6:40 PM',
-    pickup: 'Landers Superstore Cebu',
-    pickupSub: 'Skyrise 4 Tower, Geonzon Street, cor V. Padriga Street, Cebu City',
-    dropoff: 'Gaisano Country Mall',
-    dropoffSub: 'Gov. M. Cuenco Ave Main Entrance',
-    provider: 'Jun Joseph Pestaño',
-    tracking: 'CXV34DA675FAS',
-    price: '24.00',
-  },
-];
 
 export default function AccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -80,6 +39,9 @@ export default function AccountScreen() {
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
   const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<'All' | 'Pending' | 'In Transit' | 'Completed' | 'Cancelled'>('All');
 
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -142,6 +104,130 @@ export default function AccountScreen() {
   }, [showHistory, historyAnim]);
 
   /* ------------------------------------------------------------------ */
+  /* Fetch past delivery_requests for this sender                        */
+  /* ------------------------------------------------------------------ */
+  const fetchHistory = useCallback(async (senderId: number) => {
+    try {
+      setHistoryLoading(true);
+
+      const { data, error } = await supabase
+        .from('delivery_requests')
+        .select(`
+          request_id,
+          pickup_type,
+          delivery_status,
+          scheduled_time,
+          created_at,
+          estimated_cost,
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey (
+            street_address, barangay, city, province
+          ),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (
+            street_address, barangay, city, province
+          ),
+          deliveries (
+            delivery_id,
+            completed_at,
+            provider:users!deliveries_provider_id_fkey (
+              first_name, last_name
+            )
+          )
+        `)
+        .eq('sender_id', senderId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      console.log('🔍 History query returned:', data?.length ?? 0, 'rows');
+
+      // Show ALL statuses (Pending, In Transit, Completed, Cancelled)
+      const mapped = (data || []).map((r: any) => {
+        const delivery = r.deliveries?.[0];
+        const provider = delivery?.provider;
+
+        const dateObj = r.scheduled_time
+          ? new Date(r.scheduled_time)
+          : new Date(r.created_at);
+
+        const pickupAddr = r.pickup_location?.street_address || 'Pickup location';
+        const dropoffAddr = r.dropoff_location?.street_address || 'Dropoff location';
+
+        // Normalize status for display
+        const rawStatus = (r.delivery_status || 'Pending').trim();
+        const isCancelled = /cancel/i.test(rawStatus);
+        const isCompleted = /complete|delivered/i.test(rawStatus) || !!delivery?.completed_at;
+        const isTransit = /transit|accepted|picked/i.test(rawStatus);
+
+        let statusLabel = rawStatus;
+        let statusColor = '#6B7280';
+        let statusBg = '#F3F4F6';
+        let statusIcon: any = 'time-outline';
+
+        if (isCompleted) {
+          statusLabel = 'Completed';
+          statusColor = '#166534';
+          statusBg = '#DCFCE7';
+          statusIcon = 'checkmark-circle';
+        } else if (isCancelled) {
+          statusLabel = 'Cancelled';
+          statusColor = '#991B1B';
+          statusBg = '#FEE2E2';
+          statusIcon = 'close-circle';
+        } else if (isTransit) {
+          statusLabel = 'In Transit';
+          statusColor = '#0369A1';
+          statusBg = '#E0F2FE';
+          statusIcon = 'car-sport';
+        } else {
+          statusLabel = 'Pending';
+          statusColor = '#92400E';
+          statusBg = '#FEF3C7';
+          statusIcon = 'time-outline';
+        }
+
+        return {
+          id: String(r.request_id),
+          type: r.pickup_type || 'Curb-side Drop-off',
+          date: dateObj.toLocaleDateString('en-US', {
+            month: 'long', day: 'numeric', year: 'numeric',
+          }),
+          time: dateObj.toLocaleTimeString('en-US', {
+            hour: 'numeric', minute: '2-digit',
+          }),
+          pickup: pickupAddr,
+          pickupSub: [
+            r.pickup_location?.barangay,
+            r.pickup_location?.city,
+            r.pickup_location?.province,
+          ].filter(Boolean).join(', '),
+          dropoff: dropoffAddr,
+          dropoffSub: [
+            r.dropoff_location?.barangay,
+            r.dropoff_location?.city,
+            r.dropoff_location?.province,
+          ].filter(Boolean).join(', '),
+          provider: provider
+            ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider'
+            : 'Unassigned',
+          tracking: `PNS-${String(r.request_id).padStart(4, '0')}`,
+          price: Number(r.estimated_cost || 0).toFixed(2),
+          statusLabel,
+          statusColor,
+          statusBg,
+          statusIcon,
+        };
+      });
+
+      setHistory(mapped);
+    } catch (err) {
+      console.error('Error fetching history:', err);
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  /* ------------------------------------------------------------------ */
   /* Fetch user data                                                     */
   /* ------------------------------------------------------------------ */
   useFocusEffect(
@@ -154,11 +240,20 @@ export default function AccountScreen() {
           if (user) {
             setUserEmail(user.email || 'john.doe@example.com');
 
+            // Read name + avatar from user_metadata
+            if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
+            if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
+            if (user.user_metadata?.avatar_url) {
+              setAvatarUrl(user.user_metadata.avatar_url);
+              setImageError(false);
+            }
+
+            // Fetch user_id from DB
             const { data: userData, error: userError } = await supabase
               .from('users')
-              .select('user_id, first_name, last_name, profile_photo')
+              .select('user_id')
               .eq('auth_id', user.id)
-              .single();
+              .maybeSingle();
 
             if (userError) {
               console.error('Error fetching user:', userError);
@@ -167,20 +262,11 @@ export default function AccountScreen() {
 
             if (userData) {
               setUserId(userData.user_id);
-              if (userData.first_name) setFirstName(userData.first_name);
-              if (userData.last_name) setLastName(userData.last_name);
-
-              if (userData.profile_photo) {
-                setAvatarUrl(userData.profile_photo);
-                setImageError(false);
-              }
+              fetchHistory(userData.user_id);
 
               const { data: userRoles, error: rolesError } = await supabase
                 .from('user_roles')
-                .select(`
-                  role_id,
-                  roles!inner (role_name)
-                `)
+                .select(`role_id, roles!inner (role_name)`)
                 .eq('user_id', userData.user_id);
 
               if (rolesError) {
@@ -205,7 +291,7 @@ export default function AccountScreen() {
         }
       };
       fetchUserData();
-    }, [])
+    }, [fetchHistory])
   );
 
   /* ------------------------------------------------------------------ */
@@ -221,6 +307,7 @@ export default function AccountScreen() {
           text: 'Log Out',
           style: 'destructive',
           onPress: async () => {
+            await AsyncStorage.removeItem('last_mode');
             await supabase.auth.signOut();
             navigation.reset({
               index: 0,
@@ -237,16 +324,13 @@ export default function AccountScreen() {
     navigation.navigate('Settings');
   };
 
-  const handleSwitchToProvider = () => {
+  const handleSwitchToProvider = async () => {
+    await AsyncStorage.setItem('last_mode', 'provider');
     if (isProviderRegistered) {
       navigation.navigate('ProviderTabs', { screen: 'Task' });
     } else {
       navigation.navigate('RegisterProvider');
     }
-  };
-
-  const handlePaymentMethodsPress = () => {
-    navigation.navigate('PaymentMethods');
   };
 
   /* ------------------------------------------------------------------ */
@@ -273,6 +357,11 @@ export default function AccountScreen() {
   /* History Sub-Screen                                                  */
   /* ------------------------------------------------------------------ */
   if (showHistory) {
+    const filteredHistory = history.filter((item) => {
+      if (historyFilter === 'All') return true;
+      return item.statusLabel === historyFilter;
+    });
+
     return (
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
@@ -297,69 +386,142 @@ export default function AccountScreen() {
         >
           <Animated.View style={{ opacity: historyAnim }}>
             <Text style={styles.historyTitle}>History</Text>
-            <View style={styles.historyHeaderRow}>
-              <Text style={styles.historySubtitle}>Recent</Text>
-              <TouchableOpacity>
-                <Text style={styles.viewAllText}>View All</Text>
-              </TouchableOpacity>
-            </View>
-
-            {MOCK_HISTORY.map((item) => (
-              <View key={item.id} style={styles.historyCard}>
-                <View style={styles.hCardAccent} />
-                <Text style={styles.hCardType}>{item.type}</Text>
-                <Text style={styles.hCardDate}>{item.date}   {item.time}</Text>
-
-                <View style={styles.hCardBody}>
-                  {/* Left: Timeline */}
-                  <View style={styles.hCardTimeline}>
-                    <View style={styles.hTimelinePoint}>
-                      <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
-                      <View style={styles.hAddressWrapper}>
-                        <Text style={styles.hAddressMain}>{item.pickup}</Text>
-                        <Text style={styles.hAddressSub} numberOfLines={2}>{item.pickupSub}</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+              style={{ marginBottom: 20 }}
+            >
+              {(['All', 'Pending', 'In Transit', 'Completed', 'Cancelled'] as const).map((f) => {
+                const active = historyFilter === f;
+                return (
+                  <TouchableOpacity
+                    key={f}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    onPress={() => setHistoryFilter(f)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                      {f}
+                    </Text>
+                    {f !== 'All' && (
+                      <View style={[styles.filterCount, active && styles.filterCountActive]}>
+                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>
+                          {history.filter((h) => h.statusLabel === f).length}
+                        </Text>
                       </View>
-                    </View>
-                    <View style={styles.hTimelineLine} />
-                    <View style={styles.hTimelinePoint}>
-                      <Ionicons name="location" size={16} color="#E11D48" style={{ marginLeft: -1, marginRight: 6 }} />
-                      <View style={styles.hAddressWrapper}>
-                        <Text style={styles.hAddressMain}>{item.dropoff}</Text>
-                        <Text style={styles.hAddressSub} numberOfLines={2}>{item.dropoffSub}</Text>
-                      </View>
-                    </View>
-                  </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
 
-                  {/* Right: Provider */}
-                  <View style={styles.hCardProvider}>
-                    <View style={styles.hAvatar}>
-                      <Ionicons name="person" size={22} color="#FFF" />
-                    </View>
-                    <Text style={styles.hProviderName} numberOfLines={2}>{item.provider}</Text>
-
-                    <TouchableOpacity style={styles.hActionRow}>
-                      <Text style={styles.hActionText}>Rate Provider</Text>
-                      <Ionicons name="arrow-forward" size={12} color="#000" />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={styles.hActionRow}>
-                      <Text style={styles.hActionText}>Report</Text>
-                      <Ionicons name="flag" size={12} color="#000" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.hCardDivider} />
-
-                <View style={styles.hCardFooter}>
-                  <View style={styles.hTrackingWrapper}>
-                    <Ionicons name="barcode-outline" size={12} color="#6B7280" />
-                    <Text style={styles.hTracking}>{item.tracking}</Text>
-                  </View>
-                  <Text style={styles.hPrice}>₱{item.price}</Text>
-                </View>
+            {historyLoading ? (
+              <View style={styles.historyStateContainer}>
+                <ActivityIndicator color={ORANGE} />
+                <Text style={styles.historyStateText}>Loading history...</Text>
               </View>
-            ))}
+            ) : filteredHistory.length === 0 ? (
+              <View style={styles.historyStateContainer}>
+                <Ionicons name="receipt-outline" size={48} color="#D1D5DB" />
+                <Text style={styles.historyEmptyTitle}>No past deliveries</Text>
+                <Text style={styles.historyEmptySubtext}>
+                  Your deliveries will show up here.
+                </Text>
+              </View>
+            ) : (
+              filteredHistory.map((item) => (
+                <View key={item.id} style={styles.historyCard}>
+                  <View style={styles.hCardAccent} />
+
+                  <View style={styles.hCardTopRow}>
+                    <Text style={styles.hCardType}>{item.type}</Text>
+                    <View
+                      style={[
+                        styles.hStatusPill,
+                        { backgroundColor: item.statusBg },
+                      ]}
+                    >
+                      <Ionicons
+                        name={item.statusIcon}
+                        size={10}
+                        color={item.statusColor}
+                      />
+                      <Text
+                        style={[
+                          styles.hStatusText,
+                          { color: item.statusColor },
+                        ]}
+                      >
+                        {item.statusLabel.toUpperCase()}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text style={styles.hCardDate}>{item.date}   {item.time}</Text>
+
+                  <View style={styles.hCardBody}>
+                    <View style={styles.hCardTimeline}>
+                      <View style={styles.hTimelinePoint}>
+                        <View style={styles.blueDot}>
+                          <View style={styles.blueDotInner} />
+                        </View>
+                        <View style={styles.hAddressWrapper}>
+                          <Text style={styles.hAddressMain}>{item.pickup}</Text>
+                          <Text style={styles.hAddressSub} numberOfLines={2}>
+                            {item.pickupSub}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.hTimelineLine} />
+                      <View style={styles.hTimelinePoint}>
+                        <Ionicons
+                          name="location"
+                          size={16}
+                          color="#E11D48"
+                          style={{ marginLeft: -1, marginRight: 6 }}
+                        />
+                        <View style={styles.hAddressWrapper}>
+                          <Text style={styles.hAddressMain}>{item.dropoff}</Text>
+                          <Text style={styles.hAddressSub} numberOfLines={2}>
+                            {item.dropoffSub}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.hCardProvider}>
+                      <View style={styles.hAvatar}>
+                        <Ionicons name="person" size={22} color="#FFF" />
+                      </View>
+                      <Text style={styles.hProviderName} numberOfLines={2}>
+                        {item.provider}
+                      </Text>
+
+                      <TouchableOpacity style={styles.hActionRow}>
+                        <Text style={styles.hActionText}>Rate Provider</Text>
+                        <Ionicons name="arrow-forward" size={12} color="#000" />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity style={styles.hActionRow}>
+                        <Text style={styles.hActionText}>Report</Text>
+                        <Ionicons name="flag" size={12} color="#000" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={styles.hCardDivider} />
+
+                  <View style={styles.hCardFooter}>
+                    <View style={styles.hTrackingWrapper}>
+                      <Ionicons name="barcode-outline" size={12} color="#6B7280" />
+                      <Text style={styles.hTracking}>{item.tracking}</Text>
+                    </View>
+                    <Text style={styles.hPrice}>₱{item.price}</Text>
+                  </View>
+                </View>
+              ))
+            )}
           </Animated.View>
         </Animated.ScrollView>
       </View>
@@ -401,8 +563,12 @@ export default function AccountScreen() {
 
         <View style={styles.nameContainer}>
           <View style={styles.nameTextWrapper}>
-            <Text style={styles.profileName} numberOfLines={1}>{firstName} {lastName}</Text>
-            <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
+            <Text style={styles.profileName} numberOfLines={1}>
+              {firstName} {lastName}
+            </Text>
+            <Text style={styles.profileEmail} numberOfLines={1}>
+              {userEmail}
+            </Text>
           </View>
           <TouchableOpacity
             style={styles.editIconBtn}
@@ -422,13 +588,25 @@ export default function AccountScreen() {
         <Animated.View style={fadeUp(contentAnim, 20)}>
           {/* Role Badge */}
           <View style={styles.roleBadgeRow}>
-            <View style={[styles.roleBadge, isProviderRegistered ? styles.roleBadgeProvider : styles.roleBadgeSender]}>
+            <View
+              style={[
+                styles.roleBadge,
+                isProviderRegistered
+                  ? styles.roleBadgeProvider
+                  : styles.roleBadgeSender,
+              ]}
+            >
               <Ionicons
                 name={isProviderRegistered ? 'shield-checkmark' : 'cube-outline'}
                 size={12}
                 color={isProviderRegistered ? '#10B981' : ORANGE}
               />
-              <Text style={[styles.roleBadgeText, { color: isProviderRegistered ? '#10B981' : ORANGE }]}>
+              <Text
+                style={[
+                  styles.roleBadgeText,
+                  { color: isProviderRegistered ? '#10B981' : ORANGE },
+                ]}
+              >
                 {isProviderRegistered ? 'PROVIDER' : 'SENDER'}
               </Text>
             </View>
@@ -438,17 +616,25 @@ export default function AccountScreen() {
 
           {/* Menu Card */}
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToProvider} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleSwitchToProvider}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FFF7ED' }]}>
                   <Ionicons name="swap-horizontal-outline" size={18} color={ORANGE} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>
-                    {isProviderRegistered ? 'Switch to Provider Mode' : 'Register as a Provider'}
+                    {isProviderRegistered
+                      ? 'Switch to Provider Mode'
+                      : 'Register as a Provider'}
                   </Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {isProviderRegistered ? 'Manage delivery tasks' : 'Earn by delivering packages'}
+                    {isProviderRegistered
+                      ? 'Manage delivery tasks'
+                      : 'Earn by delivering packages'}
                   </Text>
                 </View>
               </View>
@@ -464,29 +650,32 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={handlePaymentMethodsPress} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: '#EFF6FF' }]}>
-                  <Ionicons name="card-outline" size={18} color="#3B82F6" />
-                </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Payment Methods</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() =>
+                Alert.alert('Coming Soon', 'Payment methods will be available in a future update.')
+              }
+            >
+              <Text style={styles.menuText}>Payment Methods</Text>
+              <Ionicons name="chevron-forward" size={20} color="#000" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => setShowHistory(true)}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F0FDF4' }]}>
                   <Ionicons name="time-outline" size={18} color="#10B981" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>View History</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Past deliveries & receipts</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    Past deliveries & receipts
+                  </Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
@@ -497,14 +686,20 @@ export default function AccountScreen() {
 
           {/* General Menu */}
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSettingsPress} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleSettingsPress}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F3F4F6' }]}>
                   <Ionicons name="settings-outline" size={18} color="#6B7280" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Settings</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>App preferences & notifications</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    App preferences & notifications
+                  </Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
@@ -512,14 +707,20 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleLogoutConfirm}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FEF2F2' }]}>
                   <Ionicons name="log-out-outline" size={18} color="#EF4444" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.logoutText}>Log out</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Sign out of your account</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    Sign out of your account
+                  </Text>
                 </View>
               </View>
               <Ionicons name="chevron-forward" size={20} color="#FCA5A5" />
@@ -802,6 +1003,31 @@ const styles = StyleSheet.create({
   historySubtitle: { fontSize: 15, color: '#374151', fontWeight: '600' },
   viewAllText: { fontSize: 12, color: ORANGE, fontWeight: '700' },
 
+  historyStateContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  historyStateText: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  historyEmptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#374151',
+    marginTop: 12,
+  },
+  historyEmptySubtext: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+
   historyCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
@@ -828,12 +1054,32 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 4,
     borderBottomRightRadius: 4,
   },
+  hCardTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   hCardType: {
     fontSize: 13,
     color: '#6B7280',
-    marginBottom: 4,
     fontWeight: '600',
     letterSpacing: 0.2,
+    flex: 1,
+    marginRight: 8,
+  },
+  hStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    gap: 4,
+  },
+  hStatusText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   hCardDate: {
     fontSize: 15,
@@ -855,6 +1101,60 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 8,
     marginTop: 2,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingRight: 20,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    gap: 6,
+  },
+  filterChipActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#4B5563',
+    letterSpacing: 0.2,
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+  },
+  filterCount: {
+    backgroundColor: '#E5E7EB',
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+  },
+  filterCountActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  filterCountText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#6B7280',
+  },
+  filterCountTextActive: {
+    color: '#FFFFFF',
   },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   hTimelineLine: { width: 1, height: 20, backgroundColor: '#D1D5DB', marginLeft: 6, marginVertical: 2 },
@@ -883,7 +1183,11 @@ const styles = StyleSheet.create({
   hActionRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   hActionText: { fontSize: 9, color: '#000', marginRight: 4, fontWeight: '600' },
   hCardDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
-  hCardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  hCardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   hTrackingWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
