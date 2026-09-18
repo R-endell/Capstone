@@ -13,8 +13,7 @@ import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import {
-  getProviderDeliveries, findMatches,
-  subscribeToNewRequests, subscribeToProviderRoutes, subscribeToDeliveryUpdates
+  getProviderDeliveries, findMatches
 } from '../../../services/matchingService';
 
 const ORANGE = '#FA7A25';
@@ -406,36 +405,31 @@ export default function TaskScreen() {
     loadData();
   };
 
+  // ✅ TRUE REALTIME: Listen for everything task-related
   useEffect(() => {
     if (!providerId) return;
 
-    const subs = [
-      subscribeToNewRequests(async () => { await runMatching(true); }),
-      subscribeToProviderRoutes(providerId, async () => { await runMatching(false); }),
-      subscribeToDeliveryUpdates(providerId, async () => { await loadData(); }),
-    ];
-
-    const qrChannel = supabase
-      .channel(`provider-qr-${providerId}-${Date.now()}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'qr_verifications' },
-        () => { fetchDeliveries(providerId); },
-      )
+    const channel = supabase
+      .channel(`task-realtime-${providerId}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => {
+        runMatching(false);
+        fetchDeliveries(providerId);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, () => {
+        fetchDeliveries(providerId);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => {
+        runMatching(false);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => {
+        fetchDeliveries(providerId);
+      })
       .subscribe();
 
-    const hasActive = activeDeliveries.length > 0;
-    let interval: any = null;
-    if (hasActive) {
-      interval = setInterval(() => { fetchDeliveries(providerId); }, 8000);
-    }
-
     return () => {
-      subs.forEach(sub => sub?.unsubscribe?.());
-      supabase.removeChannel(qrChannel);
-      if (interval) clearInterval(interval);
+      supabase.removeChannel(channel);
     };
-  }, [providerId, activeDeliveries.length]);
+  }, [providerId]);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 

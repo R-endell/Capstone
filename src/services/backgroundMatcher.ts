@@ -1,29 +1,21 @@
 // src/services/backgroundMatcher.ts
-import {
-  autoMatchAndCreateDeliveries,
-  subscribeToNewRequests,
-  subscribeToProviderRoutes,
-} from './matchingService';
+import { Alert } from 'react-native';
+import { autoMatchAndCreateDeliveries, findMatches } from './matchingService';
 import { getActiveRouteId } from './activeRouteStore';
 import { supabase } from '../utils/supabase';
 
-let matcherInterval: ReturnType<typeof setInterval> | null = null;
-let requestSubscription: any = null;
-let routeSubscription: any = null;
+let globalMatchChannel: any = null;
 
 /* ------------------------------------------------------------------ */
-/* Start background matching service                                   */
+/* Start background matching service & Global Notifications            */
 /* ------------------------------------------------------------------ */
 export function startBackgroundMatcher() {
-  console.log('🚀 Starting background matcher...');
+  console.log('🚀 Starting background realtime matcher...');
 
-  // Initial match — only if a route is selected
+  // 1. Initial boot match check
   (async () => {
     const routeId = await getActiveRouteId();
-    if (!routeId) {
-      console.log('⏸️  No active route selected — skipping initial match');
-      return;
-    }
+    if (!routeId) return;
     try {
       const matches = await autoMatchAndCreateDeliveries(routeId);
       console.log(`📊 Initial matching found ${matches.length} matches for route ${routeId}`);
@@ -32,46 +24,45 @@ export function startBackgroundMatcher() {
     }
   })();
 
-  // Interval: re-check every 30s against the current route
-  matcherInterval = setInterval(async () => {
-    const routeId = await getActiveRouteId();
-    if (!routeId) return;
-    try {
-      const matches = await autoMatchAndCreateDeliveries(routeId);
-      if (matches.length > 0) {
-        console.log(`🎯 Background matcher found ${matches.length} new matches on route ${routeId}`);
-      }
-    } catch (error) {
-      console.error('❌ Background matcher error:', error);
-    }
-  }, 30000);
+  // 2. Global Realtime Listener for Instant Provider Notifications
+  globalMatchChannel = supabase
+    .channel('realtime-global-matcher')
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'delivery_requests' },
+      async (payload) => {
+        // Only trigger on brand new pending requests
+        if (payload.new.delivery_status !== 'Pending') return;
 
-  // New requests → re-run matching for the current route
-  requestSubscription = subscribeToNewRequests(async () => {
-    const routeId = await getActiveRouteId();
-    if (!routeId) return;
-    console.log('📦 New request detected, running matching...');
-    try {
-      const matches = await autoMatchAndCreateDeliveries(routeId);
-      if (matches.length > 0) {
-        console.log(`🎯 Matched ${matches.length} requests instantly`);
-      }
-    } catch (err) {
-      console.error('❌ Instant match error:', err);
-    }
-  });
+        const routeId = await getActiveRouteId();
+        if (!routeId) return;
 
-  // Route changes → re-run matching for the current route
-  routeSubscription = subscribeToProviderRoutes(null, async () => {
-    const routeId = await getActiveRouteId();
-    if (!routeId) return;
-    try {
-      const matches = await autoMatchAndCreateDeliveries(routeId);
-      console.log(`♻️  Re-checked matches after route update: ${matches.length}`);
-    } catch (err) {
-      console.error('❌ Route-refresh match error:', err);
-    }
-  });
+        try {
+          // Verify provider is actually Online before sending a push notification
+          const { data: route } = await supabase.from('provider_routes').select('provider_id').eq('route_id', routeId).single();
+          if (route) {
+             const { data: user } = await supabase.from('users').select('is_active').eq('user_id', route.provider_id).single();
+             if (!user?.is_active) return; // Silently ignore if offline
+          }
+
+          // Check if this newly inserted request matches the provider's active route
+          const matches = await findMatches(routeId);
+          const isMatch = matches.some(m => m.request.request_id === payload.new.request_id);
+
+          if (isMatch) {
+            // Global cross-screen notification pops up instantly
+            Alert.alert(
+              '🎯 New Delivery Match!',
+              `A new sender request perfectly matches your route. Open the Jobs or Task tab to accept it.`,
+              [{ text: 'Got it', style: 'default' }]
+            );
+          }
+        } catch (err) {
+          console.error('❌ Global match check error:', err);
+        }
+      },
+    )
+    .subscribe();
 
   return () => stopBackgroundMatcher();
 }
@@ -80,17 +71,9 @@ export function startBackgroundMatcher() {
 /* Stop background matcher                                             */
 /* ------------------------------------------------------------------ */
 export function stopBackgroundMatcher() {
-  if (matcherInterval) {
-    clearInterval(matcherInterval);
-    matcherInterval = null;
-  }
-  if (requestSubscription) {
-    try { requestSubscription.unsubscribe?.(); } catch {}
-    requestSubscription = null;
-  }
-  if (routeSubscription) {
-    try { routeSubscription.unsubscribe?.(); } catch {}
-    routeSubscription = null;
+  if (globalMatchChannel) {
+    supabase.removeChannel(globalMatchChannel);
+    globalMatchChannel = null;
   }
   console.log('🛑 Background matcher stopped');
 }
