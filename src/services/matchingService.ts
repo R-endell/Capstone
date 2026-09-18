@@ -321,7 +321,7 @@ export function subscribeToDeliveryUpdates(
 /* Background matcher singleton                                        */
 /* ------------------------------------------------------------------ */
 let globalMatchChannel: any = null;
-let globalMatchInterval: NodeJS.Timeout | null = null;
+let globalMatchInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startBackgroundMatcher(): () => void {
   globalMatchChannel = supabase

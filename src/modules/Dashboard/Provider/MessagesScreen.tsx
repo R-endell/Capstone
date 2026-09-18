@@ -22,16 +22,19 @@ type Party = {
 
 type ChatRoom = {
   room_id: number;
+  all_room_ids: number[];
   delivery_id: number;
   other: Party;
   role: 'sender' | 'provider';
   latest_message: string | null;
   latest_sent_at: string | null;
   unread_count: number;
+  is_archived: boolean;
 };
 
 type ChatMessage = {
   message_id: number;
+  room_id: number;
   message: string;
   sent_at: string;
   sender_id: number;
@@ -78,6 +81,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
+  const [activeTab, setActiveTab] = useState<'inbox' | 'archived'>('inbox');
   const [conversations, setConversations] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -99,7 +103,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const detailHeaderAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
-  const sendScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 500) =>
@@ -132,31 +135,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
-    transform: [
-      {
-        translateY: value.interpolate({
-          inputRange: [0, 1],
-          outputRange: [distance, 0],
-        }),
-      },
-    ],
+    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
   });
-
-  const animateSendPressIn = () => {
-    Animated.spring(sendScale, { toValue: 0.9, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
-  };
-  const animateSendPressOut = () => {
-    Animated.spring(sendScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
-  };
 
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-    const { data: userRecord } = await supabase
-      .from('users')
-      .select('user_id')
-      .eq('auth_id', user.id)
-      .single();
+    const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
     return userRecord?.user_id || null;
   };
 
@@ -166,23 +151,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     currentUserId.current = userId;
 
     try {
-      const { data: providerDeliveries } = await supabase
-        .from('deliveries')
-        .select('delivery_id')
-        .eq('provider_id', userId);
+      const { data: roomStates } = await supabase
+        .from('chat_room_states')
+        .select('room_id, is_archived, is_deleted')
+        .eq('user_id', userId);
 
-      const { data: senderRequests } = await supabase
-        .from('delivery_requests')
-        .select('request_id')
-        .eq('sender_id', userId);
+      const stateMap = new Map();
+      roomStates?.forEach(s => stateMap.set(s.room_id, s));
+
+      const { data: providerDeliveries } = await supabase.from('deliveries').select('delivery_id').eq('provider_id', userId);
+      const { data: senderRequests } = await supabase.from('delivery_requests').select('request_id').eq('sender_id', userId);
       const senderRequestIds = (senderRequests || []).map(r => r.request_id);
 
       let senderDeliveries: { delivery_id: number }[] = [];
       if (senderRequestIds.length > 0) {
-        const { data } = await supabase
-          .from('deliveries')
-          .select('delivery_id')
-          .in('request_id', senderRequestIds);
+        const { data } = await supabase.from('deliveries').select('delivery_id').in('request_id', senderRequestIds);
         senderDeliveries = data || [];
       }
 
@@ -197,10 +180,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         return;
       }
 
-      const { data: rooms, error: roomError } = await supabase
-        .from('chat_rooms')
-        .select('room_id, delivery_id')
-        .in('delivery_id', deliveryIds);
+      const { data: rooms, error: roomError } = await supabase.from('chat_rooms').select('room_id, delivery_id').in('delivery_id', deliveryIds);
       if (roomError) throw roomError;
       if (!rooms || rooms.length === 0) {
         setConversations([]);
@@ -226,6 +206,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       const list: ChatRoom[] = [];
       for (const room of rooms) {
+        const rState = stateMap.get(room.room_id);
+        if (rState?.is_deleted) continue;
+
         const d: any = (deliveriesInfo || []).find((x: any) => x.delivery_id === room.delivery_id);
         if (!d) continue;
         const req = Array.isArray(d.delivery_requests) ? d.delivery_requests[0] : d.delivery_requests;
@@ -237,20 +220,20 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         if (!other) continue;
 
         const [latestResult, unreadResult] = await Promise.all([
-          supabase.from('chat_messages').select('message, sent_at')
-            .eq('room_id', room.room_id).order('sent_at', { ascending: false }).limit(1).maybeSingle(),
-          supabase.from('chat_messages').select('*', { count: 'exact', head: true })
-            .eq('room_id', room.room_id).neq('sender_id', userId).eq('is_read', false),
+          supabase.from('chat_messages').select('message, sent_at').eq('room_id', room.room_id).order('sent_at', { ascending: false }).limit(1).maybeSingle(),
+          supabase.from('chat_messages').select('*', { count: 'exact', head: true }).eq('room_id', room.room_id).neq('sender_id', userId).eq('is_read', false),
         ]);
 
         list.push({
           room_id: room.room_id,
+          all_room_ids: [room.room_id],
           delivery_id: room.delivery_id,
           other,
           role: isMeProvider ? 'provider' : 'sender',
           latest_message: latestResult.data?.message || null,
           latest_sent_at: latestResult.data?.sent_at || null,
           unread_count: unreadResult.count || 0,
+          is_archived: rState?.is_archived || false,
         });
       }
 
@@ -259,7 +242,24 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         const bT = b.latest_sent_at ? new Date(b.latest_sent_at).getTime() : 0;
         return bT - aT;
       });
-      setConversations(list);
+
+      const uniqueConversations: ChatRoom[] = [];
+      const seenUsers = new Map<number, ChatRoom>();
+
+      for (const c of list) {
+        if (!seenUsers.has(c.other.user_id)) {
+          seenUsers.set(c.other.user_id, c);
+          uniqueConversations.push(c);
+        } else {
+          const existing = seenUsers.get(c.other.user_id)!;
+          existing.unread_count += c.unread_count;
+          if (!existing.all_room_ids.includes(c.room_id)) {
+             existing.all_room_ids.push(c.room_id);
+          }
+        }
+      }
+
+      setConversations(uniqueConversations);
     } catch (error) {
       console.error('Error fetching conversations:', error);
     } finally {
@@ -268,13 +268,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const fetchMessages = async (roomId: number, olderThan?: string) => {
-    let query = supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('room_id', roomId)
-      .order('sent_at', { ascending: false })
-      .limit(30);
+  const fetchMessages = async (roomIds: number[], olderThan?: string) => {
+    let query = supabase.from('chat_messages').select('*').in('room_id', roomIds).order('sent_at', { ascending: false }).limit(30);
     if (olderThan) query = query.lt('sent_at', olderThan);
     const { data, error } = await query;
     if (error) { console.error(error); return []; }
@@ -283,22 +278,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const openConversation = async (room: ChatRoom) => {
     setSelectedRoom(room);
-    const msgs = await fetchMessages(room.room_id);
+    const msgs = await fetchMessages(room.all_room_ids);
     setMessages(msgs.reverse());
     setHasMore(msgs.length >= 30);
 
     if (currentUserId.current) {
-      await supabase
-        .from('chat_messages')
-        .update({ is_read: true })
-        .eq('room_id', room.room_id)
-        .neq('sender_id', currentUserId.current)
-        .eq('is_read', false);
-      setConversations(prev =>
-        prev.map(c => (c.room_id === room.room_id ? { ...c, unread_count: 0 } : c)),
-      );
+      await supabase.from('chat_messages').update({ is_read: true }).in('room_id', room.all_room_ids).neq('sender_id', currentUserId.current).eq('is_read', false);
+      setConversations(prev => prev.map(c => (c.room_id === room.room_id ? { ...c, unread_count: 0 } : c)));
     }
-    subscribeToRoom(room.room_id);
+    subscribeToRoom(room.all_room_ids);
   };
 
   const closeConversation = () => {
@@ -308,24 +296,18 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setMessages([]);
   };
 
-  const subscribeToRoom = (roomId: number) => {
-    if (subscription.current) subscription.current.unsubscribe();
+  const subscribeToRoom = (roomIds: number[]) => {
+    if (subscription.current) { subscription.current.unsubscribe(); subscription.current = null; }
     subscription.current = supabase
-      .channel(`chat-room-${roomId}`)
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `room_id=eq.${roomId}` },
-        (payload) => {
+      .channel(`chat-room-active-${Date.now()}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
           const newMsg = payload.new as ChatMessage;
+          
+          if (!roomIds.includes(newMsg.room_id)) return;
 
           setMessages(prev => {
             if (prev.some(m => m.message_id === newMsg.message_id)) return prev;
-
-            const tempIdx = prev.findIndex(
-              (m) =>
-                m._temp_id !== undefined &&
-                m.sender_id === newMsg.sender_id &&
-                m.message === newMsg.message,
-            );
+            const tempIdx = prev.findIndex(m => m._temp_id !== undefined && m.sender_id === newMsg.sender_id && m.message === newMsg.message);
             if (tempIdx !== -1) {
               const next = [...prev];
               next[tempIdx] = { ...newMsg, _temp_id: undefined };
@@ -334,11 +316,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             return [...prev, newMsg];
           });
 
-          setConversations(prev =>
-            prev.map(c => (c.room_id === roomId
-              ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at }
-              : c)),
-          );
+          setConversations(prev => prev.map(c => (c.all_room_ids.includes(newMsg.room_id) ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at } : c)));
 
           if (newMsg.sender_id !== currentUserId.current) {
             supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id);
@@ -353,7 +331,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setLoadMore(true);
     const oldest = messages[0];
     if (!oldest) { setLoadMore(false); return; }
-    const older = await fetchMessages(selectedRoom.room_id, oldest.sent_at);
+    const older = await fetchMessages(selectedRoom.all_room_ids, oldest.sent_at);
     setLoadMore(false);
     if (older.length < 30) setHasMore(false);
     if (older.length > 0) setMessages(prev => [...older.reverse(), ...prev]);
@@ -366,38 +344,30 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setSending(true);
     const tempId = Date.now();
     const tempMsg: ChatMessage = {
-      message_id: tempId,
-      message: trimmed,
-      sent_at: new Date().toISOString(),
-      sender_id: currentUserId.current,
-      is_read: false,
-      _temp_id: tempId,
+      message_id: tempId, room_id: selectedRoom.room_id, message: trimmed, sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current, is_read: false, _temp_id: tempId,
     };
     setMessages(prev => [...prev, tempMsg]);
     setNewMessage('');
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
 
     try {
-      const { data, error } = await supabase
-        .from('chat_messages')
-        .insert({
-          message: trimmed,
-          room_id: selectedRoom.room_id,
-          sender_id: currentUserId.current,
-        })
-        .select('*')
-        .single();
+      const { data, error } = await supabase.from('chat_messages').insert({
+          message: trimmed, room_id: selectedRoom.room_id, sender_id: currentUserId.current,
+        }).select('*').single();
       if (error) throw error;
 
-      setMessages(prev =>
-        prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)),
+      await supabase.from('chat_room_states').upsert(
+        selectedRoom.all_room_ids.map(id => ({
+          room_id: id,
+          user_id: currentUserId.current,
+          is_archived: false,
+          is_deleted: false
+        }))
       );
 
-      setConversations(prev =>
-        prev.map(c => (c.room_id === selectedRoom.room_id
-          ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
-          : c)),
-      );
+      setMessages(prev => prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)));
+      setConversations(prev => prev.map(c => (c.room_id === selectedRoom.room_id ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false } : c)));
     } catch (error: any) {
       console.error('Send error:', error);
       Alert.alert('Error', 'Unable to send message.');
@@ -407,13 +377,76 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
+  const openChatOptions = (room: ChatRoom) => {
+    const isArchived = room.is_archived;
+    
+    Alert.alert(
+      'Conversation Options',
+      `Manage chat with ${room.other.first_name}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: isArchived ? 'Unarchive' : 'Archive', 
+          onPress: () => toggleArchiveChat(room, !isArchived) 
+        },
+        { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(room) },
+      ]
+    );
+  };
+
+  const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
+    // Optimistic UI update
+    setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
+    try {
+      const payloads = room.all_room_ids.map(id => ({
+        room_id: id,
+        user_id: currentUserId.current,
+        is_archived: archive,
+        is_deleted: false
+      }));
+      await supabase.from('chat_room_states').upsert(payloads);
+    } catch (error) {
+      console.error('Error toggling archive:', error);
+      fetchConversations();
+    }
+  };
+
+  const deleteChat = async (room: ChatRoom) => {
+    Alert.alert(
+      'Delete Conversation',
+      'Are you sure? This will permanently remove the chat from your inbox.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setConversations(prev => prev.filter(c => c.room_id !== room.room_id));
+            try {
+              const payloads = room.all_room_ids.map(id => ({
+                room_id: id,
+                user_id: currentUserId.current,
+                is_deleted: true,
+                is_archived: false
+              }));
+              await supabase.from('chat_room_states').upsert(payloads);
+            } catch (error) {
+              console.error('Error deleting chat:', error);
+              fetchConversations();
+            }
+          }
+        }
+      ]
+    );
+  };
+
   useEffect(() => {
     const tryAutoOpen = async () => {
       if (!openRoomIdParam) return;
       if (autoOpenHandled.current === openRoomIdParam) return;
       if (conversations.length === 0) return;
 
-      const target = conversations.find(c => c.room_id === openRoomIdParam);
+      const target = conversations.find(c => c.all_room_ids.includes(openRoomIdParam));
       if (target) {
         autoOpenHandled.current = openRoomIdParam;
         await openConversation(target);
@@ -423,7 +456,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       }
     };
     tryAutoOpen();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRoomIdParam, conversations.length]);
 
   useFocusEffect(
@@ -433,7 +465,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }, [selectedRoom]),
   );
 
-  // FIX: This ensures the list immediately updates when ANY message arrives
   useEffect(() => {
     roomsSubscription.current = supabase
       .channel(`chat-rooms-list-${Date.now()}`)
@@ -445,7 +476,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return () => {
       if (roomsSubscription.current) supabase.removeChannel(roomsSubscription.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -455,6 +485,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
   }, []);
 
+  // Filter conversations based on the active tab
+  const filteredConversations = conversations.filter(c => 
+    activeTab === 'archived' ? c.is_archived : !c.is_archived
+  );
+
   const renderAvatar = (party: Party, size: number, badgeColor?: string) => {
     const initials = `${party.first_name?.charAt(0) || '?'}${party.last_name?.charAt(0) || ''}`;
     return (
@@ -462,27 +497,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         {party.profile_photo ? (
           <Image
             source={{ uri: party.profile_photo }}
-            style={{
-              width: size,
-              height: size,
-              borderRadius: size / 2,
-              backgroundColor: '#F3F4F6',
-            }}
+            style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: '#F3F4F6' }}
           />
         ) : (
-          <View
-            style={{
-              width: size,
-              height: size,
-              borderRadius: size / 2,
-              backgroundColor: ORANGE,
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
-          >
-            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: size * 0.38 }}>
-              {initials}
-            </Text>
+          <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: size * 0.38 }}>{initials}</Text>
           </View>
         )}
         {badgeColor && (
@@ -495,43 +514,58 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   const renderConversationItem = ({ item }: { item: ChatRoom }) => (
-    <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
-      <View style={styles.avatarWrapper}>
-        {item.other.profile_photo ? (
-          <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
-        ) : (
-          <View style={styles.avatarFallback}>
-            <Text style={styles.avatarText}>
-              {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
-            </Text>
-          </View>
-        )}
-        <View style={styles.onlineDot} />
-      </View>
-
-      <View style={styles.chatInfo}>
-        <View style={styles.chatNameRow}>
-          <Text style={styles.chatName} numberOfLines={1}>
-            {item.other.first_name} {item.other.last_name}
-          </Text>
-          {item.latest_sent_at && (
-            <Text style={[styles.chatTime, item.unread_count > 0 && styles.chatTimeUnread]}>
-              {formatChatTime(item.latest_sent_at)}
-            </Text>
-          )}
-        </View>
-        <View style={styles.chatMsgRow}>
-          <Text style={[styles.chatLastMsg, item.unread_count > 0 && styles.chatLastMsgUnread]} numberOfLines={1}>
-            {item.latest_message || 'Say hi 👋'}
-          </Text>
-          {item.unread_count > 0 && (
-            <View style={styles.unreadBadge}>
-              <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+    <View style={styles.chatRowWrapper}>
+      <TouchableOpacity 
+        style={styles.chatRow} 
+        onPress={() => openConversation(item)} 
+        activeOpacity={0.7}
+      >
+        <View style={styles.avatarWrapper}>
+          {item.other.profile_photo ? (
+            <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
+          ) : (
+            <View style={styles.avatarFallback}>
+              <Text style={styles.avatarText}>
+                {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
+              </Text>
             </View>
           )}
+          {item.unread_count > 0 && <View style={styles.onlineDot} />}
         </View>
-      </View>
-    </TouchableOpacity>
+
+        <View style={styles.chatInfo}>
+          <View style={styles.chatNameRow}>
+            <Text style={styles.chatName} numberOfLines={1}>
+              {item.other.first_name} {item.other.last_name}
+            </Text>
+            {item.latest_sent_at && (
+              <Text style={[styles.chatTime, item.unread_count > 0 && styles.chatTimeUnread]}>
+                {formatChatTime(item.latest_sent_at)}
+              </Text>
+            )}
+          </View>
+          <View style={styles.chatMsgRow}>
+            <Text style={[styles.chatLastMsg, item.unread_count > 0 && styles.chatLastMsgUnread]} numberOfLines={1}>
+              {item.latest_message || 'Say hi 👋'}
+            </Text>
+            {item.unread_count > 0 && (
+              <View style={styles.unreadBadge}>
+                <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+      
+      {/* Dropdown Options Icon */}
+      <TouchableOpacity 
+        style={styles.optionsButton} 
+        onPress={() => openChatOptions(item)}
+        activeOpacity={0.6}
+      >
+        <Ionicons name="ellipsis-vertical" size={18} color="#9CA3AF" />
+      </TouchableOpacity>
+    </View>
   );
 
   const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
@@ -546,9 +580,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         {showDateSeparator && (
           <View style={styles.dateSeparator}>
             <View style={styles.dateSeparatorLine} />
-            <Text style={styles.dateSeparatorText}>
-              {formatDateSeparator(item.sent_at)}
-            </Text>
+            <Text style={styles.dateSeparatorText}>{formatDateSeparator(item.sent_at)}</Text>
             <View style={styles.dateSeparatorLine} />
           </View>
         )}
@@ -561,13 +593,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           )}
 
           <View style={[styles.msgBubble, isMe ? styles.myMsg : styles.theirMsg]}>
-            <Text style={[styles.msgText, isMe && styles.myMsgText]}>
-              {item.message}
-            </Text>
+            <Text style={[styles.msgText, isMe && styles.myMsgText]}>{item.message}</Text>
             <View style={styles.msgMeta}>
-              <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>
-                {formatDate(item.sent_at, 'h:mm a')}
-              </Text>
+              <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
               {isMe && (
                 <Ionicons
                   name={item.is_read ? 'checkmark-done' : 'checkmark'}
@@ -588,7 +616,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       <SafeAreaView style={styles.container} edges={['top']}>
         <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
         <View style={styles.listHeader}>
-          <Text style={styles.headerSub}>Inbox</Text>
           <Text style={styles.mainTitle}>Messages</Text>
         </View>
         <View style={styles.centerLoader}>
@@ -605,8 +632,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
         <Animated.View style={[styles.listHeader, fadeUp(listHeaderAnim, -14)]}>
-          <Text style={styles.headerSub}>Inbox</Text>
-          <View style={styles.listHeaderRow}>
+          <View style={styles.listHeaderTop}>
             <Text style={styles.mainTitle}>Messages</Text>
             {conversations.length > 0 && (
               <View style={styles.countPill}>
@@ -614,22 +640,42 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               </View>
             )}
           </View>
+          
+          {/* Tab Navigation */}
+          <View style={styles.tabContainer}>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'inbox' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('inbox')}
+            >
+              <Text style={[styles.tabText, activeTab === 'inbox' && styles.tabTextActive]}>Inbox</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'archived' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('archived')}
+            >
+              <Text style={[styles.tabText, activeTab === 'archived' && styles.tabTextActive]}>Archived</Text>
+            </TouchableOpacity>
+          </View>
         </Animated.View>
 
-        {conversations.length === 0 ? (
+        {filteredConversations.length === 0 ? (
           <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
             <View style={styles.emptyIconCircle}>
-              <Ionicons name="chatbubbles-outline" size={40} color={ORANGE} />
+              <Ionicons name={activeTab === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'} size={40} color={ORANGE} />
             </View>
-            <Text style={styles.emptyTitle}>No conversations yet</Text>
+            <Text style={styles.emptyTitle}>
+              {activeTab === 'inbox' ? 'No conversations yet' : 'No archived chats'}
+            </Text>
             <Text style={styles.emptySubtext}>
-              Your messages with providers or senders will appear here.
+              {activeTab === 'inbox' 
+                ? 'Your messages with providers or senders will appear here.'
+                : 'Chats you archive will be saved here.'}
             </Text>
           </Animated.View>
         ) : (
           <Animated.View style={{ flex: 1, opacity: listAnim }}>
             <FlatList
-              data={conversations}
+              data={filteredConversations}
               keyExtractor={(item) => item.room_id.toString()}
               renderItem={renderConversationItem}
               contentContainerStyle={styles.listContent}
@@ -726,18 +772,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             <Ionicons name="camera-outline" size={22} color="#6B7280" />
           </TouchableOpacity>
 
-          <Animated.View style={{ transform: [{ scale: sendScale }] }}>
-            <TouchableOpacity
-              style={[styles.sendBtn, newMessage.trim() ? styles.sendBtnActive : styles.sendBtnDisabled]}
-              onPress={sendMessage}
-              onPressIn={animateSendPressIn}
-              onPressOut={animateSendPressOut}
-              disabled={sending || !newMessage.trim()}
-              activeOpacity={0.9}
-            >
-              {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="send" size={16} color="#FFFFFF" />}
-            </TouchableOpacity>
-          </Animated.View>
+          <TouchableOpacity
+            style={[styles.sendBtn, newMessage.trim() ? styles.sendBtnActive : styles.sendBtnDisabled]}
+            onPress={sendMessage}
+            disabled={sending || !newMessage.trim()}
+            activeOpacity={0.7}
+          >
+            {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="send" size={16} color="#FFFFFF" />}
+          </TouchableOpacity>
         </Animated.View>
       </KeyboardAvoidingView>
     </View>
@@ -749,15 +791,20 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
 
   listHeader: {
-    backgroundColor: ORANGE, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 24,
+    backgroundColor: ORANGE, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16,
     borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
   },
-  headerSub: { fontSize: 11, color: '#FFE0C7', fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 },
-  listHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  listHeaderTop: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
   mainTitle: { fontSize: 26, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.4 },
   countPill: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
   countPillText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  
+  tabContainer: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.15)', borderRadius: 20, padding: 4 },
+  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 16 },
+  tabButtonActive: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
+  tabText: { color: 'rgba(255,255,255,0.8)', fontSize: 13, fontWeight: '600' },
+  tabTextActive: { color: ORANGE, fontWeight: '800' },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
@@ -768,7 +815,20 @@ const styles = StyleSheet.create({
   emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 18, fontWeight: '500' },
 
   listContent: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
-  chatRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 12, marginBottom: 6, borderRadius: 16, backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 1, borderWidth: 1, borderColor: '#F3F4F6' },
+  
+  chatRowWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    marginBottom: 6,
+    borderRadius: 16,
+    borderWidth: 1, 
+    borderColor: '#F3F4F6',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 6, elevation: 1,
+  },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 12 },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
+  
   avatarWrapper: { position: 'relative', marginRight: 14 },
   avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
   avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#F3F4F6' },

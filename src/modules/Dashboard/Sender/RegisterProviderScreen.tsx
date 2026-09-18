@@ -864,7 +864,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   tileOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center',
     justifyContent: 'center',

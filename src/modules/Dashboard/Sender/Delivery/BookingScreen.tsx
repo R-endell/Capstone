@@ -39,7 +39,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const sheetScale = useRef(new Animated.Value(1)).current;
 
   const matchChannelRef = useRef<any>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* ------------------------------------------------------------------ */
   /* Sync receiver from ScheduleContext                                  */
@@ -219,7 +219,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const picked = route.params?.pickedReceiver;
       if (picked) {
         setReceiver(picked);
-        dispatch({ type: 'SET_RECEIVER', payload: picked });
+        dispatch({ type: 'SET_INITIAL_STATE', payload: { ...state, receiver: picked } as any });
         navigation.setParams({ pickedReceiver: undefined });
       }
     });
@@ -696,7 +696,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F3F4F6' },
-  map: { ...StyleSheet.absoluteFillObject },
+  map: { ...StyleSheet.absoluteFill },
 
   topOverlay: {
     position: 'absolute', left: 20, right: 20,
