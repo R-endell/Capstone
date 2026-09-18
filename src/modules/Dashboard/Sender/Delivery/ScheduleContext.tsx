@@ -3,6 +3,11 @@ import React, { createContext, useContext, useReducer } from 'react';
 // ---- Types ----
 type DropoffType = 'curb-side' | 'door-to-door' | null;
 type ShipmentSize = 'Small' | 'Medium' | 'Large';
+type PickedLocation = {
+  address: string;
+  latitude: number;
+  longitude: number;
+} | null;
 
 export interface ShipmentItem {
   id: string;
@@ -19,6 +24,7 @@ interface LocationInfo {
 }
 
 export interface ScheduleState {
+  receiver: null;
   dropoffType: DropoffType;
   items: ShipmentItem[];
   scheduledDate: Date | null;
@@ -33,6 +39,8 @@ export interface ScheduleState {
     pickupLocId: number;
     dropoffLocId: number;
   };
+  explorePickup: LocationInfo | null;
+  exploreDropoff: LocationInfo | null;
 }
 
 type Action =
@@ -46,7 +54,9 @@ type Action =
   | { type: 'SET_DROPOFF_LOCATION'; payload: LocationInfo }
   | { type: 'SET_ESTIMATED_COST'; payload: number }
   | { type: 'RESET' }
-  | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> };
+  | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> } 
+  | { type: 'SET_EXPLORE_PICKUP'; payload: LocationInfo | null }
+  | { type: 'SET_EXPLORE_DROPOFF'; payload: LocationInfo | null };
 
 const initialState: ScheduleState = {
   dropoffType: null,
@@ -58,6 +68,9 @@ const initialState: ScheduleState = {
   isEdit: false,
   mode: undefined,
   editIds: undefined,
+  explorePickup: null,
+  exploreDropoff: null,
+  receiver: null
 };
 
 function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
@@ -84,6 +97,10 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
       return { ...state, isEdit: true, editIds: action.payload };
     case 'RESET':
       return initialState;
+    case 'SET_EXPLORE_PICKUP':
+      return { ...state, explorePickup: action.payload };
+    case 'SET_EXPLORE_DROPOFF':
+      return { ...state, exploreDropoff: action.payload };
     default:
       return state;
   }

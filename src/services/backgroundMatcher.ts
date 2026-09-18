@@ -7,7 +7,7 @@ import {
 import { getActiveRouteId } from './activeRouteStore';
 import { supabase } from '../utils/supabase';
 
-let matcherInterval: NodeJS.Timeout | null = null;
+let matcherInterval: ReturnType<typeof setInterval> | null = null;
 let requestSubscription: any = null;
 let routeSubscription: any = null;
 

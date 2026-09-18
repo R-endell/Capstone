@@ -174,6 +174,18 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       longitude: markerCoord.longitude,
     };
 
+    // Case 1: called from Explore — store in context, don't run the Send flow
+    if (route.params?.fromExplore) {
+      if (route.params.for === 'pickup') {
+        dispatch({ type: 'SET_EXPLORE_PICKUP', payload: locationInfo });
+      } else {
+        dispatch({ type: 'SET_EXPLORE_DROPOFF', payload: locationInfo });
+      }
+      navigation.goBack();
+      return;
+    }
+
+    // Case 2: original Send Package flow
     if (type === 'pickup') {
       dispatch({ type: 'SET_PICKUP_LOCATION', payload: locationInfo });
       navigation.navigate('DropoffLocation', {
