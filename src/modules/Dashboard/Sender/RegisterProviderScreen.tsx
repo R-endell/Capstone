@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
   Animated,
   Easing,
-  Platform,
+  TextInput,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -20,26 +20,38 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system/legacy';
+
 
 const ORANGE = '#FA7A25';
+const BUCKET_NAME = 'vehicle-documents';
+
+type Side = 'front' | 'back';
 
 export default function RegisterProviderScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(false);
-  const [orcrImage, setOrcrImage] = useState<string | null>(null);
-  const [driversLicenseImage, setDriversLicenseImage] = useState<string | null>(null);
-  const [uploadingOrcr, setUploadingOrcr] = useState(false);
+
+  // Driver's license — front and back
+  const [licenseFrontUri, setLicenseFrontUri] = useState<string | null>(null);
+  const [licenseBackUri, setLicenseBackUri] = useState<string | null>(null);
+  const [licenseFrontUrl, setLicenseFrontUrl] = useState<string | null>(null);
+  const [licenseBackUrl, setLicenseBackUrl] = useState<string | null>(null);
+
   const [uploadingLicense, setUploadingLicense] = useState(false);
+
+  // License details
+  const [licenseNumber, setLicenseNumber] = useState('');
+  const [licenseExpiry, setLicenseExpiry] = useState(''); // YYYY-MM-DD
 
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const introAnim = useRef(new Animated.Value(0)).current;
-  const orcrAnim = useRef(new Animated.Value(0)).current;
   const licenseAnim = useRef(new Animated.Value(0)).current;
+  const detailsAnim = useRef(new Animated.Value(0)).current;
   const buttonAnim = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
@@ -56,154 +68,187 @@ export default function RegisterProviderScreen() {
     Animated.parallel([
       animate(headerAnim, 0),
       animate(introAnim, 150),
-      animate(orcrAnim, 300),
-      animate(licenseAnim, 450),
+      animate(licenseAnim, 300),
+      animate(detailsAnim, 450),
       animate(buttonAnim, 600),
     ]).start();
-  }, [headerAnim, introAnim, orcrAnim, licenseAnim, buttonAnim]);
+  }, [headerAnim, introAnim, licenseAnim, detailsAnim, buttonAnim]);
 
   const animatePressIn = () => {
-    Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
+    Animated.spring(buttonScale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 4,
+    }).start();
   };
   const animatePressOut = () => {
-    Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
+    Animated.spring(buttonScale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 30,
+      bounciness: 6,
+    }).start();
   };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
-    transform: [{
-      translateY: value.interpolate({
-        inputRange: [0, 1],
-        outputRange: [distance, 0],
-      }),
-    }],
+    transform: [
+      {
+        translateY: value.interpolate({
+          inputRange: [0, 1],
+          outputRange: [distance, 0],
+        }),
+      },
+    ],
   });
 
   /* ------------------------------------------------------------------ */
-  /* Image picker & upload                                               */
+  /* License picker — front or back, camera or gallery                   */
   /* ------------------------------------------------------------------ */
-  const pickImage = async (type: 'orcr' | 'license') => {
+  const handlePickLicense = (side: Side) => {
+    const title = side === 'front' ? "Front of Driver's License" : "Back of Driver's License";
+    Alert.alert(title, 'Choose how you want to provide the photo.', [
+      { text: 'Take Photo', onPress: () => pickImage(side, 'camera') },
+      { text: 'Choose from Gallery', onPress: () => pickImage(side, 'library') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const pickImage = async (side: Side, source: 'camera' | 'library') => {
     try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant permission to access your photos.');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets && result.assets.length > 0) {
-        const uri = result.assets[0].uri;
-        if (type === 'orcr') {
-          setOrcrImage(uri);
-          await uploadImage(uri, 'orcr');
-        } else {
-          setDriversLicenseImage(uri);
-          await uploadImage(uri, 'license');
+      if (source === 'camera') {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Required', 'Please grant camera permission to take a photo.');
+          return;
+        }
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          quality: 0.85,
+        });
+        if (!result.canceled && result.assets.length > 0) {
+          await handlePicked(side, result.assets[0].uri);
+        }
+      } else {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Required', 'Please grant permission to access your photos.');
+          return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          quality: 0.85,
+        });
+        if (!result.canceled && result.assets.length > 0) {
+          await handlePicked(side, result.assets[0].uri);
         }
       }
-    } catch (error) {
-      console.error('Error picking image:', error);
-      Alert.alert('Error', 'Failed to pick image. Please try again.');
+    } catch (error: any) {
+      console.error('Pick error:', error);
+      Alert.alert('Error', error?.message || 'Failed to pick image. Please try again.');
     }
   };
 
-  const uploadImage = async (uri: string, type: 'orcr' | 'license') => {
-    try {
-      if (type === 'orcr') setUploadingOrcr(true);
-      else setUploadingLicense(true);
+  const handlePicked = async (side: Side, uri: string) => {
+    // Show preview immediately, clear the previous uploaded URL
+    if (side === 'front') {
+      setLicenseFrontUri(uri);
+      setLicenseFrontUrl(null);
+    } else {
+      setLicenseBackUri(uri);
+      setLicenseBackUrl(null);
+    }
 
+    // Upload in background
+    try {
+      setUploadingLicense(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('No user found');
 
-      const fileExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
-      const fileName = `${user.id}/${type}_${Date.now()}.${fileExt}`;
+      const prefix = side === 'front' ? 'license_front' : 'license_back';
+      const url = await uploadSingle(uri, user.id, prefix);
 
-      const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      if (side === 'front') setLicenseFrontUrl(url);
+      else setLicenseBackUrl(url);
 
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const arrayBuffer = bytes.buffer;
-
-      try {
-        const { data, error } = await supabase.storage
-          .from('provider-documents')
-          .upload(fileName, arrayBuffer, {
-            contentType: `image/${fileExt}`,
-            upsert: true,
-          });
-
-        if (error) {
-          if (error.message?.includes('bucket not found')) {
-            await supabase.storage.createBucket('provider-documents', { public: true });
-
-            const { data: retryData, error: retryError } = await supabase.storage
-              .from('provider-documents')
-              .upload(fileName, arrayBuffer, {
-                contentType: `image/${fileExt}`,
-                upsert: true,
-              });
-
-            if (retryError) throw retryError;
-          } else {
-            throw error;
-          }
-        }
-      } catch (uploadError: any) {
-        console.error('Upload error:', uploadError);
-        throw new Error('Failed to upload image: ' + uploadError.message);
-      }
-
-      const { data: urlData } = supabase.storage
-        .from('provider-documents')
-        .getPublicUrl(fileName);
-
-      if (type === 'orcr') setOrcrImage(urlData.publicUrl);
-      else setDriversLicenseImage(urlData.publicUrl);
-
+      console.log(`✅ ${prefix} uploaded:`, url);
     } catch (error: any) {
       console.error('Upload error:', error);
       Alert.alert('Upload Error', error.message || 'Failed to upload image');
+      if (side === 'front') {
+        setLicenseFrontUri(null);
+        setLicenseFrontUrl(null);
+      } else {
+        setLicenseBackUri(null);
+        setLicenseBackUrl(null);
+      }
     } finally {
-      if (type === 'orcr') setUploadingOrcr(false);
-      else setUploadingLicense(false);
+      setUploadingLicense(false);
     }
+  };
+
+  const uploadSingle = async (uri: string, userId: string, prefix: string): Promise<string> => {
+    const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const fileExt = ['jpg', 'jpeg', 'png'].includes(rawExt) ? rawExt : 'jpg';
+    const fileName = `${userId}/${prefix}_${Date.now()}.${fileExt}`;
+
+    const file = new File(uri);
+    const arrayBuffer = await file.arrayBuffer();
+
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET_NAME)
+      .upload(fileName, arrayBuffer, {
+        contentType: `image/${fileExt}`,
+        upsert: true,
+      });
+
+    if (uploadError) throw new Error('Failed to upload image: ' + uploadError.message);
+
+    const { data: urlData } = supabase.storage
+      .from(BUCKET_NAME)
+      .getPublicUrl(fileName);
+
+    if (!urlData?.publicUrl) throw new Error('Failed to get public URL');
+    return urlData.publicUrl;
   };
 
   /* ------------------------------------------------------------------ */
   /* Register provider                                                   */
   /* ------------------------------------------------------------------ */
   const handleRegisterProvider = async () => {
-    if (!orcrImage || !driversLicenseImage) {
-      Alert.alert('Required', "Please upload both OR/CR and Driver's License.");
+    if (!licenseFrontUri || !licenseBackUri) {
+      Alert.alert('Required', "Please upload both the FRONT and BACK of your Driver's License.");
+      return;
+    }
+    if (!licenseFrontUrl || !licenseBackUrl) {
+      Alert.alert('Please Wait', 'Your license images are still uploading. Please try again in a moment.');
+      return;
+    }
+    if (!licenseNumber.trim()) {
+      Alert.alert('Required', "Please enter your Driver's License number.");
+      return;
+    }
+    if (!licenseExpiry.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry)) {
+      Alert.alert('Required', 'Please enter a valid license expiry date (YYYY-MM-DD).');
       return;
     }
 
     setLoading(true);
     try {
-      console.log('=== Starting Provider Registration ===');
+      console.log('=== Starting Provider Application ===');
 
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+      if (authError) throw new Error('Authentication error: ' + authError.message);
+      if (!user) throw new Error('No user logged in');
 
-      if (authError) {
-        console.error('Auth error:', authError);
-        throw new Error('Authentication error: ' + authError.message);
-      }
-      if (!user) {
-        console.error('No user found');
-        throw new Error('No user logged in');
-      }
-
-      let { data: userData, error: userError } = await supabase
+      // Get or create users row
+      let { data: userData } = await supabase
         .from('users')
         .select('user_id, first_name, last_name, email')
         .eq('auth_id', user.id)
@@ -217,7 +262,7 @@ export default function RegisterProviderScreen() {
             first_name: user.user_metadata?.first_name || 'User',
             last_name: user.user_metadata?.last_name || '',
             email: user.email || '',
-            is_verified: true,
+            is_verified: false,
             is_active: true,
           })
           .select('user_id, first_name, last_name, email')
@@ -226,18 +271,14 @@ export default function RegisterProviderScreen() {
         if (createError) throw new Error('Failed to create user: ' + createError.message);
         userData = newUser;
       }
-
       if (!userData) throw new Error('Failed to get or create user');
 
-      const { data: roleData, error: roleError } = await supabase
+      // Get or create Provider role
+      let { data: providerRole } = await supabase
         .from('roles')
         .select('role_id, role_name')
         .eq('role_name', 'Provider')
         .maybeSingle();
-
-      if (roleError) throw new Error('Error fetching Provider role: ' + roleError.message);
-
-      let providerRole = roleData;
 
       if (!providerRole) {
         const { data: newRole, error: createRoleError } = await supabase
@@ -245,13 +286,14 @@ export default function RegisterProviderScreen() {
           .insert({ role_name: 'Provider' })
           .select('role_id, role_name')
           .maybeSingle();
-
-        if (createRoleError) throw new Error('Failed to create Provider role: ' + createRoleError.message);
-        if (!newRole) throw new Error('Failed to create Provider role');
+        if (createRoleError)
+          throw new Error('Failed to create Provider role: ' + createRoleError.message);
         providerRole = newRole;
       }
+      if (!providerRole) throw new Error('Failed to resolve Provider role');
 
-      const { data: existingRole, error: checkError } = await supabase
+      // Check if user already has Provider role
+      const { data: existingRole } = await supabase
         .from('user_roles')
         .select('*')
         .eq('user_id', userData.user_id)
@@ -259,56 +301,80 @@ export default function RegisterProviderScreen() {
         .maybeSingle();
 
       if (existingRole) {
-        Alert.alert(
-          'Already Registered',
-          'You are already registered as a Provider!',
-          [{ text: 'OK', onPress: () => navigation.goBack() }]
-        );
+        const { data: existingVerif } = await supabase
+          .from('provider_verifications')
+          .select('verification_id, verification_status')
+          .eq('provider_id', userData.user_id)
+          .maybeSingle();
+
+        const statusMsg = existingVerif?.verification_status
+          ? `Your application is currently: ${existingVerif.verification_status}.`
+          : 'You are already registered as a Provider.';
+
+        Alert.alert('Already Registered', statusMsg, [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
         setLoading(false);
         return;
       }
 
+      // Assign Provider role
       const { error: assignError } = await supabase
         .from('user_roles')
-        .insert({
-          user_id: userData.user_id,
-          role_id: providerRole.role_id,
-        });
-
+        .insert({ user_id: userData.user_id, role_id: providerRole.role_id });
       if (assignError) throw new Error('Failed to assign role: ' + assignError.message);
 
-      const { error: updateError } = await supabase.auth.updateUser({
+      // Submit verification row
+      const { error: verifError } = await supabase
+        .from('provider_verifications')
+        .insert({
+          provider_id: userData.user_id,
+          drivers_license_number: licenseNumber.trim(),
+          license_expiry_date: licenseExpiry.trim(),
+          selfie_photo: licenseFrontUrl,
+          selfie_photo_back: licenseBackUrl,
+          verification_status: 'Pending',
+        });
+
+      if (verifError) {
+        console.error('Verification insert error:', verifError);
+        throw new Error('Failed to submit verification: ' + verifError.message);
+      }
+
+      // Update auth metadata
+      await supabase.auth.updateUser({
         data: {
           role: 'Provider',
           provider_documents: {
-            orcr: orcrImage,
-            drivers_license: driversLicenseImage,
+            drivers_license_front: licenseFrontUrl,
+            drivers_license_back: licenseBackUrl,
+            license_number: licenseNumber.trim(),
             registered_at: new Date().toISOString(),
           },
         },
       });
 
-      if (updateError) console.warn('Failed to update auth metadata, but role was assigned');
-
       Alert.alert(
-        'Success! 🎉',
-        'You have been registered as a Provider! You can now switch to Provider mode.',
+        'Application Submitted',
+        'Your provider application is pending admin approval. You will be notified once verified.',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
-
     } catch (error: any) {
-      console.error('=== Registration Error ===');
-      console.error('Error:', error);
+      console.error('=== Registration Error ===', error);
       Alert.alert(
         'Registration Error',
-        error.message || 'Failed to register as provider. Please try again.'
+        error.message || 'Failed to submit application. Please try again.'
       );
     } finally {
       setLoading(false);
     }
   };
 
-  const bothUploaded = !!orcrImage && !!driversLicenseImage;
+  const detailsFilled =
+    licenseNumber.trim().length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry.trim());
+  const licenseComplete =
+    !!licenseFrontUri && !!licenseBackUri && !!licenseFrontUrl && !!licenseBackUrl;
+  const canSubmit = licenseComplete && detailsFilled;
 
   /* ------------------------------------------------------------------ */
   /* Render                                                              */
@@ -345,9 +411,9 @@ export default function RegisterProviderScreen() {
             <Ionicons name="shield-checkmark" size={22} color={ORANGE} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.introTitle}>Verify your identity</Text>
+            <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Upload clear photos of your documents to get verified and start accepting deliveries.
+              Upload the front and back of your driver's license for admin review.
             </Text>
           </View>
         </Animated.View>
@@ -355,56 +421,60 @@ export default function RegisterProviderScreen() {
         {/* Progress indicator */}
         <Animated.View style={[styles.progressRow, fadeUp(introAnim, 20)]}>
           <View style={styles.progressStep}>
-            <View style={[styles.progressDot, orcrImage && styles.progressDotDone]}>
-              {orcrImage ? (
+            <View style={[styles.progressDot, licenseComplete && styles.progressDotDone]}>
+              {licenseComplete ? (
                 <Ionicons name="checkmark" size={12} color="#FFFFFF" />
               ) : (
                 <Text style={styles.progressDotText}>1</Text>
               )}
             </View>
-            <Text style={[styles.progressLabel, orcrImage && styles.progressLabelDone]}>OR/CR</Text>
+            <Text style={[styles.progressLabel, licenseComplete && styles.progressLabelDone]}>
+              License
+            </Text>
           </View>
-          <View style={[styles.progressLine, orcrImage && styles.progressLineDone]} />
+          <View style={[styles.progressLine, detailsFilled && styles.progressLineDone]} />
           <View style={styles.progressStep}>
-            <View style={[styles.progressDot, driversLicenseImage && styles.progressDotDone]}>
-              {driversLicenseImage ? (
+            <View style={[styles.progressDot, detailsFilled && styles.progressDotDone]}>
+              {detailsFilled ? (
                 <Ionicons name="checkmark" size={12} color="#FFFFFF" />
               ) : (
                 <Text style={styles.progressDotText}>2</Text>
               )}
             </View>
-            <Text style={[styles.progressLabel, driversLicenseImage && styles.progressLabelDone]}>
-              License
+            <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>
+              Details
             </Text>
           </View>
-          <View style={[styles.progressLine, bothUploaded && styles.progressLineDone]} />
+          <View style={[styles.progressLine, canSubmit && styles.progressLineDone]} />
           <View style={styles.progressStep}>
-            <View style={[styles.progressDot, bothUploaded && styles.progressDotDone]}>
-              {bothUploaded ? (
+            <View style={[styles.progressDot, canSubmit && styles.progressDotDone]}>
+              {canSubmit ? (
                 <Ionicons name="checkmark" size={12} color="#FFFFFF" />
               ) : (
                 <Text style={styles.progressDotText}>3</Text>
               )}
             </View>
-            <Text style={[styles.progressLabel, bothUploaded && styles.progressLabelDone]}>
+            <Text style={[styles.progressLabel, canSubmit && styles.progressLabelDone]}>
               Ready
             </Text>
           </View>
         </Animated.View>
 
-        {/* OR/CR Upload */}
-        <Animated.View style={[styles.uploadSection, fadeUp(orcrAnim, 20)]}>
+        {/* Driver's License — front & back tiles */}
+        <Animated.View style={[styles.uploadSection, fadeUp(licenseAnim, 20)]}>
           <View style={styles.uploadHeader}>
             <View style={styles.uploadTitleRow}>
               <View style={styles.uploadNumberBadge}>
                 <Text style={styles.uploadNumberText}>1</Text>
               </View>
-              <View>
-                <Text style={styles.uploadTitle}>OR / CR</Text>
-                <Text style={styles.uploadSubtitle}>Official Receipt & Certificate of Registration</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.uploadTitle}>Driver's License</Text>
+                <Text style={styles.uploadSubtitle}>
+                  Upload front & back — camera or gallery
+                </Text>
               </View>
             </View>
-            {orcrImage && (
+            {licenseComplete && (
               <View style={styles.completedBadge}>
                 <Ionicons name="checkmark-circle" size={12} color="#10B981" />
                 <Text style={styles.completedBadgeText}>Uploaded</Text>
@@ -412,97 +482,116 @@ export default function RegisterProviderScreen() {
             )}
           </View>
 
-          <TouchableOpacity
-            style={[styles.uploadBox, orcrImage && styles.uploadBoxFilled]}
-            onPress={() => pickImage('orcr')}
-            disabled={uploadingOrcr}
-            activeOpacity={0.85}
-          >
-            {uploadingOrcr ? (
-              <View style={styles.uploadingContainer}>
-                <ActivityIndicator size="large" color={ORANGE} />
-                <Text style={styles.uploadingText}>Uploading...</Text>
-              </View>
-            ) : orcrImage ? (
-              <View style={styles.previewContainer}>
-                <Image source={{ uri: orcrImage }} style={styles.previewImage} />
-                <View style={styles.previewOverlay}>
-                  <View style={styles.replaceBadge}>
-                    <Ionicons name="camera-reverse-outline" size={14} color="#FFFFFF" />
-                    <Text style={styles.replaceText}>Replace</Text>
+          <View style={styles.tilesRow}>
+            {/* FRONT tile */}
+            <TouchableOpacity
+              style={[styles.tile, licenseFrontUri && styles.tileFilled]}
+              onPress={() => handlePickLicense('front')}
+              disabled={uploadingLicense}
+              activeOpacity={0.85}
+            >
+              {licenseFrontUri ? (
+                <>
+                  <Image source={{ uri: licenseFrontUri }} style={styles.tileImage} />
+                  <View style={styles.tileLabelBadge}>
+                    <Text style={styles.tileLabelText}>FRONT</Text>
                   </View>
+                  {!licenseFrontUrl && uploadingLicense && (
+                    <View style={styles.tileOverlay}>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    </View>
+                  )}
+                </>
+              ) : (
+                <View style={styles.tileEmpty}>
+                  <Ionicons name="card-outline" size={26} color={ORANGE} />
+                  <Text style={styles.tileEmptyText}>Front</Text>
                 </View>
-              </View>
-            ) : (
-              <>
-                <View style={styles.uploadIconCircle}>
-                  <Ionicons name="cloud-upload-outline" size={28} color={ORANGE} />
+              )}
+            </TouchableOpacity>
+
+            {/* BACK tile */}
+            <TouchableOpacity
+              style={[styles.tile, licenseBackUri && styles.tileFilled]}
+              onPress={() => handlePickLicense('back')}
+              disabled={uploadingLicense}
+              activeOpacity={0.85}
+            >
+              {licenseBackUri ? (
+                <>
+                  <Image source={{ uri: licenseBackUri }} style={styles.tileImage} />
+                  <View style={styles.tileLabelBadge}>
+                    <Text style={styles.tileLabelText}>BACK</Text>
+                  </View>
+                  {!licenseBackUrl && uploadingLicense && (
+                    <View style={styles.tileOverlay}>
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    </View>
+                  )}
+                </>
+              ) : (
+                <View style={styles.tileEmpty}>
+                  <Ionicons name="card-outline" size={26} color={ORANGE} />
+                  <Text style={styles.tileEmptyText}>Back</Text>
                 </View>
-                <Text style={styles.uploadButtonText}>Tap to upload OR/CR</Text>
-                <Text style={styles.uploadHint}>JPG · PNG</Text>
-              </>
-            )}
-          </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.uploadHint}>
+            Tip: use a flat surface and good lighting for clearer photos.
+          </Text>
         </Animated.View>
 
-        {/* License Upload */}
-        <Animated.View style={[styles.uploadSection, fadeUp(licenseAnim, 20)]}>
+        {/* License details */}
+        <Animated.View style={[styles.detailsSection, fadeUp(detailsAnim, 20)]}>
           <View style={styles.uploadHeader}>
             <View style={styles.uploadTitleRow}>
               <View style={styles.uploadNumberBadge}>
                 <Text style={styles.uploadNumberText}>2</Text>
               </View>
               <View>
-                <Text style={styles.uploadTitle}>Driver's License</Text>
-                <Text style={styles.uploadSubtitle}>Valid professional or non-professional license</Text>
+                <Text style={styles.uploadTitle}>License Details</Text>
+                <Text style={styles.uploadSubtitle}>
+                  Enter the information on your license
+                </Text>
               </View>
             </View>
-            {driversLicenseImage && (
-              <View style={styles.completedBadge}>
-                <Ionicons name="checkmark-circle" size={12} color="#10B981" />
-                <Text style={styles.completedBadgeText}>Uploaded</Text>
-              </View>
-            )}
           </View>
 
-          <TouchableOpacity
-            style={[styles.uploadBox, driversLicenseImage && styles.uploadBoxFilled]}
-            onPress={() => pickImage('license')}
-            disabled={uploadingLicense}
-            activeOpacity={0.85}
-          >
-            {uploadingLicense ? (
-              <View style={styles.uploadingContainer}>
-                <ActivityIndicator size="large" color={ORANGE} />
-                <Text style={styles.uploadingText}>Uploading...</Text>
-              </View>
-            ) : driversLicenseImage ? (
-              <View style={styles.previewContainer}>
-                <Image source={{ uri: driversLicenseImage }} style={styles.previewImage} />
-                <View style={styles.previewOverlay}>
-                  <View style={styles.replaceBadge}>
-                    <Ionicons name="camera-reverse-outline" size={14} color="#FFFFFF" />
-                    <Text style={styles.replaceText}>Replace</Text>
-                  </View>
-                </View>
-              </View>
-            ) : (
-              <>
-                <View style={styles.uploadIconCircle}>
-                  <Ionicons name="cloud-upload-outline" size={28} color={ORANGE} />
-                </View>
-                <Text style={styles.uploadButtonText}>Tap to upload Driver's License</Text>
-                <Text style={styles.uploadHint}>JPG · PNG</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Driver's License Number</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. D06-11-009385"
+              placeholderTextColor="#9CA3AF"
+              value={licenseNumber}
+              onChangeText={setLicenseNumber}
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>License Expiry Date</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="YYYY-MM-DD (e.g. 2026-12-31)"
+              placeholderTextColor="#9CA3AF"
+              value={licenseExpiry}
+              onChangeText={setLicenseExpiry}
+              keyboardType="numbers-and-punctuation"
+              autoCorrect={false}
+            />
+          </View>
         </Animated.View>
 
         {/* Info note */}
         <Animated.View style={[styles.infoNote, fadeUp(buttonAnim, 20)]}>
           <Ionicons name="information-circle-outline" size={16} color="#3B82F6" />
           <Text style={styles.infoNoteText}>
-            Your documents are stored securely and only used for verification purposes.
+            Your application will be reviewed by an admin. You'll be able to accept deliveries
+            once approved.
           </Text>
         </Animated.View>
 
@@ -515,25 +604,22 @@ export default function RegisterProviderScreen() {
           ]}
         >
           <TouchableOpacity
-            style={[
-              styles.registerButton,
-              !bothUploaded && styles.registerButtonDisabled,
-            ]}
+            style={[styles.registerButton, !canSubmit && styles.registerButtonDisabled]}
             onPress={handleRegisterProvider}
             onPressIn={animatePressIn}
             onPressOut={animatePressOut}
-            disabled={loading || !bothUploaded}
+            disabled={loading || !canSubmit}
             activeOpacity={0.9}
           >
             {loading ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="small" color="#FFF" />
-                <Text style={styles.registerButtonText}>Registering...</Text>
+                <Text style={styles.registerButtonText}>Submitting...</Text>
               </View>
             ) : (
               <>
                 <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
-                <Text style={styles.registerButtonText}>Register as Provider</Text>
+                <Text style={styles.registerButtonText}>Submit for Verification</Text>
               </>
             )}
           </TouchableOpacity>
@@ -661,7 +747,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 2,
     backgroundColor: '#E5E7EB',
-    marginHorizontal: 8,
+    marginHorizontal: 6,
     marginBottom: 20,
   },
   progressLineDone: { backgroundColor: '#10B981' },
@@ -724,82 +810,94 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  uploadBox: {
-    borderWidth: 2,
-    borderColor: '#E5E7EB',
-    borderStyle: 'dashed',
-    borderRadius: 16,
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 140,
-    backgroundColor: '#FAFAFA',
+  /* Two-tile layout for front & back */
+  tilesRow: {
+    flexDirection: 'row',
+    gap: 12,
   },
-  uploadBoxFilled: {
+  tile: {
+    flex: 1,
+    height: 140,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FAFAFA',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  tileFilled: {
     borderStyle: 'solid',
     borderColor: '#FFE4D2',
-    padding: 0,
     backgroundColor: '#FFF7ED',
-    overflow: 'hidden',
-    minHeight: 180,
   },
-  uploadIconCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
+  tileEmpty: {
+    flex: 1,
     alignItems: 'center',
-    marginBottom: 10,
+    justifyContent: 'center',
+    gap: 6,
   },
-  uploadButtonText: {
-    color: '#111827',
-    fontSize: 13,
+  tileEmptyText: {
+    fontSize: 12,
     fontWeight: '700',
-    marginTop: 4,
+    color: '#6B7280',
+    letterSpacing: 0.2,
+  },
+  tileImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+  tileLabelBadge: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    backgroundColor: 'rgba(17,24,39,0.75)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  tileLabelText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  tileOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   uploadHint: {
     fontSize: 11,
     color: '#9CA3AF',
     fontWeight: '500',
-    marginTop: 4,
-    letterSpacing: 0.3,
-  },
-  uploadingContainer: { alignItems: 'center', gap: 10 },
-  uploadingText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#6B7280',
-  },
-  previewContainer: {
-    width: '100%',
-    height: 180,
-    position: 'relative',
-  },
-  previewImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  previewOverlay: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-  },
-  replaceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(17,24,39,0.75)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-  },
-  replaceText: {
-    fontSize: 11,
-    color: '#FFFFFF',
-    fontWeight: '700',
+    marginTop: 10,
     letterSpacing: 0.2,
+    textAlign: 'center',
+  },
+
+  /* Details section */
+  detailsSection: { marginBottom: 20 },
+  fieldGroup: { marginBottom: 14 },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 6,
+    letterSpacing: 0.2,
+  },
+  textInput: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '600',
   },
 
   /* Info note */

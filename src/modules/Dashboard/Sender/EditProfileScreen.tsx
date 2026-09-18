@@ -116,6 +116,7 @@ export default function EditProfileScreen() {
       const firstName = nameParts[0];
       const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
 
+      // Upload new avatar if picked
       if (imageBase64) {
         const fileExt = 'jpg';
         const fileName = `${Date.now()}_${firstName.toLowerCase()}.${fileExt}`;
@@ -136,6 +137,7 @@ export default function EditProfileScreen() {
         finalAvatarUrl = publicUrl;
       }
 
+      // 1️⃣ Update auth metadata (used by HomeScreen)
       const { error: updateError } = await supabase.auth.updateUser({
         data: {
           first_name: firstName,
@@ -144,8 +146,25 @@ export default function EditProfileScreen() {
           avatar_url: finalAvatarUrl,
         },
       });
-
       if (updateError) throw updateError;
+
+      // 2️⃣ ALSO update the users table (used by AccountScreen)
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { error: tableError } = await supabase
+          .from('users')
+          .update({
+            first_name: firstName,
+            last_name: lastName,
+            profile_photo: finalAvatarUrl,
+          })
+          .eq('auth_id', user.id);
+
+        if (tableError) {
+          console.warn('Could not update users table:', tableError);
+          // Don't throw — auth metadata already updated
+        }
+      }
 
       Alert.alert('Success', 'Your profile has been updated!');
       navigation.goBack();
@@ -449,7 +468,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: -46,
     marginBottom: 24,
-    
   },
   imagePicker: {
     width: 110,
@@ -471,7 +489,6 @@ const styles = StyleSheet.create({
     width: 102,
     height: 102,
     borderRadius: 51,
-    
   },
   imagePlaceholder: {
     justifyContent: 'center',

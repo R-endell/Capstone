@@ -24,6 +24,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 /** Brand */
 const ORANGE = '#FA7A25';
 
+// Provider registration state
+type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
+
 export default function AccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
@@ -34,7 +37,7 @@ export default function AccountScreen() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
   const [userRole, setUserRole] = useState<string>('Sender');
-  const [isProviderRegistered, setIsProviderRegistered] = useState(false);
+  const [providerState, setProviderState] = useState<ProviderState>('none');
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
@@ -140,7 +143,6 @@ export default function AccountScreen() {
 
       console.log('🔍 History query returned:', data?.length ?? 0, 'rows');
 
-      // Show ALL statuses (Pending, In Transit, Completed, Cancelled)
       const mapped = (data || []).map((r: any) => {
         const delivery = r.deliveries?.[0];
         const provider = delivery?.provider;
@@ -152,7 +154,6 @@ export default function AccountScreen() {
         const pickupAddr = r.pickup_location?.street_address || 'Pickup location';
         const dropoffAddr = r.dropoff_location?.street_address || 'Dropoff location';
 
-        // Normalize status for display
         const rawStatus = (r.delivery_status || 'Pending').trim();
         const isCancelled = /cancel/i.test(rawStatus);
         const isCompleted = /complete|delivered/i.test(rawStatus) || !!delivery?.completed_at;
@@ -228,7 +229,7 @@ export default function AccountScreen() {
   }, []);
 
   /* ------------------------------------------------------------------ */
-  /* Fetch user data                                                     */
+  /* Fetch user data + provider verification state                       */
   /* ------------------------------------------------------------------ */
   useFocusEffect(
     useCallback(() => {
@@ -237,55 +238,104 @@ export default function AccountScreen() {
           setImgKey(Date.now());
 
           const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-            setUserEmail(user.email || 'john.doe@example.com');
+          if (!user) return;
 
-            // Read name + avatar from user_metadata
-            if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
-            if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
-            if (user.user_metadata?.avatar_url) {
-              setAvatarUrl(user.user_metadata.avatar_url);
-              setImageError(false);
-            }
-
-            // Fetch user_id from DB
-            const { data: userData, error: userError } = await supabase
-              .from('users')
-              .select('user_id')
-              .eq('auth_id', user.id)
-              .maybeSingle();
-
-            if (userError) {
-              console.error('Error fetching user:', userError);
-              return;
-            }
-
-            if (userData) {
-              setUserId(userData.user_id);
-              fetchHistory(userData.user_id);
-
-              const { data: userRoles, error: rolesError } = await supabase
-                .from('user_roles')
-                .select(`role_id, roles!inner (role_name)`)
-                .eq('user_id', userData.user_id);
-
-              if (rolesError) {
-                console.error('Error fetching roles:', rolesError);
-                return;
-              }
-
-              if (userRoles && userRoles.length > 0) {
-                const hasProviderRole = userRoles.some(
-                  (ur: any) => ur.roles?.role_name === 'Provider'
-                );
-                setIsProviderRegistered(hasProviderRole);
-                setUserRole(hasProviderRole ? 'Provider' : 'Sender');
-              } else {
-                setUserRole('Sender');
-                setIsProviderRegistered(false);
-              }
-            }
+          // Read name + avatar from user_metadata
+          if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
+          if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
+          if (user.user_metadata?.avatar_url) {
+            setAvatarUrl(user.user_metadata.avatar_url);
+            setImageError(false);
           }
+
+          setUserEmail(user.email || 'john.doe@example.com');
+
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('user_id, first_name, last_name, profile_photo')
+            .eq('auth_id', user.id)
+            .maybeSingle();
+
+          if (userError) {
+            console.error('Error fetching user:', userError);
+            return;
+          }
+          if (!userData) return;
+
+          setUserId(userData.user_id);
+
+          // Prefer DB name if user_metadata was empty
+          if (!user.user_metadata?.first_name && userData.first_name) {
+            setFirstName(userData.first_name);
+          }
+          if (!user.user_metadata?.last_name && userData.last_name) {
+            setLastName(userData.last_name);
+          }
+          // Fallback avatar from DB if not in metadata
+          if (!user.user_metadata?.avatar_url && userData.profile_photo) {
+            setAvatarUrl(userData.profile_photo);
+            setImageError(false);
+          }
+
+          // Load history
+          fetchHistory(userData.user_id);
+
+          // ---- Check role ----
+          const { data: userRoles, error: rolesError } = await supabase
+            .from('user_roles')
+            .select(`
+              role_id,
+              roles!inner (role_name)
+            `)
+            .eq('user_id', userData.user_id);
+
+          if (rolesError) {
+            console.error('Error fetching roles:', rolesError);
+            return;
+          }
+
+          const hasProviderRole = (userRoles || []).some(
+            (ur: any) => ur.roles?.role_name === 'Provider'
+          );
+
+          if (!hasProviderRole) {
+            setUserRole('Sender');
+            setProviderState('none');
+            return;
+          }
+
+          // ---- Has Provider role → check verification status ----
+          setUserRole('Provider');
+
+          const { data: verif, error: verifError } = await supabase
+            .from('provider_verifications')
+            .select('verification_status, submitted_at')
+            .eq('provider_id', userData.user_id)
+            .order('submitted_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (verifError) {
+            console.error('Error fetching verification:', verifError);
+            setProviderState('pending');
+            return;
+          }
+
+          if (!verif) {
+            setProviderState('pending');
+            return;
+          }
+
+          const status = (verif.verification_status || '').toLowerCase();
+
+          if (status === 'approved' || status === 'verified') {
+            setProviderState('approved');
+          } else if (status === 'rejected') {
+            setProviderState('rejected');
+          } else {
+            setProviderState('pending');
+          }
+
         } catch (error) {
           console.error('Error fetching user data:', error);
         }
@@ -324,13 +374,51 @@ export default function AccountScreen() {
     navigation.navigate('Settings');
   };
 
+  const handlePaymentMethodsPress = () => {
+    Alert.alert('Coming Soon', 'Payment methods will be available in a future update.');
+  };
+
+  /* ------------------------------------------------------------------ */
+  /* Provider-switch handler — THE KEY LOGIC                             */
+  /* ------------------------------------------------------------------ */
   const handleSwitchToProvider = async () => {
+    // Persist last mode (used by LoadingScreen to resume where user left off)
     await AsyncStorage.setItem('last_mode', 'provider');
-    if (isProviderRegistered) {
-      navigation.navigate('ProviderTabs', { screen: 'Task' });
-    } else {
-      navigation.navigate('RegisterProvider');
+
+    if (providerState === 'approved') {
+      // ✅ Verified — enter provider mode
+      navigation.navigate('ProviderTabs', { screen: 'Jobs' });
+      return;
     }
+
+    if (providerState === 'pending') {
+      // ⏳ Awaiting admin approval — block, inform
+      Alert.alert(
+        'Awaiting Approval',
+        'Your provider application is pending admin review. You will be able to switch to Provider Mode once it has been approved.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    if (providerState === 'rejected') {
+      // ❌ Rejected — offer re-apply
+      Alert.alert(
+        'Application Rejected',
+        'Your previous provider application was rejected by an admin. You can submit a new application with updated documents.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Re-apply',
+            onPress: () => navigation.navigate('RegisterProvider'),
+          },
+        ]
+      );
+      return;
+    }
+
+    // providerState === 'none' → not registered yet
+    navigation.navigate('RegisterProvider');
   };
 
   /* ------------------------------------------------------------------ */
@@ -354,6 +442,27 @@ export default function AccountScreen() {
   });
 
   /* ------------------------------------------------------------------ */
+  /* Derived UI values                                                   */
+  /* ------------------------------------------------------------------ */
+  const providerMenuTitle = (() => {
+    switch (providerState) {
+      case 'approved': return 'Switch to Provider Mode';
+      case 'pending':  return 'Provider Application Pending';
+      case 'rejected': return 'Provider Application Rejected';
+      default:         return 'Register as a Provider';
+    }
+  })();
+
+  const providerMenuSubtext = (() => {
+    switch (providerState) {
+      case 'approved': return 'Manage delivery tasks';
+      case 'pending':  return 'Waiting for admin approval';
+      case 'rejected': return 'Tap to re-apply with new documents';
+      default:         return 'Earn by delivering packages';
+    }
+  })();
+
+  /* ------------------------------------------------------------------ */
   /* History Sub-Screen                                                  */
   /* ------------------------------------------------------------------ */
   if (showHistory) {
@@ -366,7 +475,6 @@ export default function AccountScreen() {
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-        {/* Header */}
         <View style={[styles.historyHeader, { paddingTop: insets.top + 16 }]}>
           <TouchableOpacity
             onPress={() => setShowHistory(false)}
@@ -386,6 +494,7 @@ export default function AccountScreen() {
         >
           <Animated.View style={{ opacity: historyAnim }}>
             <Text style={styles.historyTitle}>History</Text>
+
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -424,9 +533,11 @@ export default function AccountScreen() {
             ) : filteredHistory.length === 0 ? (
               <View style={styles.historyStateContainer}>
                 <Ionicons name="receipt-outline" size={48} color="#D1D5DB" />
-                <Text style={styles.historyEmptyTitle}>No past deliveries</Text>
+                <Text style={styles.historyEmptyTitle}>No deliveries found</Text>
                 <Text style={styles.historyEmptySubtext}>
-                  Your deliveries will show up here.
+                  {historyFilter === 'All'
+                    ? 'Your deliveries will show up here.'
+                    : `No ${historyFilter.toLowerCase()} deliveries.`}
                 </Text>
               </View>
             ) : (
@@ -535,7 +646,6 @@ export default function AccountScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
       <Animated.View
         style={[
           styles.mainHeader,
@@ -591,23 +701,58 @@ export default function AccountScreen() {
             <View
               style={[
                 styles.roleBadge,
-                isProviderRegistered
+                providerState === 'approved'
                   ? styles.roleBadgeProvider
+                  : providerState === 'pending'
+                  ? styles.roleBadgePending
+                  : providerState === 'rejected'
+                  ? styles.roleBadgeRejected
                   : styles.roleBadgeSender,
               ]}
             >
               <Ionicons
-                name={isProviderRegistered ? 'shield-checkmark' : 'cube-outline'}
+                name={
+                  providerState === 'approved'
+                    ? 'shield-checkmark'
+                    : providerState === 'pending'
+                    ? 'time-outline'
+                    : providerState === 'rejected'
+                    ? 'close-circle-outline'
+                    : 'cube-outline'
+                }
                 size={12}
-                color={isProviderRegistered ? '#10B981' : ORANGE}
+                color={
+                  providerState === 'approved'
+                    ? '#10B981'
+                    : providerState === 'pending'
+                    ? '#F59E0B'
+                    : providerState === 'rejected'
+                    ? '#EF4444'
+                    : ORANGE
+                }
               />
               <Text
                 style={[
                   styles.roleBadgeText,
-                  { color: isProviderRegistered ? '#10B981' : ORANGE },
+                  {
+                    color:
+                      providerState === 'approved'
+                        ? '#10B981'
+                        : providerState === 'pending'
+                        ? '#F59E0B'
+                        : providerState === 'rejected'
+                        ? '#EF4444'
+                        : ORANGE,
+                  },
                 ]}
               >
-                {isProviderRegistered ? 'PROVIDER' : 'SENDER'}
+                {providerState === 'approved'
+                  ? 'PROVIDER'
+                  : providerState === 'pending'
+                  ? 'PENDING'
+                  : providerState === 'rejected'
+                  ? 'REJECTED'
+                  : 'SENDER'}
               </Text>
             </View>
           </View>
@@ -626,24 +771,35 @@ export default function AccountScreen() {
                   <Ionicons name="swap-horizontal-outline" size={18} color={ORANGE} />
                 </View>
                 <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>
-                    {isProviderRegistered
-                      ? 'Switch to Provider Mode'
-                      : 'Register as a Provider'}
-                  </Text>
+                  <Text style={styles.menuText}>{providerMenuTitle}</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {isProviderRegistered
-                      ? 'Manage delivery tasks'
-                      : 'Earn by delivering packages'}
+                    {providerMenuSubtext}
                   </Text>
                 </View>
               </View>
-              {isProviderRegistered ? (
+
+              {providerState === 'approved' && (
                 <View style={styles.providerBadge}>
                   <View style={styles.providerBadgeDot} />
                   <Text style={styles.providerBadgeText}>Active</Text>
                 </View>
-              ) : (
+              )}
+
+              {providerState === 'pending' && (
+                <View style={styles.pendingBadge}>
+                  <Ionicons name="time-outline" size={10} color="#F59E0B" />
+                  <Text style={styles.pendingBadgeText}>Pending</Text>
+                </View>
+              )}
+
+              {providerState === 'rejected' && (
+                <View style={styles.rejectedBadge}>
+                  <Ionicons name="close-circle-outline" size={10} color="#EF4444" />
+                  <Text style={styles.rejectedBadgeText}>Rejected</Text>
+                </View>
+              )}
+
+              {providerState === 'none' && (
                 <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
               )}
             </TouchableOpacity>
@@ -652,12 +808,19 @@ export default function AccountScreen() {
 
             <TouchableOpacity
               style={styles.menuItem}
-              onPress={() =>
-                Alert.alert('Coming Soon', 'Payment methods will be available in a future update.')
-              }
+              onPress={handlePaymentMethodsPress}
+              activeOpacity={0.7}
             >
-              <Text style={styles.menuText}>Payment Methods</Text>
-              <Ionicons name="chevron-forward" size={20} color="#000" />
+              <View style={styles.menuItemLeft}>
+                <View style={[styles.menuIconWrapper, { backgroundColor: '#EFF6FF' }]}>
+                  <Ionicons name="card-outline" size={18} color="#3B82F6" />
+                </View>
+                <View style={styles.menuTextWrapper}>
+                  <Text style={styles.menuText}>Payment Methods</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -684,7 +847,6 @@ export default function AccountScreen() {
 
           <Text style={[styles.sectionTitle, { marginTop: 24 }]}>General</Text>
 
-          {/* General Menu */}
           <View style={styles.menuCard}>
             <TouchableOpacity
               style={styles.menuItem}
@@ -737,9 +899,6 @@ export default function AccountScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
 
-  /* ------------------------------------------------------------------ */
-  /* Main Header                                                         */
-  /* ------------------------------------------------------------------ */
   mainHeader: {
     backgroundColor: ORANGE,
     flexDirection: 'row',
@@ -778,10 +937,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  nameTextWrapper: {
-    flex: 1,
-    marginRight: 8,
-  },
+  nameTextWrapper: { flex: 1, marginRight: 8 },
   profileName: {
     fontSize: 19,
     fontWeight: '800',
@@ -805,13 +961,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.35)',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Main Content                                                        */
-  /* ------------------------------------------------------------------ */
-  mainContent: {
-    flex: 1,
-    marginTop: -50,
-  },
+  mainContent: { flex: 1, marginTop: -50 },
   mainScrollContent: {
     paddingHorizontal: 20,
     paddingTop: 0,
@@ -840,6 +990,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF7ED',
     borderColor: '#FFE4D2',
   },
+  roleBadgePending: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  roleBadgeRejected: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
   roleBadgeText: {
     fontSize: 10,
     fontWeight: '800',
@@ -854,9 +1012,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Menu Card                                                           */
-  /* ------------------------------------------------------------------ */
   menuCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 22,
@@ -892,9 +1047,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 14,
   },
-  menuTextWrapper: {
-    flex: 1,
-  },
+  menuTextWrapper: { flex: 1 },
   menuText: {
     fontSize: 15,
     fontWeight: '700',
@@ -935,6 +1088,40 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.5,
   },
+  pendingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  pendingBadgeText: {
+    color: '#F59E0B',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  rejectedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  rejectedBadgeText: {
+    color: '#EF4444',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
   logoutText: {
     fontSize: 15,
     fontWeight: '700',
@@ -949,9 +1136,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* History Screen                                                      */
-  /* ------------------------------------------------------------------ */
   historyHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -994,14 +1178,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     letterSpacing: -0.3,
   },
-  historyHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  historySubtitle: { fontSize: 15, color: '#374151', fontWeight: '600' },
-  viewAllText: { fontSize: 12, color: ORANGE, fontWeight: '700' },
 
   historyStateContainer: {
     alignItems: 'center',

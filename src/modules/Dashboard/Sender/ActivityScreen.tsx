@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import QRCode from 'react-native-qrcode-svg';
 import { supabase } from '../../../utils/supabase';
+import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
 const { width, height } = Dimensions.get('window');
 
@@ -83,9 +84,12 @@ interface DeliveryRequest {
   pickup_location_id: number;
   dropoff_location_id: number;
   rate_id: number;
+  receiver_id: number | null;
+  receiver_phone: string | null;
   cargo_profiles: any;
   pickup_location: any;
   dropoff_location: any;
+  receiver?: any;
 }
 
 interface Delivery {
@@ -110,6 +114,14 @@ interface QrRow {
   dropoff_verified: boolean;
 }
 
+interface ReceiverInfo {
+  receiver_id?: number | null;
+  receiver_name?: string;
+  receiver_phone?: string;
+  receiver_email?: string | null;
+  is_favorite?: boolean;
+}
+
 interface MappedDelivery {
   request_id: number;
   pickup_type: string;
@@ -132,6 +144,7 @@ interface MappedDelivery {
   deliveryData?: Delivery;
   isMatched: boolean;
   qr?: QrRow | null;
+  receiver?: ReceiverInfo | null;   // ✅ NEW
 }
 
 export default function ActivityScreen() {
@@ -145,6 +158,7 @@ export default function ActivityScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'pending' | 'active' | 'completed'>('all');
+  const [openingChat, setOpeningChat] = useState(false);
   const insets = useSafeAreaInsets();
 
   // Animations
@@ -200,9 +214,22 @@ export default function ActivityScreen() {
       }
       if (!userId) setUserId(currentUserId);
 
+      // ✅ Join receivers table so we get receiver details with each request
       const { data: requests, error: requestsError } = await supabase
         .from('delivery_requests')
-        .select(`*, cargo_profiles (*), pickup_location:locations!delivery_requests_pickup_location_id_fkey (*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*)`)
+        .select(`
+          *,
+          cargo_profiles (*),
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey (*),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*),
+          receiver:receivers!delivery_requests_receiver_id_fkey (
+            receiver_id,
+            receiver_name,
+            receiver_phone,
+            receiver_email,
+            is_favorite
+          )
+        `)
         .eq('sender_id', currentUserId)
         .order('created_at', { ascending: false });
 
@@ -258,6 +285,20 @@ export default function ActivityScreen() {
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
 
+        // ✅ Normalize receiver — fall back to request's receiver_phone if no joined row
+        const joinedReceiver = item.receiver || null;
+        const receiverInfo: ReceiverInfo | null =
+          joinedReceiver || item.receiver_phone
+            ? {
+                receiver_id: joinedReceiver?.receiver_id ?? item.receiver_id ?? null,
+                receiver_name: joinedReceiver?.receiver_name ?? 'Receiver',
+                receiver_phone:
+                  joinedReceiver?.receiver_phone ?? item.receiver_phone ?? '',
+                receiver_email: joinedReceiver?.receiver_email ?? null,
+                is_favorite: joinedReceiver?.is_favorite ?? false,
+              }
+            : null;
+
         return {
           request_id: item.request_id,
           pickup_type: item.pickup_type,
@@ -287,6 +328,7 @@ export default function ActivityScreen() {
             dropoff_pin: qrRow.dropoff_pin,
             dropoff_verified: qrRow.dropoff_verified,
           } : null,
+          receiver: receiverInfo,
         };
       });
 
@@ -323,8 +365,11 @@ export default function ActivityScreen() {
     const completedChanged =
       (updatedMatch.deliveryData?.completed_at ?? null) !==
       (selectedDelivery.deliveryData?.completed_at ?? null);
+    const receiverChanged =
+      (updatedMatch.receiver?.receiver_name ?? null) !==
+      (selectedDelivery.receiver?.receiver_name ?? null);
 
-    if (statusChanged || qrChanged || completedChanged) {
+    if (statusChanged || qrChanged || completedChanged || receiverChanged) {
       setSelectedDelivery(updatedMatch);
     }
   }, [deliveries]);
@@ -354,7 +399,6 @@ export default function ActivityScreen() {
       )
       .subscribe();
 
-    // Fallback polling every 8s while there's at least one non-completed matched delivery
     const hasActive = deliveries.some(d => d.status !== 'Completed' && d.isMatched);
     let interval: any = null;
     if (hasActive) {
@@ -397,6 +441,30 @@ export default function ActivityScreen() {
     ]);
   };
 
+  const handleMessageProvider = async (item: MappedDelivery) => {
+    try {
+      if (!item.deliveryData?.delivery_id) {
+        return Alert.alert('Please wait', 'Provider details are still loading.');
+      }
+      setOpeningChat(true);
+      const roomId = await getOrCreateChatRoom(item.deliveryData.delivery_id);
+      if (!roomId) {
+        setOpeningChat(false);
+        return Alert.alert('Error', 'Could not open chat. Please try again.');
+      }
+
+      navigation.navigate('MainTabs', {
+        screen: 'Messages',
+        params: { openRoomId: roomId },
+      });
+    } catch (err: any) {
+      console.error('Error opening chat:', err);
+      Alert.alert('Error', 'Could not open chat.');
+    } finally {
+      setOpeningChat(false);
+    }
+  };
+
   const filteredDeliveries = deliveries.filter((item) => {
     if (activeTab === 'pending' && item.status !== 'Waiting for Provider') return false;
     if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched' && item.status !== 'In Transit') return false;
@@ -406,7 +474,9 @@ export default function ActivityScreen() {
     return (item.pickup_main + " " + item.pickup_sub).toLowerCase().includes(query) ||
       (item.dropoff_main + " " + item.dropoff_sub).toLowerCase().includes(query) ||
       String(item.request_id).toLowerCase().includes(query) ||
-      String(item.provider_name).toLowerCase().includes(query);
+      String(item.provider_name).toLowerCase().includes(query) ||
+      String(item.receiver?.receiver_name || '').toLowerCase().includes(query) ||
+      String(item.receiver?.receiver_phone || '').toLowerCase().includes(query);
   });
 
   const getStatusColor = (status: string) => {
@@ -510,7 +580,7 @@ export default function ActivityScreen() {
         <View style={styles.searchBar}>
           <Ionicons name="search-outline" size={18} color="#9CA3AF" />
           <TextInput
-            placeholder="Search by location, package, ID..."
+            placeholder="Search by location, receiver, ID..."
             placeholderTextColor="#9CA3AF"
             style={styles.searchInput}
             value={searchQuery}
@@ -603,6 +673,24 @@ export default function ActivityScreen() {
                         <Text style={styles.addressSub} numberOfLines={2}>{item.dropoff_sub}</Text>
                       </View>
                     </View>
+
+                    {/* ✅ Receiver compact row (only when present) */}
+                    {item.receiver && (
+                      <View style={[styles.timelineItem, { marginTop: 14 }]}>
+                        <View style={styles.iconWrapper}>
+                          <Ionicons name="person-circle-outline" size={16} color="#8B5CF6" />
+                        </View>
+                        <View style={styles.addressWrapper}>
+                          <Text style={[styles.timelineLabel, { color: '#8B5CF6' }]}>RECEIVER</Text>
+                          <Text style={styles.addressMain} numberOfLines={1}>
+                            {item.receiver.receiver_name || 'Receiver'}
+                          </Text>
+                          <Text style={styles.addressSub} numberOfLines={1}>
+                            {item.receiver.receiver_phone || '—'}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
                   </View>
                 </View>
 
@@ -654,8 +742,6 @@ export default function ActivityScreen() {
   /* Detail View                                                         */
   /* ------------------------------------------------------------------ */
   const renderDetailView = () => {
-    // ✅ Local derived booleans so the timeline updates as soon as the QR flips,
-    // even before the "status" column catches up.
     const pickupVerified =
       selectedDelivery?.qr?.pickup_verified === true ||
       selectedDelivery?.status === 'In Transit' ||
@@ -787,6 +873,51 @@ export default function ActivityScreen() {
             </View>
           </View>
 
+          {/* ✅ Receiver Card */}
+          {selectedDelivery?.receiver && (
+            <View style={styles.receiverCard}>
+              <View style={styles.receiverCardHeader}>
+                <View style={styles.receiverCardIconBox}>
+                  <Ionicons name="person-circle" size={18} color="#8B5CF6" />
+                </View>
+                <Text style={styles.receiverCardHeaderTitle}>RECEIVER</Text>
+                {selectedDelivery.receiver.is_favorite && (
+                  <View style={styles.receiverFavBadge}>
+                    <Ionicons name="star" size={10} color="#F59E0B" />
+                    <Text style={styles.receiverFavText}>Saved</Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.receiverCardRow}>
+                <View style={styles.receiverAvatar}>
+                  <Text style={styles.receiverAvatarText}>
+                    {(selectedDelivery.receiver.receiver_name || '?').trim().charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+                <View style={styles.receiverInfo}>
+                  <Text style={styles.receiverName} numberOfLines={1}>
+                    {selectedDelivery.receiver.receiver_name || 'Receiver'}
+                  </Text>
+                  <View style={styles.receiverContactRow}>
+                    <Ionicons name="call-outline" size={12} color="#6B7280" />
+                    <Text style={styles.receiverContactText} numberOfLines={1}>
+                      {selectedDelivery.receiver.receiver_phone || '—'}
+                    </Text>
+                  </View>
+                  {selectedDelivery.receiver.receiver_email ? (
+                    <View style={styles.receiverContactRow}>
+                      <Ionicons name="mail-outline" size={12} color="#6B7280" />
+                      <Text style={styles.receiverContactText} numberOfLines={1}>
+                        {selectedDelivery.receiver.receiver_email}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            </View>
+          )}
+
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionHeaderTitle}>Package Status</Text>
           </View>
@@ -820,14 +951,12 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 3: Item Collected — now driven by pickupVerified */}
+            {/* Step 3: Item Collected */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[
                   styles.statusDotLarge,
-                  pickupVerified
-                    ? { backgroundColor: '#8B5CF6' }
-                    : { backgroundColor: '#D1D5DB' }
+                  pickupVerified ? { backgroundColor: '#8B5CF6' } : { backgroundColor: '#D1D5DB' }
                 ]} />
                 <View style={[
                   styles.statusLine,
@@ -891,10 +1020,32 @@ export default function ActivityScreen() {
                     {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.providerContactBtn} activeOpacity={0.8}>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                <TouchableOpacity
+                  style={styles.providerContactBtn}
+                  activeOpacity={0.8}
+                  onPress={() => handleMessageProvider(selectedDelivery)}
+                  disabled={openingChat}
+                >
+                  {openingChat ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  )}
                 </TouchableOpacity>
               </View>
+
+              <TouchableOpacity
+                style={styles.messageProviderRow}
+                activeOpacity={0.85}
+                onPress={() => handleMessageProvider(selectedDelivery)}
+                disabled={openingChat}
+              >
+                <Ionicons name="chatbubble-ellipses-outline" size={14} color={ORANGE} />
+                <Text style={styles.messageProviderText}>
+                  {openingChat ? 'Opening chat...' : 'Message Provider'}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color={ORANGE} />
+              </TouchableOpacity>
             </View>
           )}
 
@@ -1178,7 +1329,7 @@ const styles = StyleSheet.create({
   },
 
   routeCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 24,
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 16,
     borderWidth: 1, borderColor: '#F3F4F6',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 10, elevation: 2,
   },
@@ -1190,6 +1341,53 @@ const styles = StyleSheet.create({
   routeLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 1, marginBottom: 3 },
   routeMain: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 2 },
   routeSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
+
+  /* ✅ Receiver Card */
+  receiverCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 24,
+    borderWidth: 1, borderColor: '#EDE9FE',
+    shadowColor: '#8B5CF6', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 2,
+  },
+  receiverCardHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,
+  },
+  receiverCardIconBox: {
+    width: 28, height: 28, borderRadius: 9, backgroundColor: '#F5F3FF',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  receiverCardHeaderTitle: {
+    flex: 1, fontSize: 10, fontWeight: '800', color: '#8B5CF6', letterSpacing: 1,
+  },
+  receiverFavBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: '#FEF3C7', paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: 10, borderWidth: 1, borderColor: '#FDE68A',
+  },
+  receiverFavText: {
+    fontSize: 9, fontWeight: '800', color: '#B45309', letterSpacing: 0.3,
+  },
+  receiverCardRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+  },
+  receiverAvatar: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: '#8B5CF6',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 3, borderColor: '#FFFFFF',
+    shadowColor: '#8B5CF6', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
+  },
+  receiverAvatarText: { fontSize: 22, fontWeight: '800', color: '#FFFFFF' },
+  receiverInfo: { flex: 1 },
+  receiverName: {
+    fontSize: 15, fontWeight: '800', color: '#111827',
+    marginBottom: 6, letterSpacing: -0.2,
+  },
+  receiverContactRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2,
+  },
+  receiverContactText: {
+    fontSize: 12, color: '#6B7280', fontWeight: '600',
+  },
 
   sectionHeaderRow: { marginBottom: 18 },
   sectionHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
@@ -1223,6 +1421,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1.5, borderColor: '#FFE4D2',
   },
+  messageProviderRow: {
+    marginTop: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BBF7D0',
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12,
+  },
+  messageProviderText: { flex: 1, color: ORANGE, fontWeight: '700', fontSize: 13, marginLeft: 8 },
 
   detailActionsRow: {
     flexDirection: 'row', justifyContent: 'space-between', gap: 12, marginTop: 8,

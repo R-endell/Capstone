@@ -11,6 +11,7 @@ import { WebView } from 'react-native-webview';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
+import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries, findMatches,
   subscribeToNewRequests, subscribeToProviderRoutes, subscribeToDeliveryUpdates
@@ -51,14 +52,13 @@ const LeafletMap = ({ lat, lng, zoom }: { lat: number, lng: number, zoom: number
   );
 };
 
-// token + pin helpers
 const randToken = (len = 16) => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s = '';
   for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 };
-const randPin = () => String(Math.floor(1000 + Math.random() * 9000)); // 4 digit pin
+const randPin = () => String(Math.floor(1000 + Math.random() * 9000));
 
 const hydrateQr = async (deliveries: any[]) => {
   if (!deliveries || deliveries.length === 0) return deliveries;
@@ -90,7 +90,6 @@ export default function TaskScreen() {
   const [userData, setUserData] = useState<any>(null);
   const [isMatching, setIsMatching] = useState(false);
 
-  // QR verification state
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
   const [scanned, setScanned] = useState(false);
@@ -98,10 +97,8 @@ export default function TaskScreen() {
   const [pinVerifying, setPinVerifying] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
-  // View detail modal state
   const [viewTarget, setViewTarget] = useState<any>(null);
 
-  // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const matchingPulse = useRef(new Animated.Value(0)).current;
@@ -125,7 +122,6 @@ export default function TaskScreen() {
     return () => pulse.stop();
   }, [isMatching, matchingPulse]);
 
-  // Laser scanner animation
   useEffect(() => {
     if (!verifyModalVisible) return;
     scanLineAnim.setValue(0);
@@ -301,7 +297,7 @@ export default function TaskScreen() {
 
   const handleBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanned || !verifyTarget) return;
-    setScanned(true); // Disable future scans instantly until reset
+    setScanned(true);
     try {
       const { data: row, error } = await supabase
         .from('qr_verifications')
@@ -449,8 +445,7 @@ export default function TaskScreen() {
   });
 
   const pulseOpacity = matchingPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
-  
-  // Calculate scan line movement inside the transparent window frame
+
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
@@ -496,7 +491,7 @@ export default function TaskScreen() {
         </View>
 
         <Text style={styles.taskDateTime}>
-          {new Date(request.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {new Date(request.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {formatDate(request.created_at, 'MMM d, yyyy')} · {formatDate(request.created_at, 'h:mm a')}
         </Text>
 
         <View style={styles.locationSection}>
@@ -614,7 +609,7 @@ export default function TaskScreen() {
         </View>
 
         <Text style={styles.taskDateTime}>
-          {new Date(request.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {new Date(request.scheduled_time || request.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {formatDate(request.created_at, 'MMM d, yyyy')} · {formatDate(request.scheduled_time || request.created_at, 'h:mm a')}
         </Text>
 
         <View style={styles.locationSection}>
@@ -667,9 +662,6 @@ export default function TaskScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Full-screen Scanner Modal (FIXED CENTERING)                         */
-  /* ------------------------------------------------------------------ */
   const renderScannerModal = () => {
     return (
       <Modal
@@ -681,7 +673,6 @@ export default function TaskScreen() {
         <View style={styles.scannerRoot}>
           <StatusBar barStyle="light-content" backgroundColor="#000" />
 
-          {/* Automatic Camera Scanner */}
           {cameraPermission?.granted && (
             <CameraView
               style={StyleSheet.absoluteFill}
@@ -691,41 +682,28 @@ export default function TaskScreen() {
             />
           )}
 
-          {/* Perfectly Centered Transparent Hole-Punch Overlay */}
           <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
-            {/* Top Overlay: Flex 1 pushes the hole down */}
             <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-            
             <View style={{ flexDirection: 'row', height: frameSize }}>
               <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-              
-              {/* The clear scanning window */}
               <View style={{ width: frameSize, height: frameSize, overflow: 'hidden', position: 'relative' }}>
-                {/* Laser animation */}
                 <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
-                
-                {/* White Corner Markers */}
                 <View style={[styles.corner, styles.cornerTL]} />
                 <View style={[styles.corner, styles.cornerTR]} />
                 <View style={[styles.corner, styles.cornerBL]} />
                 <View style={[styles.corner, styles.cornerBR]} />
               </View>
-              
               <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
             </View>
-            
-            {/* Bottom Overlay: slightly larger flex accounts for the bottom sheet so it visually centers */}
             <View style={{ flex: 2.2, backgroundColor: 'rgba(0,0,0,0.7)' }} />
           </View>
 
-          {/* Header Close Button */}
           <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
             <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
               <Ionicons name="close" size={24} color="#FFF" />
             </TouchableOpacity>
           </View>
 
-          {/* Bottom Sheet Context */}
           <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
             <View style={styles.sheetHandle} />
 
@@ -914,7 +892,7 @@ export default function TaskScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.viewTimelineTitle}>Accepted</Text>
                     <Text style={styles.viewTimelineTime}>
-                      {new Date(viewTarget.accepted_at).toLocaleString()}
+                      {formatDateTime(viewTarget.accepted_at)}
                     </Text>
                   </View>
                 </View>
@@ -945,7 +923,7 @@ export default function TaskScreen() {
                     </Text>
                     <Text style={styles.viewTimelineText}>
                       {isCompleted && viewTarget.completed_at
-                        ? new Date(viewTarget.completed_at).toLocaleString()
+                        ? formatDateTime(viewTarget.completed_at)
                         : 'Awaiting delivery'}
                     </Text>
                   </View>
@@ -1233,7 +1211,6 @@ const styles = StyleSheet.create({
   actionBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
   viewBtnText: { color: '#4B5563', fontSize: 11, fontWeight: '700' },
 
-  /* Loading / matching */
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
   matchingStatus: {
@@ -1242,7 +1219,6 @@ const styles = StyleSheet.create({
   },
   matchingStatusText: { fontSize: 13, color: ORANGE, fontWeight: '700' },
 
-  /* Empty */
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, paddingHorizontal: 24 },
   emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   emptyTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginTop: 4 },
@@ -1255,23 +1231,13 @@ const styles = StyleSheet.create({
   matchNowButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
   bottomSpacer: { height: 60 },
 
-  /* ==================== Scanner Modal ==================== */
   scannerRoot: { flex: 1, backgroundColor: '#000' },
-
-  cameraPermissionFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0F172A', justifyContent: 'center', alignItems: 'center', gap: 14, paddingHorizontal: 30 },
-  cameraPermissionText: { color: '#E5E7EB', fontSize: 13, fontWeight: '600', textAlign: 'center' },
-  cameraPermissionBtn: { marginTop: 8, paddingHorizontal: 22, paddingVertical: 12, backgroundColor: ORANGE, borderRadius: 24 },
-  cameraPermissionBtnText: { color: '#FFF', fontWeight: '800', fontSize: 13 },
-  
-  scanWindow: { backgroundColor: 'transparent', overflow: 'hidden', position: 'relative' },
   scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 1, shadowRadius: 8 },
-
   corner: { position: 'absolute', width: 40, height: 40, borderColor: '#FFFFFF' },
   cornerTL: { top: 0, left: 0, borderTopWidth: 5, borderLeftWidth: 5, borderTopLeftRadius: 16 },
   cornerTR: { top: 0, right: 0, borderTopWidth: 5, borderRightWidth: 5, borderTopRightRadius: 16 },
   cornerBL: { bottom: 0, left: 0, borderBottomWidth: 5, borderLeftWidth: 5, borderBottomLeftRadius: 16 },
   cornerBR: { bottom: 0, right: 0, borderBottomWidth: 5, borderRightWidth: 5, borderBottomRightRadius: 16 },
-
   scannerTopBar: {
     position: 'absolute', top: 0, left: 0, right: 0,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-start',
@@ -1282,7 +1248,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center', alignItems: 'center',
   },
-
   scannerBottomSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: '#FFFFFF',
@@ -1295,11 +1260,9 @@ const styles = StyleSheet.create({
   },
   sheetHeading: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 4 },
   sheetSubheading: { fontSize: 13, color: '#6B7280', marginBottom: 16, lineHeight: 18 },
-
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
   orLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
   orText: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1.2 },
-
   pinRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinInput: {
     flex: 1, borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14,
@@ -1313,7 +1276,6 @@ const styles = StyleSheet.create({
   },
   pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
 
-  /* ==================== View Modal ==================== */
   viewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   viewSheet: {
     backgroundColor: '#F9FAFB', borderTopLeftRadius: 28, borderTopRightRadius: 28,

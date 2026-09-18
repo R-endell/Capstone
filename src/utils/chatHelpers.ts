@@ -1,35 +1,36 @@
 // src/utils/chatHelpers.ts
 import { supabase } from './supabase';
 
-export const createChatRoomForDelivery = async (
+/**
+ * Get or create the chat room for a delivery.
+ * chat_rooms schema = (room_id, delivery_id). Nothing else.
+ */
+export const getOrCreateChatRoom = async (
   deliveryId: number,
-  providerId: number,
-  senderId: number
-) => {
+): Promise<number | null> => {
   try {
-    // Check if chat room already exists
-    const { data: existingRoom } = await supabase
+    const { data: existing } = await supabase
       .from('chat_rooms')
       .select('room_id')
       .eq('delivery_id', deliveryId)
       .maybeSingle();
 
-    if (existingRoom) {
-      return existingRoom.room_id;
-    }
+    if (existing?.room_id) return existing.room_id;
 
-    // Create new chat room
     const { data, error } = await supabase
       .from('chat_rooms')
-      .insert({
-        delivery_id: deliveryId,
-        provider_id: providerId,
-        sender_id: senderId,
-      })
+      .insert({ delivery_id: deliveryId })
       .select('room_id')
       .single();
 
     if (error) {
+      // Race: another client created it between SELECT and INSERT
+      const { data: race } = await supabase
+        .from('chat_rooms')
+        .select('room_id')
+        .eq('delivery_id', deliveryId)
+        .maybeSingle();
+      if (race?.room_id) return race.room_id;
       console.error('Error creating chat room:', error);
       return null;
     }
@@ -39,4 +40,17 @@ export const createChatRoomForDelivery = async (
     console.error('Error creating chat room:', error);
     return null;
   }
+};
+
+/** Backwards-compatible alias. */
+export const createChatRoomForDelivery = getOrCreateChatRoom;
+
+/** Look up the room_id for a delivery (or null). */
+export const getRoomByDelivery = async (deliveryId: number): Promise<number | null> => {
+  const { data } = await supabase
+    .from('chat_rooms')
+    .select('room_id')
+    .eq('delivery_id', deliveryId)
+    .maybeSingle();
+  return data?.room_id ?? null;
 };
