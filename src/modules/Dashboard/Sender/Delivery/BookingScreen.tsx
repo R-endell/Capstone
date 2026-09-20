@@ -13,6 +13,7 @@ import { supabase } from '../../../../utils/supabase';
 import { nowInManila } from '../../../../utils/dateUtils';
 
 const ORANGE = '#FA7A25';
+const SEND_NOW_WINDOW_MINUTES = 5;
 
 export default function BookingScreen({ route, navigation }: any) {
   const { mode: routeMode } = route.params || {};
@@ -27,7 +28,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
-  // ✅ Receiver state (pulled from ScheduleContext — fallback local)
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
   const pulseAnim1 = useRef(new Animated.Value(1)).current;
@@ -41,16 +41,10 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ------------------------------------------------------------------ */
-  /* Sync receiver from ScheduleContext                                  */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (state.receiver) setReceiver(state.receiver);
   }, [state.receiver]);
 
-  /* ------------------------------------------------------------------ */
-  /* Sheet entrance animation                                            */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     sheetAnim.setValue(0);
     Animated.timing(sheetAnim, {
@@ -61,9 +55,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }).start();
   }, [bookingState, sheetAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* State-driven animation effects                                      */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (bookingState === 'finding') {
       setIsSearching(true);
@@ -106,15 +97,22 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, [bookingState, insets.top]);
 
-  /* ------------------------------------------------------------------ */
-  /* Matching logic                                                      */
-  /* ------------------------------------------------------------------ */
   const startMatching = async () => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Required', 'Please select a receiver before booking.');
         return;
       }
+
+      console.log('=== startMatching: state dump ===');
+      console.log('mode:', mode);
+      console.log('receiver:', receiver);
+      console.log('pickupLocation:', state.pickupLocation);
+      console.log('dropoffLocation:', state.dropoffLocation);
+      console.log('estimatedCost:', state.estimatedCost);
+      console.log('cargo:', state.cargo);
+      console.log('dropoffType:', state.dropoffType);
+      console.log('scheduledTime:', state.scheduledTime);
 
       let savedRequest;
       if (state.isEdit && state.editIds) {
@@ -123,6 +121,9 @@ export default function BookingScreen({ route, navigation }: any) {
       } else {
         savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
       }
+
+      console.log('=== startMatching: savedRequest ===');
+      console.log(savedRequest);
 
       if (!savedRequest) throw new Error('Failed to save request');
       setSavedRequestId(savedRequest.request_id);
@@ -167,13 +168,20 @@ export default function BookingScreen({ route, navigation }: any) {
           supabase.removeChannel(matchChannel);
         }
       }, 60000);
-    } catch (error) {
-      console.error('Error starting matching:', error);
-      Alert.alert('Error', 'Failed to process your booking. Please try again.');
+    } catch (error: any) {
+      console.error('=== Error starting matching ===');
+      console.error(error);
+      Alert.alert(
+        'Error',
+        error?.message || 'Failed to process your booking. Please try again.',
+      );
       setBookingState('review');
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Book — enforces ±5 min window for Send Now                          */
+  /* ------------------------------------------------------------------ */
   const handleBook = () => {
     if (!receiver?.receiver_id && !receiver?.receiver_phone) {
       Alert.alert(
@@ -186,6 +194,28 @@ export default function BookingScreen({ route, navigation }: any) {
       );
       return;
     }
+
+    // ✅ Send Now requests must be scheduled within ±5 minutes of now
+    if (mode === 'sendNow') {
+      const now = Date.now();
+      const scheduledMs = state.scheduledTime
+        ? new Date(state.scheduledTime).getTime()
+        : now;
+      const diffMinutes = Math.abs(scheduledMs - now) / 60000;
+
+      if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
+        Alert.alert(
+          'Schedule Too Far',
+          `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes of the current time.\n\nYour request is ${Math.round(diffMinutes)} minutes away.\n\nSwitch to Scheduled Delivery for a later time, or update the schedule.`,
+          [
+            { text: 'Edit Schedule', onPress: () => navigation.goBack() },
+            { text: 'Cancel', style: 'cancel' },
+          ]
+        );
+        return;
+      }
+    }
+
     setBookingState('finding');
     startMatching();
   };
@@ -205,9 +235,6 @@ export default function BookingScreen({ route, navigation }: any) {
     navigation.navigate('MainTabs');
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Receiver selection                                                  */
-  /* ------------------------------------------------------------------ */
   const handleSelectReceiver = () => {
     navigation.navigate('ReceiverPicker', {
       selectedReceiverId: receiver?.receiver_id || null,
@@ -235,13 +262,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const pickup = parseAddress(state.pickupLocation?.address);
   const dropoff = parseAddress(state.dropoffLocation?.address);
 
-  const mapRegion = state.pickupLocation
-    ? {
-        latitude: (state.pickupLocation.latitude + (state.dropoffLocation?.latitude || state.pickupLocation.latitude)) / 2,
-        longitude: (state.pickupLocation.longitude + (state.dropoffLocation?.longitude || state.pickupLocation.longitude)) / 2,
-      }
-    : { latitude: 10.3157, longitude: 123.8854 };
-
   const sheetFadeUp = {
     opacity: sheetAnim,
     transform: [
@@ -254,59 +274,104 @@ export default function BookingScreen({ route, navigation }: any) {
     ],
   };
 
+  const pickupLat = state.pickupLocation?.latitude ?? null;
+  const pickupLng = state.pickupLocation?.longitude ?? null;
+  const dropoffLat = state.dropoffLocation?.latitude ?? null;
+  const dropoffLng = state.dropoffLocation?.longitude ?? null;
+
+  const mapHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          body { margin: 0; padding: 0; }
+          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
+          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          var pickupLat = ${pickupLat === null ? 'null' : pickupLat};
+          var pickupLng = ${pickupLng === null ? 'null' : pickupLng};
+          var dropoffLat = ${dropoffLat === null ? 'null' : dropoffLat};
+          var dropoffLng = ${dropoffLng === null ? 'null' : dropoffLng};
+
+          var centerLat = (pickupLat !== null) ? pickupLat : ((dropoffLat !== null) ? dropoffLat : 10.3157);
+          var centerLng = (pickupLng !== null) ? pickupLng : ((dropoffLng !== null) ? dropoffLng : 123.8854);
+
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 13);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
+          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
+
+          if (pickupLat !== null && pickupLng !== null) {
+            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          }
+          if (dropoffLat !== null && dropoffLng !== null) {
+            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
+          }
+
+          if (pickupLat !== null && pickupLng !== null && dropoffLat !== null && dropoffLng !== null) {
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
+              + pickupLng + ',' + pickupLat + ';'
+              + dropoffLng + ',' + dropoffLat
+              + '?overview=full&geometries=geojson';
+
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                  L.polyline(latlngs, {
+                    color: '#FA7A25',
+                    weight: 5,
+                    opacity: 0.85,
+                    lineJoin: 'round',
+                    lineCap: 'round'
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [80, 80] });
+                } else {
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                    color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8'
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [80, 80] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                  color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8'
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [80, 80] });
+              });
+          }
+        </script>
+      </body>
+    </html>
+  `;
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* Map */}
       <WebView
         style={styles.map}
-        source={{
-          html: `
-          <!DOCTYPE html>
-          <html>
-            <head>
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-              <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-              <style>
-                body { margin: 0; padding: 0; }
-                #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-                .pickup-marker { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 18px; height: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-                .dropoff-marker { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 18px; height: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-              </style>
-            </head>
-            <body>
-              <div id="map"></div>
-              <script>
-                var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${mapRegion.latitude}, ${mapRegion.longitude}], 14);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-                var pickupIcon = L.divIcon({ className: 'pickup-marker', iconSize: [18, 18], iconAnchor: [9, 9] });
-                var dropoffIcon = L.divIcon({ className: 'dropoff-marker', iconSize: [18, 18], iconAnchor: [9, 9] });
-
-                L.marker([${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}], { icon: pickupIcon }).addTo(map);
-                L.marker([${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}], { icon: dropoffIcon }).addTo(map);
-
-                L.polyline([
-                  [${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}],
-                  [${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}]
-                ], { color: '#FA7A25', weight: 4, dashArray: '10, 10', opacity: 0.85 }).addTo(map);
-
-                map.fitBounds([
-                  [${state.pickupLocation?.latitude || 10.3157}, ${state.pickupLocation?.longitude || 123.8854}],
-                  [${state.dropoffLocation?.latitude || 10.3178}, ${state.dropoffLocation?.longitude || 123.9050}]
-                ], { padding: [80, 80] });
-              </script>
-            </body>
-          </html>
-        `,
-        }}
+        source={{ html: mapHtml }}
         scrollEnabled={false}
-        zoomEnabled={false}
+        javaScriptEnabled
+        domStorageEnabled
+        androidLayerType="hardware"
+        originWhitelist={['*']}
+        mixedContentMode="always"
+        onConsoleMessage={(e) => console.log('MAP WEBVIEW:', e.nativeEvent.message)}
       />
 
-      {/* Push Notification */}
       {showNotification && (
         <Animated.View
           style={[styles.pushNotification, { transform: [{ translateY: notificationSlide }] }]}
@@ -336,7 +401,6 @@ export default function BookingScreen({ route, navigation }: any) {
         </Animated.View>
       )}
 
-      {/* Top Overlay */}
       <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
         <TouchableOpacity
           style={styles.backCircleBtn}
@@ -368,9 +432,7 @@ export default function BookingScreen({ route, navigation }: any) {
         </View>
       </View>
 
-      {/* Bottom Sheet */}
       <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
-        {/* ==================== REVIEW ==================== */}
         {bookingState === 'review' && (
           <Animated.View style={[styles.sheetCard, sheetFadeUp]}>
             <View style={styles.sheetHandle} />
@@ -501,7 +563,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* ==================== FINDING ==================== */}
         {bookingState === 'finding' && (
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]}>
             <View style={styles.sheetHandle} />
@@ -573,7 +634,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* ==================== MATCHED ==================== */}
         {bookingState === 'matched' && matchFound && (
           <Animated.View style={[styles.sheetCardMatched, sheetFadeUp]}>
             <View style={styles.sheetHandle} />
@@ -656,7 +716,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* ==================== NO MATCH ==================== */}
         {bookingState === 'no_match' && (
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp]}>
             <View style={styles.sheetHandle} />

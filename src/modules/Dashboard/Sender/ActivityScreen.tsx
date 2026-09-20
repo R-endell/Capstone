@@ -17,8 +17,30 @@ const { width, height } = Dimensions.get('window');
 /** Brand */
 const ORANGE = '#F27024';
 
-// --- LEAFLET MAP COMPONENT ---
-const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
+/* ==================================================================== */
+/* LeafletMap — OSRM road-following route with P and D markers          */
+/* ==================================================================== */
+const LeafletMap = ({
+  pickupLat, pickupLng, dropoffLat, dropoffLng, interactive = false,
+}: {
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
+  interactive?: boolean;
+}) => {
+  const hasPickup = pickupLat != null && pickupLng != null;
+  const hasDropoff = dropoffLat != null && dropoffLng != null;
+
+  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
+  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
+
+  const dragging = interactive ? 'true' : 'false';
+  const touchZoom = interactive ? 'true' : 'false';
+  const scrollWheelZoom = interactive ? 'true' : 'false';
+  const doubleClickZoom = interactive ? 'true' : 'false';
+  const zoomControl = interactive ? 'true' : 'false';
+
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -28,31 +50,88 @@ const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .pickup-marker { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 14px; height: 14px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
-          .dropoff-marker { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 14px; height: 14px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
         </style>
       </head>
       <body>
         <div id="map"></div>
         <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${pickupLat}, ${pickupLng}], 14);
+          var pickupLat = ${hasPickup ? pickupLat : 'null'};
+          var pickupLng = ${hasPickup ? pickupLng : 'null'};
+          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
+          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
+
+          var map = L.map('map', {
+            zoomControl: ${zoomControl},
+            attributionControl: false,
+            dragging: ${dragging},
+            touchZoom: ${touchZoom},
+            scrollWheelZoom: ${scrollWheelZoom},
+            doubleClickZoom: ${doubleClickZoom},
+          }).setView([${centerLat}, ${centerLng}], 13);
+
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          var pickupIcon = L.divIcon({ className: 'pickup-marker', iconSize: [14, 14], iconAnchor: [7, 7] });
-          var dropoffIcon = L.divIcon({ className: 'dropoff-marker', iconSize: [14, 14], iconAnchor: [7, 7] });
+          var pickupIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-pickup">P</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
+          var dropoffIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-dropoff">D</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
 
-          L.marker([${pickupLat}, ${pickupLng}], { icon: pickupIcon }).addTo(map);
-          L.marker([${dropoffLat}, ${dropoffLng}], { icon: dropoffIcon }).addTo(map);
+          if (pickupLat != null && pickupLng != null) {
+            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          }
+          if (dropoffLat != null && dropoffLng != null) {
+            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
+          }
 
-          L.polyline([
-            [${pickupLat}, ${pickupLng}],
-            [${dropoffLat}, ${dropoffLng}]
-          ], { color: '#0000CC', weight: 4, dashArray: '10, 10' }).addTo(map);
+          // Fetch actual road route from OSRM
+          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
+              + pickupLng + ',' + pickupLat + ';'
+              + dropoffLng + ',' + dropoffLat
+              + '?overview=full&geometries=geojson';
 
-          map.fitBounds([
-            [${pickupLat}, ${pickupLng}],
-            [${dropoffLat}, ${dropoffLng}]
-          ], { padding: [40, 40] });
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                  L.polyline(latlngs, {
+                    color: '#F27024',
+                    weight: 5,
+                    opacity: 0.9,
+                    lineJoin: 'round',
+                    lineCap: 'round',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                    color: '#F27024', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                  color: '#F27024', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+              });
+          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
+            map.setView([pickupLat, pickupLng], 14);
+          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
+            map.setView([dropoffLat, dropoffLng], 14);
+          }
         </script>
       </body>
     </html>
@@ -63,10 +142,12 @@ const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
       originWhitelist={['*']}
       source={{ html: mapHtml }}
       style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
+      scrollEnabled={interactive}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
       androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
     />
   );
 };
@@ -144,7 +225,7 @@ interface MappedDelivery {
   deliveryData?: Delivery;
   isMatched: boolean;
   qr?: QrRow | null;
-  receiver?: ReceiverInfo | null;   // ✅ NEW
+  receiver?: ReceiverInfo | null;
 }
 
 export default function ActivityScreen() {
@@ -161,13 +242,9 @@ export default function ActivityScreen() {
   const [openingChat, setOpeningChat] = useState(false);
   const insets = useSafeAreaInsets();
 
-  // Animations
   const listAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animations                                                 */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!selectedDelivery) {
       listAnim.setValue(0);
@@ -182,9 +259,6 @@ export default function ActivityScreen() {
     }
   }, [selectedDelivery, listAnim, detailAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Data fetching                                                       */
-  /* ------------------------------------------------------------------ */
   const fetchUserRecord = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -214,7 +288,6 @@ export default function ActivityScreen() {
       }
       if (!userId) setUserId(currentUserId);
 
-      // ✅ Join receivers table so we get receiver details with each request
       const { data: requests, error: requestsError } = await supabase
         .from('delivery_requests')
         .select(`
@@ -285,7 +358,6 @@ export default function ActivityScreen() {
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
 
-        // ✅ Normalize receiver — fall back to request's receiver_phone if no joined row
         const joinedReceiver = item.receiver || null;
         const receiverInfo: ReceiverInfo | null =
           joinedReceiver || item.receiver_phone
@@ -350,9 +422,6 @@ export default function ActivityScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Refresh selected delivery when its data changes                     */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!selectedDelivery) return;
     const updatedMatch = deliveries.find(d => d.request_id === selectedDelivery.request_id);
@@ -374,9 +443,6 @@ export default function ActivityScreen() {
     }
   }, [deliveries]);
 
-  /* ------------------------------------------------------------------ */
-  /* Realtime + polling fallback                                         */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!userId) return;
 
@@ -414,9 +480,6 @@ export default function ActivityScreen() {
 
   useFocusEffect(useCallback(() => { fetchData(); /* eslint-disable-next-line */ }, [userId]));
 
-  /* ------------------------------------------------------------------ */
-  /* Handlers                                                            */
-  /* ------------------------------------------------------------------ */
   const handleEdit = (rawData: any) => {
     if (!rawData) return;
     setSelectedDelivery(null);
@@ -520,9 +583,6 @@ export default function ActivityScreen() {
     return 0;
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Tab Bar                                                             */
-  /* ------------------------------------------------------------------ */
   const renderTabBar = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
       {(['all', 'pending', 'active', 'completed'] as const).map((tab) => {
@@ -551,9 +611,6 @@ export default function ActivityScreen() {
     </ScrollView>
   );
 
-  /* ------------------------------------------------------------------ */
-  /* List View                                                           */
-  /* ------------------------------------------------------------------ */
   const renderListView = () => (
     <ScrollView
       contentContainerStyle={styles.listContainer}
@@ -674,7 +731,6 @@ export default function ActivityScreen() {
                       </View>
                     </View>
 
-                    {/* ✅ Receiver compact row (only when present) */}
                     {item.receiver && (
                       <View style={[styles.timelineItem, { marginTop: 14 }]}>
                         <View style={styles.iconWrapper}>
@@ -738,9 +794,6 @@ export default function ActivityScreen() {
     </ScrollView>
   );
 
-  /* ------------------------------------------------------------------ */
-  /* Detail View                                                         */
-  /* ------------------------------------------------------------------ */
   const renderDetailView = () => {
     const pickupVerified =
       selectedDelivery?.qr?.pickup_verified === true ||
@@ -788,7 +841,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* Pickup QR CTA */}
           {showPickupQRButton && (
             <TouchableOpacity
               style={styles.pickupQRCard}
@@ -815,7 +867,6 @@ export default function ActivityScreen() {
             </View>
           )}
 
-          {/* Map Card */}
           <TouchableOpacity
             style={styles.detailMapCard}
             activeOpacity={0.9}
@@ -846,7 +897,6 @@ export default function ActivityScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* Route Card */}
           <View style={styles.routeCard}>
             <View style={styles.routeTimeline}>
               <View style={styles.routeItem}>
@@ -873,7 +923,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* ✅ Receiver Card */}
           {selectedDelivery?.receiver && (
             <View style={styles.receiverCard}>
               <View style={styles.receiverCardHeader}>
@@ -923,7 +972,6 @@ export default function ActivityScreen() {
           </View>
 
           <View style={styles.statusTimeline}>
-            {/* Step 1: Order Confirmed */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
@@ -935,7 +983,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 2: Provider Matched */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[styles.statusDotLarge, { backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
@@ -951,7 +998,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 3: Item Collected */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[
@@ -979,7 +1025,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 4: Delivered */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[
@@ -1076,9 +1121,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Full Map View                                                       */
-  /* ------------------------------------------------------------------ */
   const renderFullMapView = () => {
     return (
       <View style={styles.fullMapContainer}>
@@ -1087,6 +1129,7 @@ export default function ActivityScreen() {
           pickupLng={selectedDelivery?.coords.pickup.longitude}
           dropoffLat={selectedDelivery?.coords.dropoff.latitude}
           dropoffLng={selectedDelivery?.coords.dropoff.longitude}
+          interactive={true}
         />
         <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
           <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
@@ -1101,9 +1144,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Pickup QR Modal (Sender side)                                       */
-  /* ------------------------------------------------------------------ */
   const renderPickupQRModal = () => (
     <Modal
       visible={showPickupQR}
@@ -1140,7 +1180,7 @@ export default function ActivityScreen() {
           )}
 
           <View style={styles.pinBox}>
-            <Text style={styles.pinBoxLabel}>Or share this 6‑digit PIN</Text>
+            <Text style={styles.pinBoxLabel}>Or share this PIN</Text>
             <Text style={styles.pinBoxValue}>
               {selectedDelivery?.qr?.pickup_pin || '------'}
             </Text>
@@ -1169,17 +1209,14 @@ export default function ActivityScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAFA' },
 
-  /* Shared */
   blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   statusDotSmall: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
 
-  /* List Header */
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 },
   pageTitle: { fontSize: 26, fontWeight: '800', color: '#111827', letterSpacing: -0.5 },
   pageSubtitle: { fontSize: 13, color: '#6B7280', fontWeight: '500', marginTop: 4 },
 
-  /* Search */
   searchBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
     borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14,
@@ -1188,7 +1225,6 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
 
-  /* Tab Bar */
   tabBarScroll: { gap: 8, paddingBottom: 4, marginBottom: 16 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center',
@@ -1206,7 +1242,6 @@ const styles = StyleSheet.create({
   tabCountText: { fontSize: 10, fontWeight: '800', color: '#6B7280' },
   tabCountTextActive: { color: '#FFFFFF' },
 
-  /* List */
   listContainer: { paddingHorizontal: 20, paddingBottom: 30, paddingTop: 20 },
   bottomSpacer: { height: 80 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
@@ -1216,7 +1251,6 @@ const styles = StyleSheet.create({
   noResultsText: { fontSize: 17, fontWeight: '700', color: '#111827', marginTop: 4, textAlign: 'center' },
   noResultsSubtext: { fontSize: 13, color: '#6B7280', marginTop: 6, textAlign: 'center', lineHeight: 18 },
 
-  /* Card */
   card: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 14,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
@@ -1269,7 +1303,6 @@ const styles = StyleSheet.create({
   },
   trackBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 0.2 },
 
-  /* Detail */
   detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 12 },
   detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   backBtn: {
@@ -1291,7 +1324,6 @@ const styles = StyleSheet.create({
   statusBadgeLarge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, gap: 6 },
   statusBadgeLargeText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
 
-  /* Pickup QR card */
   pickupQRCard: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: ORANGE, borderRadius: 18, padding: 14, marginBottom: 14, gap: 12,
@@ -1342,7 +1374,6 @@ const styles = StyleSheet.create({
   routeMain: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 2 },
   routeSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
 
-  /* ✅ Receiver Card */
   receiverCard: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 24,
     borderWidth: 1, borderColor: '#EDE9FE',
@@ -1446,7 +1477,6 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 
-  /* Full Map */
   fullMapContainer: { flex: 1 },
   topOverlay: {
     position: 'absolute', left: 20, right: 20,
@@ -1464,7 +1494,6 @@ const styles = StyleSheet.create({
   },
   statusPillText: { fontSize: 12, fontWeight: '700', color: '#111827' },
 
-  /* Pickup QR Modal */
   qrOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   qrCard: {
     width: '100%', maxWidth: 360, backgroundColor: '#FFF', borderRadius: 24, padding: 22, alignItems: 'center',

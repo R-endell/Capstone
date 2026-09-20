@@ -20,6 +20,9 @@ const ORANGE = '#FA7A25';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
+/* ==================================================================== */
+/* LeafletMap — single-point map (kept for reference)                    */
+/* ==================================================================== */
 const LeafletMap = ({ lat, lng, zoom }: { lat: number, lng: number, zoom: number }) => {
   const mapHtml = `
     <!DOCTYPE html>
@@ -51,6 +54,146 @@ const LeafletMap = ({ lat, lng, zoom }: { lat: number, lng: number, zoom: number
   );
 };
 
+/* ==================================================================== */
+/* TaskRouteMap — two-point map with OSRM road-following route          */
+/* ==================================================================== */
+const TaskRouteMap = ({
+  pickupLat, pickupLng,
+  dropoffLat, dropoffLng,
+  zoom = 12,
+  interactive = false,
+}: {
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
+  zoom?: number;
+  interactive?: boolean;
+}) => {
+  const hasPickup = pickupLat != null && pickupLng != null;
+  const hasDropoff = dropoffLat != null && dropoffLng != null;
+
+  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
+  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
+
+  const dragging = interactive ? 'true' : 'false';
+  const touchZoom = interactive ? 'true' : 'false';
+  const scrollWheelZoom = interactive ? 'true' : 'false';
+  const doubleClickZoom = interactive ? 'true' : 'false';
+  const zoomControl = interactive ? 'true' : 'false';
+
+  const mapHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
+          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #D90429; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        <script>
+          var pickupLat = ${hasPickup ? pickupLat : 'null'};
+          var pickupLng = ${hasPickup ? pickupLng : 'null'};
+          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
+          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
+
+          var map = L.map('map', {
+            zoomControl: ${zoomControl},
+            attributionControl: false,
+            dragging: ${dragging},
+            touchZoom: ${touchZoom},
+            scrollWheelZoom: ${scrollWheelZoom},
+            doubleClickZoom: ${doubleClickZoom},
+          }).setView([${centerLat}, ${centerLng}], ${zoom});
+
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+          var pickupIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-pickup">P</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
+          var dropoffIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-dropoff">D</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
+
+          if (pickupLat != null && pickupLng != null) {
+            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          }
+          if (dropoffLat != null && dropoffLng != null) {
+            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
+          }
+
+          // Fetch actual road route from OSRM
+          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
+              + pickupLng + ',' + pickupLat + ';'
+              + dropoffLng + ',' + dropoffLat
+              + '?overview=full&geometries=geojson';
+
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                  L.polyline(latlngs, {
+                    color: '#FA7A25',
+                    weight: 5,
+                    opacity: 0.85,
+                    lineJoin: 'round',
+                    lineCap: 'round',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                    color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                  color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+              });
+          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
+            map.setView([pickupLat, pickupLng], ${zoom});
+          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
+            map.setView([dropoffLat, dropoffLng], ${zoom});
+          }
+        </script>
+      </body>
+    </html>
+  `;
+
+  return (
+    <WebView
+      originWhitelist={['*']}
+      source={{ html: mapHtml }}
+      style={{ flex: 1, backgroundColor: 'transparent' }}
+      scrollEnabled={interactive}
+      androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
+    />
+  );
+};
+
+/* ==================================================================== */
+/* Helpers                                                              */
+/* ==================================================================== */
 const randToken = (len = 16) => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let s = '';
@@ -507,7 +650,14 @@ export default function TaskScreen() {
             </View>
           </View>
           <View style={styles.miniMapWrapper}>
-            <LeafletMap lat={request.pickup_location?.latitude || 10.3188} lng={request.pickup_location?.longitude || 123.9050} zoom={14} />
+            <TaskRouteMap
+              pickupLat={request.pickup_location?.latitude}
+              pickupLng={request.pickup_location?.longitude}
+              dropoffLat={request.dropoff_location?.latitude}
+              dropoffLng={request.dropoff_location?.longitude}
+              zoom={12}
+              interactive={false}
+            />
           </View>
         </View>
 
@@ -625,7 +775,14 @@ export default function TaskScreen() {
             </View>
           </View>
           <View style={styles.miniMapWrapper}>
-            <LeafletMap lat={request.pickup_location?.latitude || 10.3188} lng={request.pickup_location?.longitude || 123.9050} zoom={14} />
+            <TaskRouteMap
+              pickupLat={request.pickup_location?.latitude}
+              pickupLng={request.pickup_location?.longitude}
+              dropoffLat={request.dropoff_location?.latitude}
+              dropoffLng={request.dropoff_location?.longitude}
+              zoom={12}
+              interactive={false}
+            />
           </View>
         </View>
 
@@ -807,10 +964,13 @@ export default function TaskScreen() {
               </View>
 
               <View style={styles.viewMapWrap}>
-                <LeafletMap
-                  lat={request.pickup_location?.latitude || 10.3188}
-                  lng={request.pickup_location?.longitude || 123.9050}
-                  zoom={14}
+                <TaskRouteMap
+                  pickupLat={request.pickup_location?.latitude}
+                  pickupLng={request.pickup_location?.longitude}
+                  dropoffLat={request.dropoff_location?.latitude}
+                  dropoffLng={request.dropoff_location?.longitude}
+                  zoom={12}
+                  interactive={true}
                 />
               </View>
 
@@ -1169,7 +1329,7 @@ const styles = StyleSheet.create({
   locationTextWrapper: { flex: 1 },
   locationLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
   locationAddress: { fontSize: 12, fontWeight: '600', color: '#111827', lineHeight: 16 },
-  miniMapWrapper: { width: 88, height: 72, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
+  miniMapWrapper: { width: 110, height: 88, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
 
   taskDetails: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10, gap: 6 },
   detailChip: {
@@ -1292,7 +1452,7 @@ const styles = StyleSheet.create({
   },
   viewStatusPillText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
   viewMapWrap: {
-    height: 160, borderRadius: 18, overflow: 'hidden', marginBottom: 18,
+    height: 180, borderRadius: 18, overflow: 'hidden', marginBottom: 18,
     borderWidth: 1, borderColor: '#E5E7EB',
   },
   viewSectionTitle: { fontSize: 13, fontWeight: '800', color: '#111827', marginBottom: 8, letterSpacing: 0.2 },

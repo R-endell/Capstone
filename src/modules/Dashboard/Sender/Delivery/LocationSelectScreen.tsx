@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/LocationSelectScreen.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Alert, StatusBar,
@@ -174,7 +175,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       longitude: markerCoord.longitude,
     };
 
-    // Case 1: called from Explore — store in context, don't run the Send flow
     if (route.params?.fromExplore) {
       if (route.params.for === 'pickup') {
         dispatch({ type: 'SET_EXPLORE_PICKUP', payload: locationInfo });
@@ -185,7 +185,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       return;
     }
 
-    // Case 2: original Send Package flow
     if (type === 'pickup') {
       dispatch({ type: 'SET_PICKUP_LOCATION', payload: locationInfo });
       navigation.navigate('DropoffLocation', {
@@ -307,32 +306,28 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const pinScale = pinBounce.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 1.08],
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* Map */}
       <WebView
         ref={webViewRef}
         style={styles.map}
         source={{ html: openStreetMapHtml }}
         onMessage={handleMessage}
         onLoadEnd={() => setMapLoaded(true)}
+        onConsoleMessage={(e) => console.log('WEBVIEW:', e.nativeEvent.message)}
         javaScriptEnabled
         domStorageEnabled
         startInLoadingState
         androidLayerType="hardware"
+        originWhitelist={['*']}
+        mixedContentMode="always"
       />
 
       {!mapLoaded && (
@@ -342,12 +337,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
       )}
 
-      {/* Center pin shadow */}
       <View style={styles.centerPinOverlay} pointerEvents="none">
         <Animated.View style={[styles.centerPinShadow, { transform: [{ scale: pinScale }] }]} />
       </View>
 
-      {/* Top Overlay */}
       <Animated.View
         style={[styles.topOverlay, { top: insets.top + 10 }, fadeUp(topAnim, -20)]}
       >
@@ -372,7 +365,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
       </Animated.View>
 
-      {/* Locate Me Button */}
       <Animated.View
         style={[styles.locateMeWrapper, fadeUp(topAnim, -20)]}
         pointerEvents="box-none"
@@ -391,13 +383,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Bottom Sheet */}
       <Animated.View
         style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }, fadeUp(sheetAnim, 30)]}
       >
         <View style={styles.dragHandle} />
 
-        {/* Header */}
         <View style={styles.sheetHeader}>
           <View style={styles.sheetHeaderLeft}>
             <View
@@ -419,7 +409,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         </View>
 
-        {/* Address Card */}
         <View style={styles.addressCard}>
           <View
             style={[
@@ -437,7 +426,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         </View>
 
-        {/* Coordinates */}
         <View style={styles.coordsRow}>
           <Ionicons name="navigate-outline" size={12} color="#9CA3AF" />
           <Text style={styles.coordsText}>
@@ -445,7 +433,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </Text>
         </View>
 
-        {/* Confirm */}
         <Animated.View style={{ transform: [{ scale: buttonScale }], width: '100%' }}>
           <TouchableOpacity
             style={[styles.confirmBtn, { backgroundColor: themeColor }]}
@@ -484,9 +471,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Center Pin Overlay                                                  */
-  /* ------------------------------------------------------------------ */
   centerPinOverlay: {
     position: 'absolute',
     top: '50%',
@@ -503,9 +487,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(242,112,36,0.15)',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Top Overlay                                                         */
-  /* ------------------------------------------------------------------ */
   topOverlay: {
     position: 'absolute',
     left: 20,
@@ -568,9 +549,6 @@ const styles = StyleSheet.create({
   },
   pickupIconInner: {},
 
-  /* ------------------------------------------------------------------ */
-  /* Locate Me                                                           */
-  /* ------------------------------------------------------------------ */
   locateMeWrapper: {
     position: 'absolute',
     right: 20,
@@ -593,9 +571,6 @@ const styles = StyleSheet.create({
     borderColor: '#F3F4F6',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Bottom Sheet                                                        */
-  /* ------------------------------------------------------------------ */
   bottomSheet: {
     position: 'absolute',
     bottom: 0,
@@ -653,7 +628,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* Address Card */
   addressCard: {
     flexDirection: 'row',
     backgroundColor: '#FAFAFA',
@@ -688,7 +662,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* Coordinates */
   coordsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -703,7 +676,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
 
-  /* Confirm */
   confirmBtn: {
     flexDirection: 'row',
     alignItems: 'center',

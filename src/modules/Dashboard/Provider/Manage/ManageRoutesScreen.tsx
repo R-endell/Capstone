@@ -21,19 +21,18 @@ interface Route {
   start_location?: Location; end_location?: Location; vehicle?: Vehicle;
 }
 
-// --- BULLETPROOF TIMEZONE HELPER ---
-// This completely ignores the device timezone and locks the exact numbers you pick.
+/* ==================================================================== */
+/* Timezone helpers                                                      */
+/* ==================================================================== */
 const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, '0');
   const d = String(dateObj.getDate()).padStart(2, '0');
   const hh = String(timeObj.getHours()).padStart(2, '0');
   const mm = String(timeObj.getMinutes()).padStart(2, '0');
-  // Notice there is NO 'Z' at the end. Supabase will save this exactly as is.
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
-// This safely parses the string back into a Date without shifting the timezone
 const parseNaiveIsoString = (isoString: string) => {
   if (!isoString) return new Date();
   const parts = isoString.split(/[-T:+Z]/);
@@ -48,7 +47,15 @@ const parseNaiveIsoString = (isoString: string) => {
   return new Date(y, m, d, hh, mm);
 };
 
-const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, startName = 'Starting Point', endName = 'Destination', mode = 'view' }: any) => {
+/* ==================================================================== */
+/* InteractiveMap — now with OSRM routing                                */
+/* ==================================================================== */
+const InteractiveMap = ({
+  onLocationSelect,
+  startLat, startLng, endLat, endLng,
+  startName = 'Starting Point', endName = 'Destination',
+  mode = 'view',
+}: any) => {
   const centerLat = startLat || endLat || 10.3157;
   const centerLng = startLng || endLng || 123.8854;
 
@@ -74,10 +81,11 @@ const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, 
         <div id="map"></div>
         ${mode !== 'view' ? `<div class="select-instruction">Tap on the map to set ${mode === 'select_start' ? 'START' : 'END'} location</div>` : ''}
         <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${centerLat}, ${centerLng}], 14);
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${centerLat}, ${centerLng}], 13);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
           var tempMarker = null;
+
           ${startLat && startLng ? `
             L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
               .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${startName}</h4><p>Starting Point</p></div>');
@@ -86,10 +94,45 @@ const InteractiveMap = ({ onLocationSelect, startLat, startLng, endLat, endLng, 
             L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
               .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${endName}</h4><p>Destination</p></div>');
           ` : ''}
+
           ${startLat && startLng && endLat && endLng ? `
-            L.polyline([[${startLat}, ${startLng}], [${endLat}, ${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.8, dashArray: '8, 8' }).addTo(map);
-            map.fitBounds(L.latLngBounds([[${startLat}, ${startLng}], [${endLat}, ${endLng}]]), { padding: [40, 40] });
+            // Fetch road route from OSRM directly
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
+              + ${startLng} + ',' + ${startLat} + ';' 
+              + ${endLng} + ',' + ${endLat} 
+              + '?overview=full&geometries=geojson';
+
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+
+                  L.polyline(latlngs, {
+                    color: '#FA7A25',
+                    weight: 5,
+                    opacity: 0.85,
+                    lineJoin: 'round',
+                    lineCap: 'round'
+                  }).addTo(map);
+
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
+                    color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
+                  color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+              });
           ` : ''}
+
           ${mode !== 'view' ? `
             map.on('click', function(e) {
               if (tempMarker) map.removeLayer(tempMarker);
@@ -261,7 +304,6 @@ export default function ManageRoutesScreen() {
 
     setSubmitting(true);
     try {
-      // ✅ Use the NAIVE string so Supabase saves exactly the digits we picked without shifting them
       const departureValue = toNaiveIsoString(departureDate, departureTime);
       const routeData = {
         departure_time: departureValue,
@@ -312,12 +354,9 @@ export default function ManageRoutesScreen() {
 
   const handleEdit = (route: Route) => {
     setEditingRoute(route);
-    
-    // ✅ Use the NAIVE parser to reconstruct exactly the local time we saved
     const dt = parseNaiveIsoString(route.departure_time);
     setDepartureDate(dt);
     setDepartureTime(dt);
-
     setSelectedFrequency(route.route_frequency || 'Daily');
     setSelectedVehicleId(route.vehicle_id || null);
     setStartLocation(route.start_location || null);
@@ -359,7 +398,6 @@ export default function ManageRoutesScreen() {
   });
 
   const renderRouteCard = ({ item }: { item: Route }) => {
-    // ✅ Use the NAIVE parser to display exactly what is in the database
     const dt = parseNaiveIsoString(item.departure_time);
     
     const freqColor =
