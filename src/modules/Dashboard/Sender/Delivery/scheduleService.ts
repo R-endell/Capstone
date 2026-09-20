@@ -87,7 +87,7 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .single();
 
   // Status depends on mode
-  const deliveryStatus = mode === 'sendNow' ? 'Accepted' : 'Pending';
+  const deliveryStatus = 'Pending';
 
   const { data: request } = await supabase
     .from('delivery_requests')

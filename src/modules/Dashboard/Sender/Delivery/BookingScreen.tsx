@@ -14,6 +14,35 @@ import { nowInManila } from '../../../../utils/dateUtils';
 
 const ORANGE = '#FA7A25';
 const SEND_NOW_WINDOW_MINUTES = 5;
+const MANILA_OFFSET_HOURS = 8;
+
+/* ------------------------------------------------------------------ */
+/* Manila time helpers                                                 */
+/* ------------------------------------------------------------------ */
+const parseManilaNaive = (naive: string): number => {
+  const m = String(naive).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return NaN;
+  const [, y, mo, d, h, mi, s] = m;
+  return Date.UTC(
+    parseInt(y, 10),
+    parseInt(mo, 10) - 1,
+    parseInt(d, 10),
+    parseInt(h, 10) - MANILA_OFFSET_HOURS,
+    parseInt(mi, 10),
+    parseInt(s || '0', 10),
+  );
+};
+
+const nowManilaNaive = (): string => {
+  const now = new Date();
+  const manila = new Date(now.getTime() + MANILA_OFFSET_HOURS * 60 * 60 * 1000);
+  const y = manila.getUTCFullYear();
+  const m = String(manila.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(manila.getUTCDate()).padStart(2, '0');
+  const hh = String(manila.getUTCHours()).padStart(2, '0');
+  const mm = String(manila.getUTCMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:00`;
+};
 
 export default function BookingScreen({ route, navigation }: any) {
   const { mode: routeMode } = route.params || {};
@@ -36,7 +65,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const notificationSlide = useRef(new Animated.Value(-100)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const sheetAnim = useRef(new Animated.Value(0)).current;
-  const sheetScale = useRef(new Animated.Value(1)).current;
 
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -180,7 +208,8 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   /* ------------------------------------------------------------------ */
-  /* Book — enforces ±5 min window for Send Now                          */
+  /* Book — enforces ±5 min window only when a schedule was explicitly   */
+  /* set. Send Now with no schedule always passes.                       */
   /* ------------------------------------------------------------------ */
   const handleBook = () => {
     if (!receiver?.receiver_id && !receiver?.receiver_phone) {
@@ -195,24 +224,24 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
-    // ✅ Send Now requests must be scheduled within ±5 minutes of now
-    if (mode === 'sendNow') {
-      const now = Date.now();
-      const scheduledMs = state.scheduledTime
-        ? new Date(state.scheduledTime).getTime()
-        : now;
-      const diffMinutes = Math.abs(scheduledMs - now) / 60000;
+    if (mode === 'sendNow' && state.scheduledTime) {
+      const scheduledMs = parseManilaNaive(String(state.scheduledTime));
+      const nowMs = parseManilaNaive(nowManilaNaive());
 
-      if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
-        Alert.alert(
-          'Schedule Too Far',
-          `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes of the current time.\n\nYour request is ${Math.round(diffMinutes)} minutes away.\n\nSwitch to Scheduled Delivery for a later time, or update the schedule.`,
-          [
-            { text: 'Edit Schedule', onPress: () => navigation.goBack() },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
-        return;
+      if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
+        const diffMinutes = Math.abs(scheduledMs - nowMs) / 60000;
+
+        if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
+          Alert.alert(
+            'Schedule Too Far',
+            `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes of the current Manila time.\n\nYour request is ${Math.round(diffMinutes)} minutes away.\n\nSwitch to Scheduled Delivery for a later time, or update the schedule.`,
+            [
+              { text: 'Edit Schedule', onPress: () => navigation.goBack() },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          );
+          return;
+        }
       }
     }
 
