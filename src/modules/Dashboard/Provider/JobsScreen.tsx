@@ -50,9 +50,6 @@ interface Route {
   vehicle?: Vehicle;
 }
 
-/* ------------------------------------------------------------------ */
-/* Map (view only)                                                     */
-/* ------------------------------------------------------------------ */
 const RouteMap = ({
   startLat, startLng, endLat, endLng,
   centerLat, centerLng,
@@ -79,14 +76,14 @@ const RouteMap = ({
           var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${lat}, ${lng}], 14);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
           ${startLat && startLng ? `
-            L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
+            L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
           ` : ''}
           ${endLat && endLng ? `
-            L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
+            L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
           ` : ''}
           ${startLat && startLng && endLat && endLng ? `
-            L.polyline([[${startLat}, ${startLng}], [${endLat}, ${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.8, dashArray: '8, 8' }).addTo(map);
-            map.fitBounds(L.latLngBounds([[${startLat}, ${startLng}], [${endLat}, ${endLng}]]), { padding: [40, 40] });
+            L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.8, dashArray: '8, 8' }).addTo(map);
+            map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
           ` : ''}
         </script>
       </body>
@@ -123,9 +120,6 @@ export default function JobsScreen() {
   const onlinePulse = useRef(new Animated.Value(0)).current;
   const matchBannerAnim = useRef(new Animated.Value(0)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animations                                                 */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(v, {
@@ -159,9 +153,6 @@ export default function JobsScreen() {
     }
   }, [matchedCount, matchBannerAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Data load                                                           */
-  /* ------------------------------------------------------------------ */
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -237,21 +228,29 @@ export default function JobsScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
-  useEffect(() => {
-    refreshMatches();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoute?.route_id]);
-
+  // ✅ TRUE REALTIME: Listen for any change to delivery requests instantly
   useEffect(() => {
     if (!isOnline || !activeRoute) return;
-    const iv = setInterval(refreshMatches, 10000);
-    return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    refreshMatches(); // Initial load
+
+    const channel = supabase
+      .channel(`jobs-realtime-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_requests' },
+        () => {
+          // Whenever ANY delivery request is created, updated, or deleted, recalculate matches instantly
+          refreshMatches();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [isOnline, activeRoute?.route_id]);
 
-  /* ------------------------------------------------------------------ */
-  /* Handlers                                                            */
-  /* ------------------------------------------------------------------ */
   const toggleOnlineStatus = async (online: boolean) => {
     if (!providerId) return;
 
@@ -297,9 +296,6 @@ export default function JobsScreen() {
     setTimeout(refreshMatches, 100);
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{
@@ -311,9 +307,6 @@ export default function JobsScreen() {
   const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
   const bannerTranslate = matchBannerAnim.interpolate({ inputRange: [0, 1], outputRange: [-30, 0] });
 
-  /* ------------------------------------------------------------------ */
-  /* Loading                                                             */
-  /* ------------------------------------------------------------------ */
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -325,9 +318,6 @@ export default function JobsScreen() {
     );
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
