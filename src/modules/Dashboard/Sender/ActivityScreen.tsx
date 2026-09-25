@@ -93,7 +93,6 @@ const LeafletMap = ({
             L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
           }
 
-          // Fetch actual road route from OSRM
           if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
               + pickupLng + ',' + pickupLat + ';'
@@ -197,10 +196,20 @@ interface QrRow {
 
 interface ReceiverInfo {
   receiver_id?: number | null;
-  receiver_name?: string;
+  receiver_name?: string | null;
   receiver_phone?: string;
   receiver_email?: string | null;
   is_favorite?: boolean;
+}
+
+interface DeliveryConfirmation {
+  confirmation_id: number;
+  delivery_id: number;
+  contiguity_otp_id?: string | null;
+  otp_expires_at: string;
+  otp_verified: boolean;
+  otp_verified_at: string | null;
+  attempts: number;
 }
 
 interface MappedDelivery {
@@ -226,6 +235,7 @@ interface MappedDelivery {
   isMatched: boolean;
   qr?: QrRow | null;
   receiver?: ReceiverInfo | null;
+  confirmation?: DeliveryConfirmation | null;
 }
 
 export default function ActivityScreen() {
@@ -234,6 +244,7 @@ export default function ActivityScreen() {
   const [selectedDelivery, setSelectedDelivery] = useState<MappedDelivery | null>(null);
   const [showFullMap, setShowFullMap] = useState(false);
   const [showPickupQR, setShowPickupQR] = useState(false);
+  const [showDeliveryOTP, setShowDeliveryOTP] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -309,8 +320,29 @@ export default function ActivityScreen() {
       if (requestsError) throw requestsError;
 
       const requestIds = requests?.map((r: any) => r.request_id) || [];
+
+      // ✅ FIX: Fetch receivers separately by receiver_id as a fallback
+      //    so name/phone/email match the ReceiverPickerScreen exactly.
+      const receiverIds = Array.from(
+        new Set(
+          (requests || [])
+            .map((r: any) => r.receiver_id)
+            .filter((id: any) => id != null)
+        )
+      ) as number[];
+
+      const receiverById: Record<number, any> = {};
+      if (receiverIds.length > 0) {
+        const { data: receiverRows } = await supabase
+          .from('receivers')
+          .select('receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite')
+          .in('receiver_id', receiverIds);
+        (receiverRows || []).forEach((r: any) => { receiverById[r.receiver_id] = r; });
+      }
+
       let deliveriesData: Delivery[] = [];
       const qrByDeliveryId: Record<number, any> = {};
+      const confirmationByDeliveryId: Record<number, DeliveryConfirmation> = {};
 
       if (requestIds.length > 0) {
         const { data: deliveries } = await supabase
@@ -327,6 +359,12 @@ export default function ActivityScreen() {
             .select('*')
             .in('delivery_id', deliveryIds);
           (qrs || []).forEach((q: any) => { qrByDeliveryId[q.delivery_id] = q; });
+
+          const { data: confirmations } = await supabase
+            .from('delivery_confirmations')
+            .select('*')
+            .in('delivery_id', deliveryIds);
+          (confirmations || []).forEach((c: any) => { confirmationByDeliveryId[c.delivery_id] = c; });
         }
       }
 
@@ -357,17 +395,34 @@ export default function ActivityScreen() {
         }
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
+        const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
 
-        const joinedReceiver = item.receiver || null;
-        const receiverInfo: ReceiverInfo | null =
-          joinedReceiver || item.receiver_phone
+        /* ============================================================
+         * ✅ FIX: Build receiver info reliably.
+         *    Priority: joined receiver -> receiverById fallback -> null.
+         *    Do NOT invent a name from receiver_phone; only fall back
+         *    to the raw phone if we have no joined receiver row.
+         * ============================================================ */
+        const joinedReceiver =
+          item.receiver ||
+          (item.receiver_id != null ? receiverById[item.receiver_id] : null);
+
+        const receiverInfo: ReceiverInfo | null = joinedReceiver
+          ? {
+              receiver_id: joinedReceiver.receiver_id ?? item.receiver_id ?? null,
+              receiver_name: joinedReceiver.receiver_name ?? null,
+              receiver_phone:
+                joinedReceiver.receiver_phone ?? item.receiver_phone ?? '',
+              receiver_email: joinedReceiver.receiver_email ?? null,
+              is_favorite: joinedReceiver.is_favorite ?? false,
+            }
+          : item.receiver_phone
             ? {
-                receiver_id: joinedReceiver?.receiver_id ?? item.receiver_id ?? null,
-                receiver_name: joinedReceiver?.receiver_name ?? 'Receiver',
-                receiver_phone:
-                  joinedReceiver?.receiver_phone ?? item.receiver_phone ?? '',
-                receiver_email: joinedReceiver?.receiver_email ?? null,
-                is_favorite: joinedReceiver?.is_favorite ?? false,
+                receiver_id: item.receiver_id ?? null,
+                receiver_name: null,
+                receiver_phone: item.receiver_phone,
+                receiver_email: null,
+                is_favorite: false,
               }
             : null;
 
@@ -401,6 +456,7 @@ export default function ActivityScreen() {
             dropoff_verified: qrRow.dropoff_verified,
           } : null,
           receiver: receiverInfo,
+          confirmation: confirmationRow || null,
         };
       });
 
@@ -437,8 +493,11 @@ export default function ActivityScreen() {
     const receiverChanged =
       (updatedMatch.receiver?.receiver_name ?? null) !==
       (selectedDelivery.receiver?.receiver_name ?? null);
+    const confirmationChanged =
+      (updatedMatch.confirmation?.otp_verified ?? false) !==
+      (selectedDelivery.confirmation?.otp_verified ?? false);
 
-    if (statusChanged || qrChanged || completedChanged || receiverChanged) {
+    if (statusChanged || qrChanged || completedChanged || receiverChanged || confirmationChanged) {
       setSelectedDelivery(updatedMatch);
     }
   }, [deliveries]);
@@ -461,6 +520,11 @@ export default function ActivityScreen() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'qr_verifications' },
+        () => { fetchData(); },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_confirmations' },
         () => { fetchData(); },
       )
       .subscribe();
@@ -493,8 +557,13 @@ export default function ActivityScreen() {
       {
         text: 'Yes, Cancel it', style: 'destructive', onPress: async () => {
           try {
-            await supabase.from('escrow_payments').delete().eq('delivery_id', rawData.request_id);
-            await supabase.from('deliveries').delete().eq('request_id', rawData.request_id);
+            const deliveryId = selectedDelivery?.deliveryData?.delivery_id;
+            if (deliveryId) {
+              await supabase.from('delivery_confirmations').delete().eq('delivery_id', deliveryId);
+              await supabase.from('qr_verifications').delete().eq('delivery_id', deliveryId);
+              await supabase.from('escrow_payments').delete().eq('delivery_id', deliveryId);
+              await supabase.from('deliveries').delete().eq('delivery_id', deliveryId);
+            }
             await supabase.from('delivery_requests').delete().eq('request_id', rawData.request_id);
             setSelectedDelivery(null);
             fetchData();
@@ -739,7 +808,7 @@ export default function ActivityScreen() {
                         <View style={styles.addressWrapper}>
                           <Text style={[styles.timelineLabel, { color: '#8B5CF6' }]}>RECEIVER</Text>
                           <Text style={styles.addressMain} numberOfLines={1}>
-                            {item.receiver.receiver_name || 'Receiver'}
+                            {item.receiver.receiver_name?.trim() || 'Receiver'}
                           </Text>
                           <Text style={styles.addressSub} numberOfLines={1}>
                             {item.receiver.receiver_phone || '—'}
@@ -810,6 +879,23 @@ export default function ActivityScreen() {
       !selectedDelivery?.qr?.pickup_verified &&
       !isCompleted;
 
+    const hasConfirmation = !!selectedDelivery?.confirmation;
+    const otpVerified = selectedDelivery?.confirmation?.otp_verified === true;
+
+    /* ✅ Display name fallback: prefer real name; only use "Receiver" if truly missing */
+    const receiverDisplayName =
+      selectedDelivery?.receiver?.receiver_name?.trim() ||
+      selectedDelivery?.receiver?.receiver_phone ||
+      'Receiver';
+
+    const receiverInitial = (() => {
+      const name = selectedDelivery?.receiver?.receiver_name?.trim();
+      if (name) return name.charAt(0).toUpperCase();
+      const phone = selectedDelivery?.receiver?.receiver_phone;
+      if (phone) return phone.replace(/\D/g, '').slice(-2) || 'R';
+      return 'R';
+    })();
+
     return (
       <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
         <Animated.View style={{ opacity: detailAnim }}>
@@ -865,6 +951,52 @@ export default function ActivityScreen() {
               <Ionicons name="checkmark-circle" size={18} color="#22C55E" />
               <Text style={styles.pickupVerifiedText}>Item collected by provider</Text>
             </View>
+          )}
+
+          {pickupVerified && !isCompleted && hasConfirmation && (
+            <TouchableOpacity
+              style={styles.deliveryOTPCard}
+              onPress={() => setShowDeliveryOTP(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.deliveryOTPHeader}>
+                <View style={styles.deliveryOTPIconBox}>
+                  <Ionicons
+                    name={otpVerified ? 'shield-checkmark' : 'lock-closed'}
+                    size={20}
+                    color={otpVerified ? '#22C55E' : '#7C3AED'}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.deliveryOTPTitle}>
+                    {otpVerified ? 'Delivery Confirmed' : 'Delivery Confirmation Code'}
+                  </Text>
+                  <Text style={styles.deliveryOTPSubtitle} numberOfLines={2}>
+                    {otpVerified
+                      ? 'Receiver has verified the delivery. Payment released.'
+                      : `Share this OTP with the receiver. They'll give it to the provider upon delivery.`}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={otpVerified ? '#22C55E' : '#7C3AED'} />
+              </View>
+
+              {!otpVerified && (
+                <View style={styles.deliveryOTPCodeBox}>
+                  <Text style={styles.deliveryOTPHintText}>
+                    Tap to view the code
+                  </Text>
+                </View>
+              )}
+
+              {otpVerified && selectedDelivery.confirmation.otp_verified_at && (
+                <View style={styles.deliveryOTPVerifiedRow}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22C55E" />
+                  <Text style={styles.deliveryOTPVerifiedText}>
+                    Verified {new Date(selectedDelivery.confirmation.otp_verified_at).toLocaleString()}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
           )}
 
           <TouchableOpacity
@@ -940,13 +1072,11 @@ export default function ActivityScreen() {
 
               <View style={styles.receiverCardRow}>
                 <View style={styles.receiverAvatar}>
-                  <Text style={styles.receiverAvatarText}>
-                    {(selectedDelivery.receiver.receiver_name || '?').trim().charAt(0).toUpperCase()}
-                  </Text>
+                  <Text style={styles.receiverAvatarText}>{receiverInitial}</Text>
                 </View>
                 <View style={styles.receiverInfo}>
                   <Text style={styles.receiverName} numberOfLines={1}>
-                    {selectedDelivery.receiver.receiver_name || 'Receiver'}
+                    {receiverDisplayName}
                   </Text>
                   <View style={styles.receiverContactRow}>
                     <Ionicons name="call-outline" size={12} color="#6B7280" />
@@ -1027,22 +1157,36 @@ export default function ActivityScreen() {
 
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
-                <View style={[
-                  styles.statusDotLarge,
-                  isCompleted ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }
-                ]} />
+                <View style={[styles.statusDotLarge, {
+                  backgroundColor: otpVerified ? '#7C3AED' : '#D1D5DB'
+                }]} />
+                <View style={[styles.statusLine, otpVerified && { backgroundColor: '#7C3AED' }]} />
               </View>
               <View style={styles.statusTextContainer}>
                 <Text style={[
                   styles.statusStepTitle,
-                  isCompleted ? { color: '#111827' } : { color: '#9CA3AF' }
+                  otpVerified ? { color: '#111827' } : { color: '#9CA3AF' }
                 ]}>
-                  Delivered Successfully
+                  Receiver Confirmation
                 </Text>
                 <Text style={[
                   styles.statusStepTime,
-                  isCompleted ? { color: '#6B7280' } : { color: '#D1D5DB' }
+                  otpVerified ? { color: '#6B7280' } : { color: '#D1D5DB' }
                 ]}>
+                  {otpVerified ? 'OTP verified by receiver' : 'Waiting for receiver OTP'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <View style={[styles.statusDotLarge, isCompleted ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={[styles.statusStepTitle, isCompleted ? { color: '#111827' } : { color: '#9CA3AF' }]}>
+                  Delivered Successfully
+                </Text>
+                <Text style={[styles.statusStepTime, isCompleted ? { color: '#6B7280' } : { color: '#D1D5DB' }]}>
                   {isCompleted ? 'Completed' : 'Awaiting delivery'}
                 </Text>
               </View>
@@ -1198,10 +1342,100 @@ export default function ActivityScreen() {
     </Modal>
   );
 
+  /* ============================================================
+   * ✅ FIX: Delivery OTP modal
+   *  - Contiguity does NOT return the OTP to us (only otp_id).
+   *  - So we cannot display the code on the sender side.
+   *  - Instead we show status + confirmation that OTP was sent.
+   *  - Sender shares the confirmation via their communication with
+   *    the receiver (the OTP arrives on the receiver's phone).
+   * ============================================================ */
+  const renderDeliveryOTPModal = () => {
+    if (!selectedDelivery?.confirmation) return null;
+    const otpVerified = selectedDelivery.confirmation.otp_verified;
+
+    return (
+      <Modal
+        visible={showDeliveryOTP}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowDeliveryOTP(false)}
+      >
+        <View style={styles.qrOverlay}>
+          <View style={styles.qrCard}>
+            <View style={styles.qrHeader}>
+              <Text style={styles.qrTitle}>
+                {otpVerified ? 'Delivery Confirmed' : 'Delivery Confirmation'}
+              </Text>
+              <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
+                <Ionicons name="close" size={24} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.qrSubtitle}>
+              {otpVerified
+                ? 'The receiver has confirmed delivery. Payment has been released to the provider.'
+                : 'A 6-digit OTP was sent directly to the receiver\'s phone. The provider will ask for it upon delivery.'}
+            </Text>
+
+            {otpVerified ? (
+              <View style={styles.otpVerifiedBigBox}>
+                <Ionicons name="checkmark-circle" size={64} color="#22C55E" />
+                <Text style={styles.otpVerifiedBigText}>Verified</Text>
+                {selectedDelivery.confirmation.otp_verified_at && (
+                  <Text style={styles.otpVerifiedBigTime}>
+                    {new Date(selectedDelivery.confirmation.otp_verified_at).toLocaleString()}
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <>
+                <View style={styles.sentToReceiverBox}>
+                  <View style={styles.sentToReceiverIconRow}>
+                    <Ionicons name="phone-portrait-outline" size={20} color="#7C3AED" />
+                    <Ionicons name="arrow-forward" size={16} color="#9CA3AF" style={{ marginHorizontal: 8 }} />
+                    <Ionicons name="chatbubble-ellipses" size={20} color="#22C55E" />
+                  </View>
+                  <Text style={styles.sentToReceiverTitle}>OTP sent to receiver</Text>
+                  <Text style={styles.sentToReceiverPhone}>
+                    {selectedDelivery.receiver?.receiver_phone ||
+                      selectedDelivery.rawData?.receiver_phone ||
+                      '—'}
+                  </Text>
+                  <Text style={styles.sentToReceiverHint}>
+                    Ask the receiver to check their SMS when the provider arrives. They will share the 6-digit code with the provider to confirm delivery.
+                  </Text>
+                </View>
+
+                {selectedDelivery.confirmation.otp_expires_at && (
+                  <View style={styles.otpInfoRow}>
+                    <Ionicons name="time-outline" size={14} color="#6B7280" />
+                    <Text style={styles.otpInfoRowText}>
+                      Expires {new Date(selectedDelivery.confirmation.otp_expires_at).toLocaleString()}
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
+
+            <TouchableOpacity
+              style={styles.qrDoneBtn}
+              onPress={() => setShowDeliveryOTP(false)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.qrDoneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={showFullMap ? [] : ['top']}>
       {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
       {renderPickupQRModal()}
+      {renderDeliveryOTPModal()}
     </SafeAreaView>
   );
 }
@@ -1342,6 +1576,67 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#BBF7D0',
   },
   pickupVerifiedText: { color: '#166534', fontWeight: '700', fontSize: 12 },
+
+  deliveryOTPCard: {
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+  deliveryOTPHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deliveryOTPIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deliveryOTPTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#5B21B6',
+    marginBottom: 3,
+  },
+  deliveryOTPSubtitle: {
+    fontSize: 11,
+    color: '#7C3AED',
+    lineHeight: 15,
+    fontWeight: '500',
+  },
+  deliveryOTPCodeBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 14,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+    borderStyle: 'dashed',
+  },
+  deliveryOTPHintText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#5B21B6',
+    letterSpacing: 0.2,
+  },
+  deliveryOTPVerifiedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+  },
+  deliveryOTPVerifiedText: {
+    fontSize: 11,
+    color: '#166534',
+    fontWeight: '600',
+  },
 
   detailMapCard: {
     width: '100%', height: 200, borderRadius: 20, overflow: 'hidden', marginBottom: 20,
@@ -1517,4 +1812,74 @@ const styles = StyleSheet.create({
     width: '100%', backgroundColor: '#111827', paddingVertical: 14, borderRadius: 30, alignItems: 'center',
   },
   qrDoneBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+
+  otpVerifiedBigBox: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 18,
+    paddingVertical: 30,
+    alignItems: 'center',
+    marginBottom: 18,
+    borderWidth: 1.5,
+    borderColor: '#BBF7D0',
+  },
+  otpVerifiedBigText: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#166534',
+    marginTop: 10,
+    letterSpacing: 0.5,
+  },
+  otpVerifiedBigTime: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  sentToReceiverBox: {
+    width: '100%',
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+  sentToReceiverIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sentToReceiverTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#5B21B6',
+    marginBottom: 4,
+  },
+  sentToReceiverPhone: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: 0.3,
+    marginBottom: 10,
+  },
+  sentToReceiverHint: {
+    fontSize: 11,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  otpInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 18,
+  },
+  otpInfoRowText: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
 });

@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Delivery/scheduleService.ts
 import { Alert } from 'react-native';
 import { supabase } from '../../../../utils/supabase';
 import { ScheduleState } from './ScheduleContext';
@@ -89,16 +90,29 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
   // Status depends on mode
   const deliveryStatus = 'Pending';
 
+  /* ============================================================
+   * ✅ FIX: Read receiver from state — do NOT hardcode phone.
+   *    Prefer receiver_id + receiver_phone from the picked receiver.
+   *    Fall back to state.receiver's phone_number if needed.
+   * ============================================================ */
+  const receiverId = state.receiver?.receiver_id ?? null;
+  const receiverPhone =
+    state.receiver?.receiver_phone ||
+    state.receiver?.phone_number ||
+    '';
+
   const { data: request } = await supabase
     .from('delivery_requests')
     .insert({
       pickup_type: state.dropoffType,
       scheduled_time: state.scheduledDate
-      ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2,
-     '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
-      : null,
+        ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
+        : null,
       delivery_status: deliveryStatus,
-      receiver_phone: '09171234567', // placeholder
+
+      receiver_id: receiverId,
+      receiver_phone: receiverPhone,
+
       total_distance: 5.0,
       estimated_cost: state.estimatedCost,
       dropoff_location_id: dropoffLoc!.location_id,
@@ -143,38 +157,51 @@ export async function updateScheduleInDB(
     .eq('location_id', existingIds.dropoffLocId);
 
   // Update cargo
-const smallQty = state.items.filter(i => i.size === 'Small').length;
-const mediumQty = state.items.filter(i => i.size === 'Medium').length;
-const largeQty = state.items.filter(i => i.size === 'Large').length;
-const isFragile = state.items.some(i => i.fragile);
-const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
+  const smallQty = state.items.filter(i => i.size === 'Small').length;
+  const mediumQty = state.items.filter(i => i.size === 'Medium').length;
+  const largeQty = state.items.filter(i => i.size === 'Large').length;
+  const isFragile = state.items.some(i => i.fragile);
+  const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
 
-// Use the first available photo from the items (if any)
-const cargoPic = state.items.length > 0 ? state.items[0].photoUri : null;
+  // Use the first available photo from the items (if any)
+  const cargoPic = state.items.length > 0 ? state.items[0].photoUri : null;
 
-await supabase
-  .from('cargo_profiles')
-  .update({
-    description: state.items.map(i => i.description).join(', '),
-    total_weight_kg: totalWeight,
-    small_box_qty: smallQty,
-    medium_box_qty: mediumQty,
-    large_box_qty: largeQty,
-    is_fragile: isFragile,
-    cargo_pic: cargoPic,   // <-- NEW: save photo
-  })
-  .eq('cargo_id', existingIds.cargoId);
+  await supabase
+    .from('cargo_profiles')
+    .update({
+      description: state.items.map(i => i.description).join(', '),
+      total_weight_kg: totalWeight,
+      small_box_qty: smallQty,
+      medium_box_qty: mediumQty,
+      large_box_qty: largeQty,
+      is_fragile: isFragile,
+      cargo_pic: cargoPic,
+    })
+    .eq('cargo_id', existingIds.cargoId);
+
+  /* ============================================================
+   * ✅ FIX: Keep receiver in sync on edit.
+   * ============================================================ */
+  const receiverId = state.receiver?.receiver_id ?? null;
+  const receiverPhone =
+    state.receiver?.receiver_phone ||
+    state.receiver?.phone_number ||
+    '';
+
   // Update request
   await supabase
-  .from('delivery_requests')
-  .update({
-    pickup_type: state.dropoffType,
-    scheduled_time: state.scheduledDate
-      ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
-      : null,
-    estimated_cost: state.estimatedCost,
-  })
-  .eq('request_id', existingIds.requestId);
+    .from('delivery_requests')
+    .update({
+      pickup_type: state.dropoffType,
+      scheduled_time: state.scheduledDate
+        ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
+        : null,
+      estimated_cost: state.estimatedCost,
+
+      receiver_id: receiverId,
+      receiver_phone: receiverPhone,
+    })
+    .eq('request_id', existingIds.requestId);
 }
 
 export async function deleteDelivery(

@@ -114,18 +114,8 @@ const TaskRouteMap = ({
 
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          var pickupIcon = L.divIcon({
-            className: '',
-            html: '<div class="marker-pickup">P</div>',
-            iconSize: [22, 22],
-            iconAnchor: [11, 11],
-          });
-          var dropoffIcon = L.divIcon({
-            className: '',
-            html: '<div class="marker-dropoff">D</div>',
-            iconSize: [22, 22],
-            iconAnchor: [11, 11],
-          });
+          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
+          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
 
           if (pickupLat != null && pickupLng != null) {
             L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
@@ -134,7 +124,6 @@ const TaskRouteMap = ({
             L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
           }
 
-          // Fetch actual road route from OSRM
           if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
               + pickupLng + ',' + pickupLat + ';'
@@ -147,25 +136,15 @@ const TaskRouteMap = ({
                 if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
                   var coords = data.routes[0].geometry.coordinates;
                   var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, {
-                    color: '#FA7A25',
-                    weight: 5,
-                    opacity: 0.85,
-                    lineJoin: 'round',
-                    lineCap: 'round',
-                  }).addTo(map);
+                  L.polyline(latlngs, { color: '#FA7A25', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
                   map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
                 } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                    color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8',
-                  }).addTo(map);
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
                   map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
                 }
               })
               .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                  color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8',
-                }).addTo(map);
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
                 map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
               });
           } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
@@ -240,6 +219,12 @@ export default function TaskScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [viewTarget, setViewTarget] = useState<any>(null);
+
+  const [deliveryOTPModalVisible, setDeliveryOTPModalVisible] = useState(false);
+  const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
+  const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
+  const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
+  const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -496,40 +481,165 @@ export default function TaskScreen() {
     }
   };
 
-  const completeDelivery = async (deliveryId: number, requestId: number) => {
-    Alert.alert('Complete Delivery', 'Have you successfully delivered the package to the receiver?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Yes, Complete', onPress: async () => {
-          try {
-            setLoading(true);
-            const { error: delError } = await supabase.from('deliveries').update({ completed_at: new Date().toISOString() }).eq('delivery_id', deliveryId);
-            if (delError) throw delError;
+  /* ==================================================================== */
+  /* DELIVERY CONFIRMATION (OTP via Contiguity)                           */
+  /* ==================================================================== */
+  const openDeliveryOTPModal = (delivery: any) => {
+    setDeliveryOTPTarget(delivery);
+    setDeliveryOTPInput('');
+    setDeliveryOTPModalVisible(true);
+  };
 
-            const { error: reqError } = await supabase.from('delivery_requests').update({ delivery_status: 'Completed' }).eq('request_id', requestId);
-            if (reqError) throw reqError;
+  const closeDeliveryOTPModal = () => {
+    setDeliveryOTPModalVisible(false);
+    setDeliveryOTPTarget(null);
+    setDeliveryOTPInput('');
+    setDeliveryOTPVerifying(false);
+    setDeliveryOTPResending(false);
+  };
 
-            await supabase.from('qr_verifications').update({ dropoff_verified: true }).eq('delivery_id', deliveryId);
+  /* ✅ Calls Edge Function with action: 'regenerate' (creates a brand new OTP) */
+  const handleResendDeliveryOTP = async () => {
+    if (!deliveryOTPTarget) return;
 
-            const { data: escrowData } = await supabase.from('escrow_payments').update({ escrow_status: 'Completed' }).eq('delivery_id', deliveryId).select('*').single();
+    Alert.alert(
+      'Send New OTP',
+      'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send New OTP',
+          onPress: async () => {
+            try {
+              setDeliveryOTPResending(true);
 
-            if (escrowData && escrowData.provider_id) {
-              const { data: wallet } = await supabase.from('provider_wallet').select('*').eq('provider_id', escrowData.provider_id).single();
-              if (wallet) {
-                await supabase.from('provider_wallet').update({ balance: Number(wallet.balance) + Number(escrowData.amount) }).eq('wallet_id', wallet.wallet_id);
+              const { data, error } = await supabase.functions.invoke('contiguity-otp', {
+                body: {
+                  action: 'regenerate',
+                  delivery_id: deliveryOTPTarget.delivery_id,
+                },
+              });
+
+              if (error || !data?.success) {
+                Alert.alert('Error', data?.error || error?.message || 'Could not send new OTP.');
+                return;
               }
-            }
 
-            Alert.alert('Success', 'Delivery completed! Payment has been released to your wallet.');
-            await loadData();
-          } catch (error: any) {
-            Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
-          } finally {
-            setLoading(false);
-          }
+              Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
+              setDeliveryOTPInput('');
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to send new OTP.');
+            } finally {
+              setDeliveryOTPResending(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  /* ✅ Calls Edge Function with action: 'verify' */
+  const completeDelivery = async () => {
+    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
+
+    const deliveryId = deliveryOTPTarget.delivery_id;
+    const requestId = deliveryOTPTarget.delivery_requests?.request_id;
+
+    setDeliveryOTPVerifying(true);
+    try {
+      const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
+        'contiguity-otp',
+        {
+          body: {
+            action: 'verify',
+            delivery_id: deliveryId,
+            otp: deliveryOTPInput.trim(),
+          },
+        }
+      );
+
+      if (verifyError) {
+        Alert.alert('Verification Failed', verifyError.message || 'Could not verify OTP.');
+        return;
+      }
+
+      if (!verifyResult?.success) {
+        Alert.alert(
+          'Invalid OTP',
+          verifyResult?.message || 'The code is incorrect or has expired. Please try again.'
+        );
+        return;
+      }
+
+      /* ✅ OTP VERIFIED — Proceed with completion */
+      const now = new Date().toISOString();
+
+      // 1. Complete the delivery
+      const { error: delError } = await supabase
+        .from('deliveries')
+        .update({ completed_at: now })
+        .eq('delivery_id', deliveryId);
+      if (delError) throw delError;
+
+      // 2. Update request status
+      if (requestId) {
+        const { error: reqError } = await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Completed' })
+          .eq('request_id', requestId);
+        if (reqError) throw reqError;
+      }
+
+      // 3. Mark dropoff verified in QR verifications
+      await supabase
+        .from('qr_verifications')
+        .update({ dropoff_verified: true })
+        .eq('delivery_id', deliveryId);
+
+      // 4. Release escrow payment
+      const { data: escrowData } = await supabase
+        .from('escrow_payments')
+        .update({ escrow_status: 'Completed' })
+        .eq('delivery_id', deliveryId)
+        .select('*')
+        .single();
+
+      // 5. Credit provider wallet
+      if (escrowData && escrowData.provider_id) {
+        const { data: wallet } = await supabase
+          .from('provider_wallet')
+          .select('*')
+          .eq('provider_id', escrowData.provider_id)
+          .single();
+
+        if (wallet) {
+          await supabase
+            .from('provider_wallet')
+            .update({ balance: Number(wallet.balance) + Number(escrowData.amount) })
+            .eq('wallet_id', wallet.wallet_id);
         }
       }
-    ]);
+
+      // 6. Status history
+      await supabase.from('delivery_status_history').insert({
+        delivery_id: deliveryId,
+        status: 'Delivered',
+        updated_at: now,
+      });
+
+      Alert.alert(
+        '✅ Delivery Complete!',
+        'Payment has been released to your wallet.',
+        [{ text: 'OK' }]
+      );
+
+      closeDeliveryOTPModal();
+      await loadData();
+    } catch (error: any) {
+      Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
+    } finally {
+      setDeliveryOTPVerifying(false);
+    }
   };
 
   const loadData = async () => {
@@ -548,7 +658,6 @@ export default function TaskScreen() {
     loadData();
   };
 
-  // ✅ TRUE REALTIME: Listen for everything task-related
   useEffect(() => {
     if (!providerId) return;
 
@@ -567,6 +676,9 @@ export default function TaskScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => {
         fetchDeliveries(providerId);
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => {
+        fetchDeliveries(providerId);
+      })
       .subscribe();
 
     return () => {
@@ -582,7 +694,6 @@ export default function TaskScreen() {
   });
 
   const pulseOpacity = matchingPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
-
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
@@ -707,10 +818,10 @@ export default function TaskScreen() {
                 ) : (
                   <TouchableOpacity
                     style={[styles.actionBtn, styles.completeBtn]}
-                    onPress={() => completeDelivery(delivery.delivery_id, request.request_id)}
+                    onPress={() => openDeliveryOTPModal(delivery)}
                     activeOpacity={0.9}
                   >
-                    <Ionicons name="checkmark-circle" size={14} color="#FFFFFF" />
+                    <Ionicons name="shield-checkmark" size={14} color="#FFFFFF" />
                     <Text style={styles.actionBtnText}>Complete</Text>
                   </TouchableOpacity>
                 )}
@@ -813,90 +924,88 @@ export default function TaskScreen() {
     );
   };
 
-  const renderScannerModal = () => {
-    return (
-      <Modal
-        visible={verifyModalVisible}
-        animationType="slide"
-        transparent={false}
-        onRequestClose={closeVerifyModal}
-      >
-        <View style={styles.scannerRoot}>
-          <StatusBar barStyle="light-content" backgroundColor="#000" />
+  const renderScannerModal = () => (
+    <Modal
+      visible={verifyModalVisible}
+      animationType="slide"
+      transparent={false}
+      onRequestClose={closeVerifyModal}
+    >
+      <View style={styles.scannerRoot}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
 
-          {cameraPermission?.granted && (
-            <CameraView
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={!scanned ? handleBarcodeScanned : undefined}
-            />
-          )}
+        {cameraPermission?.granted && (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            onBarcodeScanned={!scanned ? handleBarcodeScanned : undefined}
+          />
+        )}
 
-          <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
+        <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+          <View style={{ flexDirection: 'row', height: frameSize }}>
             <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-            <View style={{ flexDirection: 'row', height: frameSize }}>
-              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-              <View style={{ width: frameSize, height: frameSize, overflow: 'hidden', position: 'relative' }}>
-                <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
-                <View style={[styles.corner, styles.cornerTL]} />
-                <View style={[styles.corner, styles.cornerTR]} />
-                <View style={[styles.corner, styles.cornerBL]} />
-                <View style={[styles.corner, styles.cornerBR]} />
-              </View>
-              <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+            <View style={{ width: frameSize, height: frameSize, overflow: 'hidden', position: 'relative' }}>
+              <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
+              <View style={[styles.corner, styles.cornerTL]} />
+              <View style={[styles.corner, styles.cornerTR]} />
+              <View style={[styles.corner, styles.cornerBL]} />
+              <View style={[styles.corner, styles.cornerBR]} />
             </View>
-            <View style={{ flex: 2.2, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+          </View>
+          <View style={{ flex: 2.2, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+        </View>
+
+        <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
+          <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
+            <Ionicons name="close" size={24} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
+          <View style={styles.sheetHandle} />
+
+          <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
+          <Text style={styles.sheetSubheading}>
+            Point your camera at the Sender's screen to automatically verify pickup.
+          </Text>
+
+          <View style={styles.orRow}>
+            <View style={styles.orLine} />
+            <Text style={styles.orText}>OR ENTER PIN</Text>
+            <View style={styles.orLine} />
           </View>
 
-          <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
-            <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
-              <Ionicons name="close" size={24} color="#FFF" />
+          <View style={styles.pinRow}>
+            <TextInput
+              style={styles.pinInput}
+              value={pinInput}
+              onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
+              keyboardType="number-pad"
+              placeholder="••••"
+              placeholderTextColor="#9CA3AF"
+              maxLength={4}
+            />
+            <TouchableOpacity
+              style={[styles.pinBtn, (pinInput.length !== 4 || pinVerifying) && { opacity: 0.5 }]}
+              disabled={pinInput.length !== 4 || pinVerifying}
+              onPress={handlePinVerify}
+              activeOpacity={0.9}
+            >
+              {pinVerifying ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <Text style={styles.pinBtnText}>Verify</Text>
+              )}
             </TouchableOpacity>
           </View>
-
-          <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
-            <View style={styles.sheetHandle} />
-
-            <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
-            <Text style={styles.sheetSubheading}>
-              Point your camera at the Sender's screen to automatically verify pickup.
-            </Text>
-
-            <View style={styles.orRow}>
-              <View style={styles.orLine} />
-              <Text style={styles.orText}>OR ENTER PIN</Text>
-              <View style={styles.orLine} />
-            </View>
-
-            <View style={styles.pinRow}>
-              <TextInput
-                style={styles.pinInput}
-                value={pinInput}
-                onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
-                keyboardType="number-pad"
-                placeholder="••••"
-                placeholderTextColor="#9CA3AF"
-                maxLength={4}
-              />
-              <TouchableOpacity
-                style={[styles.pinBtn, (pinInput.length !== 4 || pinVerifying) && { opacity: 0.5 }]}
-                disabled={pinInput.length !== 4 || pinVerifying}
-                onPress={handlePinVerify}
-                activeOpacity={0.9}
-              >
-                {pinVerifying ? (
-                  <ActivityIndicator color="#FFF" size="small" />
-                ) : (
-                  <Text style={styles.pinBtnText}>Verify</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
         </View>
-      </Modal>
-    );
-  };
+      </View>
+    </Modal>
+  );
 
   const renderViewModal = () => {
     if (!viewTarget) return null;
@@ -1121,11 +1230,11 @@ export default function TaskScreen() {
                   onPress={() => {
                     const t = viewTarget;
                     setViewTarget(null);
-                    setTimeout(() => completeDelivery(t.delivery_id, t.delivery_requests.request_id), 150);
+                    setTimeout(() => openDeliveryOTPModal(t), 150);
                   }}
                   activeOpacity={0.9}
                 >
-                  <Ionicons name="checkmark-circle" size={16} color="#FFF" />
+                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
                   <Text style={styles.viewFooterPrimaryText}>Complete Delivery</Text>
                 </TouchableOpacity>
               )}
@@ -1135,6 +1244,90 @@ export default function TaskScreen() {
       </Modal>
     );
   };
+
+  const renderDeliveryOTPModal = () => (
+    <Modal
+      visible={deliveryOTPModalVisible}
+      transparent
+      animationType="slide"
+      onRequestClose={closeDeliveryOTPModal}
+    >
+      <View style={styles.otpModalOverlay}>
+        <View style={styles.otpModalCard}>
+          <View style={styles.otpModalHeader}>
+            <View style={styles.otpModalIconBox}>
+              <Ionicons name="shield-checkmark" size={24} color="#22C55E" />
+            </View>
+            <TouchableOpacity onPress={closeDeliveryOTPModal}>
+              <Ionicons name="close" size={24} color="#111827" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
+          <Text style={styles.otpModalSubtitle}>
+            Ask the receiver for the 6-digit OTP sent to their phone. Verifying will release payment to your wallet.
+          </Text>
+
+          <View style={styles.otpInputContainer}>
+            <TextInput
+              style={styles.otpInput}
+              value={deliveryOTPInput}
+              onChangeText={(t) => setDeliveryOTPInput(t.replace(/[^0-9]/g, '').slice(0, 6))}
+              keyboardType="number-pad"
+              placeholder="000000"
+              placeholderTextColor="#9CA3AF"
+              maxLength={6}
+            />
+          </View>
+
+          <View style={styles.otpInfoBox}>
+            <Ionicons name="information-circle-outline" size={16} color="#6B7280" />
+            <Text style={styles.otpInfoText} numberOfLines={2}>
+              Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
+              {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
+                deliveryOTPTarget?.delivery_requests?.receiver?.receiver_phone ||
+                'N/A'}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.otpVerifyButton,
+              (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
+            ]}
+            disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
+            onPress={completeDelivery}
+            activeOpacity={0.9}
+          >
+            {deliveryOTPVerifying ? (
+              <ActivityIndicator color="#FFF" size="small" />
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.otpResendButton}
+            onPress={handleResendDeliveryOTP}
+            disabled={deliveryOTPResending}
+            activeOpacity={0.85}
+          >
+            {deliveryOTPResending ? (
+              <ActivityIndicator size="small" color="#6B7280" />
+            ) : (
+              <>
+                <Ionicons name="refresh" size={14} color="#6B7280" />
+                <Text style={styles.otpResendText}>Send New OTP</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
 
   if (loading) {
     return (
@@ -1260,6 +1453,7 @@ export default function TaskScreen() {
 
       {renderScannerModal()}
       {renderViewModal()}
+      {renderDeliveryOTPModal()}
     </SafeAreaView>
   );
 }
@@ -1479,9 +1673,7 @@ const styles = StyleSheet.create({
   viewInfoLabel: { flex: 1, fontSize: 12, color: '#6B7280', fontWeight: '600' },
   viewInfoValue: { fontSize: 12, color: '#111827', fontWeight: '700' },
 
-  viewTimelineRow: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8,
-  },
+  viewTimelineRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8 },
   viewTimelineTitle: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
   viewTimelineTime: { fontSize: 11, color: '#6B7280' },
   viewTimelineText: { fontSize: 11, color: '#6B7280' },
@@ -1510,4 +1702,55 @@ const styles = StyleSheet.create({
     shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   viewFooterPrimaryText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+
+  otpModalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center', alignItems: 'center', padding: 20,
+  },
+  otpModalCard: {
+    width: '100%', maxWidth: 380,
+    backgroundColor: '#FFFFFF', borderRadius: 24, padding: 24,
+  },
+  otpModalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 16,
+  },
+  otpModalIconBox: {
+    width: 48, height: 48, borderRadius: 14, backgroundColor: '#DCFCE7',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  otpModalTitle: {
+    fontSize: 20, fontWeight: '800', color: '#111827',
+    marginBottom: 8, letterSpacing: -0.3,
+  },
+  otpModalSubtitle: {
+    fontSize: 13, color: '#6B7280', lineHeight: 19, marginBottom: 20,
+  },
+  otpInputContainer: { marginBottom: 16 },
+  otpInput: {
+    borderWidth: 2, borderColor: '#E5E7EB', borderRadius: 16,
+    paddingHorizontal: 20, paddingVertical: 18,
+    fontSize: 28, letterSpacing: 12, color: '#111827',
+    fontWeight: '800', textAlign: 'center', backgroundColor: '#F9FAFB',
+  },
+  otpInfoBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#F3F4F6', paddingHorizontal: 12,
+    paddingVertical: 10, borderRadius: 10, marginBottom: 20,
+  },
+  otpInfoText: { flex: 1, fontSize: 11, color: '#6B7280', fontWeight: '500' },
+  otpVerifyButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#22C55E', borderRadius: 16,
+    paddingVertical: 16, gap: 8, marginBottom: 12,
+    shadowColor: '#22C55E', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  },
+  otpVerifyButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  otpResendButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 12,
+  },
+  otpResendText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
 });

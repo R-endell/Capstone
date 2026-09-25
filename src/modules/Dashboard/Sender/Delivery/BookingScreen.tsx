@@ -132,16 +132,6 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
-      console.log('=== startMatching: state dump ===');
-      console.log('mode:', mode);
-      console.log('receiver:', receiver);
-      console.log('pickupLocation:', state.pickupLocation);
-      console.log('dropoffLocation:', state.dropoffLocation);
-      console.log('estimatedCost:', state.estimatedCost);
-      console.log('cargo:', state.cargo);
-      console.log('dropoffType:', state.dropoffType);
-      console.log('scheduledTime:', state.scheduledTime);
-
       let savedRequest;
       if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
@@ -149,9 +139,6 @@ export default function BookingScreen({ route, navigation }: any) {
       } else {
         savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
       }
-
-      console.log('=== startMatching: savedRequest ===');
-      console.log(savedRequest);
 
       if (!savedRequest) throw new Error('Failed to save request');
       setSavedRequestId(savedRequest.request_id);
@@ -164,6 +151,7 @@ export default function BookingScreen({ route, navigation }: any) {
           async (payload) => {
             const delivery = payload.new;
 
+            // Fetch provider details
             const { data: provider } = await supabase
               .from('users')
               .select('first_name, last_name, phone_number')
@@ -176,6 +164,48 @@ export default function BookingScreen({ route, navigation }: any) {
               .single();
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
+
+            /* ===================================================== */
+            /* ✅ CONTIGUITY: Send OTP via Edge Function             */
+            /* ===================================================== */
+            const receiverPhone =
+              receiver?.receiver_phone || receiver?.phone_number;
+            const receiverName =
+              receiver?.receiver_name ||
+              `${receiver?.first_name || ''} ${receiver?.last_name || ''}`.trim() ||
+              'Receiver';
+
+            // Normalize to E.164 for Contiguity
+            let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
+            if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
+            else if (e164.startsWith('63')) e164 = '+' + e164;
+            else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
+
+            if (e164) {
+              try {
+                const { data: otpResult, error: otpError } = await supabase.functions.invoke(
+                  'contiguity-otp',
+                  {
+                    body: {
+                      action: 'send',
+                      delivery_id: delivery.delivery_id,
+                      to: e164,
+                      name: receiverName || 'PNS Delivery',
+                    },
+                  }
+                );
+
+                if (otpError) {
+                  console.error('❌ Failed to send OTP via Contiguity:', otpError);
+                } else {
+                  console.log('✅ Contiguity OTP sent:', otpResult);
+                }
+              } catch (otpErr) {
+                console.error('❌ Contiguity invoke error:', otpErr);
+              }
+            } else {
+              console.warn('No receiver phone number available for OTP');
+            }
 
             setMatchFound(true);
             setBookingState('matched');
@@ -197,8 +227,7 @@ export default function BookingScreen({ route, navigation }: any) {
         }
       }, 60000);
     } catch (error: any) {
-      console.error('=== Error starting matching ===');
-      console.error(error);
+      console.error('=== Error starting matching ===', error);
       Alert.alert(
         'Error',
         error?.message || 'Failed to process your booking. Please try again.',
@@ -207,10 +236,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Book — enforces ±5 min window only when a schedule was explicitly   */
-  /* set. Send Now with no schedule always passes.                       */
-  /* ------------------------------------------------------------------ */
   const handleBook = () => {
     if (!receiver?.receiver_id && !receiver?.receiver_phone) {
       Alert.alert(
@@ -230,11 +255,10 @@ export default function BookingScreen({ route, navigation }: any) {
 
       if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
         const diffMinutes = Math.abs(scheduledMs - nowMs) / 60000;
-
         if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
           Alert.alert(
             'Schedule Too Far',
-            `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes of the current Manila time.\n\nYour request is ${Math.round(diffMinutes)} minutes away.\n\nSwitch to Scheduled Delivery for a later time, or update the schedule.`,
+            `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes of the current Manila time.\n\nYour request is ${Math.round(diffMinutes)} minutes away.`,
             [
               { text: 'Edit Schedule', onPress: () => navigation.goBack() },
               { text: 'Cancel', style: 'cancel' },
@@ -359,11 +383,8 @@ export default function BookingScreen({ route, navigation }: any) {
                   var coords = data.routes[0].geometry.coordinates;
                   var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
                   L.polyline(latlngs, {
-                    color: '#FA7A25',
-                    weight: 5,
-                    opacity: 0.85,
-                    lineJoin: 'round',
-                    lineCap: 'round'
+                    color: '#FA7A25', weight: 5, opacity: 0.85,
+                    lineJoin: 'round', lineCap: 'round'
                   }).addTo(map);
                   map.fitBounds(L.latLngBounds(latlngs), { padding: [80, 80] });
                 } else {
@@ -417,9 +438,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <Text style={styles.pushTitle}>
                 {matchFound ? 'Provider Matched!' : 'No match found'}
               </Text>
-              <Text style={styles.pushTime}>
-                {nowInManila('h:mm a')}
-              </Text>
+              <Text style={styles.pushTime}>{nowInManila('h:mm a')}</Text>
             </View>
             <Text style={styles.pushSub}>
               {matchFound
@@ -493,12 +512,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
               <View style={styles.timelineLine} />
               <View style={styles.timelinePoint}>
-                <Ionicons
-                  name="location"
-                  size={18}
-                  color="#E11D48"
-                  style={styles.dotDropoff}
-                />
+                <Ionicons name="location" size={18} color="#E11D48" style={styles.dotDropoff} />
                 <View style={styles.timelineTextContainer}>
                   <Text style={[styles.timelineLabel, { color: '#E11D48' }]}>DROPOFF</Text>
                   <Text style={styles.timelineMainText} numberOfLines={1}>{dropoff.main}</Text>
@@ -510,10 +524,7 @@ export default function BookingScreen({ route, navigation }: any) {
             <View style={styles.divider} />
 
             <TouchableOpacity
-              style={[
-                styles.receiverCard,
-                !receiver && styles.receiverCardEmpty,
-              ]}
+              style={[styles.receiverCard, !receiver && styles.receiverCardEmpty]}
               onPress={handleSelectReceiver}
               activeOpacity={0.85}
             >
@@ -543,9 +554,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 ) : (
                   <>
                     <Text style={styles.receiverPlaceholder}>Tap to select receiver</Text>
-                    <Text style={styles.receiverHelper}>
-                      Who will receive this package?
-                    </Text>
+                    <Text style={styles.receiverHelper}>Who will receive this package?</Text>
                   </>
                 )}
               </View>
@@ -555,6 +564,15 @@ export default function BookingScreen({ route, navigation }: any) {
                 color={receiver ? '#6B7280' : ORANGE}
               />
             </TouchableOpacity>
+
+            {receiver && (
+              <View style={styles.otpInfoBanner}>
+                <Ionicons name="shield-checkmark-outline" size={14} color="#7C3AED" />
+                <Text style={styles.otpInfoBannerText}>
+                  A confirmation OTP will be sent to the receiver's phone when booking.
+                </Text>
+              </View>
+            )}
 
             <View style={styles.divider} />
 
@@ -567,10 +585,7 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.primaryButton,
-                !receiver && styles.primaryButtonDisabled,
-              ]}
+              style={[styles.primaryButton, !receiver && styles.primaryButtonDisabled]}
               onPress={handleBook}
               activeOpacity={0.9}
             >
@@ -623,27 +638,21 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
 
             <View style={styles.providerPlaceholders}>
-              <Animated.View
-                style={[styles.placeholderCard, { transform: [{ scale: pulseAnim1 }] }]}
-              >
+              <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim1 }] }]}>
                 <View style={styles.placeholderAvatar}>
                   <Ionicons name="person" size={20} color="#FFFFFF" />
                 </View>
                 <View style={styles.placeholderLine} />
                 <View style={styles.placeholderLineShort} />
               </Animated.View>
-              <Animated.View
-                style={[styles.placeholderCardCenter, { transform: [{ scale: pulseAnim2 }] }]}
-              >
+              <Animated.View style={[styles.placeholderCardCenter, { transform: [{ scale: pulseAnim2 }] }]}>
                 <View style={[styles.placeholderAvatar, { width: 36, height: 36, borderRadius: 18 }]}>
                   <Ionicons name="person" size={24} color="#FFFFFF" />
                 </View>
                 <View style={styles.placeholderLine} />
                 <View style={styles.placeholderLineShort} />
               </Animated.View>
-              <Animated.View
-                style={[styles.placeholderCard, { transform: [{ scale: pulseAnim3 }] }]}
-              >
+              <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim3 }] }]}>
                 <View style={styles.placeholderAvatar}>
                   <Ionicons name="person" size={20} color="#FFFFFF" />
                 </View>
@@ -673,9 +682,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.matchedHeaderTitle}>Provider Matched!</Text>
-                <Text style={styles.matchedHeaderSub}>
-                  Your delivery is on the way
-                </Text>
+                <Text style={styles.matchedHeaderSub}>Your delivery is on the way</Text>
               </View>
             </View>
 
@@ -725,6 +732,13 @@ export default function BookingScreen({ route, navigation }: any) {
                   </View>
                 </>
               )}
+
+              <View style={styles.otpSentBanner}>
+                <Ionicons name="shield-checkmark" size={16} color="#22C55E" />
+                <Text style={styles.otpSentText}>
+                  Confirmation OTP sent to receiver's phone
+                </Text>
+              </View>
 
               <View style={styles.matchedDivider} />
 
@@ -810,18 +824,11 @@ const styles = StyleSheet.create({
     width: 14, height: 14, borderRadius: 7, borderWidth: 3,
     borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
-  pillIconPickupInner: {
-    width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC',
-  },
+  pillIconPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   pillTextContainer: { flex: 1 },
-  pillLabel: {
-    fontSize: 9, fontWeight: '800', color: '#0000CC',
-    letterSpacing: 1, marginBottom: 2,
-  },
+  pillLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
   pillMainText: { fontSize: 13, fontWeight: '700', color: '#111827' },
-  pillSubText: {
-    fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500',
-  },
+  pillSubText: { fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500' },
 
   pushNotification: {
     position: 'absolute', left: 16, right: 16,
@@ -836,19 +843,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
   pushTextContainer: { flex: 1 },
-  pushHeaderRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
-  },
-  pushTitle: {
-    flex: 1, fontSize: 13, fontWeight: '700', color: '#FFFFFF',
-    lineHeight: 18, marginRight: 8,
-  },
+  pushHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  pushTitle: { flex: 1, fontSize: 13, fontWeight: '700', color: '#FFFFFF', lineHeight: 18, marginRight: 8 },
   pushTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '500' },
   pushSub: { fontSize: 11, color: '#D1D5DB', marginTop: 3, fontWeight: '500' },
 
-  bottomSheet: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center',
-  },
+  bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center' },
   sheetHandle: {
     width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',
     alignSelf: 'center', marginBottom: 14,
@@ -861,19 +861,13 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
   },
-  sheetTitleRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20,
-  },
+  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
   sheetIconBox: {
     width: 42, height: 42, borderRadius: 13, backgroundColor: '#FFF7ED',
     justifyContent: 'center', alignItems: 'center',
   },
-  sheetHeaderTitle: {
-    fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2,
-  },
-  sheetHeaderSub: {
-    fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2,
-  },
+  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  sheetHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
 
   timelineContainer: { marginLeft: 6, marginBottom: 4 },
   timelinePoint: { flexDirection: 'row', alignItems: 'center' },
@@ -881,27 +875,15 @@ const styles = StyleSheet.create({
     width: 16, height: 16, borderRadius: 8, borderWidth: 4,
     borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
-  dotPickupInner: {
-    width: 6, height: 6, borderRadius: 3, backgroundColor: '#0000CC',
-  },
+  dotPickupInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#0000CC' },
   dotDropoff: { marginRight: 10, marginLeft: -1 },
-  timelineLine: {
-    width: 1, height: 24, backgroundColor: '#E5E7EB',
-    marginLeft: 7, marginVertical: 4,
-  },
+  timelineLine: { width: 1, height: 24, backgroundColor: '#E5E7EB', marginLeft: 7, marginVertical: 4 },
   timelineTextContainer: { flex: 1 },
-  timelineLabel: {
-    fontSize: 9, fontWeight: '800', color: '#0000CC',
-    letterSpacing: 1, marginBottom: 2,
-  },
+  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
   timelineMainText: { fontSize: 13, fontWeight: '700', color: '#111827' },
-  timelineSubText: {
-    fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500',
-  },
+  timelineSubText: { fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500' },
 
-  divider: {
-    height: 1, backgroundColor: '#F3F4F6', marginVertical: 16,
-  },
+  divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 16 },
 
   receiverCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
@@ -909,68 +891,39 @@ const styles = StyleSheet.create({
     borderWidth: 1.5, borderColor: '#E5E7EB',
     borderRadius: 16, padding: 12,
   },
-  receiverCardEmpty: {
-    borderStyle: 'dashed',
-    borderColor: '#FDBA74',
-    backgroundColor: '#FFFBF5',
+  receiverCardEmpty: { borderStyle: 'dashed', borderColor: '#FDBA74', backgroundColor: '#FFFBF5' },
+  receiverIconBox: { width: 42, height: 42, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
+  receiverIconBoxFilled: { backgroundColor: ORANGE },
+  receiverIconBoxEmpty: { backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFE4D2' },
+  receiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 1, marginBottom: 3 },
+  receiverName: { fontSize: 14, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  receiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500' },
+  receiverPlaceholder: { fontSize: 13, fontWeight: '700', color: ORANGE },
+  receiverHelper: { fontSize: 10, color: '#9CA3AF', marginTop: 2, fontWeight: '500' },
+
+  otpInfoBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#F5F3FF', borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 10, marginTop: 12,
+    borderWidth: 1, borderColor: '#DDD6FE',
   },
-  receiverIconBox: {
-    width: 42, height: 42, borderRadius: 13,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  receiverIconBoxFilled: {
-    backgroundColor: ORANGE,
-  },
-  receiverIconBoxEmpty: {
-    backgroundColor: '#FFF7ED',
-    borderWidth: 1, borderColor: '#FFE4D2',
-  },
-  receiverLabel: {
-    fontSize: 9, fontWeight: '800', color: '#6B7280',
-    letterSpacing: 1, marginBottom: 3,
-  },
-  receiverName: {
-    fontSize: 14, fontWeight: '800', color: '#111827', letterSpacing: -0.2,
-  },
-  receiverPhone: {
-    fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500',
-  },
-  receiverPlaceholder: {
-    fontSize: 13, fontWeight: '700', color: ORANGE,
-  },
-  receiverHelper: {
-    fontSize: 10, color: '#9CA3AF', marginTop: 2, fontWeight: '500',
+  otpInfoBannerText: {
+    flex: 1, fontSize: 11, color: '#5B21B6', fontWeight: '600', lineHeight: 15,
   },
 
-  costRow: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 18,
-  },
+  costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   costLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  costSub: {
-    fontSize: 10, color: '#9CA3AF', fontWeight: '500', marginTop: 2,
-  },
-  costValue: {
-    fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.4,
-  },
+  costSub: { fontSize: 10, color: '#9CA3AF', fontWeight: '500', marginTop: 2 },
+  costValue: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.4 },
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 16, gap: 8,
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
-  primaryButtonDisabled: {
-    backgroundColor: '#D1D5DB',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  primaryButtonText: {
-    color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2,
-  },
-  primaryButtonHint: {
-    textAlign: 'center', fontSize: 11, color: '#9CA3AF',
-    marginTop: 10, fontWeight: '500',
-  },
+  primaryButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 10, fontWeight: '500' },
 
   sheetCardFinding: {
     width: '100%', backgroundColor: '#FFFFFF',
@@ -980,36 +933,21 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
   },
-  findingHeaderRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6,
-  },
+  findingHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   findingPulseDot: {
     width: 10, height: 10, borderRadius: 5,
     backgroundColor: 'rgba(242,112,36,0.25)',
     justifyContent: 'center', alignItems: 'center',
   },
-  findingPulseDotInner: {
-    width: 6, height: 6, borderRadius: 3, backgroundColor: ORANGE,
-  },
-  findingTitle: {
-    fontSize: 15, fontWeight: '800', color: '#111827',
-    textAlign: 'center', letterSpacing: -0.2,
-  },
-  findingSub: {
-    fontSize: 12, color: '#6B7280', fontWeight: '500',
-    marginBottom: 18, textAlign: 'center',
-  },
+  findingPulseDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: ORANGE },
+  findingTitle: { fontSize: 15, fontWeight: '800', color: '#111827', textAlign: 'center', letterSpacing: -0.2 },
+  findingSub: { fontSize: 12, color: '#6B7280', fontWeight: '500', marginBottom: 18, textAlign: 'center' },
   progressContainer: {
     width: '100%', height: 5, backgroundColor: '#F3F4F6',
     borderRadius: 3, marginBottom: 24, overflow: 'hidden',
   },
-  progressBar: {
-    height: '100%', backgroundColor: ORANGE, borderRadius: 3,
-  },
-  providerPlaceholders: {
-    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
-    marginBottom: 20, gap: 8,
-  },
+  progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 3 },
+  providerPlaceholders: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20, gap: 8 },
   placeholderCard: {
     width: 66, height: 84, backgroundColor: '#FFF7ED', borderRadius: 12,
     padding: 10, alignItems: 'center',
@@ -1026,22 +964,14 @@ const styles = StyleSheet.create({
     width: 30, height: 30, borderRadius: 15, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center', marginBottom: 8,
   },
-  placeholderLine: {
-    width: '80%', height: 4, backgroundColor: '#FDBA74',
-    borderRadius: 2, marginBottom: 4,
-  },
-  placeholderLineShort: {
-    width: '50%', height: 4, backgroundColor: '#FDBA74', borderRadius: 2,
-  },
+  placeholderLine: { width: '80%', height: 4, backgroundColor: '#FDBA74', borderRadius: 2, marginBottom: 4 },
+  placeholderLineShort: { width: '50%', height: 4, backgroundColor: '#FDBA74', borderRadius: 2 },
   cancelTextButton: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1, borderColor: '#FECACA',
+    backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
   },
-  cancelTextButtonLabel: {
-    color: '#EF4444', fontWeight: '700', fontSize: 13,
-  },
+  cancelTextButtonLabel: { color: '#EF4444', fontWeight: '700', fontSize: 13 },
 
   sheetCardMatched: {
     width: '100%', backgroundColor: '#FFFFFF',
@@ -1050,27 +980,19 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
   },
-  matchedHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18,
-  },
+  matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
   matchedHeaderIcon: {
     width: 42, height: 42, borderRadius: 13, backgroundColor: '#DCFCE7',
     justifyContent: 'center', alignItems: 'center',
   },
-  matchedHeaderTitle: {
-    fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.2,
-  },
-  matchedHeaderSub: {
-    fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2,
-  },
+  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  matchedHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
   matchedInnerCard: {
     borderWidth: 1, borderColor: '#F3F4F6', borderRadius: 16,
     padding: 14, backgroundColor: '#FAFAFA', marginBottom: 16,
   },
   matchedRow: { flexDirection: 'row', alignItems: 'center' },
-  matchedLeftCol: {
-    width: 70, alignItems: 'center', marginRight: 14, position: 'relative',
-  },
+  matchedLeftCol: { width: 70, alignItems: 'center', marginRight: 14, position: 'relative' },
   matchedAvatarCircle: {
     width: 58, height: 58, borderRadius: 29, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center',
@@ -1085,49 +1007,33 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: '#FFFFFF',
   },
   matchedRightCol: { flex: 1 },
-  matchedName: {
-    fontSize: 15, fontWeight: '800', color: '#111827',
-    marginBottom: 6, letterSpacing: -0.2,
-  },
+  matchedName: { fontSize: 15, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
-  carDetailRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-  },
-  carText: {
-    fontSize: 11, color: '#6B7280', fontWeight: '600',
-  },
-  matchedDivider: {
-    height: 1, backgroundColor: '#F3F4F6', marginVertical: 12,
-  },
-  matchedReceiverRow: {
-    flexDirection: 'row', alignItems: 'center',
-  },
-  matchedReceiverLabel: {
-    fontSize: 9, fontWeight: '800', color: '#6B7280',
-    letterSpacing: 1, marginBottom: 2,
-  },
-  matchedReceiverName: {
-    fontSize: 13, fontWeight: '700', color: '#111827',
-  },
-  matchedReceiverPhone: {
-    fontSize: 11, color: '#6B7280', marginTop: 1, fontWeight: '500',
-  },
-  totalRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-  },
+  carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  carText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  matchedDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
+  matchedReceiverRow: { flexDirection: 'row', alignItems: 'center' },
+  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 1, marginBottom: 2 },
+  matchedReceiverName: { fontSize: 13, fontWeight: '700', color: '#111827' },
+  matchedReceiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 1, fontWeight: '500' },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  totalValue: {
-    fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3,
-  },
+  totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 16, gap: 8,
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
-  confirmButtonText: {
-    color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2,
+  confirmButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+
+  otpSentBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#DCFCE7', borderRadius: 12,
+    padding: 12, marginTop: 12,
+    borderWidth: 1, borderColor: '#BBF7D0',
   },
+  otpSentText: { flex: 1, fontSize: 12, color: '#166534', fontWeight: '600' },
 
   sheetCardNoMatch: {
     width: '100%', backgroundColor: '#FFFFFF',
@@ -1142,17 +1048,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 16, marginTop: 4,
   },
-  noMatchTitle: {
-    fontSize: 18, fontWeight: '800', color: '#111827',
-    marginBottom: 6, letterSpacing: -0.2, textAlign: 'center',
-  },
+  noMatchTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2, textAlign: 'center' },
   noMatchSubtitle: {
     fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 18,
     marginBottom: 22, paddingHorizontal: 10, fontWeight: '500',
   },
-  noMatchActions: {
-    flexDirection: 'row', gap: 12, width: '100%',
-  },
+  noMatchActions: { flexDirection: 'row', gap: 12, width: '100%' },
   noMatchBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'center', paddingVertical: 14, borderRadius: 16, gap: 6,
@@ -1162,13 +1063,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 3,
   },
-  retryBtnText: {
-    color: '#FFFFFF', fontWeight: '700', fontSize: 13, letterSpacing: 0.2,
-  },
-  modifyBtn: {
-    backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB',
-  },
-  modifyBtnText: {
-    color: '#6B7280', fontWeight: '700', fontSize: 13, letterSpacing: 0.2,
-  },
+  retryBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
+  modifyBtn: { backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
+  modifyBtnText: { color: '#6B7280', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
 });
