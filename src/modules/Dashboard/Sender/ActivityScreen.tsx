@@ -17,8 +17,30 @@ const { width, height } = Dimensions.get('window');
 /** Brand */
 const ORANGE = '#F27024';
 
-// --- LEAFLET MAP COMPONENT ---
-const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
+/* ==================================================================== */
+/* LeafletMap — OSRM road-following route with P and D markers          */
+/* ==================================================================== */
+const LeafletMap = ({
+  pickupLat, pickupLng, dropoffLat, dropoffLng, interactive = false,
+}: {
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
+  interactive?: boolean;
+}) => {
+  const hasPickup = pickupLat != null && pickupLng != null;
+  const hasDropoff = dropoffLat != null && dropoffLng != null;
+
+  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
+  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
+
+  const dragging = interactive ? 'true' : 'false';
+  const touchZoom = interactive ? 'true' : 'false';
+  const scrollWheelZoom = interactive ? 'true' : 'false';
+  const doubleClickZoom = interactive ? 'true' : 'false';
+  const zoomControl = interactive ? 'true' : 'false';
+
   const mapHtml = `
     <!DOCTYPE html>
     <html>
@@ -28,31 +50,87 @@ const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .pickup-marker { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 14px; height: 14px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
-          .dropoff-marker { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 14px; height: 14px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
         </style>
       </head>
       <body>
         <div id="map"></div>
         <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${pickupLat}, ${pickupLng}], 14);
+          var pickupLat = ${hasPickup ? pickupLat : 'null'};
+          var pickupLng = ${hasPickup ? pickupLng : 'null'};
+          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
+          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
+
+          var map = L.map('map', {
+            zoomControl: ${zoomControl},
+            attributionControl: false,
+            dragging: ${dragging},
+            touchZoom: ${touchZoom},
+            scrollWheelZoom: ${scrollWheelZoom},
+            doubleClickZoom: ${doubleClickZoom},
+          }).setView([${centerLat}, ${centerLng}], 13);
+
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-          var pickupIcon = L.divIcon({ className: 'pickup-marker', iconSize: [14, 14], iconAnchor: [7, 7] });
-          var dropoffIcon = L.divIcon({ className: 'dropoff-marker', iconSize: [14, 14], iconAnchor: [7, 7] });
+          var pickupIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-pickup">P</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
+          var dropoffIcon = L.divIcon({
+            className: '',
+            html: '<div class="marker-dropoff">D</div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
 
-          L.marker([${pickupLat}, ${pickupLng}], { icon: pickupIcon }).addTo(map);
-          L.marker([${dropoffLat}, ${dropoffLng}], { icon: dropoffIcon }).addTo(map);
+          if (pickupLat != null && pickupLng != null) {
+            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          }
+          if (dropoffLat != null && dropoffLng != null) {
+            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
+          }
 
-          L.polyline([
-            [${pickupLat}, ${pickupLng}],
-            [${dropoffLat}, ${dropoffLng}]
-          ], { color: '#0000CC', weight: 4, dashArray: '10, 10' }).addTo(map);
+          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
+              + pickupLng + ',' + pickupLat + ';'
+              + dropoffLng + ',' + dropoffLat
+              + '?overview=full&geometries=geojson';
 
-          map.fitBounds([
-            [${pickupLat}, ${pickupLng}],
-            [${dropoffLat}, ${dropoffLng}]
-          ], { padding: [40, 40] });
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                  L.polyline(latlngs, {
+                    color: '#F27024',
+                    weight: 5,
+                    opacity: 0.9,
+                    lineJoin: 'round',
+                    lineCap: 'round',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                    color: '#F27024', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
+                  color: '#F27024', weight: 4, opacity: 0.7, dashArray: '8, 8',
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
+              });
+          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
+            map.setView([pickupLat, pickupLng], 14);
+          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
+            map.setView([dropoffLat, dropoffLng], 14);
+          }
         </script>
       </body>
     </html>
@@ -63,10 +141,12 @@ const LeafletMap = ({ pickupLat, pickupLng, dropoffLat, dropoffLng }: any) => {
       originWhitelist={['*']}
       source={{ html: mapHtml }}
       style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
+      scrollEnabled={interactive}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
       androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
     />
   );
 };
@@ -116,10 +196,20 @@ interface QrRow {
 
 interface ReceiverInfo {
   receiver_id?: number | null;
-  receiver_name?: string;
+  receiver_name?: string | null;
   receiver_phone?: string;
   receiver_email?: string | null;
   is_favorite?: boolean;
+}
+
+interface DeliveryConfirmation {
+  confirmation_id: number;
+  delivery_id: number;
+  contiguity_otp_id?: string | null;
+  otp_expires_at: string;
+  otp_verified: boolean;
+  otp_verified_at: string | null;
+  attempts: number;
 }
 
 interface MappedDelivery {
@@ -144,7 +234,8 @@ interface MappedDelivery {
   deliveryData?: Delivery;
   isMatched: boolean;
   qr?: QrRow | null;
-  receiver?: ReceiverInfo | null;   // ✅ NEW
+  receiver?: ReceiverInfo | null;
+  confirmation?: DeliveryConfirmation | null;
 }
 
 export default function ActivityScreen() {
@@ -153,6 +244,7 @@ export default function ActivityScreen() {
   const [selectedDelivery, setSelectedDelivery] = useState<MappedDelivery | null>(null);
   const [showFullMap, setShowFullMap] = useState(false);
   const [showPickupQR, setShowPickupQR] = useState(false);
+  const [showDeliveryOTP, setShowDeliveryOTP] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -161,13 +253,9 @@ export default function ActivityScreen() {
   const [openingChat, setOpeningChat] = useState(false);
   const insets = useSafeAreaInsets();
 
-  // Animations
   const listAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animations                                                 */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!selectedDelivery) {
       listAnim.setValue(0);
@@ -182,9 +270,6 @@ export default function ActivityScreen() {
     }
   }, [selectedDelivery, listAnim, detailAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Data fetching                                                       */
-  /* ------------------------------------------------------------------ */
   const fetchUserRecord = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -214,7 +299,6 @@ export default function ActivityScreen() {
       }
       if (!userId) setUserId(currentUserId);
 
-      // ✅ Join receivers table so we get receiver details with each request
       const { data: requests, error: requestsError } = await supabase
         .from('delivery_requests')
         .select(`
@@ -236,8 +320,29 @@ export default function ActivityScreen() {
       if (requestsError) throw requestsError;
 
       const requestIds = requests?.map((r: any) => r.request_id) || [];
+
+      // ✅ FIX: Fetch receivers separately by receiver_id as a fallback
+      //    so name/phone/email match the ReceiverPickerScreen exactly.
+      const receiverIds = Array.from(
+        new Set(
+          (requests || [])
+            .map((r: any) => r.receiver_id)
+            .filter((id: any) => id != null)
+        )
+      ) as number[];
+
+      const receiverById: Record<number, any> = {};
+      if (receiverIds.length > 0) {
+        const { data: receiverRows } = await supabase
+          .from('receivers')
+          .select('receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite')
+          .in('receiver_id', receiverIds);
+        (receiverRows || []).forEach((r: any) => { receiverById[r.receiver_id] = r; });
+      }
+
       let deliveriesData: Delivery[] = [];
       const qrByDeliveryId: Record<number, any> = {};
+      const confirmationByDeliveryId: Record<number, DeliveryConfirmation> = {};
 
       if (requestIds.length > 0) {
         const { data: deliveries } = await supabase
@@ -254,6 +359,12 @@ export default function ActivityScreen() {
             .select('*')
             .in('delivery_id', deliveryIds);
           (qrs || []).forEach((q: any) => { qrByDeliveryId[q.delivery_id] = q; });
+
+          const { data: confirmations } = await supabase
+            .from('delivery_confirmations')
+            .select('*')
+            .in('delivery_id', deliveryIds);
+          (confirmations || []).forEach((c: any) => { confirmationByDeliveryId[c.delivery_id] = c; });
         }
       }
 
@@ -284,18 +395,34 @@ export default function ActivityScreen() {
         }
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
+        const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
 
-        // ✅ Normalize receiver — fall back to request's receiver_phone if no joined row
-        const joinedReceiver = item.receiver || null;
-        const receiverInfo: ReceiverInfo | null =
-          joinedReceiver || item.receiver_phone
+        /* ============================================================
+         * ✅ FIX: Build receiver info reliably.
+         *    Priority: joined receiver -> receiverById fallback -> null.
+         *    Do NOT invent a name from receiver_phone; only fall back
+         *    to the raw phone if we have no joined receiver row.
+         * ============================================================ */
+        const joinedReceiver =
+          item.receiver ||
+          (item.receiver_id != null ? receiverById[item.receiver_id] : null);
+
+        const receiverInfo: ReceiverInfo | null = joinedReceiver
+          ? {
+              receiver_id: joinedReceiver.receiver_id ?? item.receiver_id ?? null,
+              receiver_name: joinedReceiver.receiver_name ?? null,
+              receiver_phone:
+                joinedReceiver.receiver_phone ?? item.receiver_phone ?? '',
+              receiver_email: joinedReceiver.receiver_email ?? null,
+              is_favorite: joinedReceiver.is_favorite ?? false,
+            }
+          : item.receiver_phone
             ? {
-                receiver_id: joinedReceiver?.receiver_id ?? item.receiver_id ?? null,
-                receiver_name: joinedReceiver?.receiver_name ?? 'Receiver',
-                receiver_phone:
-                  joinedReceiver?.receiver_phone ?? item.receiver_phone ?? '',
-                receiver_email: joinedReceiver?.receiver_email ?? null,
-                is_favorite: joinedReceiver?.is_favorite ?? false,
+                receiver_id: item.receiver_id ?? null,
+                receiver_name: null,
+                receiver_phone: item.receiver_phone,
+                receiver_email: null,
+                is_favorite: false,
               }
             : null;
 
@@ -329,6 +456,7 @@ export default function ActivityScreen() {
             dropoff_verified: qrRow.dropoff_verified,
           } : null,
           receiver: receiverInfo,
+          confirmation: confirmationRow || null,
         };
       });
 
@@ -350,9 +478,6 @@ export default function ActivityScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Refresh selected delivery when its data changes                     */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!selectedDelivery) return;
     const updatedMatch = deliveries.find(d => d.request_id === selectedDelivery.request_id);
@@ -368,15 +493,15 @@ export default function ActivityScreen() {
     const receiverChanged =
       (updatedMatch.receiver?.receiver_name ?? null) !==
       (selectedDelivery.receiver?.receiver_name ?? null);
+    const confirmationChanged =
+      (updatedMatch.confirmation?.otp_verified ?? false) !==
+      (selectedDelivery.confirmation?.otp_verified ?? false);
 
-    if (statusChanged || qrChanged || completedChanged || receiverChanged) {
+    if (statusChanged || qrChanged || completedChanged || receiverChanged || confirmationChanged) {
       setSelectedDelivery(updatedMatch);
     }
   }, [deliveries]);
 
-  /* ------------------------------------------------------------------ */
-  /* Realtime + polling fallback                                         */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (!userId) return;
 
@@ -397,6 +522,11 @@ export default function ActivityScreen() {
         { event: '*', schema: 'public', table: 'qr_verifications' },
         () => { fetchData(); },
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_confirmations' },
+        () => { fetchData(); },
+      )
       .subscribe();
 
     const hasActive = deliveries.some(d => d.status !== 'Completed' && d.isMatched);
@@ -414,9 +544,6 @@ export default function ActivityScreen() {
 
   useFocusEffect(useCallback(() => { fetchData(); /* eslint-disable-next-line */ }, [userId]));
 
-  /* ------------------------------------------------------------------ */
-  /* Handlers                                                            */
-  /* ------------------------------------------------------------------ */
   const handleEdit = (rawData: any) => {
     if (!rawData) return;
     setSelectedDelivery(null);
@@ -430,8 +557,13 @@ export default function ActivityScreen() {
       {
         text: 'Yes, Cancel it', style: 'destructive', onPress: async () => {
           try {
-            await supabase.from('escrow_payments').delete().eq('delivery_id', rawData.request_id);
-            await supabase.from('deliveries').delete().eq('request_id', rawData.request_id);
+            const deliveryId = selectedDelivery?.deliveryData?.delivery_id;
+            if (deliveryId) {
+              await supabase.from('delivery_confirmations').delete().eq('delivery_id', deliveryId);
+              await supabase.from('qr_verifications').delete().eq('delivery_id', deliveryId);
+              await supabase.from('escrow_payments').delete().eq('delivery_id', deliveryId);
+              await supabase.from('deliveries').delete().eq('delivery_id', deliveryId);
+            }
             await supabase.from('delivery_requests').delete().eq('request_id', rawData.request_id);
             setSelectedDelivery(null);
             fetchData();
@@ -520,9 +652,6 @@ export default function ActivityScreen() {
     return 0;
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Tab Bar                                                             */
-  /* ------------------------------------------------------------------ */
   const renderTabBar = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
       {(['all', 'pending', 'active', 'completed'] as const).map((tab) => {
@@ -551,9 +680,6 @@ export default function ActivityScreen() {
     </ScrollView>
   );
 
-  /* ------------------------------------------------------------------ */
-  /* List View                                                           */
-  /* ------------------------------------------------------------------ */
   const renderListView = () => (
     <ScrollView
       contentContainerStyle={styles.listContainer}
@@ -674,7 +800,6 @@ export default function ActivityScreen() {
                       </View>
                     </View>
 
-                    {/* ✅ Receiver compact row (only when present) */}
                     {item.receiver && (
                       <View style={[styles.timelineItem, { marginTop: 14 }]}>
                         <View style={styles.iconWrapper}>
@@ -683,7 +808,7 @@ export default function ActivityScreen() {
                         <View style={styles.addressWrapper}>
                           <Text style={[styles.timelineLabel, { color: '#8B5CF6' }]}>RECEIVER</Text>
                           <Text style={styles.addressMain} numberOfLines={1}>
-                            {item.receiver.receiver_name || 'Receiver'}
+                            {item.receiver.receiver_name?.trim() || 'Receiver'}
                           </Text>
                           <Text style={styles.addressSub} numberOfLines={1}>
                             {item.receiver.receiver_phone || '—'}
@@ -738,9 +863,6 @@ export default function ActivityScreen() {
     </ScrollView>
   );
 
-  /* ------------------------------------------------------------------ */
-  /* Detail View                                                         */
-  /* ------------------------------------------------------------------ */
   const renderDetailView = () => {
     const pickupVerified =
       selectedDelivery?.qr?.pickup_verified === true ||
@@ -756,6 +878,23 @@ export default function ActivityScreen() {
       !!selectedDelivery?.qr &&
       !selectedDelivery?.qr?.pickup_verified &&
       !isCompleted;
+
+    const hasConfirmation = !!selectedDelivery?.confirmation;
+    const otpVerified = selectedDelivery?.confirmation?.otp_verified === true;
+
+    /* ✅ Display name fallback: prefer real name; only use "Receiver" if truly missing */
+    const receiverDisplayName =
+      selectedDelivery?.receiver?.receiver_name?.trim() ||
+      selectedDelivery?.receiver?.receiver_phone ||
+      'Receiver';
+
+    const receiverInitial = (() => {
+      const name = selectedDelivery?.receiver?.receiver_name?.trim();
+      if (name) return name.charAt(0).toUpperCase();
+      const phone = selectedDelivery?.receiver?.receiver_phone;
+      if (phone) return phone.replace(/\D/g, '').slice(-2) || 'R';
+      return 'R';
+    })();
 
     return (
       <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
@@ -788,7 +927,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* Pickup QR CTA */}
           {showPickupQRButton && (
             <TouchableOpacity
               style={styles.pickupQRCard}
@@ -815,7 +953,52 @@ export default function ActivityScreen() {
             </View>
           )}
 
-          {/* Map Card */}
+          {pickupVerified && !isCompleted && hasConfirmation && (
+            <TouchableOpacity
+              style={styles.deliveryOTPCard}
+              onPress={() => setShowDeliveryOTP(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.deliveryOTPHeader}>
+                <View style={styles.deliveryOTPIconBox}>
+                  <Ionicons
+                    name={otpVerified ? 'shield-checkmark' : 'lock-closed'}
+                    size={20}
+                    color={otpVerified ? '#22C55E' : '#7C3AED'}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.deliveryOTPTitle}>
+                    {otpVerified ? 'Delivery Confirmed' : 'Delivery Confirmation Code'}
+                  </Text>
+                  <Text style={styles.deliveryOTPSubtitle} numberOfLines={2}>
+                    {otpVerified
+                      ? 'Receiver has verified the delivery. Payment released.'
+                      : `Share this OTP with the receiver. They'll give it to the provider upon delivery.`}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={otpVerified ? '#22C55E' : '#7C3AED'} />
+              </View>
+
+              {!otpVerified && (
+                <View style={styles.deliveryOTPCodeBox}>
+                  <Text style={styles.deliveryOTPHintText}>
+                    Tap to view the code
+                  </Text>
+                </View>
+              )}
+
+              {otpVerified && selectedDelivery.confirmation.otp_verified_at && (
+                <View style={styles.deliveryOTPVerifiedRow}>
+                  <Ionicons name="checkmark-circle" size={16} color="#22C55E" />
+                  <Text style={styles.deliveryOTPVerifiedText}>
+                    Verified {new Date(selectedDelivery.confirmation.otp_verified_at).toLocaleString()}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity
             style={styles.detailMapCard}
             activeOpacity={0.9}
@@ -846,7 +1029,6 @@ export default function ActivityScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* Route Card */}
           <View style={styles.routeCard}>
             <View style={styles.routeTimeline}>
               <View style={styles.routeItem}>
@@ -873,7 +1055,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* ✅ Receiver Card */}
           {selectedDelivery?.receiver && (
             <View style={styles.receiverCard}>
               <View style={styles.receiverCardHeader}>
@@ -891,13 +1072,11 @@ export default function ActivityScreen() {
 
               <View style={styles.receiverCardRow}>
                 <View style={styles.receiverAvatar}>
-                  <Text style={styles.receiverAvatarText}>
-                    {(selectedDelivery.receiver.receiver_name || '?').trim().charAt(0).toUpperCase()}
-                  </Text>
+                  <Text style={styles.receiverAvatarText}>{receiverInitial}</Text>
                 </View>
                 <View style={styles.receiverInfo}>
                   <Text style={styles.receiverName} numberOfLines={1}>
-                    {selectedDelivery.receiver.receiver_name || 'Receiver'}
+                    {receiverDisplayName}
                   </Text>
                   <View style={styles.receiverContactRow}>
                     <Ionicons name="call-outline" size={12} color="#6B7280" />
@@ -923,7 +1102,6 @@ export default function ActivityScreen() {
           </View>
 
           <View style={styles.statusTimeline}>
-            {/* Step 1: Order Confirmed */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
@@ -935,7 +1113,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 2: Provider Matched */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[styles.statusDotLarge, { backgroundColor: selectedDelivery?.isMatched ? '#3B82F6' : '#F59E0B' }]} />
@@ -951,7 +1128,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 3: Item Collected */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
                 <View style={[
@@ -979,25 +1155,38 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* Step 4: Delivered */}
             <View style={styles.statusStep}>
               <View style={styles.statusIconContainer}>
-                <View style={[
-                  styles.statusDotLarge,
-                  isCompleted ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }
-                ]} />
+                <View style={[styles.statusDotLarge, {
+                  backgroundColor: otpVerified ? '#7C3AED' : '#D1D5DB'
+                }]} />
+                <View style={[styles.statusLine, otpVerified && { backgroundColor: '#7C3AED' }]} />
               </View>
               <View style={styles.statusTextContainer}>
                 <Text style={[
                   styles.statusStepTitle,
-                  isCompleted ? { color: '#111827' } : { color: '#9CA3AF' }
+                  otpVerified ? { color: '#111827' } : { color: '#9CA3AF' }
                 ]}>
-                  Delivered Successfully
+                  Receiver Confirmation
                 </Text>
                 <Text style={[
                   styles.statusStepTime,
-                  isCompleted ? { color: '#6B7280' } : { color: '#D1D5DB' }
+                  otpVerified ? { color: '#6B7280' } : { color: '#D1D5DB' }
                 ]}>
+                  {otpVerified ? 'OTP verified by receiver' : 'Waiting for receiver OTP'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.statusStep}>
+              <View style={styles.statusIconContainer}>
+                <View style={[styles.statusDotLarge, isCompleted ? { backgroundColor: '#22C55E' } : { backgroundColor: '#D1D5DB' }]} />
+              </View>
+              <View style={styles.statusTextContainer}>
+                <Text style={[styles.statusStepTitle, isCompleted ? { color: '#111827' } : { color: '#9CA3AF' }]}>
+                  Delivered Successfully
+                </Text>
+                <Text style={[styles.statusStepTime, isCompleted ? { color: '#6B7280' } : { color: '#D1D5DB' }]}>
                   {isCompleted ? 'Completed' : 'Awaiting delivery'}
                 </Text>
               </View>
@@ -1076,9 +1265,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Full Map View                                                       */
-  /* ------------------------------------------------------------------ */
   const renderFullMapView = () => {
     return (
       <View style={styles.fullMapContainer}>
@@ -1087,6 +1273,7 @@ export default function ActivityScreen() {
           pickupLng={selectedDelivery?.coords.pickup.longitude}
           dropoffLat={selectedDelivery?.coords.dropoff.latitude}
           dropoffLng={selectedDelivery?.coords.dropoff.longitude}
+          interactive={true}
         />
         <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
           <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
@@ -1101,9 +1288,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Pickup QR Modal (Sender side)                                       */
-  /* ------------------------------------------------------------------ */
   const renderPickupQRModal = () => (
     <Modal
       visible={showPickupQR}
@@ -1140,7 +1324,7 @@ export default function ActivityScreen() {
           )}
 
           <View style={styles.pinBox}>
-            <Text style={styles.pinBoxLabel}>Or share this 6‑digit PIN</Text>
+            <Text style={styles.pinBoxLabel}>Or share this PIN</Text>
             <Text style={styles.pinBoxValue}>
               {selectedDelivery?.qr?.pickup_pin || '------'}
             </Text>
@@ -1158,10 +1342,100 @@ export default function ActivityScreen() {
     </Modal>
   );
 
+  /* ============================================================
+   * ✅ FIX: Delivery OTP modal
+   *  - Contiguity does NOT return the OTP to us (only otp_id).
+   *  - So we cannot display the code on the sender side.
+   *  - Instead we show status + confirmation that OTP was sent.
+   *  - Sender shares the confirmation via their communication with
+   *    the receiver (the OTP arrives on the receiver's phone).
+   * ============================================================ */
+  const renderDeliveryOTPModal = () => {
+    if (!selectedDelivery?.confirmation) return null;
+    const otpVerified = selectedDelivery.confirmation.otp_verified;
+
+    return (
+      <Modal
+        visible={showDeliveryOTP}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowDeliveryOTP(false)}
+      >
+        <View style={styles.qrOverlay}>
+          <View style={styles.qrCard}>
+            <View style={styles.qrHeader}>
+              <Text style={styles.qrTitle}>
+                {otpVerified ? 'Delivery Confirmed' : 'Delivery Confirmation'}
+              </Text>
+              <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
+                <Ionicons name="close" size={24} color="#111827" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.qrSubtitle}>
+              {otpVerified
+                ? 'The receiver has confirmed delivery. Payment has been released to the provider.'
+                : 'A 6-digit OTP was sent directly to the receiver\'s phone. The provider will ask for it upon delivery.'}
+            </Text>
+
+            {otpVerified ? (
+              <View style={styles.otpVerifiedBigBox}>
+                <Ionicons name="checkmark-circle" size={64} color="#22C55E" />
+                <Text style={styles.otpVerifiedBigText}>Verified</Text>
+                {selectedDelivery.confirmation.otp_verified_at && (
+                  <Text style={styles.otpVerifiedBigTime}>
+                    {new Date(selectedDelivery.confirmation.otp_verified_at).toLocaleString()}
+                  </Text>
+                )}
+              </View>
+            ) : (
+              <>
+                <View style={styles.sentToReceiverBox}>
+                  <View style={styles.sentToReceiverIconRow}>
+                    <Ionicons name="phone-portrait-outline" size={20} color="#7C3AED" />
+                    <Ionicons name="arrow-forward" size={16} color="#9CA3AF" style={{ marginHorizontal: 8 }} />
+                    <Ionicons name="chatbubble-ellipses" size={20} color="#22C55E" />
+                  </View>
+                  <Text style={styles.sentToReceiverTitle}>OTP sent to receiver</Text>
+                  <Text style={styles.sentToReceiverPhone}>
+                    {selectedDelivery.receiver?.receiver_phone ||
+                      selectedDelivery.rawData?.receiver_phone ||
+                      '—'}
+                  </Text>
+                  <Text style={styles.sentToReceiverHint}>
+                    Ask the receiver to check their SMS when the provider arrives. They will share the 6-digit code with the provider to confirm delivery.
+                  </Text>
+                </View>
+
+                {selectedDelivery.confirmation.otp_expires_at && (
+                  <View style={styles.otpInfoRow}>
+                    <Ionicons name="time-outline" size={14} color="#6B7280" />
+                    <Text style={styles.otpInfoRowText}>
+                      Expires {new Date(selectedDelivery.confirmation.otp_expires_at).toLocaleString()}
+                    </Text>
+                  </View>
+                )}
+              </>
+            )}
+
+            <TouchableOpacity
+              style={styles.qrDoneBtn}
+              onPress={() => setShowDeliveryOTP(false)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.qrDoneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={showFullMap ? [] : ['top']}>
       {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
       {renderPickupQRModal()}
+      {renderDeliveryOTPModal()}
     </SafeAreaView>
   );
 }
@@ -1169,17 +1443,14 @@ export default function ActivityScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FAFAFA' },
 
-  /* Shared */
   blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
   blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
   statusDotSmall: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
 
-  /* List Header */
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 },
   pageTitle: { fontSize: 26, fontWeight: '800', color: '#111827', letterSpacing: -0.5 },
   pageSubtitle: { fontSize: 13, color: '#6B7280', fontWeight: '500', marginTop: 4 },
 
-  /* Search */
   searchBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
     borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14,
@@ -1188,7 +1459,6 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
 
-  /* Tab Bar */
   tabBarScroll: { gap: 8, paddingBottom: 4, marginBottom: 16 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center',
@@ -1206,7 +1476,6 @@ const styles = StyleSheet.create({
   tabCountText: { fontSize: 10, fontWeight: '800', color: '#6B7280' },
   tabCountTextActive: { color: '#FFFFFF' },
 
-  /* List */
   listContainer: { paddingHorizontal: 20, paddingBottom: 30, paddingTop: 20 },
   bottomSpacer: { height: 80 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
@@ -1216,7 +1485,6 @@ const styles = StyleSheet.create({
   noResultsText: { fontSize: 17, fontWeight: '700', color: '#111827', marginTop: 4, textAlign: 'center' },
   noResultsSubtext: { fontSize: 13, color: '#6B7280', marginTop: 6, textAlign: 'center', lineHeight: 18 },
 
-  /* Card */
   card: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 14,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
@@ -1269,7 +1537,6 @@ const styles = StyleSheet.create({
   },
   trackBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, letterSpacing: 0.2 },
 
-  /* Detail */
   detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 12 },
   detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   backBtn: {
@@ -1291,7 +1558,6 @@ const styles = StyleSheet.create({
   statusBadgeLarge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, gap: 6 },
   statusBadgeLargeText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
 
-  /* Pickup QR card */
   pickupQRCard: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: ORANGE, borderRadius: 18, padding: 14, marginBottom: 14, gap: 12,
@@ -1310,6 +1576,67 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#BBF7D0',
   },
   pickupVerifiedText: { color: '#166534', fontWeight: '700', fontSize: 12 },
+
+  deliveryOTPCard: {
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+  deliveryOTPHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deliveryOTPIconBox: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deliveryOTPTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#5B21B6',
+    marginBottom: 3,
+  },
+  deliveryOTPSubtitle: {
+    fontSize: 11,
+    color: '#7C3AED',
+    lineHeight: 15,
+    fontWeight: '500',
+  },
+  deliveryOTPCodeBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 14,
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+    borderStyle: 'dashed',
+  },
+  deliveryOTPHintText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#5B21B6',
+    letterSpacing: 0.2,
+  },
+  deliveryOTPVerifiedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+  },
+  deliveryOTPVerifiedText: {
+    fontSize: 11,
+    color: '#166534',
+    fontWeight: '600',
+  },
 
   detailMapCard: {
     width: '100%', height: 200, borderRadius: 20, overflow: 'hidden', marginBottom: 20,
@@ -1342,7 +1669,6 @@ const styles = StyleSheet.create({
   routeMain: { fontSize: 14, fontWeight: '700', color: '#111827', marginBottom: 2 },
   routeSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
 
-  /* ✅ Receiver Card */
   receiverCard: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 24,
     borderWidth: 1, borderColor: '#EDE9FE',
@@ -1446,7 +1772,6 @@ const styles = StyleSheet.create({
   },
   deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 
-  /* Full Map */
   fullMapContainer: { flex: 1 },
   topOverlay: {
     position: 'absolute', left: 20, right: 20,
@@ -1464,7 +1789,6 @@ const styles = StyleSheet.create({
   },
   statusPillText: { fontSize: 12, fontWeight: '700', color: '#111827' },
 
-  /* Pickup QR Modal */
   qrOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   qrCard: {
     width: '100%', maxWidth: 360, backgroundColor: '#FFF', borderRadius: 24, padding: 22, alignItems: 'center',
@@ -1488,4 +1812,74 @@ const styles = StyleSheet.create({
     width: '100%', backgroundColor: '#111827', paddingVertical: 14, borderRadius: 30, alignItems: 'center',
   },
   qrDoneBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+
+  otpVerifiedBigBox: {
+    width: '100%',
+    backgroundColor: '#F0FDF4',
+    borderRadius: 18,
+    paddingVertical: 30,
+    alignItems: 'center',
+    marginBottom: 18,
+    borderWidth: 1.5,
+    borderColor: '#BBF7D0',
+  },
+  otpVerifiedBigText: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#166534',
+    marginTop: 10,
+    letterSpacing: 0.5,
+  },
+  otpVerifiedBigTime: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 6,
+    fontWeight: '500',
+  },
+  sentToReceiverBox: {
+    width: '100%',
+    backgroundColor: '#F5F3FF',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#DDD6FE',
+  },
+  sentToReceiverIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  sentToReceiverTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#5B21B6',
+    marginBottom: 4,
+  },
+  sentToReceiverPhone: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: 0.3,
+    marginBottom: 10,
+  },
+  sentToReceiverHint: {
+    fontSize: 11,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  otpInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 18,
+  },
+  otpInfoRowText: {
+    fontSize: 11,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
 });

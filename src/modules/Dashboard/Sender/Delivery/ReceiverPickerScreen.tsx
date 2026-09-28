@@ -10,6 +10,15 @@ import { supabase } from '../../../../utils/supabase';
 
 const ORANGE = '#FA7A25';
 
+/** Normalize PH phone number to E.164 (+63XXXXXXXXXX) */
+const toE164 = (raw: string): string => {
+  let digits = (raw || '').replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = '63' + digits.slice(1);
+  else if (digits.startsWith('9') && digits.length === 10) digits = '63' + digits;
+  else if (!digits.startsWith('63') && digits.length === 10) digits = '63' + digits;
+  return '+' + digits;
+};
+
 export default function ReceiverPickerScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
@@ -19,16 +28,12 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Add-new form state
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newEmail, setNewEmail] = useState('');
 
   const selectedId = route.params?.selectedReceiverId || null;
 
-  /* ------------------------------------------------------------------ */
-  /* Fetch user + receivers                                              */
-  /* ------------------------------------------------------------------ */
   const fetchUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
@@ -64,16 +69,10 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     })();
   }, []);
 
-  /* ------------------------------------------------------------------ */
-  /* Pick a receiver                                                     */
-  /* ------------------------------------------------------------------ */
   const handlePick = (receiver: any) => {
     navigation.navigate('Booking', { pickedReceiver: receiver }, { merge: true });
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Add a new receiver                                                  */
-  /* ------------------------------------------------------------------ */
   const handleAddNew = async () => {
     if (!newName.trim()) return Alert.alert('Required', 'Please enter the receiver name.');
     if (!newPhone.trim()) return Alert.alert('Required', 'Please enter the receiver phone.');
@@ -82,12 +81,15 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setSaving(true);
       if (!userId) throw new Error('No user');
 
+      // ✅ Normalize phone to E.164 for Contiguity
+      const e164Phone = toE164(newPhone.trim());
+
       const { data, error } = await supabase
         .from('receivers')
         .insert({
           sender_id: userId,
           receiver_name: newName.trim(),
-          receiver_phone: newPhone.trim(),
+          receiver_phone: e164Phone,
           receiver_email: newEmail.trim() || null,
           is_favorite: false,
         })
@@ -101,7 +103,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setNewPhone('');
       setNewEmail('');
 
-      // Auto-pick the new one
       if (data) handlePick(data);
     } catch (e: any) {
       console.error('Add receiver error:', e);
@@ -111,9 +112,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Filter                                                              */
-  /* ------------------------------------------------------------------ */
   const filtered = receivers.filter(r => {
     if (!search.trim()) return true;
     const q = search.toLowerCase();
@@ -123,9 +121,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     );
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   const renderItem = ({ item }: any) => {
     const isSelected = item.receiver_id === selectedId;
     return (
@@ -142,9 +137,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
         <View style={{ flex: 1 }}>
           <View style={styles.itemNameRow}>
             <Text style={styles.itemName} numberOfLines={1}>{item.receiver_name}</Text>
-            {item.is_favorite && (
-              <Ionicons name="star" size={12} color="#F59E0B" />
-            )}
+            {item.is_favorite && <Ionicons name="star" size={12} color="#F59E0B" />}
           </View>
           <Text style={styles.itemPhone} numberOfLines={1}>{item.receiver_phone}</Text>
           {item.receiver_email ? (
@@ -162,26 +155,16 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.85}
-        >
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
           <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Select Receiver</Text>
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={() => setShowAddModal(true)}
-          activeOpacity={0.85}
-        >
+        <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddModal(true)} activeOpacity={0.85}>
           <Ionicons name="add" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
-      {/* Search */}
       <View style={styles.searchBar}>
         <Ionicons name="search-outline" size={18} color="#9CA3AF" />
         <TextInput
@@ -198,7 +181,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
         )}
       </View>
 
-      {/* List */}
       {loading ? (
         <View style={styles.loadingBox}>
           <ActivityIndicator size="large" color={ORANGE} />
@@ -238,7 +220,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
         />
       )}
 
-      {/* Add Receiver Modal */}
       <Modal
         visible={showAddModal}
         transparent
@@ -279,6 +260,9 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                   value={newPhone}
                   onChangeText={setNewPhone}
                 />
+                <Text style={styles.fieldHint}>
+                  We'll auto-format to +63 for SMS delivery
+                </Text>
               </View>
 
               <View style={styles.fieldGroup}>
@@ -363,14 +347,11 @@ const styles = StyleSheet.create({
     shadowColor: ORANGE, shadowOpacity: 0.15,
   },
   itemAvatar: {
-    width: 46, height: 46, borderRadius: 23,
-    backgroundColor: '#F3F4F6',
+    width: 46, height: 46, borderRadius: 23, backgroundColor: '#F3F4F6',
     justifyContent: 'center', alignItems: 'center',
   },
   itemAvatarSelected: { backgroundColor: ORANGE },
-  itemAvatarText: {
-    fontSize: 18, fontWeight: '800', color: '#FFFFFF',
-  },
+  itemAvatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
   itemNameRow: {
     flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2,
   },
@@ -407,14 +388,10 @@ const styles = StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  emptyCtaText: {
-    color: '#FFFFFF', fontWeight: '700', fontSize: 13,
-  },
+  emptyCtaText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
 
-  /* Modal */
   modalOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
   },
   modalCard: {
     backgroundColor: '#FFFFFF',
@@ -427,13 +404,15 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginBottom: 18,
   },
   modalTitle: {
-    fontSize: 18, fontWeight: '800', color: '#111827',
-    letterSpacing: -0.2,
+    fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.2,
   },
   fieldGroup: { marginBottom: 14 },
   fieldLabel: {
     fontSize: 12, fontWeight: '700', color: '#374151',
     marginBottom: 6, letterSpacing: 0.2,
+  },
+  fieldHint: {
+    fontSize: 10, color: '#9CA3AF', marginTop: 4, fontWeight: '500',
   },
   textInput: {
     backgroundColor: '#FFFFFF',

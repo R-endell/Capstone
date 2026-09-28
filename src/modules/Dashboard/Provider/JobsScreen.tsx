@@ -8,6 +8,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
@@ -50,10 +51,35 @@ interface Route {
   vehicle?: Vehicle;
 }
 
-const RouteMap = ({
-  startLat, startLng, endLat, endLng,
-  centerLat, centerLng,
-}: any) => {
+/* ------------------------------------------------------------------ */
+/* Timezone helpers                                                    */
+/* ------------------------------------------------------------------ */
+const toNaiveIsoString = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:00`;
+};
+
+const parseNaiveIsoString = (s: string): Date => {
+  if (!s) return new Date();
+  const parts = s.split(/[-T:+Z]/);
+  if (parts.length < 5) return new Date();
+  return new Date(
+    parseInt(parts[0], 10),
+    parseInt(parts[1], 10) - 1,
+    parseInt(parts[2], 10),
+    parseInt(parts[3], 10),
+    parseInt(parts[4], 10),
+  );
+};
+
+/* ==================================================================== */
+/* RouteMap — OSRM road-following route                                  */
+/* ==================================================================== */
+const RouteMap = ({ startLat, startLng, endLat, endLng, centerLat, centerLng }: any) => {
   const lat = startLat ?? endLat ?? centerLat ?? 10.3157;
   const lng = startLng ?? endLng ?? centerLng ?? 123.8854;
 
@@ -73,17 +99,38 @@ const RouteMap = ({
       <body>
         <div id="map"></div>
         <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${lat}, ${lng}], 14);
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${lat}, ${lng}], 13);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
           ${startLat && startLng ? `
             L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
           ` : ''}
           ${endLat && endLng ? `
             L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
           ` : ''}
+
           ${startLat && startLng && endLat && endLng ? `
-            L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.8, dashArray: '8, 8' }).addTo(map);
-            map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
+              + ${startLng} + ',' + ${startLat} + ';' 
+              + ${endLng} + ',' + ${endLat} 
+              + '?overview=full&geometries=geojson';
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                  L.polyline(latlngs, { color: '#FA7A25', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
+                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+              });
           ` : ''}
         </script>
       </body>
@@ -97,10 +144,15 @@ const RouteMap = ({
       style={{ flex: 1, backgroundColor: 'transparent' }}
       scrollEnabled={false}
       androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
     />
   );
 };
 
+/* ==================================================================== */
+/* JobsScreen                                                           */
+/* ==================================================================== */
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const [isOnline, setIsOnline] = useState(false);
@@ -114,6 +166,13 @@ export default function JobsScreen() {
   const [checkingMatches, setCheckingMatches] = useState(false);
 
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
+
+  // Departure confirmation sheet state
+  const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
+  const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
+  const [departureDate, setDepartureDate] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const sheetAnim = useRef(new Animated.Value(0)).current;
@@ -228,21 +287,17 @@ export default function JobsScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
-  // ✅ TRUE REALTIME: Listen for any change to delivery requests instantly
   useEffect(() => {
     if (!isOnline || !activeRoute) return;
 
-    refreshMatches(); // Initial load
+    refreshMatches();
 
     const channel = supabase
       .channel(`jobs-realtime-${Date.now()}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'delivery_requests' },
-        () => {
-          // Whenever ANY delivery request is created, updated, or deleted, recalculate matches instantly
-          refreshMatches();
-        }
+        () => { refreshMatches(); }
       )
       .subscribe();
 
@@ -257,7 +312,7 @@ export default function JobsScreen() {
     if (online && !activeRoute) {
       Alert.alert(
         'Select a Route',
-        'Please pick a route before going online. Your app will only match requests along that route.',
+        'Please pick a route before going online.',
         [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Pick Route', onPress: () => setRoutePickerVisible(true) },
@@ -289,11 +344,56 @@ export default function JobsScreen() {
     if (online) refreshMatches();
   };
 
-  const pickRoute = async (route: Route) => {
-    setActiveRoute(route);
-    await setActiveRouteId(route.route_id);
-    setRoutePickerVisible(false);
-    setTimeout(refreshMatches, 100);
+  /* ---- Route picker: user taps a route to confirm departure time ---- */
+  const openConfirmSheet = (route: Route) => {
+    setPendingRoute(route);
+    const dt = parseNaiveIsoString(route.departure_time);
+    setDepartureDate(dt);
+    setShowDatePicker(false);
+    setShowTimePicker(false);
+    setConfirmSheetVisible(true);
+  };
+
+  /* ---- Confirm: save new departure time, set active route, go online ---- */
+  const confirmDeparture = async () => {
+    if (!pendingRoute || !providerId) return;
+
+    try {
+      const departureValue = toNaiveIsoString(departureDate);
+
+      const { error: updateErr } = await supabase
+        .from('provider_routes')
+        .update({ departure_time: departureValue })
+        .eq('route_id', pendingRoute.route_id);
+      if (updateErr) throw updateErr;
+
+      // Reload with joined locations & vehicle
+      const { data: fullRoute } = await supabase
+        .from('provider_routes')
+        .select(`
+          *,
+          start_location:locations!provider_routes_start_location_id_fkey(*),
+          end_location:locations!provider_routes_end_location_id_fkey(*),
+          vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
+        `)
+        .eq('route_id', pendingRoute.route_id)
+        .single();
+
+      if (!fullRoute) throw new Error('Failed to reload route');
+
+      setActiveRoute(fullRoute as Route);
+      await setActiveRouteId(pendingRoute.route_id);
+      await supabase.from('users').update({ is_active: true }).eq('user_id', providerId);
+      setIsOnline(true);
+
+      setConfirmSheetVisible(false);
+      setRoutePickerVisible(false);
+      setPendingRoute(null);
+      setTimeout(refreshMatches, 200);
+    } catch (e: any) {
+      console.error('confirmDeparture error:', e);
+      Alert.alert('Error', e.message || 'Failed to set departure time');
+    }
   };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
@@ -362,7 +462,6 @@ export default function JobsScreen() {
         <Animated.View style={[styles.bottomSheet, fadeUp(sheetAnim, 40)]}>
           <View style={styles.dragHandle} />
 
-          {/* Matched packages banner */}
           {matchedCount > 0 && isOnline && (
             <Animated.View
               style={[
@@ -384,7 +483,6 @@ export default function JobsScreen() {
             </Animated.View>
           )}
 
-          {/* Vehicle / route row */}
           <View style={styles.vehicleRow}>
             <View style={styles.vehicleInfoLeft}>
               <View style={styles.vehicleIconBox}>
@@ -412,7 +510,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Route selector / CTA */}
           <View style={styles.dynamicContentArea}>
             {!isOnline ? (
               <View style={styles.offlineContainer}>
@@ -421,7 +518,9 @@ export default function JobsScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.offlineTextMain}>You are offline</Text>
-                  <Text style={styles.offlineTextSub}>Turn on to receive delivery offers.</Text>
+                  <Text style={styles.offlineTextSub}>
+                    Tap the switch to go online and start matching.
+                  </Text>
                 </View>
               </View>
             ) : !activeRoute ? (
@@ -457,6 +556,14 @@ export default function JobsScreen() {
                   <Text style={styles.activeRouteDesc} numberOfLines={1}>
                     {activeRoute.start_location?.street_address || ''} → {activeRoute.end_location?.street_address || ''}
                   </Text>
+                  <Text style={styles.activeRouteDeparture}>
+                    Departs {parseNaiveIsoString(activeRoute.departure_time).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
                 </View>
                 <Ionicons name="chevron-up" size={22} color="#FFFFFF" />
               </TouchableOpacity>
@@ -464,7 +571,9 @@ export default function JobsScreen() {
           </View>
         </Animated.View>
 
-        {/* Route Picker Modal */}
+        {/* ============================================================ */}
+        {/* Route Picker Modal                                            */}
+        {/* ============================================================ */}
         <Modal
           visible={routePickerVisible}
           transparent
@@ -493,11 +602,12 @@ export default function JobsScreen() {
                 <ScrollView showsVerticalScrollIndicator={false}>
                   {routes.map((r) => {
                     const isSelected = activeRoute?.route_id === r.route_id;
+                    const rDate = parseNaiveIsoString(r.departure_time);
                     return (
                       <TouchableOpacity
                         key={r.route_id}
                         style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
-                        onPress={() => pickRoute(r)}
+                        onPress={() => openConfirmSheet(r)}
                         activeOpacity={0.85}
                       >
                         <View
@@ -511,7 +621,7 @@ export default function JobsScreen() {
                             {r.start_location?.city || 'Start'} → {r.end_location?.city || 'End'}
                           </Text>
                           <Text style={styles.routeOptionSub} numberOfLines={1}>
-                            {new Date(r.departure_time).toLocaleString()} · {r.route_frequency}
+                            {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
                           </Text>
                           <Text style={styles.routeOptionAddr} numberOfLines={1}>
                             {r.start_location?.street_address} → {r.end_location?.street_address}
@@ -525,6 +635,123 @@ export default function JobsScreen() {
                   })}
                   <View style={{ height: 30 }} />
                 </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+
+        {/* ============================================================ */}
+        {/* Confirm Departure Time Sheet                                  */}
+        {/* ============================================================ */}
+        <Modal
+          visible={confirmSheetVisible}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setConfirmSheetVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
+              <View style={styles.routePickerHandle} />
+              <View style={styles.routePickerHeader}>
+                <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+                <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
+                  <Ionicons name="close" size={22} color="#111827" />
+                </TouchableOpacity>
+              </View>
+
+              {pendingRoute && (
+                <>
+                  <View style={styles.confirmRoutePreview}>
+                    <View style={styles.confirmRouteRow}>
+                      <View style={[styles.confirmDot, { backgroundColor: '#3B82F6' }]} />
+                      <Text style={styles.confirmRouteText} numberOfLines={1}>
+                        {pendingRoute.start_location?.street_address || 'Start'}
+                      </Text>
+                    </View>
+                    <View style={styles.confirmRouteLine} />
+                    <View style={styles.confirmRouteRow}>
+                      <View style={[styles.confirmDot, { backgroundColor: '#EF4444' }]} />
+                      <Text style={styles.confirmRouteText} numberOfLines={1}>
+                        {pendingRoute.end_location?.street_address || 'End'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.dateTimeRow}>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Date</Text>
+                      <TouchableOpacity
+                        style={styles.dateTimeButton}
+                        onPress={() => !showDatePicker && setShowDatePicker(true)}
+                      >
+                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>
+                          {departureDate.toLocaleDateString()}
+                        </Text>
+                      </TouchableOpacity>
+                      {showDatePicker && (
+                        <DateTimePicker
+                          value={departureDate}
+                          mode="date"
+                          display="default"
+                          minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
+                          onChange={(e, d) => {
+                            if (Platform.OS === 'android') setShowDatePicker(false);
+                            if (e.type === 'set' && d) {
+                              const merged = new Date(d);
+                              merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
+                              setDepartureDate(merged);
+                            }
+                          }}
+                        />
+                      )}
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Time</Text>
+                      <TouchableOpacity
+                        style={styles.dateTimeButton}
+                        onPress={() => !showTimePicker && setShowTimePicker(true)}
+                      >
+                        <Ionicons name="time-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>
+                          {departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </TouchableOpacity>
+                      {showTimePicker && (
+                        <DateTimePicker
+                          value={departureDate}
+                          mode="time"
+                          display="default"
+                          onChange={(e, t) => {
+                            if (Platform.OS === 'android') setShowTimePicker(false);
+                            if (e.type === 'set' && t) {
+                              const merged = new Date(departureDate);
+                              merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
+                              setDepartureDate(merged);
+                            }
+                          }}
+                        />
+                      )}
+                    </View>
+                  </View>
+
+                  <View style={styles.infoBox}>
+                    <Ionicons name="information-circle-outline" size={16} color="#1E40AF" />
+                    <Text style={styles.infoBoxText}>
+                      The app will match requests within ±5 minutes of this departure time.
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.confirmBtn}
+                    onPress={confirmDeparture}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                    <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
+                  </TouchableOpacity>
+                </>
               )}
             </View>
           </View>
@@ -608,7 +835,7 @@ const styles = StyleSheet.create({
   toggleContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   toggleText: { fontSize: 12, fontWeight: '700', color: '#111827' },
 
-  dynamicContentArea: { marginTop: 14, minHeight: 68, justifyContent: 'center' },
+  dynamicContentArea: { marginTop: 14, minHeight: 68, justifyContent: 'center', gap: 10 },
   offlineContainer: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB',
     borderRadius: 16, padding: 14, gap: 12, borderWidth: 1, borderColor: '#F3F4F6',
@@ -647,6 +874,7 @@ const styles = StyleSheet.create({
   },
   activeRouteTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: '800', marginBottom: 3, letterSpacing: -0.2 },
   activeRouteDesc: { color: 'rgba(255,255,255,0.9)', fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  activeRouteDeparture: { color: 'rgba(255,255,255,0.75)', fontSize: 10, marginTop: 3, fontWeight: '600', letterSpacing: 0.2 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   routePickerSheet: {
@@ -679,4 +907,48 @@ const styles = StyleSheet.create({
   routeOptionTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
   routeOptionSub: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500' },
   routeOptionAddr: { fontSize: 10, color: '#9CA3AF', marginTop: 2 },
+
+  /* Confirm departure sheet */
+  confirmSheet: {
+    backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 20, paddingTop: 10,
+  },
+  confirmRoutePreview: {
+    backgroundColor: '#F9FAFB', borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: '#F3F4F6', marginBottom: 16,
+  },
+  confirmRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  confirmDot: { width: 8, height: 8, borderRadius: 4 },
+  confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: '#111827' },
+  confirmRouteLine: {
+    width: 1, height: 14, backgroundColor: '#E5E7EB',
+    marginLeft: 3.5, marginVertical: 4,
+  },
+
+  dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
+  inputGroup: { flex: 1 },
+  inputLabel: { marginBottom: 6, fontWeight: '700', color: '#374151', fontSize: 11, letterSpacing: 0.2 },
+  dateTimeButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB',
+    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+  },
+  dateTimeValue: { fontSize: 13, color: '#111827', fontWeight: '600' },
+
+  infoBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: '#EFF6FF', borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: '#DBEAFE', marginBottom: 14,
+  },
+  infoBoxText: {
+    flex: 1, fontSize: 11, color: '#1E40AF', fontWeight: '600', lineHeight: 16,
+  },
+
+  confirmBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 16, borderRadius: 16, backgroundColor: ORANGE,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+  },
+  confirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: '800' },
 });
