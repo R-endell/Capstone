@@ -22,7 +22,7 @@ import { supabase } from '../../../utils/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /** Brand */
-const ORANGE = '#FA7A25';
+const ORANGE = '#FF751F';
 
 // Provider registration state
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
@@ -141,8 +141,6 @@ export default function AccountScreen() {
 
       if (error) throw error;
 
-      console.log('🔍 History query returned:', data?.length ?? 0, 'rows');
-
       const mapped = (data || []).map((r: any) => {
         const delivery = r.deliveries?.[0];
         const provider = delivery?.provider;
@@ -240,7 +238,6 @@ export default function AccountScreen() {
           const { data: { user } } = await supabase.auth.getUser();
           if (!user) return;
 
-          // Read name + avatar from user_metadata
           if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
           if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
           if (user.user_metadata?.avatar_url) {
@@ -256,31 +253,23 @@ export default function AccountScreen() {
             .eq('auth_id', user.id)
             .maybeSingle();
 
-          if (userError) {
-            console.error('Error fetching user:', userError);
-            return;
-          }
-          if (!userData) return;
+          if (userError || !userData) return;
 
           setUserId(userData.user_id);
 
-          // Prefer DB name if user_metadata was empty
           if (!user.user_metadata?.first_name && userData.first_name) {
             setFirstName(userData.first_name);
           }
           if (!user.user_metadata?.last_name && userData.last_name) {
             setLastName(userData.last_name);
           }
-          // Fallback avatar from DB if not in metadata
           if (!user.user_metadata?.avatar_url && userData.profile_photo) {
             setAvatarUrl(userData.profile_photo);
             setImageError(false);
           }
 
-          // Load history
           fetchHistory(userData.user_id);
 
-          // ---- Check role ----
           const { data: userRoles, error: rolesError } = await supabase
             .from('user_roles')
             .select(`
@@ -289,10 +278,7 @@ export default function AccountScreen() {
             `)
             .eq('user_id', userData.user_id);
 
-          if (rolesError) {
-            console.error('Error fetching roles:', rolesError);
-            return;
-          }
+          if (rolesError) return;
 
           const hasProviderRole = (userRoles || []).some(
             (ur: any) => ur.roles?.role_name === 'Provider'
@@ -304,7 +290,6 @@ export default function AccountScreen() {
             return;
           }
 
-          // ---- Has Provider role → check verification status ----
           setUserRole('Provider');
 
           const { data: verif, error: verifError } = await supabase
@@ -315,13 +300,7 @@ export default function AccountScreen() {
             .limit(1)
             .maybeSingle();
 
-          if (verifError) {
-            console.error('Error fetching verification:', verifError);
-            setProviderState('pending');
-            return;
-          }
-
-          if (!verif) {
+          if (verifError || !verif) {
             setProviderState('pending');
             return;
           }
@@ -341,6 +320,10 @@ export default function AccountScreen() {
         }
       };
       fetchUserData();
+
+      return () => {
+        StatusBar.setBarStyle('dark-content', true);
+      };
     }, [fetchHistory])
   );
 
@@ -378,34 +361,27 @@ export default function AccountScreen() {
     Alert.alert('Coming Soon', 'Payment methods will be available in a future update.');
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Provider-switch handler — THE KEY LOGIC                             */
-  /* ------------------------------------------------------------------ */
   const handleSwitchToProvider = async () => {
-    // Persist last mode (used by LoadingScreen to resume where user left off)
     await AsyncStorage.setItem('last_mode', 'provider');
 
     if (providerState === 'approved') {
-      // ✅ Verified — enter provider mode
       navigation.navigate('ProviderTabs', { screen: 'Jobs' });
       return;
     }
 
     if (providerState === 'pending') {
-      // ⏳ Awaiting admin approval — block, inform
       Alert.alert(
         'Awaiting Approval',
-        'Your provider application is pending admin review. You will be able to switch to Provider Mode once it has been approved.',
+        'Your provider application is pending admin review. You will be able to switch to Provider Mode once approved.',
         [{ text: 'OK' }]
       );
       return;
     }
 
     if (providerState === 'rejected') {
-      // ❌ Rejected — offer re-apply
       Alert.alert(
         'Application Rejected',
-        'Your previous provider application was rejected by an admin. You can submit a new application with updated documents.',
+        'Your previous provider application was rejected. You can submit a new application with updated documents.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -417,13 +393,9 @@ export default function AccountScreen() {
       return;
     }
 
-    // providerState === 'none' → not registered yet
     navigation.navigate('RegisterProvider');
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [
@@ -441,9 +413,6 @@ export default function AccountScreen() {
     outputRange: [1, 1.03],
   });
 
-  /* ------------------------------------------------------------------ */
-  /* Derived UI values                                                   */
-  /* ------------------------------------------------------------------ */
   const providerMenuTitle = (() => {
     switch (providerState) {
       case 'approved': return 'Switch to Provider Mode';
@@ -473,28 +442,26 @@ export default function AccountScreen() {
 
     return (
       <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+        <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-        <View style={[styles.historyHeader, { paddingTop: insets.top + 16 }]}>
+        <View style={[styles.historyHeader, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity
             onPress={() => setShowHistory(false)}
             style={styles.backBtn}
             activeOpacity={0.8}
           >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            <Ionicons name="arrow-back" size={22} color="#111827" />
           </TouchableOpacity>
-          <Text style={styles.historyHeaderTitle}>View History</Text>
+          <Text style={styles.historyHeaderTitle}>Delivery History</Text>
           <View style={{ width: 40 }} />
         </View>
 
-        <Animated.ScrollView
+        <ScrollView
           style={styles.historyContent}
           contentContainerStyle={styles.historyScroll}
           showsVerticalScrollIndicator={false}
         >
           <Animated.View style={{ opacity: historyAnim }}>
-            <Text style={styles.historyTitle}>History</Text>
-
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -527,17 +494,19 @@ export default function AccountScreen() {
 
             {historyLoading ? (
               <View style={styles.historyStateContainer}>
-                <ActivityIndicator color={ORANGE} />
+                <ActivityIndicator color={ORANGE} size="large" />
                 <Text style={styles.historyStateText}>Loading history...</Text>
               </View>
             ) : filteredHistory.length === 0 ? (
               <View style={styles.historyStateContainer}>
-                <Ionicons name="receipt-outline" size={48} color="#D1D5DB" />
+                <View style={styles.emptyIconBox}>
+                  <Ionicons name="receipt-outline" size={38} color={ORANGE} />
+                </View>
                 <Text style={styles.historyEmptyTitle}>No deliveries found</Text>
                 <Text style={styles.historyEmptySubtext}>
                   {historyFilter === 'All'
-                    ? 'Your deliveries will show up here.'
-                    : `No ${historyFilter.toLowerCase()} deliveries.`}
+                    ? 'Your past deliveries and receipts will show up here.'
+                    : `No ${historyFilter.toLowerCase()} deliveries found.`}
                 </Text>
               </View>
             ) : (
@@ -547,23 +516,9 @@ export default function AccountScreen() {
 
                   <View style={styles.hCardTopRow}>
                     <Text style={styles.hCardType}>{item.type}</Text>
-                    <View
-                      style={[
-                        styles.hStatusPill,
-                        { backgroundColor: item.statusBg },
-                      ]}
-                    >
-                      <Ionicons
-                        name={item.statusIcon}
-                        size={10}
-                        color={item.statusColor}
-                      />
-                      <Text
-                        style={[
-                          styles.hStatusText,
-                          { color: item.statusColor },
-                        ]}
-                      >
+                    <View style={[styles.hStatusPill, { backgroundColor: item.statusBg }]}>
+                      <Ionicons name={item.statusIcon} size={11} color={item.statusColor} />
+                      <Text style={[styles.hStatusText, { color: item.statusColor }]}>
                         {item.statusLabel.toUpperCase()}
                       </Text>
                     </View>
@@ -578,7 +533,7 @@ export default function AccountScreen() {
                           <View style={styles.blueDotInner} />
                         </View>
                         <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain}>{item.pickup}</Text>
+                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.pickup}</Text>
                           <Text style={styles.hAddressSub} numberOfLines={2}>
                             {item.pickupSub}
                           </Text>
@@ -589,35 +544,16 @@ export default function AccountScreen() {
                         <Ionicons
                           name="location"
                           size={16}
-                          color="#E11D48"
+                          color="#EF4444"
                           style={{ marginLeft: -1, marginRight: 6 }}
                         />
                         <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain}>{item.dropoff}</Text>
+                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.dropoff}</Text>
                           <Text style={styles.hAddressSub} numberOfLines={2}>
                             {item.dropoffSub}
                           </Text>
                         </View>
                       </View>
-                    </View>
-
-                    <View style={styles.hCardProvider}>
-                      <View style={styles.hAvatar}>
-                        <Ionicons name="person" size={22} color="#FFF" />
-                      </View>
-                      <Text style={styles.hProviderName} numberOfLines={2}>
-                        {item.provider}
-                      </Text>
-
-                      <TouchableOpacity style={styles.hActionRow}>
-                        <Text style={styles.hActionText}>Rate Provider</Text>
-                        <Ionicons name="arrow-forward" size={12} color="#000" />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity style={styles.hActionRow}>
-                        <Text style={styles.hActionText}>Report</Text>
-                        <Ionicons name="flag" size={12} color="#000" />
-                      </TouchableOpacity>
                     </View>
                   </View>
 
@@ -625,7 +561,7 @@ export default function AccountScreen() {
 
                   <View style={styles.hCardFooter}>
                     <View style={styles.hTrackingWrapper}>
-                      <Ionicons name="barcode-outline" size={12} color="#6B7280" />
+                      <Ionicons name="barcode-outline" size={13} color="#6B7280" />
                       <Text style={styles.hTracking}>{item.tracking}</Text>
                     </View>
                     <Text style={styles.hPrice}>₱{item.price}</Text>
@@ -634,130 +570,114 @@ export default function AccountScreen() {
               ))
             )}
           </Animated.View>
-        </Animated.ScrollView>
+        </ScrollView>
       </View>
     );
   }
 
   /* ------------------------------------------------------------------ */
-  /* Main Screen                                                         */
+  /* Main Screen (Fixed Top Profile/Header + Scrollable Menu Content)    */
   /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
+      {/* FIXED TOP SECTION (Non-scrollable: Header & Compact Profile Card with Inline Mode Badge) */}
       <Animated.View
         style={[
-          styles.mainHeader,
-          { paddingTop: insets.top + 20 },
+          styles.fixedTopContainer,
+          { paddingTop: Math.max(insets.top, 16) + 14 },
           fadeUp(headerAnim, 14),
         ]}
       >
-        <Animated.View style={{ transform: [{ scale: avatarScale }] }}>
-          <View style={styles.profilePicContainer}>
-            {avatarUrl && !imageError ? (
-              <Image
-                key={`avatar-${imgKey}`}
-                source={{ uri: avatarUrl, cache: 'reload' }}
-                style={styles.profileImage}
-                onError={(e) => {
-                  console.warn('Image load error details:', e.nativeEvent.error);
-                  setImageError(true);
-                }}
-              />
-            ) : (
-              <Ionicons name="person" size={36} color="#FFFFFF" />
-            )}
-          </View>
-        </Animated.View>
+        <View style={styles.headerTopBar}>
+          <Text style={styles.headerTitle}>My Profile</Text>
+        </View>
 
-        <View style={styles.nameContainer}>
-          <View style={styles.nameTextWrapper}>
-            <Text style={styles.profileName} numberOfLines={1}>
-              {firstName} {lastName}
-            </Text>
-            <Text style={styles.profileEmail} numberOfLines={1}>
-              {userEmail}
-            </Text>
+        {/* Compact Profile Card (Transparent background, no solid orange, with inline role badge) */}
+        <View style={styles.profileContainerCard}>
+          <View style={styles.profileRow}>
+            <Animated.View style={[{ transform: [{ scale: avatarScale }] }]}>
+              <View style={styles.profilePicContainer}>
+                {avatarUrl && !imageError ? (
+                  <Image
+                    key={`avatar-${imgKey}`}
+                    source={{ uri: avatarUrl, cache: 'reload' }}
+                    style={styles.profileImage}
+                    onError={() => setImageError(true)}
+                  />
+                ) : (
+                  <Ionicons name="person" size={28} color={ORANGE} />
+                )}
+              </View>
+            </Animated.View>
+
+            <View style={styles.nameContainer}>
+              <View style={styles.nameAndBadgeRow}>
+                <Text style={styles.profileName} numberOfLines={1}>
+                  {firstName} {lastName}
+                </Text>
+                <View
+                  style={[
+                    styles.roleBadgeInline,
+                    providerState === 'approved'
+                      ? styles.roleBadgeProvider
+                      : providerState === 'pending'
+                      ? styles.roleBadgePending
+                      : providerState === 'rejected'
+                      ? styles.roleBadgeRejected
+                      : styles.roleBadgeSender,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.roleBadgeTextInline,
+                      {
+                        color:
+                          providerState === 'approved'
+                            ? '#10B981'
+                            : providerState === 'pending'
+                            ? '#F59E0B'
+                            : providerState === 'rejected'
+                            ? '#EF4444'
+                            : ORANGE,
+                      },
+                    ]}
+                  >
+                    {providerState === 'approved'
+                      ? 'PROVIDER'
+                      : providerState === 'pending'
+                      ? 'PENDING'
+                      : providerState === 'rejected'
+                      ? 'REJECTED'
+                      : 'SENDER'}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.profileEmail} numberOfLines={1}>
+                {userEmail}
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.editIconBtn}
+              onPress={() => navigation.navigate('EditProfile')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="pencil" size={16} color="#4B5563" />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={styles.editIconBtn}
-            onPress={() => navigation.navigate('EditProfile')}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="pencil" size={15} color="#FFFFFF" />
-          </TouchableOpacity>
         </View>
       </Animated.View>
 
-      <Animated.ScrollView
+      {/* SCROLLABLE CONTENT SECTION (Account & Services, Preferences, etc.) */}
+      <ScrollView
         showsVerticalScrollIndicator={false}
         style={styles.mainContent}
         contentContainerStyle={styles.mainScrollContent}
       >
-        <Animated.View style={fadeUp(contentAnim, 20)}>
-          {/* Role Badge */}
-          <View style={styles.roleBadgeRow}>
-            <View
-              style={[
-                styles.roleBadge,
-                providerState === 'approved'
-                  ? styles.roleBadgeProvider
-                  : providerState === 'pending'
-                  ? styles.roleBadgePending
-                  : providerState === 'rejected'
-                  ? styles.roleBadgeRejected
-                  : styles.roleBadgeSender,
-              ]}
-            >
-              <Ionicons
-                name={
-                  providerState === 'approved'
-                    ? 'shield-checkmark'
-                    : providerState === 'pending'
-                    ? 'time-outline'
-                    : providerState === 'rejected'
-                    ? 'close-circle-outline'
-                    : 'cube-outline'
-                }
-                size={12}
-                color={
-                  providerState === 'approved'
-                    ? '#10B981'
-                    : providerState === 'pending'
-                    ? '#F59E0B'
-                    : providerState === 'rejected'
-                    ? '#EF4444'
-                    : ORANGE
-                }
-              />
-              <Text
-                style={[
-                  styles.roleBadgeText,
-                  {
-                    color:
-                      providerState === 'approved'
-                        ? '#10B981'
-                        : providerState === 'pending'
-                        ? '#F59E0B'
-                        : providerState === 'rejected'
-                        ? '#EF4444'
-                        : ORANGE,
-                  },
-                ]}
-              >
-                {providerState === 'approved'
-                  ? 'PROVIDER'
-                  : providerState === 'pending'
-                  ? 'PENDING'
-                  : providerState === 'rejected'
-                  ? 'REJECTED'
-                  : 'SENDER'}
-              </Text>
-            </View>
-          </View>
-
-          <Text style={styles.sectionTitle}>My Account</Text>
+        <Animated.View style={[styles.bodyContentWrapper, fadeUp(contentAnim, 20)]}>
+          <Text style={styles.sectionTitle}>Account & Services</Text>
 
           {/* Menu Card */}
           <View style={styles.menuCard}>
@@ -768,7 +688,7 @@ export default function AccountScreen() {
             >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FFF7ED' }]}>
-                  <Ionicons name="swap-horizontal-outline" size={18} color={ORANGE} />
+                  <Ionicons name="swap-horizontal-outline" size={19} color={ORANGE} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>{providerMenuTitle}</Text>
@@ -800,7 +720,7 @@ export default function AccountScreen() {
               )}
 
               {providerState === 'none' && (
-                <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+                <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
               )}
             </TouchableOpacity>
 
@@ -813,14 +733,14 @@ export default function AccountScreen() {
             >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#EFF6FF' }]}>
-                  <Ionicons name="card-outline" size={18} color="#3B82F6" />
+                  <Ionicons name="card-outline" size={19} color="#3B82F6" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Payment Methods</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -832,20 +752,20 @@ export default function AccountScreen() {
             >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F0FDF4' }]}>
-                  <Ionicons name="time-outline" size={18} color="#10B981" />
+                  <Ionicons name="time-outline" size={19} color="#10B981" />
                 </View>
                 <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>View History</Text>
+                  <Text style={styles.menuText}>Delivery History</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>
                     Past deliveries & receipts
                   </Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.sectionTitle, { marginTop: 24 }]}>General</Text>
+          <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Preferences & System</Text>
 
           <View style={styles.menuCard}>
             <TouchableOpacity
@@ -855,7 +775,7 @@ export default function AccountScreen() {
             >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#F3F4F6' }]}>
-                  <Ionicons name="settings-outline" size={18} color="#6B7280" />
+                  <Ionicons name="settings-outline" size={19} color="#6B7280" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Settings</Text>
@@ -864,7 +784,7 @@ export default function AccountScreen() {
                   </Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
+              <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -876,7 +796,7 @@ export default function AccountScreen() {
             >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FEF2F2' }]}>
-                  <Ionicons name="log-out-outline" size={18} color="#EF4444" />
+                  <Ionicons name="log-out-outline" size={19} color="#EF4444" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.logoutText}>Log out</Text>
@@ -885,101 +805,101 @@ export default function AccountScreen() {
                   </Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={20} color="#FCA5A5" />
+              <Ionicons name="chevron-forward" size={18} color="#FCA5A5" />
             </TouchableOpacity>
           </View>
 
           <Text style={styles.versionText}>Pack-N-Ship · v1.0.0</Text>
         </Animated.View>
-      </Animated.ScrollView>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+  container: { flex: 1, backgroundColor: '#F9FAFB' },
 
-  mainHeader: {
-    backgroundColor: ORANGE,
+  fixedTopContainer: {
+    backgroundColor: 'transparent',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  headerTopBar: {
+    marginBottom: 14,
+  },
+  headerTitle: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.5,
+  },
+  profileContainerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingBottom: 80,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
   },
   profilePicContainer: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 16,
+    marginRight: 12,
     overflow: 'hidden',
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 5,
+    borderWidth: 1.5,
+    borderColor: '#FFE4D2',
   },
   profileImage: { width: '100%', height: '100%' },
   nameContainer: {
     flex: 1,
+    marginRight: 8,
+    justifyContent: 'center',
+  },
+  nameAndBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 8,
+    flexWrap: 'wrap',
   },
-  nameTextWrapper: { flex: 1, marginRight: 8 },
   profileName: {
-    fontSize: 19,
+    fontSize: 16,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#111827',
     letterSpacing: -0.2,
   },
   profileEmail: {
     fontSize: 12,
-    color: '#FFE0C7',
+    color: '#6B7280',
     fontWeight: '500',
-    marginTop: 3,
+    marginTop: 2,
   },
   editIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.35)',
+    borderColor: '#E5E7EB',
   },
 
-  mainContent: { flex: 1, marginTop: -50 },
-  mainScrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 0,
-    paddingBottom: 120,
-  },
-
-  roleBadgeRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginBottom: 30,
-  },
-  roleBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 4,
+  roleBadgeInline: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
     borderWidth: 1,
   },
   roleBadgeProvider: {
@@ -998,14 +918,23 @@ const styles = StyleSheet.create({
     backgroundColor: '#FEF2F2',
     borderColor: '#FECACA',
   },
-  roleBadgeText: {
-    fontSize: 10,
+  roleBadgeTextInline: {
+    fontSize: 9,
     fontWeight: '800',
-    letterSpacing: 0.8,
+    letterSpacing: 0.6,
+  },
+
+  mainContent: { flex: 1 },
+  mainScrollContent: {
+    paddingBottom: 40,
+  },
+  bodyContentWrapper: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
   },
 
   sectionTitle: {
-    fontSize: 19,
+    fontSize: 16,
     fontWeight: '800',
     color: '#111827',
     marginBottom: 12,
@@ -1014,16 +943,16 @@ const styles = StyleSheet.create({
 
   menuCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 22,
+    borderRadius: 20,
     paddingHorizontal: 6,
     paddingVertical: 4,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 16,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
   },
   menuItem: {
     flexDirection: 'row',
@@ -1031,7 +960,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 14,
     paddingHorizontal: 10,
-    borderRadius: 16,
+    borderRadius: 14,
   },
   menuItemLeft: {
     flexDirection: 'row',
@@ -1055,31 +984,31 @@ const styles = StyleSheet.create({
   },
   menuSubtext: {
     fontSize: 12,
-    color: '#9CA3AF',
+    color: '#6B7280',
     marginTop: 2,
     fontWeight: '500',
   },
   menuDivider: {
     height: 1,
     backgroundColor: '#F3F4F6',
-    marginLeft: 68,
-    marginRight: 12,
+    marginLeft: 66,
+    marginRight: 10,
   },
   providerBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ECFDF5',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    gap: 4,
     borderWidth: 1,
     borderColor: '#A7F3D0',
   },
   providerBadgeDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#10B981',
   },
   providerBadgeText: {
@@ -1092,10 +1021,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFBEB',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    gap: 4,
     borderWidth: 1,
     borderColor: '#FDE68A',
   },
@@ -1109,10 +1038,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF2F2',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    gap: 4,
     borderWidth: 1,
     borderColor: '#FECACA',
   },
@@ -1132,7 +1061,8 @@ const styles = StyleSheet.create({
     color: '#9CA3AF',
     fontSize: 11,
     fontWeight: '600',
-    marginTop: 28,
+    marginTop: 24,
+    marginBottom: 20,
     letterSpacing: 0.5,
   },
 
@@ -1141,42 +1071,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingBottom: 20,
-    backgroundColor: ORANGE,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: '#E5E7EB',
   },
   historyHeaderTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#111827',
     letterSpacing: -0.2,
   },
   historyContent: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F9FAFB',
   },
   historyScroll: {
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 16,
     paddingBottom: 40,
-  },
-  historyTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#000',
-    marginBottom: 12,
-    letterSpacing: -0.3,
   },
 
   historyStateContainer: {
@@ -1185,6 +1108,15 @@ const styles = StyleSheet.create({
     paddingVertical: 60,
     paddingHorizontal: 20,
   },
+  emptyIconBox: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
   historyStateText: {
     marginTop: 12,
     fontSize: 13,
@@ -1192,31 +1124,31 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   historyEmptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#374151',
-    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 4,
   },
   historyEmptySubtext: {
-    fontSize: 12,
-    color: '#9CA3AF',
-    marginTop: 4,
+    fontSize: 13,
+    color: '#6B7280',
     textAlign: 'center',
+    lineHeight: 18,
   },
 
   historyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 16,
     paddingLeft: 20,
-    marginBottom: 14,
+    marginBottom: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.07,
-    shadowRadius: 12,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
     overflow: 'hidden',
     position: 'relative',
   },
@@ -1227,8 +1159,6 @@ const styles = StyleSheet.create({
     bottom: 0,
     width: 4,
     backgroundColor: ORANGE,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
   },
   hCardTopRow: {
     flexDirection: 'row',
@@ -1240,7 +1170,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#6B7280',
     fontWeight: '600',
-    letterSpacing: 0.2,
     flex: 1,
     marginRight: 8,
   },
@@ -1258,21 +1187,20 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   hCardDate: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
-    color: '#000',
-    marginBottom: 16,
-    letterSpacing: -0.2,
+    color: '#111827',
+    marginBottom: 12,
   },
   hCardBody: { flexDirection: 'row', justifyContent: 'space-between' },
-  hCardTimeline: { flex: 1, paddingRight: 10 },
+  hCardTimeline: { flex: 1 },
   hTimelinePoint: { flexDirection: 'row', alignItems: 'flex-start' },
   blueDot: {
     width: 14,
     height: 14,
     borderRadius: 7,
     borderWidth: 3,
-    borderColor: '#0000CC',
+    borderColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 8,
@@ -1289,31 +1217,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
     gap: 6,
   },
   filterChipActive: {
     backgroundColor: ORANGE,
     borderColor: ORANGE,
     shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
   },
   filterChipText: {
     fontSize: 12,
     fontWeight: '700',
     color: '#4B5563',
-    letterSpacing: 0.2,
   },
   filterChipTextActive: {
     color: '#FFFFFF',
   },
   filterCount: {
-    backgroundColor: '#E5E7EB',
+    backgroundColor: '#F3F4F6',
     minWidth: 20,
     height: 20,
     borderRadius: 10,
@@ -1332,32 +1259,11 @@ const styles = StyleSheet.create({
   filterCountTextActive: {
     color: '#FFFFFF',
   },
-  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
-  hTimelineLine: { width: 1, height: 20, backgroundColor: '#D1D5DB', marginLeft: 6, marginVertical: 2 },
+  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#2563EB' },
+  hTimelineLine: { width: 1, height: 18, backgroundColor: '#E5E7EB', marginLeft: 6, marginVertical: 2 },
   hAddressWrapper: { flex: 1 },
-  hAddressMain: { fontSize: 14, fontWeight: '700', color: '#000', marginBottom: 2 },
-  hAddressSub: { fontSize: 9, color: '#6B7280', lineHeight: 12 },
-  hCardProvider: { width: 100, alignItems: 'center' },
-  hAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#D97706',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 6,
-    borderWidth: 2,
-    borderColor: '#FFFBEB',
-  },
-  hProviderName: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#000',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  hActionRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  hActionText: { fontSize: 9, color: '#000', marginRight: 4, fontWeight: '600' },
+  hAddressMain: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
+  hAddressSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
   hCardDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
   hCardFooter: {
     flexDirection: 'row',
@@ -1374,5 +1280,5 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   hTracking: { fontSize: 11, color: '#6B7280', fontWeight: '600', letterSpacing: 0.3 },
-  hPrice: { fontSize: 16, fontWeight: '800', color: '#111827' },
+  hPrice: { fontSize: 15, fontWeight: '800', color: '#111827' },
 });

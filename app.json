@@ -8,7 +8,11 @@
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points.",
+        "NSCameraUsageDescription": "Allow Pack-N-Ship to take photos of your package."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -35,7 +39,13 @@
       "expo-web-browser",
       "expo-sqlite",
       "expo-status-bar",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
+        }
+      ]
     ]
   }
 }

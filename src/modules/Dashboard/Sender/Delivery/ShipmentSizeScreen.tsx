@@ -1,33 +1,57 @@
-import React, { useRef, useEffect } from 'react';
+// src/modules/Dashboard/Sender/Delivery/ShipmentSizeScreen.tsx
+import React, { useRef, useEffect, useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  FlatList,
+  ScrollView,
   Image,
   Dimensions,
   Animated,
   Easing,
   StatusBar,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#FA7A25';
+const ORANGE = '#F27024';
 
 const SIZE_META = {
-  Small: { icon: 'cube-outline', range: 'Less than 5 kg', color: '#3B82F6', bg: '#EFF6FF' },
-  Medium: { icon: 'cube', range: '5 – 20 kg', color: ORANGE, bg: '#FFF7ED' },
-  Large: { icon: 'file-tray-full-outline', range: 'More than 20 kg', color: '#8B5CF6', bg: '#F5F3FF' },
+  Small: { 
+    image: require('../../../../../assets/package-size.png'), 
+    range: 'Less than 5 kg', 
+    color: '#3B82F6', 
+    bg: '#EFF6FF',
+    imgSize: 26 
+  },
+  Medium: { 
+    image: require('../../../../../assets/package-size.png'), 
+    range: '5 – 20 kg', 
+    color: ORANGE, 
+    bg: '#FFF7ED',
+    imgSize: 36 
+  },
+  Large: { 
+    image: require('../../../../../assets/package-size.png'), 
+    range: 'More than 20 kg', 
+    color: '#8B5CF6', 
+    bg: '#F5F3FF',
+    imgSize: 48 
+  },
 } as const;
 
 export default function ShipmentSizeScreen({ navigation }: any) {
   const { state, dispatch } = useSchedule();
   const mode = state.mode;
   const insets = useSafeAreaInsets();
+
+  // Modal States
+  const [selectedItem, setSelectedItem] = useState<any>(null);
+  const [fullScreenImage, setFullScreenImage] = useState<any>(null);
 
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -93,44 +117,42 @@ export default function ShipmentSizeScreen({ navigation }: any) {
     dispatch({ type: 'REMOVE_ITEM', payload: id });
   };
 
-  const getTotalWeight = () => {
-    if (!state.items.length) return 0;
-    return state.items.length * 3;
-  };
-
   /* ------------------------------------------------------------------ */
   /* Render Item                                                         */
   /* ------------------------------------------------------------------ */
-  const renderItem = ({ item }: any) => {
+  const renderItem = (item: any) => {
     const meta = SIZE_META[item.size as keyof typeof SIZE_META] || SIZE_META.Small;
     return (
-      <View style={styles.itemCard}>
-        {/* Size icon */}
-        <View style={[styles.itemSizeIcon, { backgroundColor: meta.bg }]}>
-          {item.photoUri ? (
-            <Image source={{ uri: item.photoUri }} style={styles.itemPhoto} />
-          ) : (
-            <Ionicons name={meta.icon as any} size={18} color={meta.color} />
-          )}
-        </View>
-
-        {/* Info */}
-        <View style={styles.itemInfo}>
-          <View style={styles.itemTopRow}>
-            <Text style={styles.itemSizeLabel}>{item.size} item</Text>
-            {item.fragile && (
-              <View style={styles.fragileTag}>
-                <Ionicons name="warning-outline" size={9} color="#EF4444" />
-                <Text style={styles.fragileTagText}>Fragile</Text>
-              </View>
+      <View key={item.id} style={styles.itemCard}>
+        <TouchableOpacity
+          style={styles.itemCardContent}
+          activeOpacity={0.7}
+          onPress={() => setSelectedItem(item)}
+        >
+          <View style={[styles.itemSizeIcon, { backgroundColor: meta.bg }]}>
+            {item.photoUri ? (
+              <Image source={{ uri: item.photoUri }} style={styles.itemPhoto} />
+            ) : (
+              <Image source={meta.image} style={styles.itemPhotoPlaceholder} resizeMode="contain" />
             )}
           </View>
-          <Text style={styles.itemDesc} numberOfLines={1}>
-            {item.description || 'No description'}
-          </Text>
-        </View>
 
-        {/* Remove */}
+          <View style={styles.itemInfo}>
+            <View style={styles.itemTopRow}>
+              <Text style={styles.itemSizeLabel}>{item.size} item</Text>
+              {item.fragile && (
+                <View style={styles.fragileTag}>
+                  <Ionicons name="warning-outline" size={9} color="#EF4444" />
+                  <Text style={styles.fragileTagText}>Fragile</Text>
+                </View>
+              )}
+            </View>
+            <Text style={styles.itemDesc} numberOfLines={1}>
+              {item.description || 'No description'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+
         <TouchableOpacity
           onPress={() => removeItem(item.id)}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -158,7 +180,11 @@ export default function ShipmentSizeScreen({ navigation }: any) {
           activeOpacity={0.85}
         >
           <View style={[styles.sizeIconCircle, { backgroundColor: meta.bg }]}>
-            <Ionicons name={meta.icon as any} size={26} color={meta.color} />
+            <Image 
+              source={meta.image} 
+              style={{ width: meta.imgSize, height: meta.imgSize }} 
+              resizeMode="contain" 
+            />
             {count > 0 && (
               <View style={[styles.countBadge, { backgroundColor: meta.color }]}>
                 <Text style={styles.countBadgeText}>{count}</Text>
@@ -180,59 +206,63 @@ export default function ShipmentSizeScreen({ navigation }: any) {
       <Animated.View
         style={[
           styles.headerBackground,
-          { paddingTop: insets.top + 10 },
+          { paddingTop: insets.top + 12 },
           fadeUp(headerAnim, -14),
         ]}
       >
-        <View style={styles.stepRow}>
-          <View style={styles.stepPill}>
-            <Text style={styles.stepText}>STEP 2 OF 4</Text>
+        <View style={styles.headerInnerContent}>
+          <View style={styles.stepRow}>
+            <View style={styles.stepPill}>
+              <Text style={styles.stepText}>STEP 2 OF 4</Text>
+            </View>
           </View>
-        </View>
 
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSub}>
-              {mode === 'sendNow' ? 'Send Package Now' : 'Schedule Delivery'}
-            </Text>
-            <Text style={styles.headerTitle}>Shipment Size</Text>
+          <View style={styles.headerTopRow}>
+            <TouchableOpacity
+              onPress={() => navigation.goBack()}
+              style={styles.backButton}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.headerSub}>
+                {mode === 'sendNow' ? 'Send Package Now' : 'Schedule Delivery'}
+              </Text>
+              <Text style={styles.headerTitle}>Shipment Size</Text>
+            </View>
           </View>
-        </View>
 
-        <Text style={styles.headerSubtitle}>
-          Add the items you're sending so we can estimate your cost.
-        </Text>
+          <Text style={styles.headerSubtitle}>
+            Add the items you're sending so we can estimate your cost.
+          </Text>
+        </View>
 
         <Animated.Image
-          source={require('../../../../../assets/Car-Grey.png')}
-          style={[styles.carImage, carSlide]}
+          source={require('../../../../../assets/Car-Grey.png')} 
+          style={[styles.headerGraphicImage, carSlide]}
+          resizeMode="contain"
         />
       </Animated.View>
 
-      {/* Content */}
-      <View style={styles.contentContainer}>
+      {/* Scrollable Content Container */}
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <Animated.View style={[styles.card, fadeUp(titleAnim, 20)]}>
-          {/* Card Header */}
-          <View style={styles.cardTitleRow}>
-            <View style={styles.cardIconBox}>
-              <Ionicons name="cube-outline" size={22} color={ORANGE} />
-            </View>
-            <View style={{ flex: 1 }}>
+          
+          <View style={styles.textTitleContainer}>
+            <View style={styles.titleWithBadge}>
               <Text style={styles.cardTitle}>What's in your shipment?</Text>
-              <Text style={styles.cardSubtitle}>Tap a size to add an item</Text>
+              {state.items.length > 0 && (
+                <View style={styles.totalBadge}>
+                  <Text style={styles.totalBadgeText}>{state.items.length}</Text>
+                </View>
+              )}
             </View>
-            {state.items.length > 0 && (
-              <View style={styles.totalBadge}>
-                <Text style={styles.totalBadgeText}>{state.items.length}</Text>
-              </View>
-            )}
+            <Text style={styles.cardSubtitle}>Tap a size below to add an item</Text>
           </View>
 
           {/* Size Options */}
@@ -254,7 +284,11 @@ export default function ShipmentSizeScreen({ navigation }: any) {
             {state.items.length === 0 ? (
               <View style={styles.emptyDashedBox}>
                 <View style={styles.emptyIconCircle}>
-                  <Ionicons name="cube-outline" size={28} color={ORANGE} />
+                  <Image 
+                    source={require('../../../../../assets/package-size.png')} 
+                    style={styles.emptyImagePlaceholder} 
+                    resizeMode="contain"
+                  />
                 </View>
                 <Text style={styles.emptyTitle}>No items yet</Text>
                 <Text style={styles.emptyText}>
@@ -262,14 +296,9 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                 </Text>
               </View>
             ) : (
-              <FlatList
-                data={state.items}
-                keyExtractor={(item) => item.id}
-                renderItem={renderItem}
-                showsVerticalScrollIndicator={false}
-                style={{ flex: 1 }}
-                contentContainerStyle={{ paddingBottom: 12 }}
-              />
+              <View style={{ width: '100%' }}>
+                {state.items.map((item: any) => renderItem(item))}
+              </View>
             )}
           </Animated.View>
 
@@ -291,39 +320,129 @@ export default function ShipmentSizeScreen({ navigation }: any) {
               }}
               activeOpacity={0.9}
             >
-              <Text style={styles.confirmButtonText}>Continue</Text>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <Text style={[
+                  styles.confirmButtonText, 
+                  state.items.length === 0 && styles.confirmButtonTextDisabled
+                ]}>Continue</Text>
+              <Ionicons 
+                name="arrow-forward" 
+                size={16} 
+                color={state.items.length === 0 ? '#9CA3AF' : '#FFFFFF'} 
+              />
             </TouchableOpacity>
           </Animated.View>
         </Animated.View>
-      </View>
+      </ScrollView>
+
+      {/* Item Review Modal */}
+      <Modal visible={!!selectedItem} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setSelectedItem(null)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.modalContent}>
+            {selectedItem && (
+              <>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Item Details</Text>
+                  <TouchableOpacity onPress={() => setSelectedItem(null)} style={styles.modalCloseBtn}>
+                    <Ionicons name="close" size={20} color="#6B7280" />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.modalBody}>
+                  <TouchableOpacity 
+                    style={[styles.modalIconBox, { backgroundColor: SIZE_META[selectedItem.size as keyof typeof SIZE_META].bg }]}
+                    activeOpacity={0.8}
+                    onPress={() => setFullScreenImage(selectedItem)}
+                  >
+                    {selectedItem.photoUri ? (
+                      <Image source={{ uri: selectedItem.photoUri }} style={styles.modalPhoto} />
+                    ) : (
+                      <Image
+                        source={SIZE_META[selectedItem.size as keyof typeof SIZE_META].image}
+                        style={styles.modalImagePlaceholder}
+                        resizeMode="contain"
+                      />
+                    )}
+                    <View style={styles.zoomIconIndicator}>
+                      <Ionicons name="expand-outline" size={14} color="#FFFFFF" />
+                    </View>
+                  </TouchableOpacity>
+                  
+                  <Text style={styles.modalSize}>{selectedItem.size} Package</Text>
+                  <Text style={styles.modalDesc}>{selectedItem.description || 'No specific description provided.'}</Text>
+
+                  {selectedItem.fragile && (
+                    <View style={styles.modalFragileLarge}>
+                      <Ionicons name="warning" size={16} color="#EF4444" />
+                      <Text style={styles.modalFragileTextLarge}>This item is marked as fragile</Text>
+                    </View>
+                  )}
+                </View>
+              </>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Full-Screen Image Viewer Modal */}
+      <Modal visible={!!fullScreenImage} transparent animationType="fade">
+        <View style={styles.fsOverlay}>
+          <TouchableOpacity 
+            style={StyleSheet.absoluteFill} 
+            activeOpacity={1} 
+            onPress={() => setFullScreenImage(null)} 
+          />
+          
+          <TouchableOpacity style={styles.fsCloseBtn} onPress={() => setFullScreenImage(null)}>
+            <Ionicons name="close" size={28} color="#FFFFFF" />
+          </TouchableOpacity>
+
+          {fullScreenImage && (
+            <Image
+              source={
+                fullScreenImage.photoUri 
+                  ? { uri: fullScreenImage.photoUri } 
+                  : SIZE_META[fullScreenImage.size as keyof typeof SIZE_META].image
+              }
+              style={styles.fsImage}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
+
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
-
-  /* ------------------------------------------------------------------ */
-  /* Header                                                              */
-  /* ------------------------------------------------------------------ */
+  container: { 
+    flex: 1, 
+    backgroundColor: '#FFFFFF',
+    position: 'relative', 
+  },
   headerBackground: {
     backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 80,
     position: 'relative',
-    overflow: 'visible',
-    height: 260,
+    overflow: 'hidden',
+    paddingBottom: 22,
     zIndex: 1,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
   },
-  stepRow: { flexDirection: 'row', marginBottom: 14 },
+  headerInnerContent: {
+    paddingHorizontal: 24,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    marginBottom: 10,
+  },
   stepPill: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
   },
@@ -331,18 +450,18 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
     gap: 12,
   },
   backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -366,75 +485,59 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#FFE0C7',
     lineHeight: 18,
-    maxWidth: '65%',
+    maxWidth: '52%',
     fontWeight: '500',
   },
-  carImage: {
+  headerGraphicImage: {
     position: 'absolute',
-    right: -30,
-    bottom: 10,
-    width: 240,
-    height: 120,
-    resizeMode: 'contain',
+    right: -45,
+    bottom: -10,
+    width: 220, 
+    height: 145,
     zIndex: 2,
-    opacity: 0.85,
   },
-
-  /* ------------------------------------------------------------------ */
-  /* Content                                                             */
-  /* ------------------------------------------------------------------ */
-  contentContainer: {
+  scrollView: {
     flex: 1,
-    paddingHorizontal: 20,
+    backgroundColor: '#FFFFFF',
+    zIndex: 3,
+    elevation: 3,
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
     paddingTop: 24,
-    zIndex: 0,
+    paddingBottom: 40,
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
-    flex: 1,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderRadius: 0,
+    padding: 0,
   },
-
-  /* Card Header */
-  cardTitleRow: {
+  textTitleContainer: {
+    marginBottom: 20,
+    paddingBottom: 4,
+  },
+  titleWithBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    marginBottom: 20,
-  },
-  cardIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
+    marginBottom: 4,
   },
   cardTitle: {
-    fontSize: 15,
+    fontSize: 18,
     fontWeight: '800',
     color: '#111827',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   cardSubtitle: {
-    fontSize: 11,
+    fontSize: 13,
     color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 2,
+    fontWeight: '400',
+    lineHeight: 18,
   },
   totalBadge: {
-    minWidth: 28,
-    height: 28,
-    borderRadius: 14,
+    minWidth: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: ORANGE,
     justifyContent: 'center',
     alignItems: 'center',
@@ -445,160 +548,172 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-
-  /* Size Options */
   sizesRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 22,
-    gap: 10,
+    marginBottom: 26,
+    gap: 12,
   },
   sizeItemWrapper: { flex: 1 },
   sizeItem: {
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    paddingVertical: 16,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    paddingVertical: 20,
     paddingHorizontal: 6,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
   },
   sizeIconCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
+    width: 60,
+    height: 60,
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
     position: 'relative',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
   countBadge: {
     position: 'absolute',
-    top: -4,
-    right: -4,
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
+    top: -6,
+    right: -6,
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
     borderColor: '#FFFFFF',
     paddingHorizontal: 4,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
   countBadgeText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
   },
   sizeLabel: {
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '700',
     color: '#111827',
-    marginBottom: 2,
+    marginBottom: 3,
     letterSpacing: -0.2,
   },
   sizeSub: {
-    fontSize: 9,
+    fontSize: 10,
     color: '#6B7280',
-    fontWeight: '600',
+    fontWeight: '500',
     textAlign: 'center',
   },
-
-  /* Items List */
-  itemsListContainer: { flex: 1 },
+  itemsListContainer: {
+    marginBottom: 10,
+  },
   itemsHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
     paddingHorizontal: 2,
   },
   itemsTitle: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '800',
     color: '#111827',
     letterSpacing: -0.2,
   },
   itemsCount: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#6B7280',
-    fontWeight: '600',
+    fontWeight: '500',
   },
-
   emptyDashedBox: {
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: '#E5E7EB',
     borderRadius: 16,
-    paddingVertical: 28,
+    paddingVertical: 32,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#FAFAFA',
   },
   emptyIconCircle: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#FFF7ED',
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  emptyImagePlaceholder: {
+    width: 32,
+    height: 32,
+    opacity: 0.5,
   },
   emptyTitle: {
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#111827',
     marginBottom: 4,
+    letterSpacing: -0.2,
   },
   emptyText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#9CA3AF',
     fontWeight: '500',
     textAlign: 'center',
     paddingHorizontal: 20,
   },
-
-  /* Item Card */
   itemCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
-    padding: 12,
-    marginBottom: 8,
+    padding: 10,
+    marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
+    borderColor: '#E5E7EB',
+  },
+  itemCardContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   itemSizeIcon: {
-    width: 42,
-    height: 42,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 14,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
-  itemPhoto: { width: 42, height: 42, borderRadius: 12 },
+  itemPhotoPlaceholder: {
+    width: 24,
+    height: 24,
+  },
+  itemPhoto: { width: 44, height: 44, borderRadius: 12 },
   itemInfo: { flex: 1, marginRight: 8 },
   itemTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 3,
+    marginBottom: 4,
   },
   itemSizeLabel: {
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '700',
     color: '#111827',
     letterSpacing: -0.2,
   },
@@ -612,52 +727,178 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   fragileTagText: {
-    fontSize: 9,
-    fontWeight: '800',
+    fontSize: 10,
+    fontWeight: '700',
     color: '#EF4444',
     letterSpacing: 0.3,
   },
   itemDesc: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#6B7280',
-    fontWeight: '500',
+    fontWeight: '400',
   },
   removeBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#FEF2F2',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#FECACA',
+    marginLeft: 8,
   },
-
-  /* Confirm Button */
   confirmButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 16,
-    paddingVertical: 16,
-    marginTop: 12,
+    paddingVertical: 18,
+    marginTop: 16,
     gap: 8,
   },
   confirmBtnDisabled: {
-    backgroundColor: '#D1D5DB',
+    backgroundColor: '#F3F4F6',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   confirmButtonActive: {
     backgroundColor: '#111827',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 5,
   },
   confirmButtonText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: 0.2,
+  },
+  confirmButtonTextDisabled: {
+    color: '#9CA3AF',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(17, 24, 39, 0.45)', 
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    width: '100%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.2,
+  },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBody: {
+    alignItems: 'center',
+    paddingBottom: 8,
+  },
+  modalIconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    position: 'relative',
+  },
+  zoomIconIndicator: {
+    position: 'absolute',
+    bottom: -6,
+    right: -6,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#111827',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  modalPhoto: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+  },
+  modalImagePlaceholder: {
+    width: 48,
+    height: 48,
+  },
+  modalSize: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 6,
+    letterSpacing: -0.3,
+  },
+  modalDesc: {
+    fontSize: 13,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 12,
+    marginBottom: 16,
+  },
+  modalFragileLarge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF2F2',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  modalFragileTextLarge: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#EF4444',
+  },
+  fsOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.92)', 
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fsCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  fsImage: {
+    width: '100%',
+    height: '80%',
   },
 });

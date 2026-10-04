@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Delivery/AddItemScreen.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
@@ -23,9 +24,24 @@ import { useSchedule } from './ScheduleContext';
 const ORANGE = '#FA7A25';
 
 const SIZE_META = {
-  Small: { color: '#3B82F6', bg: '#EFF6FF', icon: 'cube-outline' },
-  Medium: { color: ORANGE, bg: '#FFF7ED', icon: 'cube' },
-  Large: { color: '#8B5CF6', bg: '#F5F3FF', icon: 'file-tray-full-outline' },
+  Small: { 
+    color: '#3B82F6', 
+    bg: '#EFF6FF', 
+    image: require('../../../../../assets/package-size.png'),
+    headerImgSize: 100 
+  },
+  Medium: { 
+    color: ORANGE, 
+    bg: '#FFF7ED', 
+    image: require('../../../../../assets/package-size.png'),
+    headerImgSize: 130 
+  },
+  Large: { 
+    color: '#8B5CF6', 
+    bg: '#F5F3FF', 
+    image: require('../../../../../assets/package-size.png'),
+    headerImgSize: 160 
+  },
 } as const;
 
 export default function AddItemScreen({ route, navigation }: any) {
@@ -40,6 +56,7 @@ export default function AddItemScreen({ route, navigation }: any) {
 
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
+  const boxAnim = useRef(new Animated.Value(0)).current;
   const photoAnim = useRef(new Animated.Value(0)).current;
   const descAnim = useRef(new Animated.Value(0)).current;
   const fragileAnim = useRef(new Animated.Value(0)).current;
@@ -58,12 +75,13 @@ export default function AddItemScreen({ route, navigation }: any) {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(photoAnim, 120),
-      animate(descAnim, 240),
+      animate(boxAnim, 120),
+      animate(photoAnim, 200),
+      animate(descAnim, 280),
       animate(fragileAnim, 360),
-      animate(buttonAnim, 480),
+      animate(buttonAnim, 440),
     ]).start();
-  }, [headerAnim, photoAnim, descAnim, fragileAnim, buttonAnim]);
+  }, [headerAnim, boxAnim, photoAnim, descAnim, fragileAnim, buttonAnim]);
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
@@ -76,6 +94,18 @@ export default function AddItemScreen({ route, navigation }: any) {
       },
     ],
   });
+
+  const boxSlide = {
+    opacity: boxAnim,
+    transform: [
+      {
+        translateX: boxAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [40, 0],
+        }),
+      },
+    ],
+  };
 
   const animatePressIn = () => {
     Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
@@ -128,30 +158,53 @@ export default function AddItemScreen({ route, navigation }: any) {
   /* Render                                                              */
   /* ------------------------------------------------------------------ */
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
       {/* Header */}
       <Animated.View
-        style={[styles.header, { paddingTop: insets.top + 14 }, fadeUp(headerAnim, -14)]}
+        style={[
+          styles.headerBackground,
+          { paddingTop: insets.top + 12 },
+          fadeUp(headerAnim, -14),
+        ]}
       >
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backBtn}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSub}>Add to shipment</Text>
-            <Text style={styles.headerTitle}>New {size} Item</Text>
+        <View style={styles.headerInnerContent}>
+          <View style={styles.stepRow}>
+            <View style={styles.stepPill}>
+              <Text style={styles.stepText}>ADD ITEM</Text>
+            </View>
           </View>
-          <View style={[styles.sizeBadge, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-            <Ionicons name={meta.icon as any} size={14} color="#FFFFFF" />
-            <Text style={styles.sizeBadgeText}>{size}</Text>
+
+          <View style={styles.headerTopRow}>
+            <TouchableOpacity
+              onPress={() => navigation.goBack()}
+              style={styles.backButton}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.headerSub}>Add to shipment</Text>
+              <Text style={styles.headerTitle}>New {size} Item</Text>
+            </View>
           </View>
+
+          <Text style={styles.headerSubtitle}>
+            Provide details so providers can handle your package safely.
+          </Text>
         </View>
+
+        {/* Dynamic Box Graphic */}
+        <Animated.Image
+          source={meta.image}
+          style={[
+            styles.headerGraphicImage,
+            { width: meta.headerImgSize, height: meta.headerImgSize },
+            boxSlide,
+          ]}
+          resizeMode="contain"
+        />
       </Animated.View>
 
       <KeyboardAvoidingView
@@ -270,37 +323,54 @@ export default function AddItemScreen({ route, navigation }: any) {
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
 
   /* ------------------------------------------------------------------ */
   /* Header                                                              */
   /* ------------------------------------------------------------------ */
-  header: {
+  headerBackground: {
     backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
+    position: 'relative',
+    overflow: 'hidden',
+    paddingBottom: 22,
+    zIndex: 1,
+  },
+  headerInnerContent: {
+    paddingHorizontal: 24,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    marginBottom: 10,
+  },
+  stepPill: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  stepText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 8,
     gap: 12,
   },
-  backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  backButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -315,35 +385,33 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '800',
     color: '#FFFFFF',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
-  sizeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+  headerSubtitle: {
+    fontSize: 13,
+    color: '#FFE0C7',
+    lineHeight: 18,
+    maxWidth: '52%',
+    fontWeight: '500',
   },
-  sizeBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.4,
+  headerGraphicImage: {
+    position: 'absolute',
+    right: -35,
+    bottom: -15,
+    zIndex: 2,
   },
 
   /* ------------------------------------------------------------------ */
   /* Content                                                             */
   /* ------------------------------------------------------------------ */
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 22,
+    paddingHorizontal: 24,
+    paddingTop: 24,
     paddingBottom: 40,
+    backgroundColor: '#FFFFFF',
   },
   sectionLabel: {
     fontSize: 12,
@@ -359,12 +427,12 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderStyle: 'dashed',
     borderColor: '#E5E7EB',
-    borderRadius: 18,
+    borderRadius: 16,
     height: 160,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 24,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FAFAFA',
   },
   photoBoxFilled: {
     borderStyle: 'solid',
@@ -381,6 +449,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
   },
   photoPlaceholderTitle: {
     fontSize: 14,
@@ -427,22 +497,14 @@ const styles = StyleSheet.create({
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
   },
   inputWrapperFocused: {
     borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 2,
+    backgroundColor: '#FFFBF8',
   },
   inputIcon: {
     paddingLeft: 14,
@@ -452,7 +514,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 14,
     paddingHorizontal: 10,
-    fontSize: 14,
+    fontSize: 15,
     color: '#111827',
     fontWeight: '600',
   },
@@ -470,29 +532,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F9FAFB',
     borderRadius: 16,
     padding: 14,
-    marginTop: 20,
+    marginTop: 10,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
+    borderColor: '#E5E7EB',
   },
   toggleIconBox: {
     width: 44,
     height: 44,
     borderRadius: 14,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
   toggleIconBoxOn: {
     backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
   },
   toggleLabel: {
     fontSize: 13,
@@ -512,17 +572,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#F0FDF4',
     borderRadius: 12,
     padding: 12,
     marginBottom: 22,
     borderWidth: 1,
-    borderColor: '#DBEAFE',
+    borderColor: '#DCFCE7',
   },
   summaryChipText: {
     flex: 1,
     fontSize: 11,
-    color: '#1E40AF',
+    color: '#166534',
     fontWeight: '600',
     lineHeight: 16,
   },
@@ -534,7 +594,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#111827',
     borderRadius: 16,
-    paddingVertical: 16,
+    paddingVertical: 18,
     gap: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 6 },

@@ -1,14 +1,15 @@
+// src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen.tsx
 import React, { useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Image,
-  Dimensions, Animated, Easing, StatusBar, Platform,
+  Dimensions, Animated, Easing, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#FA7A25';
+const ORANGE = '#F27024';
 
 export default function DropoffTypeScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
@@ -20,7 +21,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
   const titleAnim = useRef(new Animated.Value(0)).current;
   const option1Anim = useRef(new Animated.Value(0)).current;
   const option2Anim = useRef(new Animated.Value(0)).current;
-  const carAnim = useRef(new Animated.Value(0)).current;
+  const graphicAnim = useRef(new Animated.Value(0)).current;
 
   /* ------------------------------------------------------------------ */
   /* Entrance animation                                                  */
@@ -37,12 +38,12 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(carAnim, 120),
+      animate(graphicAnim, 120),
       animate(titleAnim, 200),
       animate(option1Anim, 320),
       animate(option2Anim, 420),
     ]).start();
-  }, [headerAnim, carAnim, titleAnim, option1Anim, option2Anim]);
+  }, [headerAnim, graphicAnim, titleAnim, option1Anim, option2Anim]);
 
   /* ------------------------------------------------------------------ */
   /* Reconstruct edit data                                               */
@@ -140,11 +141,11 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     ],
   });
 
-  const carSlide = {
-    opacity: carAnim,
+  const graphicSlide = {
+    opacity: graphicAnim,
     transform: [
       {
-        translateX: carAnim.interpolate({
+        translateX: graphicAnim.interpolate({
           inputRange: [0, 1],
           outputRange: [40, 0],
         }),
@@ -159,59 +160,60 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
+      {/* Full-width Header */}
       <Animated.View
         style={[
           styles.headerBackground,
-          { paddingTop: insets.top + 10 },
+          { paddingTop: insets.top + 12 },
           fadeUp(headerAnim, -14),
         ]}
       >
-        {/* Step indicator */}
-        <View style={styles.stepRow}>
-          <View style={styles.stepPill}>
-            <Text style={styles.stepText}>STEP 1 OF 4</Text>
+        <View style={styles.headerInnerContent}>
+          <View style={styles.stepRow}>
+            <View style={styles.stepPill}>
+              <Text style={styles.stepText}>STEP 1 OF 4</Text>
+            </View>
           </View>
-        </View>
 
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSub}>
-              {mode === 'sendNow' ? 'Send Package Now' : 'Schedule Delivery'}
-            </Text>
-            <Text style={styles.headerTitle}>Drop-off Type</Text>
+          <View style={styles.headerTopRow}>
+            <TouchableOpacity
+              onPress={() => navigation.goBack()}
+              style={styles.backButton}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.headerSub}>
+                {mode === 'sendNow' ? 'Send Package Now' : 'Schedule Delivery'}
+              </Text>
+              <Text style={styles.headerTitle}>Drop-off Type</Text>
+            </View>
           </View>
-        </View>
 
-        <Text style={styles.headerSubtitle}>
-          Choose how the receiver will collect their package.
-        </Text>
+          <Text style={styles.headerSubtitle}>
+            Choose how the receiver will collect their package.
+          </Text>
+        </View>
 
         <Animated.Image
-          source={require('../../../../../assets/Car-Grey.png')}
-          style={[styles.carImage, carSlide]}
+          source={require('../../../../../assets/drop-off-method.png')}
+          style={[styles.headerGraphicImage, graphicSlide]}
+          resizeMode="contain"
         />
       </Animated.View>
 
-      {/* Content */}
-      <View style={styles.contentContainer}>
+      {/* Scrollable Content Container */}
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <Animated.View style={[styles.card, fadeUp(titleAnim, 20)]}>
-          {/* Card Header */}
-          <View style={styles.cardTitleRow}>
-            <View style={styles.cardIconBox}>
-              <Ionicons name="map" size={22} color={ORANGE} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Select drop-off method</Text>
-              <Text style={styles.cardSubtitle}>Choose the option that fits best</Text>
-            </View>
+          
+          <View style={styles.textTitleContainer}>
+            <Text style={styles.cardTitle}>Select drop-off method</Text>
+            <Text style={styles.cardSubtitle}>Choose the option that fits best for your receiver</Text>
           </View>
 
           {/* Options */}
@@ -226,7 +228,6 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
                 onPress={() => selectType('curb-side')}
                 activeOpacity={0.9}
               >
-                {/* Active indicator */}
                 <View
                   style={[
                     styles.activeIndicator,
@@ -234,12 +235,16 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
                   ]}
                 >
                   {state.dropoffType === 'curb-side' && (
-                    <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                    <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                   )}
                 </View>
 
                 <View style={styles.optionIconBox}>
-                  <Ionicons name="car-sport" size={44} color={ORANGE} />
+                  <Image
+                    source={require('../../../../../assets/curb-side-drop-off.png')}
+                    style={styles.customOptionIcon}
+                    resizeMode="contain"
+                  />
                 </View>
                 <Text style={styles.optionLabel}>Curb-side</Text>
                 <Text style={styles.optionSub}>
@@ -265,12 +270,16 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
                   ]}
                 >
                   {state.dropoffType === 'door-to-door' && (
-                    <Ionicons name="checkmark" size={12} color="#FFFFFF" />
+                    <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                   )}
                 </View>
 
                 <View style={styles.optionIconBox}>
-                  <Ionicons name="home" size={44} color="#8B4513" />
+                  <Image
+                    source={require('../../../../../assets/door-to-door.png')}
+                    style={styles.customOptionIcon}
+                    resizeMode="contain"
+                  />
                 </View>
                 <Text style={styles.optionLabel}>Door-to-Door</Text>
                 <Text style={styles.optionSub}>
@@ -282,43 +291,39 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
 
           {/* Info footer */}
           <View style={styles.infoFooter}>
-            <Ionicons name="information-circle-outline" size={16} color="#3B82F6" />
+            <Ionicons name="information-circle-outline" size={16} color={ORANGE} />
             <Text style={styles.infoFooterText}>
               You can change this later before confirming your booking.
             </Text>
           </View>
         </Animated.View>
-      </View>
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
 
-  /* ------------------------------------------------------------------ */
-  /* Header                                                              */
-  /* ------------------------------------------------------------------ */
   headerBackground: {
     backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 80,
     position: 'relative',
-    overflow: 'visible',
-    height: 280,
+    overflow: 'hidden',
+    paddingBottom: 22,
     zIndex: 1,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
+  },
+  headerInnerContent: {
+    paddingHorizontal: 24,
   },
   stepRow: {
     flexDirection: 'row',
-    marginBottom: 14,
+    marginBottom: 10,
   },
   stepPill: {
     backgroundColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.3)',
   },
@@ -326,18 +331,18 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 8,
     gap: 12,
   },
   backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -361,114 +366,83 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#FFE0C7',
     lineHeight: 18,
-    maxWidth: '65%',
+    maxWidth: '58%',
     fontWeight: '500',
   },
-  carImage: {
+  headerGraphicImage: {
     position: 'absolute',
-    right: -30,
-    bottom: 10,
-    width: 240,
-    height: 120,
-    resizeMode: 'contain',
+    right: -10,
+    bottom: -5,
+    width: 190, 
+    height: 130,
     zIndex: 2,
-    opacity: 0.85,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Content                                                             */
-  /* ------------------------------------------------------------------ */
-  contentContainer: {
+  scrollView: {
     flex: 1,
-    paddingHorizontal: 20,
+    backgroundColor: '#FFFFFF',
+    zIndex: 3,
+    elevation: 3,
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
     paddingTop: 24,
-    zIndex: 0,
+    paddingBottom: 40,
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
-    flex: 1,
+    borderRadius: 0,
+    padding: 0,
+  },
+  textTitleContainer: {
     marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-  },
-  cardTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 22,
-  },
-  cardIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 13,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
+    paddingBottom: 4,
   },
   cardTitle: {
-    fontSize: 15,
+    fontSize: 18,
     fontWeight: '800',
     color: '#111827',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
+    marginBottom: 4,
   },
   cardSubtitle: {
-    fontSize: 11,
+    fontSize: 13,
     color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 2,
+    fontWeight: '400',
+    lineHeight: 18,
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Options                                                             */
-  /* ------------------------------------------------------------------ */
   optionsWrapper: {
-    gap: 12,
-    marginBottom: 18,
+    gap: 14,
+    marginBottom: 24,
   },
   optionWrapper: { width: '100%' },
   optionBox: {
     width: '100%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
     paddingVertical: 22,
     paddingHorizontal: 16,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: '#E5E7EB',
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
   },
   optionBoxActive: {
     borderColor: ORANGE,
-    borderWidth: 2,
-    backgroundColor: '#FFF7ED',
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: 1.5,
+    backgroundColor: '#FFFBF8',
   },
   activeIndicator: {
     position: 'absolute',
     top: 12,
     right: 12,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: '#E5E7EB',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#D1D5DB',
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
@@ -478,50 +452,51 @@ const styles = StyleSheet.create({
     borderColor: ORANGE,
   },
   optionIconBox: {
-    width: 76,
-    height: 76,
-    borderRadius: 24,
-    backgroundColor: '#F9FAFB',
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
+  },
+  customOptionIcon: {
+    width: 36,
+    height: 36,
   },
   optionLabel: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#111827',
     marginBottom: 4,
     letterSpacing: -0.2,
   },
   optionSub: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#6B7280',
     textAlign: 'center',
-    lineHeight: 15,
-    paddingHorizontal: 8,
-    fontWeight: '500',
+    lineHeight: 16,
+    paddingHorizontal: 12,
+    fontWeight: '400',
   },
 
-  /* ------------------------------------------------------------------ */
-  /* Info Footer                                                         */
-  /* ------------------------------------------------------------------ */
   infoFooter: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 14,
-    padding: 12,
+    gap: 10,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    padding: 14,
     borderWidth: 1,
-    borderColor: '#DBEAFE',
+    borderColor: '#E5E7EB',
   },
   infoFooterText: {
     flex: 1,
-    fontSize: 11,
-    color: '#1E40AF',
-    fontWeight: '600',
-    lineHeight: 16,
+    fontSize: 12,
+    color: '#4B5563',
+    fontWeight: '500',
+    lineHeight: 18,
   },
 });

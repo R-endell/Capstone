@@ -1,13 +1,14 @@
+// src/modules/Authentication/LoginScreen.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, TouchableWithoutFeedback,
-  Keyboard, Alert, Image, ActivityIndicator, Animated, Easing
+  Keyboard, Alert, Image, ActivityIndicator, Animated, Easing,
+  ScrollView
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as WebBrowser from 'expo-web-browser';
-import { makeRedirectUri } from 'expo-auth-session';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,38 +32,17 @@ export default function LoginScreen() {
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
 
-  // Animated values
-  const passwordFadeAnim = useRef(new Animated.Value(1)).current;
-  const logoAnim = useRef(new Animated.Value(0)).current;
-  const headerAnim = useRef(new Animated.Value(0)).current;
-  const formAnim = useRef(new Animated.Value(0)).current;
-  const buttonAnim = useRef(new Animated.Value(0)).current;
-  const socialAnim = useRef(new Animated.Value(0)).current;
-  const footerAnim = useRef(new Animated.Value(0)).current;
+  // Entrance & Glow Animations
+  const fadeAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
-  const buttonScale = useRef(new Animated.Value(1)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animations (staggered)                                     */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
-    const animate = (value: Animated.Value, delay: number, duration = 600) =>
-      Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      });
-
-    Animated.parallel([
-      animate(logoAnim, 0),
-      animate(headerAnim, 150),
-      animate(formAnim, 300),
-      animate(buttonAnim, 450),
-      animate(socialAnim, 600),
-      animate(footerAnim, 750),
-    ]).start();
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 500,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
 
     const glow = Animated.loop(
       Animated.sequence([
@@ -83,27 +63,7 @@ export default function LoginScreen() {
     glow.start();
 
     return () => glow.stop();
-  }, [logoAnim, headerAnim, formAnim, buttonAnim, socialAnim, footerAnim, glowAnim]);
-
-  /* ------------------------------------------------------------------ */
-  /* Button press animation                                              */
-  /* ------------------------------------------------------------------ */
-  const animatePressIn = () => {
-    Animated.spring(buttonScale, {
-      toValue: 0.97,
-      useNativeDriver: true,
-      speed: 30,
-      bounciness: 4,
-    }).start();
-  };
-  const animatePressOut = () => {
-    Animated.spring(buttonScale, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 30,
-      bounciness: 6,
-    }).start();
-  };
+  }, [fadeAnim, glowAnim]);
 
   /* ------------------------------------------------------------------ */
   /* Validation                                                          */
@@ -131,24 +91,7 @@ export default function LoginScreen() {
     setPasswordError(validatePassword(text));
   };
 
-  const togglePasswordVisibility = () => {
-    Animated.sequence([
-      Animated.timing(passwordFadeAnim, {
-        toValue: 0.7,
-        duration: 100,
-        useNativeDriver: true,
-        easing: Easing.ease,
-      }),
-      Animated.timing(passwordFadeAnim, {
-        toValue: 1,
-        duration: 100,
-        useNativeDriver: true,
-        easing: Easing.ease,
-      }),
-    ]).start(() => {
-      setShowPassword(!showPassword);
-    });
-  };
+  const togglePasswordVisibility = () => setShowPassword(!showPassword);
 
   const getFriendlyErrorMessage = (error: any) => {
     const message = error?.message || '';
@@ -193,8 +136,6 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       const redirectTo = 'https://auth.expo.io/@rendelljames/Capstone';
-      console.log('🔴 Redirect URL:', redirectTo);
-
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
@@ -233,21 +174,6 @@ export default function LoginScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
-  const fadeUp = (value: Animated.Value, distance = 20) => ({
-    opacity: value,
-    transform: [
-      {
-        translateY: value.interpolate({
-          inputRange: [0, 1],
-          outputRange: [distance, 0],
-        }),
-      },
-    ],
-  });
-
   const glowScale = glowAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 1.12],
@@ -257,9 +183,19 @@ export default function LoginScreen() {
     outputRange: [0.06, 0.12],
   });
 
+  const fadeUpStyle = {
+    opacity: fadeAnim,
+    transform: [{
+      translateY: fadeAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [20, 0],
+      })
+    }],
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Ambient background glows */}
+      {/* Ambient Background Glows */}
       <View style={styles.backgroundLayer} pointerEvents="none">
         <Animated.View
           style={[
@@ -276,75 +212,72 @@ export default function LoginScreen() {
         style={styles.keyboardAvoid}
       >
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-          <View style={styles.innerContainer}>
+          <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
 
-            {/* Logo */}
-            <Animated.View style={[styles.logoSection, fadeUp(logoAnim, 14)]}>
-              <Image
-                source={require('../../../assets/Pack-N-Ship-Logo2.png')}
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
-              <Text style={styles.logoText}>
-                Pack-<Text style={styles.logoTextOrange}>N-Ship</Text>
-              </Text>
-              <Text style={styles.logoSubText}>Logistics & Moving Services</Text>
-            </Animated.View>
-
-            {/* Header */}
-            <Animated.View style={[styles.headerContainer, fadeUp(headerAnim)]}>
-              <Text style={styles.header}>Welcome Back! 👋</Text>
-              <Text style={styles.subHeader}>Log in to manage your deliveries and track packages.</Text>
-            </Animated.View>
-
-            {/* Form */}
-            <Animated.View style={[styles.inputContainer, fadeUp(formAnim)]}>
-              {/* Email */}
-              <View
-                style={[
-                  styles.inputWrapper,
-                  focusedInput === 'email' && styles.inputFocused,
-                  emailError && styles.inputError,
-                ]}
-              >
-                <Ionicons
-                  name="mail-outline"
-                  size={20}
-                  color={focusedInput === 'email' ? ORANGE : '#9CA3AF'}
-                  style={styles.inputIcon}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Email Address"
-                  placeholderTextColor="#9CA3AF"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={email}
-                  onChangeText={handleEmailChange}
-                  onFocus={() => setFocusedInput('email')}
-                  onBlur={() => setFocusedInput(null)}
-                  editable={!loading}
-                />
+            <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
+              {/* Header with Larger Brand Logo Identity */}
+              <View style={styles.headerContainer}>
+                <View style={styles.brandRow}>
+                  <Image
+                    source={require('../../../assets/Pack-N-Ship-Logo2.png')}
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.brandText}>
+                    Pack-<Text style={styles.brandTextOrange}>N-Ship</Text>
+                  </Text>
+                </View>
+                <Text style={styles.header}>Welcome Back</Text>
+                <Text style={styles.subHeader}>Log in to manage your deliveries and track packages.</Text>
               </View>
-              {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
 
-              {/* Password */}
-              <View
-                style={[
-                  styles.inputWrapper,
-                  focusedInput === 'password' && styles.inputFocused,
-                  passwordError && styles.inputError,
-                ]}
-              >
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color={focusedInput === 'password' ? ORANGE : '#9CA3AF'}
-                  style={styles.inputIcon}
-                />
-                <Animated.View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', opacity: passwordFadeAnim }}>
+              {/* Form */}
+              <View style={styles.formContainer}>
+                {/* Email */}
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    focusedInput === 'email' && styles.inputFocused,
+                    emailError && styles.inputError,
+                  ]}
+                >
+                  <Ionicons
+                    name="mail-outline"
+                    size={20}
+                    color={focusedInput === 'email' ? ORANGE : '#9CA3AF'}
+                    style={styles.inputIcon}
+                  />
                   <TextInput
-                    style={styles.passwordInput}
+                    style={styles.input}
+                    placeholder="Email Address"
+                    placeholderTextColor="#9CA3AF"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={email}
+                    onChangeText={handleEmailChange}
+                    onFocus={() => setFocusedInput('email')}
+                    onBlur={() => setFocusedInput(null)}
+                    editable={!loading}
+                  />
+                </View>
+                {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
+
+                {/* Password */}
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    focusedInput === 'password' && styles.inputFocused,
+                    passwordError && styles.inputError,
+                  ]}
+                >
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={20}
+                    color={focusedInput === 'password' ? ORANGE : '#9CA3AF'}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.input}
                     placeholder="Password"
                     placeholderTextColor="#9CA3AF"
                     secureTextEntry={!showPassword}
@@ -354,67 +287,52 @@ export default function LoginScreen() {
                     onBlur={() => setFocusedInput(null)}
                     editable={!loading}
                   />
-                </Animated.View>
-                <TouchableOpacity
-                  style={styles.eyeButton}
-                  onPress={togglePasswordVisibility}
-                  disabled={loading}
-                >
-                  <Ionicons
-                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                    size={22}
-                    color="#6B7280"
-                  />
+                  <TouchableOpacity
+                    style={styles.eyeButton}
+                    onPress={togglePasswordVisibility}
+                    disabled={loading}
+                  >
+                    <Ionicons
+                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={20}
+                      color="#6B7280"
+                    />
+                  </TouchableOpacity>
+                </View>
+                {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
+
+                <TouchableOpacity style={styles.forgotPasswordButton} disabled={loading}>
+                  <Text style={styles.forgotPasswordText}>Forgot password?</Text>
                 </TouchableOpacity>
               </View>
-              {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
 
-              <TouchableOpacity style={styles.forgotPasswordButton} disabled={loading}>
-                <Text style={styles.forgotPasswordText}>Forgot password?</Text>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Login button */}
-            <Animated.View
-              style={[
-                { width: '100%' },
-                fadeUp(buttonAnim),
-                { transform: [{ scale: buttonScale }] },
-              ]}
-            >
+              {/* Login Button */}
               <TouchableOpacity
-                style={[styles.loginButton, loading && { opacity: 0.8 }]}
+                style={[styles.loginButton, loading && styles.buttonDisabled]}
                 onPress={handleLogin}
-                onPressIn={animatePressIn}
-                onPressOut={animatePressOut}
                 disabled={loading}
-                activeOpacity={0.9}
+                activeOpacity={0.8}
               >
                 {loading ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                    <Text style={styles.loginText}>Logging in...</Text>
-                  </View>
+                  <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
                   <Text style={styles.loginText}>Log In</Text>
                 )}
               </TouchableOpacity>
-            </Animated.View>
 
-            {/* Divider */}
-            <Animated.View style={[styles.dividerContainer, fadeUp(socialAnim)]}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or</Text>
-              <View style={styles.dividerLine} />
-            </Animated.View>
+              {/* Divider */}
+              <View style={styles.dividerContainer}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
 
-            {/* Google */}
-            <Animated.View style={[{ width: '100%' }, fadeUp(socialAnim, 14)]}>
+              {/* Google Button */}
               <TouchableOpacity
-                style={[styles.googleButton, loading && { opacity: 0.5 }]}
+                style={[styles.googleButton, loading && styles.buttonDisabled]}
                 onPress={handleGoogleLogin}
                 disabled={loading}
-                activeOpacity={0.85}
+                activeOpacity={0.8}
               >
                 <Image
                   source={require('../../../assets/google.png')}
@@ -423,10 +341,8 @@ export default function LoginScreen() {
                 />
                 <Text style={styles.googleText}>Continue With Google</Text>
               </TouchableOpacity>
-            </Animated.View>
 
-            {/* Sign up */}
-            <Animated.View style={[{ width: '100%' }, fadeUp(footerAnim, 10)]}>
+              {/* Sign Up Link */}
               <TouchableOpacity
                 style={styles.signUpContainer}
                 onPress={() => navigation.navigate('Register')}
@@ -438,7 +354,7 @@ export default function LoginScreen() {
               </TouchableOpacity>
             </Animated.View>
 
-          </View>
+          </ScrollView>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -446,9 +362,13 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  keyboardAvoid: { flex: 1 },
-
+  container: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  keyboardAvoid: {
+    flex: 1,
+  },
   backgroundLayer: {
     ...StyleSheet.absoluteFill,
     overflow: 'hidden',
@@ -471,118 +391,102 @@ const styles = StyleSheet.create({
     left: -120,
     opacity: 0.05,
   },
-
   innerContainer: {
-    flex: 1,
-    paddingHorizontal: 28,
-    justifyContent: 'center',
-    paddingTop: 20,
+    paddingHorizontal: 24,
+    paddingTop: 24,
     paddingBottom: 40,
+    flexGrow: 1,
+    justifyContent: 'center',
   },
-  logoSection: {
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  logoImage: {
-    width: 140,
-    height: 80,
-    marginBottom: -5,
-  },
-  logoText: {
-    fontSize: 28,
-    fontWeight: '900',
-    fontStyle: 'italic',
-    color: '#111827',
-    letterSpacing: -0.4,
-  },
-  logoTextOrange: {
-    color: ORANGE,
-  },
-  logoSubText: {
-    fontSize: 12,
-    color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 2,
-    letterSpacing: 0.5,
+  contentWrapper: {
+    flex: 1,
+    justifyContent: 'center',
   },
   headerContainer: {
-    width: '100%',
     marginBottom: 24,
+    alignItems: 'flex-start',
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  logoImage: {
+    width: 54, // Increased logo size
+    height: 54, // Increased logo size
+  },
+  brandText: {
+    fontSize: 22, // Balanced size with larger logo
+    fontWeight: '800',
+    fontStyle: 'italic',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+  brandTextOrange: {
+    color: ORANGE,
   },
   header: {
-    fontSize: 24,
-    fontWeight: '800',
-    marginBottom: 6,
+    fontSize: 28,
+    fontWeight: '700',
     color: '#111827',
+    marginBottom: 6,
+    letterSpacing: -0.5,
   },
   subHeader: {
-    fontSize: 14,
+    fontSize: 15,
     color: '#6B7280',
     fontWeight: '400',
+    lineHeight: 22,
   },
-  inputContainer: {
-    width: '100%',
-    marginBottom: 12,
+  formContainer: {
+    marginBottom: 16,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 1.5,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
     borderColor: '#E5E7EB',
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    marginBottom: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.02,
-    shadowRadius: 4,
-    elevation: 1,
+    borderRadius: 12,
+    marginBottom: 12,
+    height: 52,
   },
   inputIcon: {
-    paddingLeft: 14,
+    paddingLeft: 16,
     paddingRight: 8,
   },
   input: {
     flex: 1,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: '#111827',
-  },
-  passwordInput: {
-    flex: 1,
-    paddingVertical: 14,
-    paddingLeft: 12,
-    paddingRight: 0,
-    paddingHorizontal: 0,
+    height: '100%',
     fontSize: 15,
     color: '#111827',
   },
   inputFocused: {
+    backgroundColor: '#FFFFFF',
     borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 2,
   },
   inputError: {
     borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
   },
   eyeButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    height: '100%',
+    justifyContent: 'center',
   },
   errorText: {
     color: '#EF4444',
     fontSize: 12,
     fontWeight: '500',
-    marginBottom: 8,
+    marginTop: -8,
+    marginBottom: 10,
     marginLeft: 4,
   },
   forgotPasswordButton: {
     alignSelf: 'flex-end',
     paddingVertical: 4,
-    marginBottom: 8,
+    marginBottom: 12,
   },
   forgotPasswordText: {
     color: ORANGE,
@@ -591,28 +495,20 @@ const styles = StyleSheet.create({
   },
   loginButton: {
     backgroundColor: ORANGE,
-    padding: 16,
-    borderRadius: 16,
+    height: 54,
+    borderRadius: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     width: '100%',
-    marginTop: 6,
     marginBottom: 20,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 6,
+  },
+  buttonDisabled: {
+    opacity: 0.7,
   },
   loginText: {
     color: '#FFFFFF',
-    fontWeight: '700',
+    fontWeight: '600',
     fontSize: 16,
-    letterSpacing: 0.2,
-  },
-  loadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
   },
   dividerContainer: {
     flexDirection: 'row',
@@ -623,34 +519,29 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: '#D1D5DB',
+    backgroundColor: '#E5E7EB',
   },
   dividerText: {
-    marginHorizontal: 15,
-    color: '#6B7280',
-    fontWeight: '600',
+    marginHorizontal: 12,
+    color: '#9CA3AF',
+    fontWeight: '500',
     fontSize: 14,
   },
   googleButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: '#D1D5DB',
-    borderRadius: 14,
-    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    height: 54,
     width: '100%',
-    marginBottom: 16,
+    marginBottom: 24,
     backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
   },
   googleIcon: {
-    width: 24,
-    height: 24,
+    width: 22,
+    height: 22,
     marginRight: 10,
   },
   googleText: {
@@ -665,11 +556,10 @@ const styles = StyleSheet.create({
   },
   signUpText: {
     color: '#6B7280',
-    fontWeight: '400',
     fontSize: 14,
   },
   signUpTextBold: {
     color: ORANGE,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 });

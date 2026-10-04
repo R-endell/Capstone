@@ -1,6 +1,6 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { View, AppState, LogBox } from 'react-native';
+import { AppState, LogBox } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -8,19 +8,25 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from './src/utils/supabase';
 
 /* ------------------------------------------------------------------ */
-/* Silence noisy library warnings                                      */
+/* Silence noisy library warnings                                     */
 /* ------------------------------------------------------------------ */
 LogBox.ignoreLogs(['DateTimePicker: `onChange` is deprecated']);
 const __origConsoleWarn = console.warn;
 console.warn = (...args: any[]) => {
   const first = args[0];
-  if (typeof first === 'string' && first.includes('DateTimePicker: `onChange` is deprecated')) return;
+  if (
+    typeof first === 'string' &&
+    first.includes('DateTimePicker: `onChange` is deprecated')
+  ) {
+    return;
+  }
   __origConsoleWarn(...args);
 };
 
 import LoadingScreen from './src/modules/Authentication/LoadingScreen';
 import LoginScreen from './src/modules/Authentication/LoginScreen';
 import RegisterScreen from './src/modules/Authentication/RegisterScreen';
+import PermissionsPromptScreen from './src/modules/Authentication/PermissionsPromptScreen';
 import IdentityVerificationScreen from './src/modules/Settings/IdentityVerificationScreen';
 import TwoFactorAuthScreen from './src/modules/Settings/TwoFactorAuthScreen';
 
@@ -65,6 +71,7 @@ export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
   Register: undefined;
+  PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
   MainTabs: { screen?: keyof MainTabParamList };
@@ -88,8 +95,21 @@ export type RootStackParamList = {
   ReceiverPicker: { selectedReceiverId?: number | null };
 };
 
-export type MainTabParamList = { Home: undefined; Explore: undefined; Messages: undefined; Activity: undefined; Account: undefined; };
-export type ProviderTabParamList = { Task: undefined; Earnings: undefined; Jobs: undefined; Messages: undefined; Account: undefined; };
+export type MainTabParamList = { 
+  Home: undefined; 
+  Activity: undefined; 
+  Explore: undefined; 
+  Messages: undefined; 
+  Account: undefined; 
+};
+
+export type ProviderTabParamList = {
+  Task: undefined;
+  Earnings: undefined;
+  Jobs: undefined;
+  Messages: undefined;
+  Account: undefined;
+};
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
@@ -105,41 +125,71 @@ function useUnreadMessages() {
 
     const fetchUnread = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
         if (!user) return;
-        const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
+
+        const { data: userRecord } = await supabase
+          .from('users')
+          .select('user_id')
+          .eq('auth_id', user.id)
+          .single();
+
         if (!userRecord) return;
+
         const userId = userRecord.user_id;
 
-        const { data: providerDelivs } = await supabase.from('deliveries').select('delivery_id').eq('provider_id', userId);
-        const { data: senderReqs } = await supabase.from('delivery_requests').select('request_id').eq('sender_id', userId);
-        const reqIds = (senderReqs || []).map(r => r.request_id);
+        const { data: providerDelivs } = await supabase
+          .from('deliveries')
+          .select('delivery_id')
+          .eq('provider_id', userId);
+
+        const { data: senderReqs } = await supabase
+          .from('delivery_requests')
+          .select('request_id')
+          .eq('sender_id', userId);
+
+        const reqIds = (senderReqs || []).map((r) => r.request_id);
 
         let senderDelivs: any[] = [];
+
         if (reqIds.length > 0) {
-          const { data } = await supabase.from('deliveries').select('delivery_id').in('request_id', reqIds);
+          const { data } = await supabase
+            .from('deliveries')
+            .select('delivery_id')
+            .in('request_id', reqIds);
+
           senderDelivs = data || [];
         }
 
-        const deliveryIds = Array.from(new Set([
-          ...(providerDelivs || []).map(d => d.delivery_id),
-          ...(senderDelivs || []).map(d => d.delivery_id)
-        ]));
+        const deliveryIds = Array.from(
+          new Set([
+            ...(providerDelivs || []).map((d) => d.delivery_id),
+            ...(senderDelivs || []).map((d) => d.delivery_id),
+          ])
+        );
 
         if (deliveryIds.length === 0) {
           if (isMounted) setUnreadCount(0);
           return;
         }
 
-        const { data: rooms } = await supabase.from('chat_rooms').select('room_id').in('delivery_id', deliveryIds);
-        const roomIds = (rooms || []).map(r => r.room_id);
+        const { data: rooms } = await supabase
+          .from('chat_rooms')
+          .select('room_id')
+          .in('delivery_id', deliveryIds);
+
+        const roomIds = (rooms || []).map((r) => r.room_id);
 
         if (roomIds.length === 0) {
           if (isMounted) setUnreadCount(0);
           return;
         }
 
-        const { count } = await supabase.from('chat_messages')
+        const { count } = await supabase
+          .from('chat_messages')
           .select('*', { count: 'exact', head: true })
           .in('room_id', roomIds)
           .eq('is_read', false)
@@ -153,8 +203,17 @@ function useUnreadMessages() {
 
     fetchUnread();
 
-    channel = supabase.channel(`global-unread-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => fetchUnread())
+    channel = supabase
+      .channel(`global-unread-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'chat_messages',
+        },
+        () => fetchUnread()
+      )
       .subscribe();
 
     return () => {
@@ -176,9 +235,9 @@ function MainTabs() {
         tabBarIcon: ({ focused, color, size }) => {
           let iconName: any;
           if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
+          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
           else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
           else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
           else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
           return <Ionicons name={iconName} size={size} color={color} />;
         },
@@ -190,13 +249,13 @@ function MainTabs() {
       })}
     >
       <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Activity" component={ActivityScreen} />
       <Tab.Screen name="Explore" component={ExploreScreen} />
       <Tab.Screen 
         name="Messages" 
         component={MessagesScreen} 
         options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
       />
-      <Tab.Screen name="Activity" component={ActivityScreen} />
       <Tab.Screen name="Account" component={AccountScreen} />
     </Tab.Navigator>
   );
@@ -211,27 +270,48 @@ function ProviderTabs() {
       screenOptions={({ route }) => ({
         tabBarIcon: ({ focused, color, size }) => {
           let iconName: any;
-          if (route.name === 'Task') iconName = focused ? 'clipboard' : 'clipboard-outline';
-          else if (route.name === 'Earnings') iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-          else if (route.name === 'Jobs') iconName = focused ? 'map' : 'map-outline';
-          else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+
+          if (route.name === 'Task') {
+            iconName = focused ? 'clipboard' : 'clipboard-outline';
+          } else if (route.name === 'Earnings') {
+            iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+          } else if (route.name === 'Jobs') {
+            iconName = focused ? 'map' : 'map-outline';
+          } else if (route.name === 'Messages') {
+            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+          } else if (route.name === 'Account') {
+            iconName = focused ? 'person' : 'person-outline';
+          }
+
           return <Ionicons name={iconName} size={size} color={color} />;
         },
         tabBarActiveTintColor: '#F27024',
         tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: { backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#E5E7EB', height: 60, paddingBottom: 8, paddingTop: 2 },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+        tabBarStyle: {
+          backgroundColor: '#FFFFFF',
+          borderTopWidth: 1,
+          borderTopColor: '#E5E7EB',
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 2,
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '500',
+        },
         headerShown: false,
       })}
     >
       <ProviderTab.Screen name="Task" component={TaskScreen} />
       <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
       <ProviderTab.Screen name="Jobs" component={JobsScreen} />
-      <ProviderTab.Screen 
-        name="Messages" 
-        component={ProviderMessagesScreen} 
-        options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
+      <ProviderTab.Screen
+        name="Messages"
+        component={ProviderMessagesScreen}
+        options={{
+          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+          tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+        }}
       />
       <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
     </ProviderTab.Navigator>
@@ -251,23 +331,34 @@ export default function App() {
     }
 
     const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
         if (matcherCleanupRef.current) {
-          try { matcherCleanupRef.current(); } catch (error) {}
+          try {
+            matcherCleanupRef.current();
+          } catch (error) {}
           matcherCleanupRef.current = null;
         }
+
         try {
           matcherCleanupRef.current = startBackgroundMatcher();
         } catch (error) {}
       }
+
       appStateRef.current = nextAppState;
     });
 
     return () => {
       if (matcherCleanupRef.current) {
-        try { matcherCleanupRef.current(); } catch (error) {}
+        try {
+          matcherCleanupRef.current();
+        } catch (error) {}
+
         matcherCleanupRef.current = null;
       }
+
       subscription.remove();
     };
   }, []);
@@ -275,30 +366,69 @@ export default function App() {
   return (
     <ScheduleProvider>
       <NavigationContainer>
-        <Stack.Navigator initialRouteName="Loading" screenOptions={{ headerShown: false }}>
+        <Stack.Navigator
+          initialRouteName="Loading"
+          screenOptions={{ headerShown: false }}
+        >
           <Stack.Screen name="Loading" component={LoadingScreen} />
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Register" component={RegisterScreen} />
-          <Stack.Screen name="IdentityVerification" component={IdentityVerificationScreen} />
-          <Stack.Screen name="TwoFactorAuth" component={TwoFactorAuthScreen} />
+          {/* Permission prompt route */}
+          <Stack.Screen
+            name="PermissionsPrompt"
+            component={PermissionsPromptScreen}
+          />
+          <Stack.Screen
+            name="IdentityVerification"
+            component={IdentityVerificationScreen}
+          />
+          <Stack.Screen
+            name="TwoFactorAuth"
+            component={TwoFactorAuthScreen}
+          />
           <Stack.Screen name="MainTabs" component={MainTabs} />
           <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
           <Stack.Screen name="EditProfile" component={EditProfileScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />
-          <Stack.Screen name="DisputeCenter" component={DisputeCenterScreen} />
+          <Stack.Screen
+            name="DisputeCenter"
+            component={DisputeCenterScreen}
+          />
           <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-          <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+          <Stack.Screen
+            name="RegisterProvider"
+            component={RegisterProviderScreen}
+          />
           <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
           <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
           <Stack.Screen name="AddItem" component={AddItemScreen} />
-          <Stack.Screen name="ScheduleCalendar" component={ScheduleCalendarScreen} />
-          <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
-          <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
+          <Stack.Screen
+            name="ScheduleCalendar"
+            component={ScheduleCalendarScreen}
+          />
+          <Stack.Screen
+            name="PickupLocation"
+            component={LocationSelectScreen}
+          />
+          <Stack.Screen
+            name="DropoffLocation"
+            component={LocationSelectScreen}
+          />
           <Stack.Screen name="Booking" component={BookingScreen} />
           <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-          <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
+          <Stack.Screen
+            name="ManageVehicle"
+            component={ManageVehicleScreen}
+          />
           <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-          <Stack.Screen name="ReceiverPicker" component={ReceiverPickerScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+          <Stack.Screen
+            name="ReceiverPicker"
+            component={ReceiverPickerScreen}
+            options={{
+              presentation: 'modal',
+              animation: 'slide_from_bottom',
+            }}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </ScheduleProvider>

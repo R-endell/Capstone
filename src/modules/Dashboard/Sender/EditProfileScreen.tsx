@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/EditProfileScreen.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
@@ -5,7 +6,7 @@ import {
   KeyboardAvoidingView, Platform, ActivityIndicator, Switch, StatusBar,
   Animated, Easing,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { decode } from 'base64-arraybuffer';
@@ -162,7 +163,6 @@ export default function EditProfileScreen() {
 
         if (tableError) {
           console.warn('Could not update users table:', tableError);
-          // Don't throw — auth metadata already updated
         }
       }
 
@@ -209,25 +209,6 @@ export default function EditProfileScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Header */}
-      <Animated.View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 16 },
-          fadeUp(headerAnim, -14),
-        ]}
-      >
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backButton}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Edit Profile</Text>
-        <View style={{ width: 42 }} />
-      </Animated.View>
-
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
@@ -236,7 +217,26 @@ export default function EditProfileScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Avatar */}
+          {/* Header with zero-radius bottom edge */}
+          <Animated.View
+            style={[
+              styles.header,
+              { paddingTop: insets.top + 16 },
+              fadeUp(headerAnim, -14),
+            ]}
+          >
+            <TouchableOpacity
+              onPress={() => navigation.goBack()}
+              style={styles.backButton}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Edit Profile</Text>
+            <View style={{ width: 42 }} />
+          </Animated.View>
+
+          {/* Avatar Section */}
           <Animated.View style={[styles.imageUploadSection, fadeUp(avatarAnim, 20)]}>
             <TouchableOpacity
               style={styles.imagePicker}
@@ -247,7 +247,7 @@ export default function EditProfileScreen() {
                 <Image source={{ uri: imageUri }} style={styles.profilePreview} />
               ) : (
                 <View style={styles.imagePlaceholder}>
-                  <Ionicons name="person" size={48} color="#FFFFFF" />
+                  <Ionicons name="person" size={48} color={ORANGE} />
                 </View>
               )}
               <View style={styles.cameraBadge}>
@@ -425,19 +425,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     backgroundColor: ORANGE,
     paddingHorizontal: 20,
-    paddingBottom: 30,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
   },
   backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
@@ -445,7 +445,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.3)',
   },
   headerTitle: {
-    fontSize: 19,
+    fontSize: 17,
     fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: -0.2,
@@ -455,10 +455,10 @@ const styles = StyleSheet.create({
   /* Scroll                                                              */
   /* ------------------------------------------------------------------ */
   scrollContent: {
-    paddingBottom: 60,
+    paddingBottom: 40,
   },
   bottomSpacer: {
-    height: 40,
+    height: 20,
   },
 
   /* ------------------------------------------------------------------ */
@@ -466,29 +466,29 @@ const styles = StyleSheet.create({
   /* ------------------------------------------------------------------ */
   imageUploadSection: {
     alignItems: 'center',
-    marginTop: -46,
+    marginTop: 24,
     marginBottom: 24,
   },
   imagePicker: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    backgroundColor: ORANGE,
+    width: 104,
+    height: 104,
+    borderRadius: 52,
+    backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 4,
-    borderColor: '#FFFFFF',
+    borderWidth: 3,
+    borderColor: '#FFE4D2',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.18,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
     overflow: 'visible',
   },
   profilePreview: {
-    width: 102,
-    height: 102,
-    borderRadius: 51,
+    width: 98,
+    height: 98,
+    borderRadius: 49,
   },
   imagePlaceholder: {
     justifyContent: 'center',
@@ -496,62 +496,62 @@ const styles = StyleSheet.create({
   },
   cameraBadge: {
     position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#111827',
+    bottom: 0,
+    right: 0,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: ORANGE,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
+    borderWidth: 2.5,
     borderColor: '#FFFFFF',
   },
   uploadHint: {
-    marginTop: 12,
+    marginTop: 10,
     fontSize: 12,
     color: '#6B7280',
-    fontWeight: '500',
+    fontWeight: '600',
   },
 
   /* ------------------------------------------------------------------ */
   /* Form                                                                */
   /* ------------------------------------------------------------------ */
   formContainer: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
   },
   inputGroup: {
-    marginBottom: 18,
+    marginBottom: 16,
   },
   label: {
     fontSize: 13,
     color: '#374151',
     fontWeight: '700',
-    marginBottom: 8,
+    marginBottom: 6,
     letterSpacing: 0.2,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: '#E5E7EB',
     borderRadius: 14,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.02,
     shadowRadius: 4,
     elevation: 1,
   },
   inputWrapperFocused: {
     borderColor: ORANGE,
     shadowColor: ORANGE,
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
     elevation: 2,
   },
   inputWrapperDisabled: {
-    backgroundColor: '#F9FAFB',
+    backgroundColor: '#F3F4F6',
   },
   inputIcon: {
     paddingLeft: 14,
@@ -559,7 +559,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    paddingVertical: 14,
+    paddingVertical: 13,
     paddingHorizontal: 10,
     fontSize: 14,
     color: '#111827',
@@ -568,7 +568,7 @@ const styles = StyleSheet.create({
   helperText: {
     fontSize: 11,
     color: '#9CA3AF',
-    marginTop: 6,
+    marginTop: 4,
     marginLeft: 4,
     fontWeight: '500',
   },
@@ -581,16 +581,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: ORANGE,
-    paddingVertical: 16,
-    borderRadius: 16,
+    paddingVertical: 15,
+    borderRadius: 14,
     marginTop: 8,
-    marginBottom: 8,
+    marginBottom: 4,
     gap: 8,
     shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
   saveButtonText: {
     color: '#FFFFFF',
@@ -608,26 +608,26 @@ const styles = StyleSheet.create({
   /* Linked Accounts                                                     */
   /* ------------------------------------------------------------------ */
   linkedAccountsSection: {
-    paddingHorizontal: 24,
-    marginTop: 24,
+    paddingHorizontal: 20,
+    marginTop: 20,
   },
   sectionTitle: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '800',
     color: '#111827',
     marginBottom: 12,
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   linkedCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
     elevation: 2,
   },
   linkedRow: {
@@ -640,8 +640,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   googleIconWrapper: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: 12,
     backgroundColor: '#F9FAFB',
     justifyContent: 'center',
@@ -651,8 +651,8 @@ const styles = StyleSheet.create({
     borderColor: '#F3F4F6',
   },
   googleIcon: {
-    width: 22,
-    height: 22,
+    width: 20,
+    height: 20,
     resizeMode: 'contain',
   },
   linkedText: {

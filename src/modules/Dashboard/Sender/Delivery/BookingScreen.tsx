@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
-  Alert, Platform, Easing,
+  Alert, Easing,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,7 +12,7 @@ import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
 import { nowInManila } from '../../../../utils/dateUtils';
 
-const ORANGE = '#FA7A25';
+const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
@@ -51,7 +51,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
 
   const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'no_match'>('review');
-  const [showNotification, setShowNotification] = useState(false);
   const [matchFound, setMatchFound] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
@@ -59,10 +58,10 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
-  const pulseAnim1 = useRef(new Animated.Value(1)).current;
-  const pulseAnim2 = useRef(new Animated.Value(1.1)).current;
-  const pulseAnim3 = useRef(new Animated.Value(1)).current;
-  const notificationSlide = useRef(new Animated.Value(-100)).current;
+  // Radar Animation Anims
+  const radarAnim1 = useRef(new Animated.Value(0)).current;
+  const radarAnim2 = useRef(new Animated.Value(0)).current;
+  const radarAnim3 = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const sheetAnim = useRef(new Animated.Value(0)).current;
 
@@ -89,41 +88,34 @@ export default function BookingScreen({ route, navigation }: any) {
       progressAnim.setValue(0);
       Animated.timing(progressAnim, { toValue: 1, duration: 60000, useNativeDriver: false }).start();
 
-      const createPulse = (anim: Animated.Value, delay: number) =>
+      // Radar Sonar Waves Animation Loop
+      const createRadarWave = (anim: Animated.Value, delay: number) =>
         Animated.loop(
           Animated.sequence([
-            Animated.timing(anim, { toValue: 1.05, duration: 600, delay, useNativeDriver: true }),
-            Animated.timing(anim, { toValue: 0.95, duration: 600, useNativeDriver: true }),
+            Animated.delay(delay),
+            Animated.timing(anim, {
+              toValue: 1,
+              duration: 2000,
+              easing: Easing.out(Easing.ease),
+              useNativeDriver: true,
+            }),
+            Animated.timing(anim, { toValue: 0, duration: 0, useNativeDriver: true }),
           ])
         );
-      const p1 = createPulse(pulseAnim1, 0);
-      const p2 = createPulse(pulseAnim2, 200);
-      const p3 = createPulse(pulseAnim3, 400);
-      p1.start(); p2.start(); p3.start();
-      return () => { p1.stop(); p2.stop(); p3.stop(); };
-    }
 
-    if (bookingState === 'matched' || bookingState === 'no_match') {
-      setShowNotification(true);
-      Animated.spring(notificationSlide, {
-        toValue: insets.top + 10,
-        friction: 6,
-        useNativeDriver: true,
-      }).start();
-      setTimeout(() => {
-        Animated.timing(notificationSlide, {
-          toValue: -150,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => setShowNotification(false));
-      }, 4000);
+      const r1 = createRadarWave(radarAnim1, 0);
+      const r2 = createRadarWave(radarAnim2, 650);
+      const r3 = createRadarWave(radarAnim3, 1300);
+
+      r1.start(); r2.start(); r3.start();
+      return () => { r1.stop(); r2.stop(); r3.stop(); };
     }
 
     return () => {
       if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
-  }, [bookingState, insets.top]);
+  }, [bookingState, radarAnim1, radarAnim2, radarAnim3, progressAnim]);
 
   const startMatching = async () => {
     try {
@@ -249,8 +241,8 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
 
-    if (mode === 'sendNow' && state.scheduledTime) {
-      const scheduledMs = parseManilaNaive(String(state.scheduledTime));
+    if (mode === 'sendNow' && state.scheduledDate) {
+      const scheduledMs = parseManilaNaive(String(state.scheduledDate));
       const nowMs = parseManilaNaive(nowManilaNaive());
 
       if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
@@ -315,22 +307,22 @@ export default function BookingScreen({ route, navigation }: any) {
   const pickup = parseAddress(state.pickupLocation?.address);
   const dropoff = parseAddress(state.dropoffLocation?.address);
 
+  const pickupLat = state.pickupLocation?.latitude ?? null;
+  const pickupLng = state.pickupLocation?.longitude ?? null;
+  const dropoffLat = state.dropoffLocation?.latitude ?? null;
+  const dropoffLng = state.dropoffLocation?.longitude ?? null;
+
   const sheetFadeUp = {
     opacity: sheetAnim,
     transform: [
       {
         translateY: sheetAnim.interpolate({
           inputRange: [0, 1],
-          outputRange: [30, 0],
+          outputRange: [20, 0],
         }),
       },
     ],
   };
-
-  const pickupLat = state.pickupLocation?.latitude ?? null;
-  const pickupLng = state.pickupLocation?.longitude ?? null;
-  const dropoffLat = state.dropoffLocation?.latitude ?? null;
-  const dropoffLng = state.dropoffLocation?.longitude ?? null;
 
   const mapHtml = `
     <!DOCTYPE html>
@@ -342,8 +334,8 @@ export default function BookingScreen({ route, navigation }: any) {
         <style>
           body { margin: 0; padding: 0; }
           #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #E11D48; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-pickup { background: #F27024; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
         </style>
       </head>
       <body>
@@ -357,17 +349,18 @@ export default function BookingScreen({ route, navigation }: any) {
           var centerLat = (pickupLat !== null) ? pickupLat : ((dropoffLat !== null) ? dropoffLat : 10.3157);
           var centerLng = (pickupLng !== null) ? pickupLng : ((dropoffLng !== null) ? dropoffLng : 123.8854);
 
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 12);
+          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 
           var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
           var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
 
+          var markers = [];
           if (pickupLat !== null && pickupLng !== null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+            markers.push(L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map));
           }
           if (dropoffLat !== null && dropoffLng !== null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
+            markers.push(L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map));
           }
 
           if (pickupLat !== null && pickupLng !== null && dropoffLat !== null && dropoffLng !== null) {
@@ -382,24 +375,23 @@ export default function BookingScreen({ route, navigation }: any) {
                 if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
                   var coords = data.routes[0].geometry.coordinates;
                   var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, {
-                    color: '#FA7A25', weight: 5, opacity: 0.85,
+                  var polyline = L.polyline(latlngs, {
+                    color: '#F27024', weight: 5, opacity: 0.85,
                     lineJoin: 'round', lineCap: 'round'
                   }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [80, 80] });
+                  map.fitBounds(polyline.getBounds(), { padding: [100, 100], maxZoom: 13 });
                 } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                    color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8'
-                  }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [80, 80] });
+                  var group = new L.featureGroup(markers);
+                  map.fitBounds(group.getBounds(), { padding: [100, 100], maxZoom: 13 });
                 }
               })
               .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                  color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8'
-                }).addTo(map);
-                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [80, 80] });
+                var group = new L.featureGroup(markers);
+                map.fitBounds(group.getBounds(), { padding: [100, 100], maxZoom: 13 });
               });
+          } else if (markers.length > 0) {
+            var group = new L.featureGroup(markers);
+            map.fitBounds(group.getBounds(), { padding: [100, 100], maxZoom: 13 });
           }
         </script>
       </body>
@@ -410,6 +402,7 @@ export default function BookingScreen({ route, navigation }: any) {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
+      {/* Background Map */}
       <WebView
         style={styles.map}
         source={{ html: mapHtml }}
@@ -419,43 +412,16 @@ export default function BookingScreen({ route, navigation }: any) {
         androidLayerType="hardware"
         originWhitelist={['*']}
         mixedContentMode="always"
-        onConsoleMessage={(e) => console.log('MAP WEBVIEW:', e.nativeEvent.message)}
       />
 
-      {showNotification && (
-        <Animated.View
-          style={[styles.pushNotification, { transform: [{ translateY: notificationSlide }] }]}
-        >
-          <View style={[styles.pushIconBox, { backgroundColor: matchFound ? '#DCFCE7' : '#FEE2E2' }]}>
-            <Ionicons
-              name={matchFound ? 'checkmark-circle' : 'alert-circle'}
-              size={22}
-              color={matchFound ? '#22C55E' : '#EF4444'}
-            />
-          </View>
-          <View style={styles.pushTextContainer}>
-            <View style={styles.pushHeaderRow}>
-              <Text style={styles.pushTitle}>
-                {matchFound ? 'Provider Matched!' : 'No match found'}
-              </Text>
-              <Text style={styles.pushTime}>{nowInManila('h:mm a')}</Text>
-            </View>
-            <Text style={styles.pushSub}>
-              {matchFound
-                ? 'A provider has been matched with your delivery!'
-                : 'Try again later.'}
-            </Text>
-          </View>
-        </Animated.View>
-      )}
-
+      {/* Top Overlay with Back Button & Location Pills */}
       <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
         <TouchableOpacity
           style={styles.backCircleBtn}
           onPress={() => navigation.goBack()}
           activeOpacity={0.85}
         >
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <Ionicons name="arrow-back" size={20} color="#111827" />
         </TouchableOpacity>
 
         <View style={styles.pillsContainer}>
@@ -470,9 +436,9 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
           </View>
           <View style={styles.locationPill}>
-            <Ionicons name="location" size={16} color="#E11D48" style={{ marginRight: 10 }} />
+            <Ionicons name="location" size={16} color="#EF4444" style={{ marginRight: 12 }} />
             <View style={styles.pillTextContainer}>
-              <Text style={[styles.pillLabel, { color: '#E11D48' }]}>DROPOFF</Text>
+              <Text style={[styles.pillLabel, { color: '#EF4444' }]}>DROPOFF</Text>
               <Text style={styles.pillMainText} numberOfLines={1}>{dropoff.main}</Text>
               <Text style={styles.pillSubText} numberOfLines={1}>{dropoff.sub}</Text>
             </View>
@@ -480,48 +446,23 @@ export default function BookingScreen({ route, navigation }: any) {
         </View>
       </View>
 
-      <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
+      {/* Bottom Sheet Modal */}
+      <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
         {bookingState === 'review' && (
-          <Animated.View style={[styles.sheetCard, sheetFadeUp]}>
+          <Animated.View style={[styles.sheetCard, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
 
             <View style={styles.sheetTitleRow}>
               <View style={styles.sheetIconBox}>
-                <Ionicons name="cube-outline" size={18} color={ORANGE} />
+                <Ionicons name="person-outline" size={18} color={ORANGE} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.sheetHeaderTitle}>
-                  {state.dropoffType === 'curb-side' ? 'Curb-side' : 'Door-to-Door'} Drop-off
-                </Text>
+                <Text style={styles.sheetHeaderTitle}>Recipient & Delivery</Text>
                 <Text style={styles.sheetHeaderSub}>
                   {mode === 'sendNow' ? 'Send now · Immediate pickup' : 'Scheduled delivery'}
                 </Text>
               </View>
             </View>
-
-            <View style={styles.timelineContainer}>
-              <View style={styles.timelinePoint}>
-                <View style={styles.dotPickupOuter}>
-                  <View style={styles.dotPickupInner} />
-                </View>
-                <View style={styles.timelineTextContainer}>
-                  <Text style={styles.timelineLabel}>PICKUP</Text>
-                  <Text style={styles.timelineMainText} numberOfLines={1}>{pickup.main}</Text>
-                  <Text style={styles.timelineSubText} numberOfLines={1}>{pickup.sub}</Text>
-                </View>
-              </View>
-              <View style={styles.timelineLine} />
-              <View style={styles.timelinePoint}>
-                <Ionicons name="location" size={18} color="#E11D48" style={styles.dotDropoff} />
-                <View style={styles.timelineTextContainer}>
-                  <Text style={[styles.timelineLabel, { color: '#E11D48' }]}>DROPOFF</Text>
-                  <Text style={styles.timelineMainText} numberOfLines={1}>{dropoff.main}</Text>
-                  <Text style={styles.timelineSubText} numberOfLines={1}>{dropoff.sub}</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.divider} />
 
             <TouchableOpacity
               style={[styles.receiverCard, !receiver && styles.receiverCardEmpty]}
@@ -541,7 +482,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.receiverLabel}>RECEIVER</Text>
+                <Text style={styles.receiverLabel}>DESIGNATED RECEIVER</Text>
                 {receiver ? (
                   <>
                     <Text style={styles.receiverName} numberOfLines={1}>
@@ -608,20 +549,103 @@ export default function BookingScreen({ route, navigation }: any) {
         )}
 
         {bookingState === 'finding' && (
-          <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]}>
+          <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
             <View style={styles.sheetHandle} />
 
-            <View style={styles.findingHeaderRow}>
-              <View style={styles.findingPulseDot}>
-                <View style={styles.findingPulseDotInner} />
+            {/* Receiver Mini Context Card */}
+            {receiver && (
+              <View style={styles.searchingReceiverMiniCard}>
+                <View style={styles.searchMiniAvatar}>
+                  <Ionicons name="person" size={12} color="#FFFFFF" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.searchMiniLabel}>RECIPIENT & SECURE OTP</Text>
+                  <Text style={styles.searchMiniName} numberOfLines={1}>
+                    {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim()} ({receiver.receiver_phone || receiver.phone_number || 'No Phone'})
+                  </Text>
+                </View>
+                <Ionicons name="shield-checkmark" size={16} color="#7C3AED" />
               </View>
-              <Text style={styles.findingTitle}>
-                {isSearching ? 'Finding your provider...' : 'Processing your booking...'}
+            )}
+
+            {/* 🌟 RADAR SONAR SCANNER ANIMATION */}
+            <View style={styles.radarContainer}>
+              <Animated.View
+                style={[
+                  styles.radarWaveRing,
+                  {
+                    transform: [
+                      {
+                        scale: radarAnim1.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 2.1],
+                        }),
+                      },
+                    ],
+                    opacity: radarAnim1.interpolate({
+                      inputRange: [0, 0.2, 1],
+                      outputRange: [0, 0.45, 0],
+                    }),
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.radarWaveRing,
+                  {
+                    transform: [
+                      {
+                        scale: radarAnim2.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 2.1],
+                        }),
+                      },
+                    ],
+                    opacity: radarAnim2.interpolate({
+                      inputRange: [0, 0.2, 1],
+                      outputRange: [0, 0.35, 0],
+                    }),
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.radarWaveRing,
+                  {
+                    transform: [
+                      {
+                        scale: radarAnim3.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [1, 2.1],
+                        }),
+                      },
+                    ],
+                    opacity: radarAnim3.interpolate({
+                      inputRange: [0, 0.2, 1],
+                      outputRange: [0, 0.25, 0],
+                    }),
+                  },
+                ]}
+              />
+              <View style={styles.radarCenterCore}>
+                <Ionicons name="cube" size={18} color="#FFFFFF" />
+              </View>
+            </View>
+
+            <View style={styles.findingTextGroup}>
+              <Text style={styles.findingTitle}>Finding nearby provider...</Text>
+              <Text style={styles.findingSub}>
+                Broadcasting to verified riders in Cebu.
               </Text>
             </View>
-            <Text style={styles.findingSub}>
-              Your request has been sent to nearby providers.
-            </Text>
+
+            {/* 🌟 BREATHABLE CLEAN COST BADGE */}
+            <View style={styles.searchCostOnlyBox}>
+              <Text style={styles.searchCostLabel}>TOTAL FARE</Text>
+              <Text style={styles.searchCostValue}>
+                ₱{state.estimatedCost?.toFixed(2) || '0.00'}
+              </Text>
+            </View>
 
             <View style={styles.progressContainer}>
               <Animated.View
@@ -637,43 +661,19 @@ export default function BookingScreen({ route, navigation }: any) {
               />
             </View>
 
-            <View style={styles.providerPlaceholders}>
-              <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim1 }] }]}>
-                <View style={styles.placeholderAvatar}>
-                  <Ionicons name="person" size={20} color="#FFFFFF" />
-                </View>
-                <View style={styles.placeholderLine} />
-                <View style={styles.placeholderLineShort} />
-              </Animated.View>
-              <Animated.View style={[styles.placeholderCardCenter, { transform: [{ scale: pulseAnim2 }] }]}>
-                <View style={[styles.placeholderAvatar, { width: 36, height: 36, borderRadius: 18 }]}>
-                  <Ionicons name="person" size={24} color="#FFFFFF" />
-                </View>
-                <View style={styles.placeholderLine} />
-                <View style={styles.placeholderLineShort} />
-              </Animated.View>
-              <Animated.View style={[styles.placeholderCard, { transform: [{ scale: pulseAnim3 }] }]}>
-                <View style={styles.placeholderAvatar}>
-                  <Ionicons name="person" size={20} color="#FFFFFF" />
-                </View>
-                <View style={styles.placeholderLine} />
-                <View style={styles.placeholderLineShort} />
-              </Animated.View>
-            </View>
-
             <TouchableOpacity
               style={styles.cancelTextButton}
               onPress={handleCancelBooking}
               activeOpacity={0.85}
             >
-              <Ionicons name="close-circle-outline" size={16} color="#EF4444" />
-              <Text style={styles.cancelTextButtonLabel}>Cancel Booking</Text>
+              <Ionicons name="close-circle-outline" size={14} color="#EF4444" />
+              <Text style={styles.cancelTextButtonLabel}>Cancel Search</Text>
             </TouchableOpacity>
           </Animated.View>
         )}
 
         {bookingState === 'matched' && matchFound && (
-          <Animated.View style={[styles.sheetCardMatched, sheetFadeUp]}>
+          <Animated.View style={[styles.sheetCardMatched, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
 
             <View style={styles.matchedHeader}>
@@ -682,7 +682,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.matchedHeaderTitle}>Provider Matched!</Text>
-                <Text style={styles.matchedHeaderSub}>Your delivery is on the way</Text>
+                <Text style={styles.matchedHeaderSub}>Your delivery partner is on the way</Text>
               </View>
             </View>
 
@@ -721,7 +721,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   <View style={styles.matchedReceiverRow}>
                     <Ionicons name="person-circle-outline" size={16} color="#6B7280" />
                     <View style={{ flex: 1, marginLeft: 8 }}>
-                      <Text style={styles.matchedReceiverLabel}>Receiver</Text>
+                      <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
                       <Text style={styles.matchedReceiverName} numberOfLines={1}>
                         {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
                       </Text>
@@ -760,7 +760,7 @@ export default function BookingScreen({ route, navigation }: any) {
         )}
 
         {bookingState === 'no_match' && (
-          <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp]}>
+          <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
 
             <View style={styles.noMatchIconCircle}>
@@ -768,7 +768,7 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find a provider on this route right now. Try again or adjust your details.
+              We couldn't find an available provider on this route right now. Please try again or modify your request.
             </Text>
 
             <View style={styles.noMatchActions}>
@@ -797,105 +797,75 @@ export default function BookingScreen({ route, navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F3F4F6' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   map: { ...StyleSheet.absoluteFill },
 
   topOverlay: {
-    position: 'absolute', left: 20, right: 20,
+    position: 'absolute', left: 24, right: 24,
     flexDirection: 'row', alignItems: 'flex-start', zIndex: 10,
   },
   backCircleBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF',
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
-    marginRight: 12, borderWidth: 1, borderColor: '#F3F4F6',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
+    marginRight: 12, borderWidth: 1, borderColor: '#E5E7EB',
   },
   pillsContainer: { flex: 1 },
   locationPill: {
     backgroundColor: '#FFFFFF', borderRadius: 16,
-    paddingHorizontal: 14, paddingVertical: 10,
+    paddingHorizontal: 16, paddingVertical: 12,
     flexDirection: 'row', alignItems: 'center', marginBottom: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1, shadowRadius: 6, elevation: 3,
-    borderWidth: 1, borderColor: '#F3F4F6',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08, shadowRadius: 8, elevation: 3,
+    borderWidth: 1, borderColor: '#E5E7EB',
   },
   pillIconPickup: {
     width: 14, height: 14, borderRadius: 7, borderWidth: 3,
-    borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    borderColor: ORANGE, justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
-  pillIconPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
+  pillIconPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
   pillTextContainer: { flex: 1 },
-  pillLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
-  pillMainText: { fontSize: 13, fontWeight: '700', color: '#111827' },
+  pillLabel: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8, marginBottom: 2 },
+  pillMainText: { fontSize: 13, fontWeight: '700', color: '#111827', letterSpacing: -0.2 },
   pillSubText: { fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500' },
 
-  pushNotification: {
-    position: 'absolute', left: 16, right: 16,
-    backgroundColor: 'rgba(17,24,39,0.95)',
-    borderRadius: 16, padding: 12, flexDirection: 'row', alignItems: 'center',
-    zIndex: 20,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 8,
-  },
-  pushIconBox: {
-    width: 40, height: 40, borderRadius: 12,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
-  },
-  pushTextContainer: { flex: 1 },
-  pushHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  pushTitle: { flex: 1, fontSize: 13, fontWeight: '700', color: '#FFFFFF', lineHeight: 18, marginRight: 8 },
-  pushTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '500' },
-  pushSub: { fontSize: 11, color: '#D1D5DB', marginTop: 3, fontWeight: '500' },
-
   bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center' },
+  bottomSheetFinding: { bottom: 0 },
   sheetHandle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',
-    alignSelf: 'center', marginBottom: 14,
+    width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',
+    alignSelf: 'center', marginBottom: 6,
   },
 
   sheetCard: {
     backgroundColor: '#FFFFFF', width: '100%',
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 24, paddingTop: 6,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
+    shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
   },
-  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
+  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   sheetIconBox: {
-    width: 42, height: 42, borderRadius: 13, backgroundColor: '#FFF7ED',
+    width: 40, height: 40, borderRadius: 12, backgroundColor: '#FFF7ED',
     justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: '#FFE4D2',
   },
-  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   sheetHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
 
-  timelineContainer: { marginLeft: 6, marginBottom: 4 },
-  timelinePoint: { flexDirection: 'row', alignItems: 'center' },
-  dotPickupOuter: {
-    width: 16, height: 16, borderRadius: 8, borderWidth: 4,
-    borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center', marginRight: 12,
-  },
-  dotPickupInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#0000CC' },
-  dotDropoff: { marginRight: 10, marginLeft: -1 },
-  timelineLine: { width: 1, height: 24, backgroundColor: '#E5E7EB', marginLeft: 7, marginVertical: 4 },
-  timelineTextContainer: { flex: 1 },
-  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
-  timelineMainText: { fontSize: 13, fontWeight: '700', color: '#111827' },
-  timelineSubText: { fontSize: 10, color: '#6B7280', marginTop: 1, fontWeight: '500' },
-
-  divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 16 },
+  divider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 12 },
 
   receiverCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5, borderColor: '#E5E7EB',
-    borderRadius: 16, padding: 12,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1, borderColor: '#E5E7EB',
+    borderRadius: 16, padding: 14,
   },
   receiverCardEmpty: { borderStyle: 'dashed', borderColor: '#FDBA74', backgroundColor: '#FFFBF5' },
-  receiverIconBox: { width: 42, height: 42, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
+  receiverIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   receiverIconBoxFilled: { backgroundColor: ORANGE },
   receiverIconBoxEmpty: { backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFE4D2' },
-  receiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 1, marginBottom: 3 },
+  receiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 0.8, marginBottom: 3 },
   receiverName: { fontSize: 14, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
   receiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500' },
   receiverPlaceholder: { fontSize: 13, fontWeight: '700', color: ORANGE },
@@ -904,101 +874,136 @@ const styles = StyleSheet.create({
   otpInfoBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: '#F5F3FF', borderRadius: 12,
-    paddingHorizontal: 12, paddingVertical: 10, marginTop: 12,
+    paddingHorizontal: 12, paddingVertical: 10, marginTop: 10,
     borderWidth: 1, borderColor: '#DDD6FE',
   },
   otpInfoBannerText: {
     flex: 1, fontSize: 11, color: '#5B21B6', fontWeight: '600', lineHeight: 15,
   },
 
-  costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
+  costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   costLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   costSub: { fontSize: 10, color: '#9CA3AF', fontWeight: '500', marginTop: 2 },
   costValue: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.4 },
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 16, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
   },
-  primaryButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  primaryButtonDisabled: { backgroundColor: '#F3F4F6', shadowOpacity: 0, elevation: 0 },
   primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 10, fontWeight: '500' },
+  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 8, fontWeight: '500' },
 
   sheetCardFinding: {
     width: '100%', backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+    paddingHorizontal: 24, paddingTop: 4, paddingBottom: 10,
     alignItems: 'center',
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
+    shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
   },
-  findingHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  findingPulseDot: {
-    width: 10, height: 10, borderRadius: 5,
-    backgroundColor: 'rgba(242,112,36,0.25)',
+  searchingReceiverMiniCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFE4D2',
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 6,
+    width: '100%', marginBottom: 6,
+  },
+  searchMiniAvatar: {
+    width: 22, height: 22, borderRadius: 11, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center',
   },
-  findingPulseDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: ORANGE },
-  findingTitle: { fontSize: 15, fontWeight: '800', color: '#111827', textAlign: 'center', letterSpacing: -0.2 },
-  findingSub: { fontSize: 12, color: '#6B7280', fontWeight: '500', marginBottom: 18, textAlign: 'center' },
+  searchMiniLabel: { fontSize: 8, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
+  searchMiniName: { fontSize: 11, fontWeight: '700', color: '#111827' },
+
+  radarContainer: {
+    width: 68, height: 68,
+    justifyContent: 'center', alignItems: 'center',
+    marginVertical: 2,
+  },
+  radarWaveRing: {
+    position: 'absolute',
+    width: 36, height: 36, borderRadius: 18,
+    borderWidth: 2, borderColor: ORANGE,
+    backgroundColor: 'rgba(242,112,36,0.08)',
+  },
+  radarCenterCore: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    zIndex: 2,
+  },
+  findingTextGroup: { alignItems: 'center', marginBottom: 6 },
+  findingTitle: { fontSize: 14, fontWeight: '800', color: '#111827', letterSpacing: -0.3, marginBottom: 2, textAlign: 'center' },
+  findingSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', textAlign: 'center', paddingHorizontal: 10 },
+
+  searchCostOnlyBox: {
+    width: '100%',
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  searchCostLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#6B7280',
+    letterSpacing: 0.8,
+  },
+  searchCostValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+
   progressContainer: {
-    width: '100%', height: 5, backgroundColor: '#F3F4F6',
-    borderRadius: 3, marginBottom: 24, overflow: 'hidden',
+    width: '100%', height: 3, backgroundColor: '#F3F4F6',
+    borderRadius: 2, marginBottom: 8, overflow: 'hidden',
   },
-  progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 3 },
-  providerPlaceholders: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20, gap: 8 },
-  placeholderCard: {
-    width: 66, height: 84, backgroundColor: '#FFF7ED', borderRadius: 12,
-    padding: 10, alignItems: 'center',
-    borderWidth: 1, borderColor: '#FFE4D2',
-  },
-  placeholderCardCenter: {
-    width: 78, height: 96, backgroundColor: '#FFEDD5', borderRadius: 12,
-    padding: 12, alignItems: 'center',
-    borderWidth: 1.5, borderColor: '#FDBA74',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
-  },
-  placeholderAvatar: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center', marginBottom: 8,
-  },
-  placeholderLine: { width: '80%', height: 4, backgroundColor: '#FDBA74', borderRadius: 2, marginBottom: 4 },
-  placeholderLineShort: { width: '50%', height: 4, backgroundColor: '#FDBA74', borderRadius: 2 },
+  progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 2 },
   cancelTextButton: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20,
+    paddingVertical: 6, paddingHorizontal: 14, borderRadius: 20,
     backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
   },
-  cancelTextButtonLabel: { color: '#EF4444', fontWeight: '700', fontSize: 13 },
+  cancelTextButtonLabel: { color: '#EF4444', fontWeight: '700', fontSize: 12 },
 
   sheetCardMatched: {
     width: '100%', backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 24, paddingTop: 8,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
+    shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
   },
-  matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
+  matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   matchedHeaderIcon: {
-    width: 42, height: 42, borderRadius: 13, backgroundColor: '#DCFCE7',
+    width: 40, height: 40, borderRadius: 12, backgroundColor: '#DCFCE7',
     justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: '#BBF7D0',
   },
-  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   matchedHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
   matchedInnerCard: {
-    borderWidth: 1, borderColor: '#F3F4F6', borderRadius: 16,
-    padding: 14, backgroundColor: '#FAFAFA', marginBottom: 16,
+    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 16,
+    padding: 14, backgroundColor: '#F9FAFB', marginBottom: 14,
   },
   matchedRow: { flexDirection: 'row', alignItems: 'center' },
   matchedLeftCol: { width: 70, alignItems: 'center', marginRight: 14, position: 'relative' },
   matchedAvatarCircle: {
-    width: 58, height: 58, borderRadius: 29, backgroundColor: ORANGE,
+    width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 3, borderColor: '#FFFFFF',
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowOpacity: 0.25, shadowRadius: 8, elevation: 4,
   },
   matchedVerifiedBadge: {
     position: 'absolute', bottom: 0, right: 4,
@@ -1009,11 +1014,11 @@ const styles = StyleSheet.create({
   matchedRightCol: { flex: 1 },
   matchedName: { fontSize: 15, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
-  carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   carText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
-  matchedDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
+  matchedDivider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 10 },
   matchedReceiverRow: { flexDirection: 'row', alignItems: 'center' },
-  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 1, marginBottom: 2 },
+  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 0.8, marginBottom: 2 },
   matchedReceiverName: { fontSize: 13, fontWeight: '700', color: '#111827' },
   matchedReceiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 1, fontWeight: '500' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -1021,47 +1026,48 @@ const styles = StyleSheet.create({
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 16, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
   },
   confirmButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
 
   otpSentBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: '#DCFCE7', borderRadius: 12,
-    padding: 12, marginTop: 12,
+    padding: 10, marginTop: 10,
     borderWidth: 1, borderColor: '#BBF7D0',
   },
   otpSentText: { flex: 1, fontSize: 12, color: '#166534', fontWeight: '600' },
 
   sheetCardNoMatch: {
     width: '100%', backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+    paddingHorizontal: 24, paddingTop: 8,
     alignItems: 'center',
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
+    shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
   },
   noMatchIconCircle: {
-    width: 78, height: 78, borderRadius: 39, backgroundColor: '#FFF7ED',
+    width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF7ED',
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: 16, marginTop: 4,
+    marginBottom: 12, marginTop: 2,
+    borderWidth: 1, borderColor: '#FFE4D2',
   },
-  noMatchTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2, textAlign: 'center' },
+  noMatchTitle: { fontSize: 17, fontWeight: '800', color: '#111827', marginBottom: 4, letterSpacing: -0.3, textAlign: 'center' },
   noMatchSubtitle: {
     fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 18,
-    marginBottom: 22, paddingHorizontal: 10, fontWeight: '500',
+    marginBottom: 18, paddingHorizontal: 10, fontWeight: '500',
   },
   noMatchActions: { flexDirection: 'row', gap: 12, width: '100%' },
   noMatchBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'center', paddingVertical: 14, borderRadius: 16, gap: 6,
+    justifyContent: 'center', paddingVertical: 15, borderRadius: 16, gap: 6,
   },
   retryBtn: {
     backgroundColor: ORANGE, shadowColor: ORANGE,
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 3,
+    shadowOpacity: 0.25, shadowRadius: 8, elevation: 3,
   },
   retryBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
   modifyBtn: { backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },

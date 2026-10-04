@@ -1,7 +1,7 @@
 // src/modules/Dashboard/Sender/Delivery/ScheduleCalendarScreen.tsx
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Image,
+  View, Text, TouchableOpacity, StyleSheet,
   Dimensions, Platform, Animated, Easing, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,7 +10,7 @@ import { useSchedule } from './ScheduleContext';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#FA7A25';
+const ORANGE = '#F27024';
 const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WEEK_DAYS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 
@@ -27,7 +27,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
-  const carAnim = useRef(new Animated.Value(0)).current;
   const cardAnim = useRef(new Animated.Value(0)).current;
   const gridAnim = useRef(new Animated.Value(0)).current;
   const buttonAnim = useRef(new Animated.Value(0)).current;
@@ -45,12 +44,11 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(carAnim, 120),
-      animate(cardAnim, 200),
-      animate(gridAnim, 320),
-      animate(buttonAnim, 440),
+      animate(cardAnim, 120),
+      animate(gridAnim, 240),
+      animate(buttonAnim, 360),
     ]).start();
-  }, [headerAnim, carAnim, cardAnim, gridAnim, buttonAnim]);
+  }, [headerAnim, cardAnim, gridAnim, buttonAnim]);
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
@@ -63,18 +61,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
       },
     ],
   });
-
-  const carSlide = {
-    opacity: carAnim,
-    transform: [
-      {
-        translateX: carAnim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [40, 0],
-        }),
-      },
-    ],
-  };
 
   const animatePressIn = () => {
     Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
@@ -148,46 +134,32 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
   /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent />
 
-      {/* Header */}
+      {/* Minimalist Top Header */}
       <Animated.View
-        style={[styles.headerBackground, { paddingTop: insets.top + 10 }, fadeUp(headerAnim, -14)]}
+        style={[styles.headerContainer, { paddingTop: insets.top + 10 }, fadeUp(headerAnim, -14)]}
       >
-        <View style={styles.stepRow}>
-          <View style={styles.stepPill}>
-            <Text style={styles.stepText}>STEP 3 OF 4</Text>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backCircleBtn}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="arrow-back" size={20} color="#111827" />
+        </TouchableOpacity>
+
+        <View style={styles.headerTextContainer}>
+          <View style={styles.stepBadge}>
+            <Text style={styles.stepBadgeText}>STEP 3 OF 4</Text>
           </View>
+          <Text style={styles.headerTitle}>Schedule Delivery</Text>
         </View>
-
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSub}>Schedule Delivery</Text>
-            <Text style={styles.headerTitle}>Pick a Date & Time</Text>
-          </View>
-        </View>
-
-        <Text style={styles.headerSubtitle}>
-          Choose when you'd like us to pick up your package.
-        </Text>
-
-        <Animated.Image
-          source={require('../../../../../assets/Car-Grey.png')}
-          style={[styles.carImage, carSlide]}
-        />
       </Animated.View>
 
       {/* Content */}
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
         <Animated.View style={[styles.card, fadeUp(cardAnim, 20)]}>
@@ -197,8 +169,8 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               <Ionicons name="calendar-outline" size={18} color={ORANGE} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Select a Date</Text>
-              <Text style={styles.cardSubtitle}>Then choose your pickup time</Text>
+              <Text style={styles.cardTitle}>Pick a Date & Time</Text>
+              <Text style={styles.cardSubtitle}>Select when you'd like your package picked up</Text>
             </View>
           </View>
 
@@ -287,7 +259,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
                 <Ionicons name="time-outline" size={18} color={ORANGE} />
               </View>
               <View>
-                <Text style={styles.timeLabel}>Pickup Time</Text>
+                <Text style={styles.timeLabel}>PICKUP TIME</Text>
                 <Text style={styles.timeValue}>
                   {selectedTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </Text>
@@ -321,9 +293,9 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
           {/* Summary */}
           {selectedDate && (
             <View style={styles.summaryCard}>
-              <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+              <Ionicons name="checkmark-circle" size={16} color="#059669" />
               <View style={{ flex: 1 }}>
-                <Text style={styles.summaryLabel}>Selected date</Text>
+                <Text style={styles.summaryLabel}>Selected schedule</Text>
                 <Text style={styles.summaryValue} numberOfLines={1}>
                   {selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                   {' · '}
@@ -354,121 +326,99 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FA' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
 
-  /* Header */
-  headerBackground: {
-    backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 60,
-    position: 'relative',
-    overflow: 'visible',
-    height: 220,
-    zIndex: 1,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-  },
-  stepRow: { flexDirection: 'row', marginBottom: 12 },
-  stepPill: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  stepText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  headerTopRow: {
+  /* Minimalist Header */
+  headerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
-    gap: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+    backgroundColor: '#FFFFFF',
   },
-  backButton: {
+  backCircleBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
+    marginRight: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: '#E5E7EB',
   },
-  headerSub: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
-    letterSpacing: 0.3,
+  headerTextContainer: { flex: 1 },
+  stepBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFF7ED',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
     marginBottom: 2,
   },
+  stepBadgeText: {
+    color: ORANGE,
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#111827',
     letterSpacing: -0.3,
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: '#FFE0C7',
-    lineHeight: 17,
-    maxWidth: '65%',
-    fontWeight: '500',
-  },
-  carImage: {
-    position: 'absolute',
-    right: -30,
-    bottom: 5,
-    width: 210,
-    height: 105,
-    resizeMode: 'contain',
-    zIndex: 2,
-    opacity: 0.85,
   },
 
   /* Scroll */
   scrollView: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 30 },
+  scrollContent: { paddingHorizontal: 20, paddingTop: 16 },
 
   /* Card */
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 22,
+    borderRadius: 20,
     padding: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
   },
   cardTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     marginBottom: 14,
   },
   cardIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 11,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
   },
   cardTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '800',
     color: '#111827',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   cardSubtitle: {
-    fontSize: 10,
+    fontSize: 11,
     color: '#6B7280',
     fontWeight: '500',
     marginTop: 2,
@@ -477,27 +427,32 @@ const styles = StyleSheet.create({
   /* Calendar */
   calendarContainer: {
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
     borderRadius: 16,
-    padding: 10,
-    marginBottom: 14,
-    backgroundColor: '#FAFAFA',
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: '#F9FAFB',
   },
   monthSelectorRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   navBtn: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   monthTitleBox: { alignItems: 'center' },
   monthTitle: {
@@ -507,14 +462,14 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
 
-  weekRow: { flexDirection: 'row', marginBottom: 6 },
+  weekRow: { flexDirection: 'row', marginBottom: 8 },
   weekDay: {
     flex: 1,
     textAlign: 'center',
-    fontWeight: '700',
+    fontWeight: '800',
     color: '#9CA3AF',
     fontSize: 10,
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
   },
   weekDayWeekend: { color: ORANGE },
 
@@ -524,27 +479,27 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 1,
+    padding: 2,
   },
   dayCell: {
     width: '100%',
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 10,
   },
   dayText: {
     fontSize: 12,
     color: '#111827',
-    fontWeight: '600',
+    fontWeight: '700',
   },
   selectedDay: {
     backgroundColor: ORANGE,
     shadowColor: ORANGE,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 4,
-    elevation: 2,
+    elevation: 3,
   },
   selectedDayText: { color: '#FFFFFF', fontWeight: '800' },
   todayCell: {
@@ -561,12 +516,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#FAFAFA',
+    backgroundColor: '#F9FAFB',
     borderRadius: 14,
     padding: 12,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
   },
   timeSectionLeft: {
     flexDirection: 'row',
@@ -575,18 +530,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   timeIconBox: {
-    width: 34,
-    height: 34,
+    width: 36,
+    height: 36,
     borderRadius: 10,
     backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
   },
   timeLabel: {
-    fontSize: 10,
+    fontSize: 8,
     color: '#6B7280',
-    fontWeight: '600',
-    letterSpacing: 0.2,
+    fontWeight: '800',
+    letterSpacing: 0.8,
   },
   timeValue: {
     fontSize: 14,
@@ -599,8 +556,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 12,
     backgroundColor: '#FFF7ED',
     borderWidth: 1,
@@ -617,23 +574,23 @@ const styles = StyleSheet.create({
   summaryCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     backgroundColor: '#ECFDF5',
     borderRadius: 12,
-    padding: 10,
-    marginBottom: 12,
+    padding: 12,
+    marginBottom: 14,
     borderWidth: 1,
     borderColor: '#A7F3D0',
   },
   summaryLabel: {
     fontSize: 9,
     color: '#059669',
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    fontWeight: '800',
+    letterSpacing: 0.8,
     textTransform: 'uppercase',
   },
   summaryValue: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#065F46',
     fontWeight: '700',
     marginTop: 1,
@@ -645,24 +602,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#111827',
-    borderRadius: 14,
-    paddingVertical: 14,
+    borderRadius: 16,
+    paddingVertical: 16,
     gap: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
     elevation: 4,
   },
   disabledBtn: {
-    backgroundColor: '#D1D5DB',
+    backgroundColor: '#F3F4F6',
     shadowOpacity: 0,
     elevation: 0,
   },
   nextBtnText: {
     color: '#FFFFFF',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 15,
     letterSpacing: 0.2,
   },
 });
