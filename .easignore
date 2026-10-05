@@ -1,0 +1,26 @@
+# AI tools & agent folders
+.agents/
+.claude/
+.cursor/
+.aider/
+.codeium/
+
+# Version control
+.git/
+
+# Build artifacts
+android/
+ios/
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# OS files
+.DS_Store
+Thumbs.db

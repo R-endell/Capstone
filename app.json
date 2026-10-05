@@ -29,23 +29,47 @@
         "ACCESS_COARSE_LOCATION",
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-web-browser",
-      "expo-sqlite",
-      "expo-status-bar",
-      "@react-native-community/datetimepicker",
-      [
-        "expo-location",
-        {
-          "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
+  "expo-web-browser",
+  "expo-sqlite",
+  "expo-status-bar",
+  "@react-native-community/datetimepicker",
+  [
+    "expo-location",
+    {
+      "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
+    }
+  ],
+  [
+    "expo-build-properties",
+    {
+      "android": {
+        "ndkVersion": "26.1.10909125"
+      }
+    }
+  ],
+  [
+    "expo-gradle-properties",
+    {
+      "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
+      "org.gradle.parallel": "false",
+      "org.gradle.workers.max": "2",
+      "kotlin.daemon.jvmargs": "-Xmx2048m"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "341c2e19-38c9-4bbf-aa65-419406bc1150"
+      }
+    }
   }
-}
+} 

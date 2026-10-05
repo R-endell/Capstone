@@ -101,8 +101,9 @@ deno.Deno.serve(async (req) => {
         country: 'PH',
         customer_id: customerId,
         channel_code: channelCode,
-        success_return_url: 'packnship://payment-success',
-        cancel_return_url: 'packnship://payment-cancel',
+        allowed_payment_channels: ['GCASH_LINK_AND_PAY'],
+        success_return_url: 'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-success',
+        cancel_return_url: 'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-cancel',
       }),
     })
 
