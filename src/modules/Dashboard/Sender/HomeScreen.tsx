@@ -1,121 +1,45 @@
 // src/modules/Dashboard/Sender/HomeScreen.tsx
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   StatusBar,
-  Alert,
   Animated,
   Easing,
   Image,
   Platform,
+  ScrollView,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
-import * as Location from 'expo-location';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
-import { supabase } from '../../../utils/supabase';
 
 /** Brand */
 const ORANGE = '#F27024';
 const ORANGE_SOFT = '#FFF4EC';
 const ORANGE_BORDER = '#FFD9B8';
 
-/* ==================================================================== */
-/* HomeMap — Interactive HD Leaflet Map for Sender Dashboard            */
-/* ==================================================================== */
-const HomeMap = ({ centerLat, centerLng }: { centerLat: number; centerLng: number }) => {
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .user-marker {
-            background: #F27024;
-            border: 3px solid white;
-            border-radius: 50%;
-            width: 22px;
-            height: 22px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .pulse {
-            width: 10px;
-            height: 10px;
-            background-color: white;
-            border-radius: 50%;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', {
-            zoomControl: false,
-            attributionControl: false,
-            detectRetina: true
-          }).setView([${centerLat}, ${centerLng}], 15);
-
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            tileSize: 256,
-            zoomOffset: 0
-          }).addTo(map);
-
-          L.marker([${centerLat}, ${centerLng}], {
-            icon: L.divIcon({
-              className: 'user-marker',
-              html: '<div class="pulse"></div>',
-              iconSize: [22, 22],
-              iconAnchor: [11, 11]
-            })
-          }).addTo(map);
-        </script>
-      </body>
-    </html>
-  `;
-
-  return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
-  );
-};
-
-/* ==================================================================== */
-/* HomeScreen                                                           */
-/* ==================================================================== */
 export default function HomeScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
 
-  // Real-time Location State (Defaults to Cebu City coordinates)
-  const [userLocation, setUserLocation] = useState({ lat: 10.3157, lng: 123.8854 });
+  // Simulated User Data for UI Polish
+  const [userName] = useState('Kenchi');
 
   // Entrance Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const actionsAnim = useRef(new Animated.Value(0)).current;
+  const promoAnim = useRef(new Animated.Value(0)).current;
+  const tipsAnim = useRef(new Animated.Value(0)).current;
   const bellPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const animate = (value: Animated.Value, delay: number, duration = 650) =>
+    const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
         toValue: 1,
         duration,
@@ -124,9 +48,11 @@ export default function HomeScreen() {
         useNativeDriver: true,
       });
 
-    Animated.parallel([
+    Animated.stagger(100, [
       animate(headerAnim, 0),
-      animate(actionsAnim, 150),
+      animate(actionsAnim, 0),
+      animate(promoAnim, 0),
+      animate(tipsAnim, 0),
     ]).start();
 
     const pulse = Animated.loop(
@@ -148,31 +74,7 @@ export default function HomeScreen() {
     pulse.start();
 
     return () => pulse.stop();
-  }, [headerAnim, actionsAnim, bellPulse]);
-
-  // Fetch Real-Time GPS Location
-  useEffect(() => {
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          console.warn('Permission to access location was denied. Using default coordinates.');
-          return;
-        }
-
-        let location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-
-        setUserLocation({
-          lat: location.coords.latitude,
-          lng: location.coords.longitude,
-        });
-      } catch (error) {
-        console.warn('Error fetching location:', error);
-      }
-    })();
-  }, []);
+  }, [headerAnim, actionsAnim, promoAnim, tipsAnim, bellPulse]);
 
   const handleSendPackage = () => {
     navigation.navigate('DropoffType', { mode: 'sendNow' });
@@ -186,7 +88,11 @@ export default function HomeScreen() {
     Alert.alert('Coming Soon', 'Notifications will be available in the next update.');
   };
 
-  const fadeUp = (value: Animated.Value, distance = 24) => ({
+  const handleContentTap = (title: string) => {
+    Alert.alert(title, 'This feature will be available in a future update.');
+  };
+
+  const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
     transform: [
       {
@@ -211,25 +117,15 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* TOP HALF: HD Interactive Map */}
-      <View style={styles.mapContainer}>
-        <HomeMap centerLat={userLocation.lat} centerLng={userLocation.lng} />
-
-        {/* Floating Header Overlay */}
-        <Animated.View
-          style={[
-            styles.floatingHeader,
-            { top: Math.max(insets.top + 10, Platform.OS === 'android' ? 40 : 16) },
-            fadeUp(headerAnim, -14),
-          ]}
-        >
-          {/* App logo */}
-          <View style={styles.brandChip}>
-            <Image
-              source={require('../../../../assets/applogo.png')}
-              style={styles.brandLogo}
-              resizeMode="contain"
-            />
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]}
+      >
+        {/* HEADER & GREETING SECTION */}
+        <Animated.View style={[styles.header, fadeUp(headerAnim, -10)]}>
+          <View style={styles.greetingTextContainer}>
+            <Text style={styles.greetingTitle}>Hello, {userName} 👋</Text>
+            <Text style={styles.greetingSubtitle}>Ready to send a package today?</Text>
           </View>
 
           <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
@@ -244,18 +140,9 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </Animated.View>
         </Animated.View>
-      </View>
 
-      {/* BOTTOM HALF: Action Sheet */}
-      <Animated.View style={[styles.bottomSheet, fadeUp(actionsAnim, 30)]}>
-        <View style={styles.sheetDragHandle} />
-
-        <View style={styles.actionContainer}>
-          <Text style={styles.bottomSheetTitle}>What would you like to do?</Text>
-          <Text style={styles.bottomSheetSubtitle}>
-            Choose how you want to ship your package
-          </Text>
-
+        {/* ACTIONS SECTION */}
+        <Animated.View style={[styles.actionContainer, fadeUp(actionsAnim)]}>
           {/* Primary: Send Package Now */}
           <TouchableOpacity
             style={[styles.actionCard, styles.actionCardPrimary]}
@@ -301,8 +188,108 @@ export default function HomeScreen() {
             </View>
             <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
           </TouchableOpacity>
-        </View>
-      </Animated.View>
+        </Animated.View>
+
+        {/* PROMOTIONS SECTION */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(promoAnim)]}>
+          <Text style={styles.sectionTitle}>Special Offers</Text>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false} 
+            contentContainerStyle={styles.promoScrollContainer}
+          >
+            <TouchableOpacity 
+              style={[styles.promoCard, { backgroundColor: '#FFF7ED', borderColor: '#FFE4D2' }]}
+              activeOpacity={0.85}
+              onPress={() => handleContentTap('20% Off Promotion')}
+            >
+              <View style={[styles.promoIconWrap, { backgroundColor: '#FFEDD5' }]}>
+                <Ionicons name="ticket" size={24} color="#EA580C" />
+              </View>
+              <View>
+                <Text style={styles.promoTitle}>20% Off First Delivery</Text>
+                <Text style={styles.promoSub}>Use code WELCOME20</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.promoCard, { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' }]}
+              activeOpacity={0.85}
+              onPress={() => handleContentTap('Free Priority Matching')}
+            >
+              <View style={[styles.promoIconWrap, { backgroundColor: '#DCFCE7' }]}>
+                <Ionicons name="flash" size={24} color="#16A34A" />
+              </View>
+              <View>
+                <Text style={styles.promoTitle}>Fast Track Upgrade</Text>
+                <Text style={styles.promoSub}>Free priority courier matching</Text>
+              </View>
+            </TouchableOpacity>
+          </ScrollView>
+        </Animated.View>
+
+        {/* SHIPPING TIPS SECTION */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(tipsAnim)]}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Shipping Tips & Guides</Text>
+            <TouchableOpacity onPress={() => handleContentTap('All Tips')}>
+              <Text style={styles.seeAllText}>See all</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity 
+            style={styles.tipCard} 
+            activeOpacity={0.8}
+            onPress={() => handleContentTap('Packing Fragile Items')}
+          >
+            <View style={styles.tipIconWrap}>
+              <Ionicons name="cube-outline" size={20} color={ORANGE} />
+            </View>
+            <View style={styles.tipTextWrap}>
+              <Text style={styles.tipTitle}>How to Pack Fragile Items</Text>
+              <Text style={styles.tipSub} numberOfLines={2}>
+                Use adequate bubble wrap and secure the corners to prevent any damage during transit.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.tipCard} 
+            activeOpacity={0.8}
+            onPress={() => handleContentTap('Weight Guidelines')}
+          >
+            <View style={styles.tipIconWrap}>
+              <Ionicons name="scale-outline" size={20} color={ORANGE} />
+            </View>
+            <View style={styles.tipTextWrap}>
+              <Text style={styles.tipTitle}>Understanding Weight Guidelines</Text>
+              <Text style={styles.tipSub} numberOfLines={2}>
+                Ensure your package weight is accurate to avoid unexpected extra charges.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.tipCard} 
+            activeOpacity={0.8}
+            onPress={() => handleContentTap('Prohibited Items')}
+          >
+            <View style={styles.tipIconWrap}>
+              <Ionicons name="warning-outline" size={20} color="#EF4444" />
+            </View>
+            <View style={styles.tipTextWrap}>
+              <Text style={styles.tipTitle}>Prohibited Delivery Items</Text>
+              <Text style={styles.tipSub} numberOfLines={2}>
+                Review the list of items that our courier partners are not allowed to transport.
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+          </TouchableOpacity>
+        </Animated.View>
+
+      </ScrollView>
     </View>
   );
 }
@@ -310,48 +297,50 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FAFAFA',
+  },
+  scrollContent: {
+    paddingBottom: Platform.OS === 'ios' ? 50 : 40,
   },
 
-  /* ── Map ─────────────────────────────────────────────── */
-  mapContainer: {
-    flex: 1,
-    position: 'relative',
-    backgroundColor: '#E5E7EB',
-  },
-  floatingHeader: {
-    position: 'absolute',
-    left: 4,
-    right: 20,
+  /* ── Header & Greeting ─────────────────────────────── */
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    zIndex: 10,
+    paddingHorizontal: 24,
+    marginBottom: 32,
   },
-  brandChip: {
-    backgroundColor: 'transparent',
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: -8,
+  greetingTextContainer: {
+    flex: 1,
+    paddingRight: 16,
   },
-  brandLogo: {
-    width: 128,
-    height: 40,
+  greetingTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.5,
+    marginBottom: 4,
+  },
+  greetingSubtitle: {
+    fontSize: 15,
+    color: '#6B7280',
+    fontWeight: '400',
   },
   notificationIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 6,
-    elevation: 4,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
   notificationBadge: {
     position: 'absolute',
@@ -365,46 +354,11 @@ const styles = StyleSheet.create({
     borderColor: '#FFFFFF',
   },
 
-  /* ── Bottom Sheet ────────────────────────────────────── */
-  bottomSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 16,
-    zIndex: 20,
-  },
-  sheetDragHandle: {
-    width: 40,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#D1D5DB',
-    alignSelf: 'center',
-    marginBottom: 20,
-  },
+  /* ── Action Cards ──────────────────────────────────── */
   actionContainer: {
     paddingHorizontal: 24,
+    marginBottom: 28,
   },
-  bottomSheetTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
-    letterSpacing: -0.4,
-    marginBottom: 4,
-  },
-  bottomSheetSubtitle: {
-    fontSize: 14,
-    color: '#6B7280',
-    marginBottom: 20,
-    fontWeight: '400',
-  },
-
-  /* ── Action Cards ────────────────────────────────────── */
   actionCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -419,7 +373,7 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     shadowColor: ORANGE,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
+    shadowOpacity: 0.25,
     shadowRadius: 12,
     elevation: 6,
   },
@@ -427,6 +381,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderWidth: 1.5,
     borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
   actionIconContainer: {
     width: 52,
@@ -482,5 +441,105 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.22)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+
+  /* ── Bottom Content Sections ───────────────────────── */
+  sectionContainer: {
+    marginBottom: 28,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.4,
+    paddingHorizontal: 24,
+    marginBottom: 14,
+  },
+  seeAllText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: ORANGE,
+  },
+
+  /* Promotions */
+  promoScrollContainer: {
+    paddingHorizontal: 24,
+    gap: 12,
+  },
+  promoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+    width: 260,
+  },
+  promoIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  promoTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  promoSub: {
+    fontSize: 12,
+    color: '#4B5563',
+    fontWeight: '500',
+  },
+
+  /* Shipping Tips */
+  tipCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    padding: 16,
+    marginHorizontal: 24,
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  tipIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  tipTextWrap: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  tipTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 4,
+  },
+  tipSub: {
+    fontSize: 12,
+    color: '#6B7280',
+    lineHeight: 16,
   },
 });

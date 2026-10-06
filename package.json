@@ -16,6 +16,7 @@
     "date-fns-tz": "^3.2.0",
     "expo": "~57.0.23",
     "expo-auth-session": "~57.0.12",
+    "expo-build-properties": "~57.0.22",
     "expo-camera": "~57.0.5",
     "expo-dev-client": "~57.0.19",
     "expo-document-picker": "~57.0.2",

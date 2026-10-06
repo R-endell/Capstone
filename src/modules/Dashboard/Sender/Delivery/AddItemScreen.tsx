@@ -28,13 +28,13 @@ const SIZE_META = {
     color: '#3B82F6', 
     bg: '#EFF6FF', 
     image: require('../../../../../assets/package-size.png'),
-    headerImgSize: 100 
+    headerImgSize: 90 
   },
   Medium: { 
     color: ORANGE, 
     bg: '#FFF7ED', 
     image: require('../../../../../assets/package-size.png'),
-    headerImgSize: 130 
+    headerImgSize: 120 
   },
   Large: { 
     color: '#8B5CF6', 

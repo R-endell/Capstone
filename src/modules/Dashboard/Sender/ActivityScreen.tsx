@@ -3,7 +3,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
-  BackHandler, StatusBar, Platform, Linking, Image,
+  BackHandler, StatusBar, Platform, Linking, Share, KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
@@ -13,14 +13,30 @@ import QRCode from 'react-native-qrcode-svg';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
+// Clipboard support — prefers expo-clipboard, falls back to community clipboard, then Share
+let ClipboardApi: any = null;
+try { ClipboardApi = require('expo-clipboard'); } catch {
+  try { ClipboardApi = require('@react-native-clipboard/clipboard')?.default || require('@react-native-clipboard/clipboard'); } catch { /* not installed */ }
+}
+
+const copyToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    if (ClipboardApi) {
+      if (typeof ClipboardApi.setStringAsync === 'function') { await ClipboardApi.setStringAsync(text); return true; }
+      if (typeof ClipboardApi.setString === 'function') { ClipboardApi.setString(text); return true; }
+    }
+  } catch { /* fall through */ }
+  return false;
+};
+
+const RATING_LABELS = ['Poor', 'Fair', 'Good', 'Very Good', 'Excellent'];
+const RATING_QUICK_TAGS = ['On time', 'Careful handling', 'Friendly', 'Good communication', 'Fast delivery'];
+
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF751F';
 
-// The Finding Provider UI lives inside BookingScreen. The first name that is actually
-// registered in one of your navigators is used. Add your exact route name here if it differs.
 const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
 
-// Finds the navigator (this one or a parent) that owns one of the given route names
 const findRouteOwner = (nav: any, names: string[]): { owner: any; name: string } | null => {
   let current = nav;
   while (current) {
@@ -34,7 +50,6 @@ const findRouteOwner = (nav: any, names: string[]): { owner: any; name: string }
   return null;
 };
 
-// Walks up the navigator tree and returns every tab navigator's navigation object
 const getTabNavigations = (nav: any): any[] => {
   const found: any[] = [];
   let current = nav;
@@ -181,8 +196,6 @@ const LeafletMap = ({
   );
 };
 
-// Storage bucket that holds the photos attached when creating a delivery.
-// Only used when a stored value is a file path rather than a full URL - change to your bucket name.
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 interface CargoItem {
@@ -192,13 +205,12 @@ interface CargoItem {
   weight: string | null;
   notes: string | null;
   photos: string[];
-  hidePhotoSlot?: boolean; // rows that share the delivery's single photo don't show a photo area
+  hidePhotoSlot?: boolean;
   size?: string | null;
   fragile?: boolean;
-  perItem?: boolean; // true when built from items_json (each item has its own photo/description)
+  perItem?: boolean;
 }
 
-// Turns whatever is stored (full URL, storage path, or an array/JSON of either) into displayable URLs
 const resolvePhotoUrls = (c: any): string[] => {
   const raw = [
     c?.photo_urls, c?.photos, c?.images, c?.photo_url, c?.image_url,
@@ -225,13 +237,11 @@ const resolvePhotoUrls = (c: any): string[] => {
   return Array.from(new Set(urls));
 };
 
-// cargo_profiles may come back as a single object or an array - normalize both
 const normalizeCargoItems = (cargo: any, fallbackName: string): CargoItem[] => {
   const list: any[] = Array.isArray(cargo) ? cargo : cargo ? [cargo] : [];
   if (list.length === 0) {
     return [{ name: fallbackName, type: null, quantity: 1, weight: null, notes: null, photos: [] }];
   }
-  // Preferred: per-item data saved in cargo_profiles.items_json
   const perItem: CargoItem[] = list.flatMap((c: any) => {
     let arr: any = c?.items_json;
     if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = null; } }
@@ -250,12 +260,10 @@ const normalizeCargoItems = (cargo: any, fallbackName: string): CargoItem[] => {
   });
   if (perItem.length > 0) return perItem;
 
-  // Fallback (older bookings): one cargo profile with small/medium/large box counts
   const sized: CargoItem[] = list.flatMap((c: any) => {
     const sizes: [string, any][] = [
       ['Small', c?.small_box_qty], ['Medium', c?.medium_box_qty], ['Large', c?.large_box_qty],
     ];
-    // The delivery stores a single photo (cargo_pic); it belongs inside the first item row
     const photos = resolvePhotoUrls(c);
     return sizes
       .filter(([, q]) => Number(q) > 0)
@@ -358,7 +366,7 @@ interface DeliveryConfirmation {
 interface MappedDelivery {
   request_id: number;
   pickup_type: string;
-  cargo_name: string;
+  cargo_name: string | null;
   date: string;
   time: string;
   pickup_main: string;
@@ -399,6 +407,17 @@ export default function ActivityScreen() {
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'completed' | 'pending' | 'active'>('all');
   const [openingChat, setOpeningChat] = useState(false);
+
+  // Rating state
+  const [ratingStars, setRatingStars] = useState(5);
+  const [ratingComment, setRatingComment] = useState('');
+  const [ratingTags, setRatingTags] = useState<string[]>([]);
+  const [submittedRating, setSubmittedRating] = useState(false);
+
+  // Tracking ID copy state
+  const [copiedTracking, setCopiedTracking] = useState(false);
+  const copyTimer = useRef<any>(null);
+
   const isFocused = useIsFocused();
   const tabBarHidden = useRef(false);
   const navigationRef = useRef(navigation);
@@ -415,6 +434,11 @@ export default function ActivityScreen() {
       }).start();
     } else {
       detailAnim.setValue(0);
+      setSubmittedRating(false);
+      setRatingStars(5);
+      setRatingComment('');
+      setRatingTags([]);
+      setCopiedTracking(false);
       Animated.timing(detailAnim, {
         toValue: 1, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: true,
       }).start();
@@ -456,7 +480,6 @@ export default function ActivityScreen() {
 
   useEffect(() => () => setTabBarHidden(false), [setTabBarHidden]);
 
-  // Resume the existing Finding Provider screen for an order that is still searching
   const handleResumeFindingProvider = (item: MappedDelivery) => {
     if (item.isMatched || item.status !== 'Waiting for Provider') return;
     const target = findRouteOwner(navigation, FINDING_PROVIDER_ROUTE_NAMES);
@@ -617,9 +640,11 @@ export default function ActivityScreen() {
               }
             : null;
 
-        const cargoName = item.cargo_profiles?.item_name || item.cargo_profiles?.cargo_type || item.pickup_type || 'Standard Parcel';
+        const rawCargoName = item.cargo_profiles?.item_name || item.cargo_profiles?.cargo_type;
+        // Specifically ignoring the "Standard Parcel" fallback logic to hide it on the UI
+        const cargoName = rawCargoName && rawCargoName !== item.pickup_type && rawCargoName !== 'Standard Parcel' ? rawCargoName : null;
 
-        const cargoItems = normalizeCargoItems(item.cargo_profiles, cargoName);
+        const cargoItems = normalizeCargoItems(item.cargo_profiles, cargoName || 'Package');
         const totalItems = cargoItems.reduce((sum, c) => sum + c.quantity, 0);
 
         return {
@@ -688,7 +713,6 @@ export default function ActivityScreen() {
     }
   }, [deliveries]);
 
-  // Reset view state back to default list when refocusing on the screen & ensure status bar cleanup on blur
   useFocusEffect(
     useCallback(() => {
       setSelectedDelivery(null);
@@ -698,11 +722,31 @@ export default function ActivityScreen() {
       fetchData();
 
       return () => {
-        // Clean up status bar styling when leaving this tab so it doesn't leak into HomeScreen
         StatusBar.setBarStyle('dark-content', true);
       };
     }, [userId])
   );
+
+  const handleCopyTracking = async () => {
+    if (!selectedDelivery) return;
+    const code = `#PNS-${String(selectedDelivery.request_id).padStart(4, '0')}`;
+    const ok = await copyToClipboard(code);
+    if (ok) {
+      setCopiedTracking(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedTracking(false), 2000);
+    } else {
+      try {
+        await Share.share({ message: `Tracking ID: ${code} for Pack-N-Ship delivery.` });
+      } catch {
+        Alert.alert('Tracking ID', code);
+      }
+    }
+  };
+
+  const toggleRatingTag = (tag: string) => {
+    setRatingTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  };
 
   const handleEdit = (rawData: any) => {
     if (!rawData) return;
@@ -840,7 +884,10 @@ export default function ActivityScreen() {
   );
 
   const renderListView = () => (
-    <View style={{ flex: 1 }}>
+    <KeyboardAvoidingView 
+      style={{ flex: 1 }} 
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       {/* Header Section */}
       <View style={styles.headerSection}>
         <Text style={styles.pageTitle}>Activity & Shipments</Text>
@@ -871,6 +918,7 @@ export default function ActivityScreen() {
       <ScrollView
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -901,46 +949,48 @@ export default function ActivityScreen() {
           ) : (
             filteredDeliveries.map((item, index) => {
               const isCompletedItem = item.status === 'Completed';
-              const isActiveItem = item.status === 'In Progress' || item.status === 'In Transit' || item.status === 'Matched';
-              const isPendingItem = item.status === 'Waiting for Provider';
 
-              // Short status labels for the list card
               const statusLabel =
                 item.status === 'Waiting for Provider' ? 'Waiting'
                 : item.status === 'In Progress' ? 'Active'
                 : item.status === 'In Transit' ? 'In Transit'
                 : item.status === 'Matched' ? 'Matched'
-                : item.status === 'Completed' ? 'Done'
+                : item.status === 'Completed' ? 'Delivered'
                 : item.status;
 
               return (
                 <TouchableOpacity
                   key={item.request_id || index}
-                  style={[
-                    styles.card,
-                    isCompletedItem && styles.completedCard,
-                    isActiveItem && styles.activeCardStyle,
-                    isPendingItem && styles.pendingCardStyle,
-                  ]}
+                  style={[styles.card, isCompletedItem && styles.completedCard]}
                   onPress={() => setSelectedDelivery(item)}
                   activeOpacity={0.9}
                 >
-                  {/* Header: ID + status */}
+                  {/* Header: Service Type + Status */}
                   <View style={styles.cardHeader}>
-                    <Text style={styles.cardId}>#PNS-{String(item.request_id).padStart(4, '0')}</Text>
-                    <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
-                      <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
-                      <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
-                        {statusLabel}
-                      </Text>
+                    <View style={styles.cardHeaderLeft}>
+                      <View style={styles.serviceTypeBadge}>
+                        <Text style={styles.serviceTypeText}>
+                          {item.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}
+                        </Text>
+                      </View>
+                      {!isCompletedItem && (
+                        <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
+                          <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
+                          <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
+                            {statusLabel}
+                          </Text>
+                        </View>
+                      )}
                     </View>
                   </View>
 
-                  {/* Package title */}
-                  <Text style={styles.cargoTitle} numberOfLines={1}>
-                    {item.cargo_name}
-                    {item.total_items > 1 ? ` · ${item.total_items} items` : ''}
-                  </Text>
+                  {/* Package title (Rendered only if cargo_name exists & is not Standard Parcel) */}
+                  {item.cargo_name && (
+                    <Text style={styles.cargoTitle} numberOfLines={1}>
+                      {item.cargo_name}
+                      {item.total_items > 1 ? ` · ${item.total_items} items` : ''}
+                    </Text>
+                  )}
 
                   {/* Route: pickup → dropoff */}
                   <View style={styles.routeBox}>
@@ -955,13 +1005,19 @@ export default function ActivityScreen() {
                     </View>
                   </View>
 
-                  {/* Date + courier (if any) */}
+                  {/* Date + Presentable Provider Row with Car Icon */}
                   <View style={styles.cardContextRow}>
-                    <Text style={styles.contextText}>{item.date}</Text>
+                    <View style={styles.contextDateBox}>
+                      <Ionicons name="calendar-outline" size={13} color="#6B7280" />
+                      <Text style={styles.contextText}>{item.date}</Text>
+                    </View>
                     {item.isMatched && item.provider_name !== 'Finding...' && (
-                      <Text style={[styles.contextText, styles.contextProvider]} numberOfLines={1}>
-                        · {item.provider_name}
-                      </Text>
+                      <View style={styles.contextProviderPill}>
+                        <Ionicons name="car-sport" size={13} color="#16A34A" />
+                        <Text style={styles.contextProviderText} numberOfLines={1}>
+                          {item.provider_name}
+                        </Text>
+                      </View>
                     )}
                   </View>
 
@@ -999,7 +1055,7 @@ export default function ActivityScreen() {
           <View style={styles.bottomSpacer} />
         </Animated.View>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 
   const renderProviderIdentity = (d: MappedDelivery) => {
@@ -1044,34 +1100,7 @@ export default function ActivityScreen() {
       selectedDelivery?.status === 'Completed' ||
       !!selectedDelivery?.deliveryData?.completed_at;
 
-    const showPickupQRButton =
-      !!selectedDelivery?.isMatched &&
-      !!selectedDelivery?.qr &&
-      !selectedDelivery?.qr?.pickup_verified &&
-      !isCompleted;
-
-    const hasConfirmation = !!selectedDelivery?.confirmation;
-    const otpVerified = selectedDelivery?.confirmation?.otp_verified === true;
-
-    const receiverDisplayName =
-      selectedDelivery?.receiver?.receiver_name?.trim() ||
-      selectedDelivery?.receiver?.receiver_phone ||
-      'Receiver';
-
-    const receiverInitial = (() => {
-      const name = selectedDelivery?.receiver?.receiver_name?.trim();
-      if (name) return name.charAt(0).toUpperCase();
-      const phone = selectedDelivery?.receiver?.receiver_phone;
-      if (phone) return phone.replace(/\D/g, '').slice(-2) || 'R';
-      return 'R';
-    })();
-
-    // Determine stepper stage index (0: Placed, 1: Matched, 2: In Transit, 3: Completed)
-    const currentStatus = selectedDelivery?.status || 'Waiting for Provider';
-    let stepIndex = 0;
-    if (currentStatus === 'Matched') stepIndex = 1;
-    else if (currentStatus === 'In Progress' || currentStatus === 'In Transit') stepIndex = 2;
-    else if (currentStatus === 'Completed') stepIndex = 3;
+    const trackingCodeStr = `#PNS-${String(selectedDelivery?.request_id).padStart(4, '0')}`;
 
     return (
       <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
@@ -1085,135 +1114,29 @@ export default function ActivityScreen() {
             <View style={styles.headerSpacer} />
           </View>
 
-          {/* Hero Tracking & Status Card */}
-          <View style={styles.heroCard}>
-            <View style={styles.heroTopRow}>
-              <View>
-                <Text style={styles.heroTrackingLabel}>TRACKING CODE</Text>
-                <Text style={styles.heroTrackingId}>#PNS-{String(selectedDelivery?.request_id).padStart(4, '0')}</Text>
-              </View>
-              <TouchableOpacity
-                disabled={!(selectedDelivery && !selectedDelivery.isMatched && currentStatus === 'Waiting for Provider')}
-                onPress={() => selectedDelivery && handleResumeFindingProvider(selectedDelivery)}
-                activeOpacity={0.7}
-                style={[styles.heroStatusBadge, { backgroundColor: getStatusBg(currentStatus) }]}
-              >
-                <Ionicons name={getStatusIcon(currentStatus)} size={13} color={getStatusColor(currentStatus)} />
-                <Text style={[styles.heroStatusText, { color: getStatusColor(currentStatus) }]}>{currentStatus}</Text>
-                {selectedDelivery && !selectedDelivery.isMatched && currentStatus === 'Waiting for Provider' && (
-                  <Ionicons name="chevron-forward" size={12} color={getStatusColor(currentStatus)} />
-                )}
-              </TouchableOpacity>
-            </View>
-
-            {/* Stepper Progress Bar */}
-            <View style={styles.stepperContainer}>
-              {[
-                { label: 'Placed', idx: 0 },
-                { label: 'Matched', idx: 1 },
-                { label: 'In Transit', idx: 2 },
-                { label: 'Delivered', idx: 3 },
-              ].map((step, sIdx) => {
-                const isPassed = stepIndex >= step.idx;
-                const isCurrent = stepIndex === step.idx;
-                return (
-                  <View key={sIdx} style={styles.stepItem}>
-                    <View style={styles.stepRowIndicator}>
-                      <View style={[styles.stepDot, isPassed && styles.stepDotActive, isCurrent && styles.stepDotCurrent]}>
-                        {isPassed ? <Ionicons name="checkmark" size={10} color="#FFF" /> : <View style={styles.stepInnerDot} />}
-                      </View>
-                      {sIdx < 3 && <View style={[styles.stepLine, stepIndex > sIdx && styles.stepLineActive]} />}
-                    </View>
-                    <Text style={[styles.stepLabel, isCurrent && styles.stepLabelActive]} numberOfLines={1}>
-                      {step.label}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Completed Settlement Banner */}
-          {isCompleted && (
-            <View style={styles.completedReceiptBanner}>
-              <View style={styles.completedReceiptHeader}>
-                <View style={styles.completedIconCircle}>
-                  <Ionicons name="checkmark" size={18} color="#16A34A" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.completedBannerTitle}>Delivered & Settled</Text>
-                  <Text style={styles.completedBannerSubtitle}>
-                    {selectedDelivery?.deliveryData?.completed_at ? new Date(selectedDelivery.deliveryData.completed_at).toLocaleString() : selectedDelivery?.date}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.completedReceiptDivider} />
-              <View style={styles.completedFareRow}>
-                <Text style={styles.completedFareLabel}>Total Fare Paid (Escrow Released)</Text>
-                <Text style={styles.completedFareValue}>₱{selectedDelivery?.price}</Text>
-              </View>
-            </View>
-          )}
-
-          {/* Package & Fare Summary Card */}
+          {/* 1. Tracking ID with Copy Feature (First) */}
           <View style={styles.sectionCard}>
             <View style={styles.sectionHeaderRow}>
-              <Ionicons name="cube-outline" size={15} color={ORANGE} />
-              <Text style={styles.sectionHeaderTitle}>PACKAGE & FARE SUMMARY</Text>
+              <Ionicons name="barcode-outline" size={15} color={ORANGE} />
+              <Text style={styles.sectionHeaderTitle}>TRACKING ID</Text>
             </View>
-            <View style={styles.summaryGrid}>
-              <View style={styles.summaryCol}>
-                <Text style={styles.summaryLabel}>Total Items</Text>
-                <Text style={styles.summaryValue} numberOfLines={1}>
-                  {selectedDelivery?.total_items ?? 0} {(selectedDelivery?.total_items ?? 0) === 1 ? 'item' : 'items'}
-                </Text>
+            <View style={styles.trackingIdCardRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trackingIdValue}>{trackingCodeStr}</Text>
+                <Text style={styles.trackingIdSub}>Keep this code for shipment reference</Text>
               </View>
-              <View style={styles.summaryDividerVertical} />
-              <View style={styles.summaryCol}>
-                <Text style={styles.summaryLabel}>Service Type</Text>
-                <Text style={styles.summaryValue} numberOfLines={1}>{selectedDelivery?.pickup_type}</Text>
-              </View>
-              <View style={styles.summaryDividerVertical} />
-              <View style={styles.summaryCol}>
-                <Text style={styles.summaryLabel}>Total Fare</Text>
-                <Text style={[styles.summaryValue, { color: ORANGE }]} numberOfLines={1}>₱{selectedDelivery?.price}</Text>
-              </View>
+              <TouchableOpacity
+                style={[styles.copyButton, copiedTracking && styles.copyButtonCopied]}
+                activeOpacity={0.8}
+                onPress={handleCopyTracking}
+              >
+                <Ionicons name={copiedTracking ? 'checkmark' : 'copy-outline'} size={15} color="#FFFFFF" />
+                <Text style={styles.copyButtonText}>{copiedTracking ? 'Copied' : 'Copy'}</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
-          {/* Pickup QR Action Card */}
-          {showPickupQRButton && (
-            <TouchableOpacity style={styles.pickupQRCard} onPress={() => setShowPickupQR(true)} activeOpacity={0.9}>
-              <View style={styles.pickupQRIconBox}>
-                <Ionicons name="qr-code" size={20} color="#FFF" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.pickupQRTitle}>Show Pickup QR Code</Text>
-                <Text style={styles.pickupQRDesc}>Tap to present verification code to courier</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color="#FFF" />
-            </TouchableOpacity>
-          )}
-
-          {/* Receiver OTP Card */}
-          {pickupVerified && !isCompleted && hasConfirmation && (
-            <TouchableOpacity style={styles.deliveryOTPCard} onPress={() => setShowDeliveryOTP(true)} activeOpacity={0.9}>
-              <View style={styles.deliveryOTPHeader}>
-                <View style={styles.deliveryOTPIconBox}>
-                  <Ionicons name={otpVerified ? 'shield-checkmark' : 'lock-closed'} size={18} color={otpVerified ? '#16A34A' : '#7C3AED'} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.deliveryOTPTitle}>{otpVerified ? 'Delivery Confirmed' : 'Receiver OTP Code'}</Text>
-                  <Text style={styles.deliveryOTPSubtitle} numberOfLines={1}>
-                    {otpVerified ? 'Funds successfully released.' : 'Tap to inspect drop-off confirmation code.'}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={otpVerified ? '#16A34A' : '#7C3AED'} />
-              </View>
-            </TouchableOpacity>
-          )}
-
-          {/* Interactive Map Preview Card */}
+          {/* 2. The Map */}
           <TouchableOpacity style={styles.detailMapCard} activeOpacity={0.9} onPress={() => setShowFullMap(true)}>
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>
               <LeafletMap
@@ -1230,16 +1153,16 @@ export default function ActivityScreen() {
               </Text>
             </View>
             <View style={styles.mapTapHint}>
-              <Text style={styles.mapTapHintText}>Tap for details</Text>
+              <Text style={styles.mapTapHintText}>Tap for full map</Text>
               <Ionicons name="expand-outline" size={11} color="#FFFFFF" />
             </View>
           </TouchableOpacity>
 
-          {/* Route Timeline Card */}
+          {/* 3. Pick up and drop off location (Route Timeline) */}
           <View style={styles.sectionCard}>
             <View style={styles.sectionHeaderRow}>
               <Ionicons name="location-outline" size={15} color={ORANGE} />
-              <Text style={styles.sectionHeaderTitle}>ROUTE TIMELINE</Text>
+              <Text style={styles.sectionHeaderTitle}>PICKUP & DROP-OFF LOCATION</Text>
             </View>
             <View style={styles.routeTimeline}>
               <View style={styles.routeItem}>
@@ -1266,31 +1189,113 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* Designated Receiver Card */}
-          {selectedDelivery?.receiver && (
-            <View style={styles.sectionCard}>
+          {/* 4. Rate the Provider — shown ONLY for completed deliveries */}
+          {isCompleted && selectedDelivery?.isMatched && (
+            <View style={styles.ratingCard}>
               <View style={styles.sectionHeaderRow}>
-                <Ionicons name="person-outline" size={15} color="#7C3AED" />
-                <Text style={[styles.sectionHeaderTitle, { color: '#7C3AED' }]}>DESIGNATED RECEIVER</Text>
+                <Ionicons name="star" size={15} color={ORANGE} />
+                <Text style={styles.sectionHeaderTitle}>RATE YOUR PROVIDER</Text>
               </View>
-              <View style={styles.receiverCardRow}>
-                <View style={styles.receiverAvatar}>
-                  <Text style={styles.receiverAvatarText}>{receiverInitial}</Text>
+              {!submittedRating ? (
+                <View style={styles.ratingCardContent}>
+                  <Text style={styles.ratingPromptText}>
+                    How was your delivery experience with {selectedDelivery.provider_name}?
+                  </Text>
+                  <View style={styles.starsRow}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <TouchableOpacity
+                        key={star}
+                        onPress={() => setRatingStars(star)}
+                        activeOpacity={0.7}
+                        style={styles.starTouch}
+                      >
+                        <Ionicons
+                          name={star <= ratingStars ? 'star' : 'star-outline'}
+                          size={34}
+                          color={ORANGE}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <View style={styles.ratingLabelPill}>
+                    <Text style={styles.ratingLabelText}>{RATING_LABELS[ratingStars - 1]}</Text>
+                  </View>
+                  <View style={styles.ratingTagsWrap}>
+                    {RATING_QUICK_TAGS.map((tag) => {
+                      const active = ratingTags.includes(tag);
+                      return (
+                        <TouchableOpacity
+                          key={tag}
+                          style={[styles.ratingTagChip, active && styles.ratingTagChipActive]}
+                          onPress={() => toggleRatingTag(tag)}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={[styles.ratingTagChipText, active && styles.ratingTagChipTextActive]}>
+                            {tag}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <TextInput
+                    style={styles.ratingInput}
+                    placeholder="Write a brief review or feedback (optional)..."
+                    placeholderTextColor="#9CA3AF"
+                    value={ratingComment}
+                    onChangeText={setRatingComment}
+                    multiline
+                  />
+                  <TouchableOpacity
+                    style={styles.submitRatingBtn}
+                    onPress={() => {
+                      setSubmittedRating(true);
+                      Alert.alert('Thank You', 'Your provider rating has been submitted successfully.');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="paper-plane-outline" size={15} color="#FFFFFF" />
+                    <Text style={styles.submitRatingBtnText}>Submit Rating</Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.receiverInfo}>
-                  <Text style={styles.receiverName} numberOfLines={1}>{receiverDisplayName}</Text>
-                  <Text style={styles.receiverPhone}>{selectedDelivery.receiver.receiver_phone || '—'}</Text>
+              ) : (
+                <View style={styles.ratingCardContent}>
+                  <View style={styles.starsRow}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <Ionicons
+                        key={star}
+                        name={star <= ratingStars ? 'star' : 'star-outline'}
+                        size={26}
+                        color={ORANGE}
+                      />
+                    ))}
+                  </View>
+                  {ratingTags.length > 0 && (
+                    <View style={styles.ratingTagsWrap}>
+                      {ratingTags.map((tag) => (
+                        <View key={tag} style={[styles.ratingTagChip, styles.ratingTagChipActive]}>
+                          <Text style={[styles.ratingTagChipText, styles.ratingTagChipTextActive]}>{tag}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  {!!ratingComment.trim() && (
+                    <Text style={styles.ratingCommentEcho}>"{ratingComment.trim()}"</Text>
+                  )}
+                  <View style={styles.submittedBadge}>
+                    <Ionicons name="checkmark-circle" size={16} color="#16A34A" />
+                    <Text style={styles.submittedBadgeText}>Rating submitted — {RATING_LABELS[ratingStars - 1]} ({ratingStars}/5)</Text>
+                  </View>
                 </View>
-              </View>
+              )}
             </View>
           )}
 
-          {/* Assigned Courier Partner Card */}
+          {/* 5. Below the rating is the provider profile */}
           {selectedDelivery?.isMatched && (
             <View style={styles.sectionCard}>
               <View style={styles.sectionHeaderRow}>
-                <Ionicons name="shield-checkmark-outline" size={15} color="#16A34A" />
-                <Text style={[styles.sectionHeaderTitle, { color: '#16A34A' }]}>ASSIGNED COURIER PARTNER</Text>
+                <Ionicons name="person-circle-outline" size={15} color={ORANGE} />
+                <Text style={styles.sectionHeaderTitle}>PROVIDER PROFILE</Text>
               </View>
               {renderProviderIdentity(selectedDelivery)}
               <View style={styles.courierActionsRow}>
@@ -1323,7 +1328,36 @@ export default function ActivityScreen() {
             </View>
           )}
 
-          {/* Bottom Actions Row */}
+          {/* 6. Payment Type and Total Payment */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeaderRow}>
+              <Ionicons name="wallet-outline" size={15} color={ORANGE} />
+              <Text style={styles.sectionHeaderTitle}>PAYMENT DETAILS</Text>
+            </View>
+            <View style={styles.paymentRowsWrap}>
+              <View style={styles.paymentRow}>
+                <View style={styles.paymentRowIcon}>
+                  <Ionicons name="card-outline" size={16} color={ORANGE} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.paymentLabel}>Payment Type</Text>
+                  <Text style={styles.paymentValue}>Secure Escrow / Online</Text>
+                </View>
+              </View>
+              <View style={styles.paymentRowDivider} />
+              <View style={styles.paymentRow}>
+                <View style={styles.paymentRowIcon}>
+                  <Ionicons name="cash-outline" size={16} color={ORANGE} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.paymentLabel}>Total Payment</Text>
+                  <Text style={styles.paymentTotalValue}>₱{selectedDelivery?.price}</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* Bottom Actions Row (Edit / Cancel - hidden if completed) */}
           {!isCompleted && (
             <View style={styles.detailActionsRow}>
               {!selectedDelivery?.isMatched && (
@@ -1675,14 +1709,6 @@ const styles = StyleSheet.create({
     borderColor: '#E5E7EB',
     opacity: 0.95,
   },
-  activeCardStyle: {
-    borderLeftWidth: 4,
-    borderLeftColor: '#7C3AED',
-  },
-  pendingCardStyle: {
-    borderLeftWidth: 4,
-    borderLeftColor: '#D97706',
-  },
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1696,22 +1722,16 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingRight: 8,
   },
-  cardId: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#6B7280',
-    letterSpacing: 0.2,
-  },
   serviceTypeBadge: {
     backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
   },
   serviceTypeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#4B5563',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#374151',
   },
   statusBadge: {
     flexDirection: 'row',
@@ -1733,47 +1753,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     marginBottom: 12,
   },
-  cargoBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFF7ED',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    marginBottom: 12,
-    gap: 10,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-  },
-  cargoIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-  },
-  cargoBannerText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#9A3412',
-    flex: 1,
-  },
-  itemCountPill: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-  },
-  itemCountText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: ORANGE,
-  },
 
   routeBox: {
     backgroundColor: '#F9FAFB',
@@ -1788,16 +1767,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-  },
-  routeTextCol: {
-    flex: 1,
-  },
-  routeLabelMini: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#9CA3AF',
-    letterSpacing: 0.6,
-    marginBottom: 2,
   },
   routeConnectorLine: {
     width: 2,
@@ -1816,11 +1785,11 @@ const styles = StyleSheet.create({
   cardContextRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
     marginBottom: 12,
-    gap: 4,
+    gap: 8,
   },
-  contextItem: {
+  contextDateBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
@@ -1828,12 +1797,24 @@ const styles = StyleSheet.create({
   contextText: {
     fontSize: 12,
     color: '#6B7280',
-    fontWeight: '500',
-  },
-  contextProvider: {
     fontWeight: '600',
-    color: '#16A34A',
+  },
+  contextProviderPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
     flexShrink: 1,
+  },
+  contextProviderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#166534',
   },
 
   cardFooter: {
@@ -1843,13 +1824,6 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#F3F4F6',
-  },
-  footerLabel: {
-    fontSize: 9,
-    color: '#9CA3AF',
-    fontWeight: '800',
-    letterSpacing: 0.6,
-    marginBottom: 2,
   },
   priceText: {
     fontSize: 18,
@@ -1932,125 +1906,7 @@ const styles = StyleSheet.create({
     color: '#111827',
     letterSpacing: -0.3,
   },
-  fullMapBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFF7ED',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-  },
-  fullMapBtnText: {
-    fontSize: 11,
-    color: ORANGE,
-    fontWeight: '800',
-  },
-
-  // Hero Card & Stepper
-  heroCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  heroTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  heroTrackingLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#9CA3AF',
-    letterSpacing: 0.8,
-  },
-  heroTrackingId: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: '#111827',
-    marginTop: 3,
-    letterSpacing: -0.4,
-  },
-  heroStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
-    gap: 6,
-  },
-  heroStatusText: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  stepperContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
-  },
-  stepItem: { flex: 1, alignItems: 'center' },
-  stepRowIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    justifyContent: 'center',
-  },
-  stepDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#E5E7EB',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 2,
-  },
-  stepDotActive: { backgroundColor: ORANGE },
-  stepDotCurrent: {
-    backgroundColor: ORANGE,
-    borderWidth: 3,
-    borderColor: '#FFE4D2',
-  },
-  stepInnerDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#9CA3AF',
-  },
-  stepLine: {
-    position: 'absolute',
-    left: '50%',
-    right: '-50%',
-    height: 2,
-    backgroundColor: '#E5E7EB',
-    zIndex: 1,
-  },
-  stepLineActive: { backgroundColor: ORANGE },
-  stepLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  stepLabelActive: {
-    color: ORANGE,
-    fontWeight: '900',
-  },
+  headerSpacer: { width: 36, height: 36 },
 
   sectionCard: {
     backgroundColor: '#FFFFFF',
@@ -2077,47 +1933,246 @@ const styles = StyleSheet.create({
     color: ORANGE,
     letterSpacing: 0.8,
   },
-  
-  summaryGrid: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  summaryCol: { flex: 1, alignItems: 'center' },
-  summaryDividerVertical: { width: 1, height: 24, backgroundColor: '#E5E7EB', marginHorizontal: 4 },
-  summaryLabel: { fontSize: 9, color: '#6B7280', fontWeight: '600', marginBottom: 2 },
-  summaryValue: { fontSize: 12, color: '#111827', fontWeight: '800', textAlign: 'center' },
 
-  completedReceiptBanner: {
-    backgroundColor: '#F0FDF4', borderRadius: 14, padding: 14, marginBottom: 12,
-    borderWidth: 1, borderColor: '#BBF7D0',
+  // Tracking ID Card styles
+  trackingIdCardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FAFAFA',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
-  completedReceiptHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  completedIconCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#DCFCE7', justifyContent: 'center', alignItems: 'center' },
-  completedBannerTitle: { fontSize: 13, fontWeight: '800', color: '#166534' },
-  completedBannerSubtitle: { fontSize: 10, color: '#4B5563', fontWeight: '500' },
-  completedReceiptDivider: { height: 1, backgroundColor: '#BBF7D0', marginVertical: 10 },
-  completedFareRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  completedFareLabel: { fontSize: 11, fontWeight: '700', color: '#166534' },
-  completedFareValue: { fontSize: 14, fontWeight: '900', color: '#166534' },
+  trackingIdValue: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+  trackingIdSub: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  copyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: ORANGE,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+    gap: 6,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  copyButtonCopied: {
+    backgroundColor: '#16A34A',
+    shadowColor: '#16A34A',
+  },
+  copyButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 13,
+  },
 
-  pickupQRCard: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
-    borderRadius: 14, padding: 14, marginBottom: 12, gap: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 3,
+  // Rating Provider UI styles
+  ratingCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  pickupQRIconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
-  pickupQRTitle: { color: '#FFF', fontSize: 13, fontWeight: '800' },
-  pickupQRDesc: { color: '#FFE0C7', fontSize: 10, marginTop: 1 },
+  ratingCardContent: {
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  ratingPromptText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#374151',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  starsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  starTouch: {
+    padding: 4,
+  },
+  ratingLabelPill: {
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 12,
+    marginBottom: 14,
+  },
+  ratingLabelText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: ORANGE,
+  },
+  ratingTagsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  ratingTagChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+  },
+  ratingTagChipActive: {
+    backgroundColor: '#FFF7ED',
+    borderColor: ORANGE,
+  },
+  ratingTagChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4B5563',
+  },
+  ratingTagChipTextActive: {
+    color: ORANGE,
+  },
+  ratingCommentEcho: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    color: '#4B5563',
+    textAlign: 'center',
+    marginBottom: 14,
+    paddingHorizontal: 12,
+  },
+  ratingInput: {
+    width: '100%',
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 13,
+    color: '#111827',
+    minHeight: 70,
+    textAlignVertical: 'top',
+    marginBottom: 12,
+  },
+  submitRatingBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: ORANGE,
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  submitRatingBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  submittedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  submittedBadgeText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#166534',
+  },
 
-  deliveryOTPCard: {
-    backgroundColor: '#F5F3FF', borderRadius: 14, padding: 14, marginBottom: 12,
-    borderWidth: 1, borderColor: '#DDD6FE',
+  // Payment Details styles
+  paymentRowsWrap: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
   },
-  deliveryOTPHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  deliveryOTPIconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#EDE9FE' },
-  deliveryOTPTitle: { fontSize: 13, fontWeight: '800', color: '#5B21B6' },
-  deliveryOTPSubtitle: { fontSize: 10, color: '#7C3AED', marginTop: 1 },
+  paymentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+  },
+  paymentRowIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  paymentRowDivider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    marginLeft: 48,
+  },
+  paymentLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#6B7280',
+    marginBottom: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  paymentValue: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  paymentTotalValue: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: ORANGE,
+    letterSpacing: -0.3,
+  },
 
   detailMapCard: {
-    width: '100%', height: 160, borderRadius: 14, overflow: 'hidden', marginBottom: 12,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    width: '100%',
+    height: 160,
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   mapOverlayPill: {
     position: 'absolute', bottom: 10, left: 10, backgroundColor: '#FFFFFF',
@@ -2125,6 +2180,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4,
   },
   overlayPillText: { fontSize: 10, fontWeight: '700', color: '#111827' },
+  mapTapHint: {
+    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
+  },
+  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
 
   routeTimeline: { gap: 2, paddingLeft: 4 },
   routeItem: { flexDirection: 'row', alignItems: 'flex-start' },
@@ -2135,30 +2195,37 @@ const styles = StyleSheet.create({
   routeMain: { fontSize: 12, fontWeight: '800', color: '#111827' },
   routeSub: { fontSize: 10, color: '#6B7280', marginTop: 1 },
 
-  receiverCardRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4 },
-  receiverAvatar: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: '#7C3AED',
+  courierIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  courierAvatarWrap: { width: 52, height: 52 },
+  courierAvatar: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: '#111827',
     justifyContent: 'center', alignItems: 'center',
   },
-  receiverAvatarText: { fontSize: 16, fontWeight: '800', color: '#FFFFFF' },
-  receiverInfo: { flex: 1 },
-  receiverName: { fontSize: 13, fontWeight: '800', color: '#111827' },
-  receiverPhone: { fontSize: 11, color: '#6B7280', fontWeight: '600', marginTop: 2 },
-
-  providerInfoCard: {
-    backgroundColor: '#F0FDF4', borderRadius: 14, padding: 14, marginBottom: 14,
-    borderWidth: 1, borderColor: '#BBF7D0',
+  courierAvatarText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  courierVerifiedDot: {
+    position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#16A34A', borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
   },
-  providerInfoHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  providerInfoTitle: { fontSize: 9, fontWeight: '900', color: '#16A34A', letterSpacing: 0.8 },
-  providerInfoRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  providerInfoDetails: { flex: 1 },
-  providerInfoName: { fontSize: 14, fontWeight: '800', color: '#111827' },
-  providerInfoVehicle: { fontSize: 11, color: '#4B5563', marginTop: 2, fontWeight: '500' },
-  providerContactBtn: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#BBF7D0',
+  courierName: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  courierSub: { fontSize: 10, color: '#16A34A', fontWeight: '700', marginTop: 1 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  infoChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F3F4F6',
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
   },
+  plateChip: { backgroundColor: '#FEF9C3', borderWidth: 1, borderColor: '#FDE68A' },
+  infoChipText: { fontSize: 10, fontWeight: '700', color: '#4B5563' },
+  courierActionsRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  courierMsgBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: ORANGE, paddingVertical: 11, borderRadius: 12,
+  },
+  courierMsgBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
+  courierCallBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#FFFFFF', paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB',
+  },
+  courierCallBtnText: { color: '#111827', fontWeight: '700', fontSize: 12 },
 
   detailActionsRow: {
     flexDirection: 'row',
@@ -2215,95 +2282,12 @@ const styles = StyleSheet.create({
   },
   statusPillText: { fontSize: 11, fontWeight: '700', color: '#111827' },
 
-  headerSpacer: { width: 36, height: 36 },
-  itemsValueRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  reviewLink: { fontSize: 9, fontWeight: '800', color: ORANGE, marginTop: 2 },
-  mapTapHint: {
-    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
-  },
-  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
-
-  // Courier card
-  courierIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  courierAvatarWrap: { width: 52, height: 52 },
-  courierAvatar: {
-    width: 52, height: 52, borderRadius: 26, backgroundColor: '#111827',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  courierAvatarText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
-  courierVerifiedDot: {
-    position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#16A34A', borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-  },
-  courierName: { fontSize: 15, fontWeight: '800', color: '#111827' },
-  courierSub: { fontSize: 10, color: '#16A34A', fontWeight: '700', marginTop: 1 },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  infoChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F3F4F6',
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
-  },
-  plateChip: { backgroundColor: '#FEF9C3', borderWidth: 1, borderColor: '#FDE68A' },
-  infoChipText: { fontSize: 10, fontWeight: '700', color: '#4B5563' },
-  courierActionsRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  courierMsgBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: ORANGE, paddingVertical: 11, borderRadius: 12,
-  },
-  courierMsgBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
-  courierCallBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: '#FFFFFF', paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB',
-  },
-  courierCallBtnText: { color: '#111827', fontWeight: '700', fontSize: 12 },
-
-  // Items modal / bottom sheets
-  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  bottomSheetCard: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    padding: 20, paddingBottom: 28, alignItems: 'center',
-  },
-  sheetGrabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 12 },
-  itemRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
-  },
-  itemIndex: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#FFE4D2' },
-  itemIndexText: { fontSize: 11, fontWeight: '800', color: ORANGE },
-  itemName: { fontSize: 13, fontWeight: '800', color: '#111827' },
-  itemMeta: { fontSize: 10, color: '#6B7280', marginTop: 2, fontWeight: '600' },
-  itemNotes: { fontSize: 10, color: '#9CA3AF', marginTop: 3 },
-  cargoSummaryBox: { backgroundColor: '#F9FAFB', borderRadius: 14, borderWidth: 1, borderColor: '#F3F4F6', padding: 12, marginBottom: 6 },
-  cargoHeroPhoto: { width: '100%', height: 170, borderRadius: 12, backgroundColor: '#F3F4F6', marginBottom: 10 },
-  cargoDescText: { fontSize: 13, fontWeight: '700', color: '#111827', lineHeight: 18 },
-  fragileTag: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
-    backgroundColor: '#FEE2E2', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginTop: 8,
-  },
-  fragileTagText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
-  photoStrip: { gap: 8, paddingTop: 8 },
-  itemPhoto: { width: 96, height: 96, borderRadius: 12, backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
-  itemPhotoFallback: { justifyContent: 'center', alignItems: 'center' },
-  noPhotoRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
-  noPhotoText: { fontSize: 10, color: '#9CA3AF', fontWeight: '600' },
-  photoPreviewOverlay: {
-    ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  photoPreviewImage: { width: '92%', height: '70%' },
-  photoPreviewClose: {
-    position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19,
-    backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-  },
-  itemQtyBadge: { backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  itemQtyText: { fontSize: 12, fontWeight: '800', color: '#111827' },
-
-  // Full map info sheet
   mapInfoSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.12, shadowRadius: 16, elevation: 14,
   },
+  sheetGrabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 12 },
   etaPayRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
   etaPayBox: { flex: 1, backgroundColor: '#FFF7ED', borderRadius: 12, borderWidth: 1, borderColor: '#FFE4D2', padding: 12 },
   etaPayLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
@@ -2324,41 +2308,6 @@ const styles = StyleSheet.create({
   trackerSub: { fontSize: 10, color: '#7C3AED', marginTop: 1 },
   soonBadge: { backgroundColor: '#7C3AED', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
   soonBadgeText: { fontSize: 8, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.6 },
-
-  itemsSheet: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 18, paddingTop: 10, paddingBottom: 24, maxHeight: '88%',
-  },
-  itemsSheetHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
-  itemsSheetTitle: { fontSize: 18, fontWeight: '900', color: '#111827', letterSpacing: -0.3 },
-  itemsSheetSub: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginTop: 2 },
-  itemsCloseBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center' },
-  itemCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E5E7EB',
-    padding: 12, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
-  },
-  itemCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  itemNumberPill: { backgroundColor: '#111827', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
-  itemNumberText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.8 },
-  itemChipsRow: { flexDirection: 'row', gap: 6 },
-  itemChip: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
-  itemChipText: { fontSize: 10, fontWeight: '800' },
-  itemPhotoWrap: { borderRadius: 14, overflow: 'hidden', marginBottom: 10 },
-  itemPhotoLarge: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
-  enlargeHint: {
-    position: 'absolute', right: 8, bottom: 8, width: 26, height: 26, borderRadius: 13,
-    backgroundColor: 'rgba(17,24,39,0.7)', justifyContent: 'center', alignItems: 'center',
-  },
-  itemPhotoFailed: {
-    height: 110, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
-    justifyContent: 'center', alignItems: 'center', gap: 4, marginBottom: 10,
-  },
-  itemNoPhoto: {
-    height: 64, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: '#E5E7EB',
-    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, marginBottom: 10, backgroundColor: '#FAFAFA',
-  },
-  itemTitle: { fontSize: 15, fontWeight: '800', color: '#111827', lineHeight: 20 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { width: '100%', maxWidth: 320, backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center' },

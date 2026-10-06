@@ -12,6 +12,7 @@ import {
   Animated,
   Easing,
   ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -53,7 +54,7 @@ export default function AccountScreen() {
   const historyAnim = useRef(new Animated.Value(0)).current;
 
   /* ------------------------------------------------------------------ */
-  /* Entrance animation                                                  */
+  /* Back Handler & Entrance animation                                   */
   /* ------------------------------------------------------------------ */
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
@@ -90,6 +91,20 @@ export default function AccountScreen() {
 
     return () => pulse.stop();
   }, [headerAnim, contentAnim, avatarPulse]);
+
+  // Handle Android Hardware Back Button specifically for the History View
+  useEffect(() => {
+    const backAction = () => {
+      if (showHistory) {
+        setShowHistory(false);
+        return true;
+      }
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => backHandler.remove();
+  }, [showHistory]);
 
   /* ------------------------------------------------------------------ */
   /* History entrance                                                    */
@@ -188,23 +203,13 @@ export default function AccountScreen() {
           id: String(r.request_id),
           type: r.pickup_type || 'Curb-side Drop-off',
           date: dateObj.toLocaleDateString('en-US', {
-            month: 'long', day: 'numeric', year: 'numeric',
+            month: 'short', day: 'numeric', year: 'numeric',
           }),
           time: dateObj.toLocaleTimeString('en-US', {
             hour: 'numeric', minute: '2-digit',
           }),
           pickup: pickupAddr,
-          pickupSub: [
-            r.pickup_location?.barangay,
-            r.pickup_location?.city,
-            r.pickup_location?.province,
-          ].filter(Boolean).join(', '),
           dropoff: dropoffAddr,
-          dropoffSub: [
-            r.dropoff_location?.barangay,
-            r.dropoff_location?.city,
-            r.dropoff_location?.province,
-          ].filter(Boolean).join(', '),
           provider: provider
             ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider'
             : 'Unassigned',
@@ -511,60 +516,64 @@ export default function AccountScreen() {
               </View>
             ) : (
               filteredHistory.map((item) => (
-                <View key={item.id} style={styles.historyCard}>
-                  <View style={styles.hCardAccent} />
-
-                  <View style={styles.hCardTopRow}>
-                    <Text style={styles.hCardType}>{item.type}</Text>
-                    <View style={[styles.hStatusPill, { backgroundColor: item.statusBg }]}>
-                      <Ionicons name={item.statusIcon} size={11} color={item.statusColor} />
-                      <Text style={[styles.hStatusText, { color: item.statusColor }]}>
-                        {item.statusLabel.toUpperCase()}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <Text style={styles.hCardDate}>{item.date}   {item.time}</Text>
-
-                  <View style={styles.hCardBody}>
-                    <View style={styles.hCardTimeline}>
-                      <View style={styles.hTimelinePoint}>
-                        <View style={styles.blueDot}>
-                          <View style={styles.blueDotInner} />
-                        </View>
-                        <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.pickup}</Text>
-                          <Text style={styles.hAddressSub} numberOfLines={2}>
-                            {item.pickupSub}
-                          </Text>
-                        </View>
+                <View 
+                  key={item.id} 
+                  style={[
+                    styles.card, 
+                    item.statusLabel === 'Completed' || item.statusLabel === 'Cancelled' ? styles.completedCard : null
+                  ]}
+                >
+                  {/* Header: Service Type + Status */}
+                  <View style={styles.cardHeader}>
+                    <View style={styles.cardHeaderLeft}>
+                      <View style={styles.serviceTypeBadge}>
+                        <Text style={styles.serviceTypeText}>{item.type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
                       </View>
-                      <View style={styles.hTimelineLine} />
-                      <View style={styles.hTimelinePoint}>
-                        <Ionicons
-                          name="location"
-                          size={16}
-                          color="#EF4444"
-                          style={{ marginLeft: -1, marginRight: 6 }}
-                        />
-                        <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.dropoff}</Text>
-                          <Text style={styles.hAddressSub} numberOfLines={2}>
-                            {item.dropoffSub}
-                          </Text>
-                        </View>
+                      <View style={[styles.statusBadge, { backgroundColor: item.statusBg }]}>
+                        <Ionicons name={item.statusIcon} size={12} color={item.statusColor} />
+                        <Text style={[styles.statusBadgeText, { color: item.statusColor }]}>
+                          {item.statusLabel}
+                        </Text>
                       </View>
                     </View>
                   </View>
 
-                  <View style={styles.hCardDivider} />
+                  {/* Route Box */}
+                  <View style={styles.routeBox}>
+                    <View style={styles.routeRow}>
+                      <View style={styles.dotOrange} />
+                      <Text style={styles.routeAddressText} numberOfLines={1}>{item.pickup}</Text>
+                    </View>
+                    <View style={styles.routeConnectorLine} />
+                    <View style={styles.routeRow}>
+                      <View style={styles.dotDark} />
+                      <Text style={styles.routeAddressText} numberOfLines={1}>{item.dropoff}</Text>
+                    </View>
+                  </View>
 
-                  <View style={styles.hCardFooter}>
+                  {/* Context Row */}
+                  <View style={styles.cardContextRow}>
+                    <View style={styles.contextDateBox}>
+                      <Ionicons name="calendar-outline" size={13} color="#6B7280" />
+                      <Text style={styles.contextText}>{item.date} • {item.time}</Text>
+                    </View>
+                    {item.provider !== 'Unassigned' && (
+                      <View style={styles.contextProviderPill}>
+                        <Ionicons name="car-sport" size={13} color="#16A34A" />
+                        <Text style={styles.contextProviderText} numberOfLines={1}>
+                          {item.provider}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Footer */}
+                  <View style={styles.cardFooter}>
                     <View style={styles.hTrackingWrapper}>
                       <Ionicons name="barcode-outline" size={13} color="#6B7280" />
                       <Text style={styles.hTracking}>{item.tracking}</Text>
                     </View>
-                    <Text style={styles.hPrice}>₱{item.price}</Text>
+                    <Text style={styles.priceText}>₱{item.price}</Text>
                   </View>
                 </View>
               ))
@@ -1141,77 +1150,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
-  historyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 18,
-    paddingLeft: 22,
-    marginBottom: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  hCardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    backgroundColor: ORANGE,
-  },
-  hCardTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  hCardType: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '600',
-    flex: 1,
-    marginRight: 8,
-  },
-  hStatusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 5,
-  },
-  hStatusText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  hCardDate: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 14,
-    letterSpacing: -0.2,
-  },
-  hCardBody: { flexDirection: 'row', justifyContent: 'space-between' },
-  hCardTimeline: { flex: 1 },
-  hTimelinePoint: { flexDirection: 'row', alignItems: 'flex-start' },
-  blueDot: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 3,
-    borderColor: ORANGE,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-    marginTop: 2,
-  },
   filterRow: {
     flexDirection: 'row',
     gap: 8,
@@ -1265,40 +1203,138 @@ const styles = StyleSheet.create({
   filterCountTextActive: {
     color: '#FFFFFF',
   },
-  blueDotInner: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: ORANGE,
+
+  /* New ActivityScreen-like History Card Styles */
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  hTimelineLine: {
-    width: 2,
-    height: 20,
-    backgroundColor: '#E5E7EB',
-    marginLeft: 7,
-    marginVertical: 3,
+  completedCard: {
+    backgroundColor: '#FAFAF9',
+    borderColor: '#E5E7EB',
+    opacity: 0.95,
   },
-  hAddressWrapper: { flex: 1 },
-  hAddressMain: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 3,
-  },
-  hAddressSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    lineHeight: 16,
-  },
-  hCardDivider: {
-    height: 1,
-    backgroundColor: '#F3F4F6',
-    marginVertical: 14,
-  },
-  hCardFooter: {
+  cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 12,
+  },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    paddingRight: 8,
+  },
+  serviceTypeBadge: {
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  serviceTypeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#374151',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 4,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  routeBox: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
+  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
+  routeConnectorLine: {
+    width: 2,
+    height: 10,
+    backgroundColor: '#D1D5DB',
+    marginLeft: 3,
+    marginVertical: 3,
+  },
+  routeAddressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    flex: 1,
+  },
+  cardContextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 8,
+  },
+  contextDateBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  contextText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '600',
+  },
+  contextProviderPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+    flexShrink: 1,
+  },
+  contextProviderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  priceText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
   },
   hTrackingWrapper: {
     flexDirection: 'row',
@@ -1309,18 +1345,12 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
   },
   hTracking: {
     fontSize: 12,
-    color: '#6B7280',
-    fontWeight: '600',
+    color: '#4B5563',
+    fontWeight: '700',
     letterSpacing: 0.3,
-  },
-  hPrice: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.3,
   },
 });
