@@ -33,6 +33,18 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Environment files
+.env
+.env.local
+supabase/functions/.env
+
+# Supabase
+supabase/.temp/
+supabase/.branches/
+
+# Expo
+.expo/
+
 # typescript
 *.tsbuildinfo
 
@@ -42,3 +54,8 @@ yarn-error.*
 
 .env
 .env.local
+
+.agents/
+.claude/
+.cursor/
+.aider/

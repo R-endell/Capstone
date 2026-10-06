@@ -67,6 +67,9 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Import matching service
 import { startBackgroundMatcher } from './src/services/matchingService';
 
+import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
+import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
+
 export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
@@ -94,6 +97,8 @@ export type RootStackParamList = {
   ManageVehicle: undefined;
   ManageRoutes: undefined;
   ReceiverPicker: { selectedReceiverId?: number | null };
+  PaymentMethods: undefined;
+  AddPaymentMethod: undefined;
 };
 
 export type MainTabParamList = { 
@@ -430,6 +435,8 @@ export default function App() {
               animation: 'slide_from_bottom',
             }}
           />
+          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </ScheduleProvider>

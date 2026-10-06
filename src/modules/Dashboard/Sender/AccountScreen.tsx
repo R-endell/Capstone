@@ -358,7 +358,7 @@ export default function AccountScreen() {
   };
 
   const handlePaymentMethodsPress = () => {
-    Alert.alert('Coming Soon', 'Payment methods will be available in a future update.');
+    navigation.navigate('PaymentMethods');
   };
 
   const handleSwitchToProvider = async () => {
