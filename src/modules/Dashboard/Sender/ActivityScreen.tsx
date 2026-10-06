@@ -1,12 +1,12 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
-  BackHandler, StatusBar, Platform,
+  BackHandler, StatusBar, Platform, Linking, Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import QRCode from 'react-native-qrcode-svg';
@@ -15,6 +15,38 @@ import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF751F';
+
+// The Finding Provider UI lives inside BookingScreen. The first name that is actually
+// registered in one of your navigators is used. Add your exact route name here if it differs.
+const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
+
+// Finds the navigator (this one or a parent) that owns one of the given route names
+const findRouteOwner = (nav: any, names: string[]): { owner: any; name: string } | null => {
+  let current = nav;
+  while (current) {
+    try {
+      const routeNames: string[] = current.getState?.()?.routeNames || [];
+      const match = names.find(n => routeNames.includes(n));
+      if (match) return { owner: current, name: match };
+    } catch { /* ignore */ }
+    current = current.getParent?.();
+  }
+  return null;
+};
+
+// Walks up the navigator tree and returns every tab navigator's navigation object
+const getTabNavigations = (nav: any): any[] => {
+  const found: any[] = [];
+  let current = nav;
+  while (current) {
+    try {
+      if (current.getState?.()?.type === 'tab') found.push(current);
+    } catch { /* ignore */ }
+    current = current.getParent?.();
+  }
+  if (found.length === 0) [nav, nav?.getParent?.()].forEach(n => n && found.push(n));
+  return found;
+};
 
 /* ==================================================================== */
 /* LeafletMap — OSRM road-following route with P and D markers          */
@@ -149,6 +181,120 @@ const LeafletMap = ({
   );
 };
 
+// Storage bucket that holds the photos attached when creating a delivery.
+// Only used when a stored value is a file path rather than a full URL - change to your bucket name.
+const CARGO_PHOTO_BUCKET = 'cargo-photos';
+
+interface CargoItem {
+  name: string;
+  type: string | null;
+  quantity: number;
+  weight: string | null;
+  notes: string | null;
+  photos: string[];
+  hidePhotoSlot?: boolean; // rows that share the delivery's single photo don't show a photo area
+  size?: string | null;
+  fragile?: boolean;
+  perItem?: boolean; // true when built from items_json (each item has its own photo/description)
+}
+
+// Turns whatever is stored (full URL, storage path, or an array/JSON of either) into displayable URLs
+const resolvePhotoUrls = (c: any): string[] => {
+  const raw = [
+    c?.photo_urls, c?.photos, c?.images, c?.photo_url, c?.image_url,
+    c?.cargo_pic, c?.photo, c?.image, c?.cargo_photo, c?.cargo_photo_url, c?.item_photo,
+  ].filter(v => v != null && v !== '');
+
+  const flat: string[] = [];
+  raw.forEach((v: any) => {
+    let val = v;
+    if (typeof val === 'string' && val.trim().startsWith('[')) {
+      try { val = JSON.parse(val); } catch { /* keep as string */ }
+    }
+    if (Array.isArray(val)) val.forEach((x: any) => typeof x === 'string' && flat.push(x));
+    else if (typeof val === 'string') flat.push(val);
+  });
+
+  const urls = flat.map(p => {
+    if (/^(https?:|file:|data:)/i.test(p)) return p;
+    try {
+      return supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(p.replace(/^\/+/, '')).data.publicUrl;
+    } catch { return ''; }
+  }).filter(Boolean);
+
+  return Array.from(new Set(urls));
+};
+
+// cargo_profiles may come back as a single object or an array - normalize both
+const normalizeCargoItems = (cargo: any, fallbackName: string): CargoItem[] => {
+  const list: any[] = Array.isArray(cargo) ? cargo : cargo ? [cargo] : [];
+  if (list.length === 0) {
+    return [{ name: fallbackName, type: null, quantity: 1, weight: null, notes: null, photos: [] }];
+  }
+  // Preferred: per-item data saved in cargo_profiles.items_json
+  const perItem: CargoItem[] = list.flatMap((c: any) => {
+    let arr: any = c?.items_json;
+    if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { arr = null; } }
+    if (!Array.isArray(arr)) return [];
+    return arr.map((it: any): CargoItem => ({
+      name: it?.description || `${it?.size || 'Standard'} package`,
+      type: null,
+      quantity: 1,
+      weight: null,
+      notes: null,
+      photos: resolvePhotoUrls({ photo_url: it?.photo }),
+      size: it?.size ?? null,
+      fragile: !!it?.fragile,
+      perItem: true,
+    }));
+  });
+  if (perItem.length > 0) return perItem;
+
+  // Fallback (older bookings): one cargo profile with small/medium/large box counts
+  const sized: CargoItem[] = list.flatMap((c: any) => {
+    const sizes: [string, any][] = [
+      ['Small', c?.small_box_qty], ['Medium', c?.medium_box_qty], ['Large', c?.large_box_qty],
+    ];
+    // The delivery stores a single photo (cargo_pic); it belongs inside the first item row
+    const photos = resolvePhotoUrls(c);
+    return sizes
+      .filter(([, q]) => Number(q) > 0)
+      .map(([label, q], idx) => ({
+        name: `${label} package`,
+        type: null,
+        quantity: Number(q),
+        weight: null,
+        notes: null,
+        photos: idx === 0 ? photos : [],
+        hidePhotoSlot: idx !== 0,
+      }));
+  });
+  if (sized.length > 0) return sized;
+
+  return list.map((c: any) => {
+    const qty = Number(c?.quantity ?? c?.item_quantity ?? c?.qty ?? 1);
+    const w = c?.weight_kg ?? c?.weight ?? c?.estimated_weight ?? null;
+    return {
+      name: c?.item_name || c?.cargo_type || fallbackName,
+      type: c?.cargo_type && c?.cargo_type !== c?.item_name ? String(c.cargo_type) : null,
+      quantity: Number.isFinite(qty) && qty > 0 ? qty : 1,
+      weight: w != null && w !== '' ? String(w) : null,
+      notes: c?.description || c?.notes || c?.special_instructions || null,
+      photos: resolvePhotoUrls(c),
+    };
+  });
+};
+
+const formatEta = (iso?: string | null): string => {
+  if (!iso) return 'Calculating...';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'Calculating...';
+  const mins = Math.round((d.getTime() - Date.now()) / 60000);
+  const clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (mins > 0 && mins < 180) return `${clock} (${mins} min)`;
+  return clock;
+};
+
 interface DeliveryRequest {
   request_id: number;
   pickup_type: string;
@@ -223,6 +369,9 @@ interface MappedDelivery {
   status_time: string;
   provider_name: string;
   provider_id?: number;
+  provider_phone?: string | null;
+  cargo_items: CargoItem[];
+  total_items: number;
   price: string;
   coords: {
     pickup: { latitude: number; longitude: number };
@@ -250,6 +399,10 @@ export default function ActivityScreen() {
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'completed' | 'pending' | 'active'>('all');
   const [openingChat, setOpeningChat] = useState(false);
+  const isFocused = useIsFocused();
+  const tabBarHidden = useRef(false);
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
 
   const listAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
@@ -286,6 +439,39 @@ export default function ActivityScreen() {
     return () => backHandler.remove();
   }, [selectedDelivery, showFullMap]);
 
+  // Hide the bottom tab bar while the full-screen map is open
+  const setTabBarHidden = useCallback((hidden: boolean) => {
+    if (tabBarHidden.current === hidden) return;
+    tabBarHidden.current = hidden;
+    getTabNavigations(navigationRef.current).forEach(nav => {
+      try {
+        nav.setOptions({ tabBarStyle: hidden ? { display: 'none' } : undefined });
+      } catch { /* ignore */ }
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    setTabBarHidden(isFocused && showFullMap);
+  }, [isFocused, showFullMap, setTabBarHidden]);
+
+  useEffect(() => () => setTabBarHidden(false), [setTabBarHidden]);
+
+  // Resume the existing Finding Provider screen for an order that is still searching
+  const handleResumeFindingProvider = (item: MappedDelivery) => {
+    if (item.isMatched || item.status !== 'Waiting for Provider') return;
+    const target = findRouteOwner(navigation, FINDING_PROVIDER_ROUTE_NAMES);
+    if (!target) {
+      Alert.alert('Unavailable', 'Could not open the Finding Provider screen.');
+      return;
+    }
+    target.owner.navigate(target.name, {
+      requestId: item.request_id,
+      request_id: item.request_id,
+      resume: true,
+      fromActivity: true,
+    });
+  };
+
   const fetchUserRecord = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -299,7 +485,7 @@ export default function ActivityScreen() {
 
   const fetchProviderDetails = async (providerId: number) => {
     try {
-      const { data } = await supabase.from('users').select('user_id, first_name, last_name, email').eq('user_id', providerId).single();
+      const { data } = await supabase.from('users').select('user_id, first_name, last_name, email, phone_number').eq('user_id', providerId).single();
       return data;
     } catch (error) { return null; }
   };
@@ -433,10 +619,15 @@ export default function ActivityScreen() {
 
         const cargoName = item.cargo_profiles?.item_name || item.cargo_profiles?.cargo_type || item.pickup_type || 'Standard Parcel';
 
+        const cargoItems = normalizeCargoItems(item.cargo_profiles, cargoName);
+        const totalItems = cargoItems.reduce((sum, c) => sum + c.quantity, 0);
+
         return {
           request_id: item.request_id,
           pickup_type: item.pickup_type,
           cargo_name: cargoName,
+          cargo_items: cargoItems,
+          total_items: totalItems,
           date: scheduleDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
           time: scheduleDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
           pickup_main: pickup.main,
@@ -472,7 +663,10 @@ export default function ActivityScreen() {
       for (const delivery of matchedDeliveries) {
         if (delivery.provider_id) {
           const provider = await fetchProviderDetails(delivery.provider_id);
-          if (provider) delivery.provider_name = `${provider.first_name} ${provider.last_name}`;
+          if (provider) {
+            delivery.provider_name = `${provider.first_name} ${provider.last_name}`;
+            delivery.provider_phone = (provider as any).phone_number || null;
+          }
         }
       }
 
@@ -619,7 +813,7 @@ export default function ActivityScreen() {
 
   const renderTabBar = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-      {(['all', 'completed', 'pending', 'active'] as const).map((tab) => {
+      {(['all', 'active', 'pending', 'completed'] as const).map((tab) => {
         const isActive = activeTab === tab;
         const count = getTabCount(tab);
         return (
@@ -710,6 +904,15 @@ export default function ActivityScreen() {
               const isActiveItem = item.status === 'In Progress' || item.status === 'In Transit' || item.status === 'Matched';
               const isPendingItem = item.status === 'Waiting for Provider';
 
+              // Short status labels for the list card
+              const statusLabel =
+                item.status === 'Waiting for Provider' ? 'Waiting'
+                : item.status === 'In Progress' ? 'Active'
+                : item.status === 'In Transit' ? 'In Transit'
+                : item.status === 'Matched' ? 'Matched'
+                : item.status === 'Completed' ? 'Done'
+                : item.status;
+
               return (
                 <TouchableOpacity
                   key={item.request_id || index}
@@ -722,97 +925,71 @@ export default function ActivityScreen() {
                   onPress={() => setSelectedDelivery(item)}
                   activeOpacity={0.9}
                 >
-                  {/* Header Row */}
+                  {/* Header: ID + status */}
                   <View style={styles.cardHeader}>
-                    <View style={styles.cardHeaderLeft}>
-                      <Text style={styles.cardId}>#PNS-{String(item.request_id).padStart(4, '0')}</Text>
-                      <View style={styles.serviceTypeBadge}>
-                        <Text style={styles.serviceTypeText}>{item.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
-                      </View>
+                    <Text style={styles.cardId}>#PNS-{String(item.request_id).padStart(4, '0')}</Text>
+                    <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
+                      <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
+                      <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
+                        {statusLabel}
+                      </Text>
                     </View>
-                    {!isCompletedItem && (
-                      <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
-                        <Ionicons name={getStatusIcon(item.status)} size={11} color={getStatusColor(item.status)} />
-                        <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
-                          {item.status}
-                        </Text>
-                      </View>
-                    )}
                   </View>
 
-                  {/* Cargo & Item Info Banner */}
-                  <View style={styles.cargoBanner}>
-                    <Ionicons name="cube-outline" size={13} color={ORANGE} />
-                    <Text style={styles.cargoBannerText} numberOfLines={1}>
-                      {item.cargo_name}
-                    </Text>
-                  </View>
+                  {/* Package title */}
+                  <Text style={styles.cargoTitle} numberOfLines={1}>
+                    {item.cargo_name}
+                    {item.total_items > 1 ? ` · ${item.total_items} items` : ''}
+                  </Text>
 
-                  {/* Route Summary */}
+                  {/* Route: pickup → dropoff */}
                   <View style={styles.routeBox}>
                     <View style={styles.routeRow}>
                       <View style={styles.dotOrange} />
-                      <Text style={styles.routeAddressText} numberOfLines={1}>
-                        {item.pickup_main}
-                      </Text>
+                      <Text style={styles.routeAddressText} numberOfLines={1}>{item.pickup_main}</Text>
                     </View>
                     <View style={styles.routeConnectorLine} />
                     <View style={styles.routeRow}>
                       <View style={styles.dotDark} />
-                      <Text style={styles.routeAddressText} numberOfLines={1}>
-                        {item.dropoff_main}
-                      </Text>
+                      <Text style={styles.routeAddressText} numberOfLines={1}>{item.dropoff_main}</Text>
                     </View>
                   </View>
 
-                  {/* Informational Context Row */}
+                  {/* Date + courier (if any) */}
                   <View style={styles.cardContextRow}>
-                    <View style={styles.contextItem}>
-                      <Ionicons name="calendar-outline" size={11} color="#6B7280" />
-                      <Text style={styles.contextText}>{item.date} • {item.time}</Text>
-                    </View>
-
+                    <Text style={styles.contextText}>{item.date}</Text>
                     {item.isMatched && item.provider_name !== 'Finding...' && (
-                      <View style={styles.contextItem}>
-                        <Ionicons name="person-circle-outline" size={12} color="#16A34A" />
-                        <Text style={[styles.contextText, { fontWeight: '700', color: '#16A34A' }]} numberOfLines={1}>
-                          {item.provider_name}
-                        </Text>
-                      </View>
-                    )}
-
-                    {item.receiver?.receiver_name && (
-                      <View style={styles.contextItem}>
-                        <Ionicons name="people-outline" size={11} color="#7C3AED" />
-                        <Text style={styles.contextText} numberOfLines={1}>
-                          To: {item.receiver.receiver_name}
-                        </Text>
-                      </View>
+                      <Text style={[styles.contextText, styles.contextProvider]} numberOfLines={1}>
+                        · {item.provider_name}
+                      </Text>
                     )}
                   </View>
 
-                  {/* Footer Info */}
+                  {/* Footer: price + action */}
                   <View style={styles.cardFooter}>
-                    <View>
-                      <Text style={styles.footerLabel}>TOTAL FARE</Text>
-                      <Text style={styles.priceText}>₱{item.price}</Text>
-                    </View>
+                    <Text style={styles.priceText}>₱{item.price}</Text>
 
                     {isCompletedItem ? (
                       <View style={styles.actionBadgeComplete}>
-                        <Ionicons name="checkmark-circle" size={12} color="#166534" />
-                        <Text style={styles.actionBadgeCompleteText}>Delivered & Settled</Text>
+                        <Ionicons name="checkmark-circle" size={14} color="#166534" />
+                        <Text style={styles.actionBadgeCompleteText}>Delivered</Text>
                       </View>
                     ) : item.isMatched ? (
                       <View style={styles.actionBadgeActive}>
-                        <Ionicons name="navigate-outline" size={12} color="#FFFFFF" />
-                        <Text style={styles.actionBadgeActiveText}>Track Live</Text>
+                        <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
+                        <Text style={styles.actionBadgeActiveText}>Track</Text>
                       </View>
                     ) : (
-                      <View style={styles.actionBadgePending}>
-                        <Ionicons name="time-outline" size={12} color="#D97706" />
-                        <Text style={styles.actionBadgePendingText}>Finding Provider</Text>
-                      </View>
+                      <TouchableOpacity
+                        style={styles.actionBadgePending}
+                        onPress={() => handleResumeFindingProvider(item)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="time-outline" size={13} color="#D97706" />
+                        <Text style={styles.actionBadgePendingText}>Find courier</Text>
+                        <Ionicons name="chevron-forward" size={12} color="#92400E" />
+                      </TouchableOpacity>
                     )}
                   </View>
                 </TouchableOpacity>
@@ -824,6 +1001,38 @@ export default function ActivityScreen() {
       </ScrollView>
     </View>
   );
+
+  const renderProviderIdentity = (d: MappedDelivery) => {
+    const initials = (d.provider_name || 'P')
+      .split(' ').filter(Boolean).slice(0, 2).map(s => s.charAt(0).toUpperCase()).join('') || 'P';
+    const vehicle = d.deliveryData?.vehicle;
+    return (
+      <View style={styles.courierIdentityRow}>
+        <View style={styles.courierAvatarWrap}>
+          <View style={styles.courierAvatar}>
+            <Text style={styles.courierAvatarText}>{initials}</Text>
+          </View>
+          <View style={styles.courierVerifiedDot}>
+            <Ionicons name="checkmark" size={9} color="#FFFFFF" />
+          </View>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.courierName} numberOfLines={1}>{d.provider_name}</Text>
+          <Text style={styles.courierSub}>Verified courier partner</Text>
+          <View style={styles.chipRow}>
+            <View style={styles.infoChip}>
+              <Ionicons name="car-sport-outline" size={11} color="#4B5563" />
+              <Text style={styles.infoChipText}>{vehicle?.vehicle_type || 'Vehicle'}</Text>
+            </View>
+            <View style={[styles.infoChip, styles.plateChip]}>
+              <Ionicons name="card-outline" size={11} color="#111827" />
+              <Text style={[styles.infoChipText, { color: '#111827', fontWeight: '800' }]}>{vehicle?.plate_number || 'N/A'}</Text>
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
 
   const renderDetailView = () => {
     const pickupVerified =
@@ -873,10 +1082,7 @@ export default function ActivityScreen() {
               <Ionicons name="arrow-back" size={18} color="#111827" />
             </TouchableOpacity>
             <Text style={styles.detailHeaderTitle}>Shipment Details</Text>
-            <TouchableOpacity onPress={() => setShowFullMap(true)} style={styles.fullMapBtn} activeOpacity={0.8}>
-              <Ionicons name="map-outline" size={13} color={ORANGE} />
-              <Text style={styles.fullMapBtnText}>Map</Text>
-            </TouchableOpacity>
+            <View style={styles.headerSpacer} />
           </View>
 
           {/* Hero Tracking & Status Card */}
@@ -886,10 +1092,18 @@ export default function ActivityScreen() {
                 <Text style={styles.heroTrackingLabel}>TRACKING CODE</Text>
                 <Text style={styles.heroTrackingId}>#PNS-{String(selectedDelivery?.request_id).padStart(4, '0')}</Text>
               </View>
-              <View style={[styles.heroStatusBadge, { backgroundColor: getStatusBg(currentStatus) }]}>
+              <TouchableOpacity
+                disabled={!(selectedDelivery && !selectedDelivery.isMatched && currentStatus === 'Waiting for Provider')}
+                onPress={() => selectedDelivery && handleResumeFindingProvider(selectedDelivery)}
+                activeOpacity={0.7}
+                style={[styles.heroStatusBadge, { backgroundColor: getStatusBg(currentStatus) }]}
+              >
                 <Ionicons name={getStatusIcon(currentStatus)} size={13} color={getStatusColor(currentStatus)} />
                 <Text style={[styles.heroStatusText, { color: getStatusColor(currentStatus) }]}>{currentStatus}</Text>
-              </View>
+                {selectedDelivery && !selectedDelivery.isMatched && currentStatus === 'Waiting for Provider' && (
+                  <Ionicons name="chevron-forward" size={12} color={getStatusColor(currentStatus)} />
+                )}
+              </TouchableOpacity>
             </View>
 
             {/* Stepper Progress Bar */}
@@ -949,8 +1163,10 @@ export default function ActivityScreen() {
             </View>
             <View style={styles.summaryGrid}>
               <View style={styles.summaryCol}>
-                <Text style={styles.summaryLabel}>Cargo Item</Text>
-                <Text style={styles.summaryValue} numberOfLines={1}>{selectedDelivery?.cargo_name}</Text>
+                <Text style={styles.summaryLabel}>Total Items</Text>
+                <Text style={styles.summaryValue} numberOfLines={1}>
+                  {selectedDelivery?.total_items ?? 0} {(selectedDelivery?.total_items ?? 0) === 1 ? 'item' : 'items'}
+                </Text>
               </View>
               <View style={styles.summaryDividerVertical} />
               <View style={styles.summaryCol}>
@@ -1013,6 +1229,10 @@ export default function ActivityScreen() {
                 {isCompleted ? 'Fulfilled Route Map' : pickupVerified ? 'In Transit Along Cebu' : 'Live Route Preview'}
               </Text>
             </View>
+            <View style={styles.mapTapHint}>
+              <Text style={styles.mapTapHintText}>Tap for details</Text>
+              <Ionicons name="expand-outline" size={11} color="#FFFFFF" />
+            </View>
           </TouchableOpacity>
 
           {/* Route Timeline Card */}
@@ -1067,30 +1287,38 @@ export default function ActivityScreen() {
 
           {/* Assigned Courier Partner Card */}
           {selectedDelivery?.isMatched && (
-            <View style={styles.providerInfoCard}>
-              <View style={styles.providerInfoHeader}>
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionHeaderRow}>
                 <Ionicons name="shield-checkmark-outline" size={15} color="#16A34A" />
-                <Text style={styles.providerInfoTitle}>ASSIGNED COURIER PARTNER</Text>
+                <Text style={[styles.sectionHeaderTitle, { color: '#16A34A' }]}>ASSIGNED COURIER PARTNER</Text>
               </View>
-              <View style={styles.providerInfoRow}>
-                <View style={styles.providerInfoDetails}>
-                  <Text style={styles.providerInfoName}>{selectedDelivery.provider_name}</Text>
-                  <Text style={styles.providerInfoVehicle}>
-                    {selectedDelivery.deliveryData?.vehicle?.vehicle_type || 'Vehicle'} • {selectedDelivery.deliveryData?.vehicle?.plate_number || 'N/A'}
-                  </Text>
-                </View>
+              {renderProviderIdentity(selectedDelivery)}
+              <View style={styles.courierActionsRow}>
                 <TouchableOpacity
-                  style={styles.providerContactBtn}
-                  activeOpacity={0.8}
+                  style={styles.courierMsgBtn}
+                  activeOpacity={0.85}
                   onPress={() => handleMessageProvider(selectedDelivery)}
                   disabled={openingChat}
                 >
                   {openingChat ? (
-                    <ActivityIndicator size="small" color={ORANGE} />
+                    <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
-                    <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                    <>
+                      <Ionicons name="chatbubble-ellipses-outline" size={15} color="#FFFFFF" />
+                      <Text style={styles.courierMsgBtnText}>Message</Text>
+                    </>
                   )}
                 </TouchableOpacity>
+                {!!selectedDelivery.provider_phone && (
+                  <TouchableOpacity
+                    style={styles.courierCallBtn}
+                    activeOpacity={0.85}
+                    onPress={() => Linking.openURL(`tel:${selectedDelivery.provider_phone}`)}
+                  >
+                    <Ionicons name="call-outline" size={15} color="#111827" />
+                    <Text style={styles.courierCallBtnText}>Call</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           )}
@@ -1138,6 +1366,116 @@ export default function ActivityScreen() {
           <Text style={styles.statusPillText}>{selectedDelivery?.status}</Text>
         </View>
       </View>
+
+      {selectedDelivery && (
+        <View style={[styles.mapInfoSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <View style={styles.sheetGrabber} />
+          <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 360 }}>
+            {/* ETA + Pay */}
+            <View style={styles.etaPayRow}>
+              <View style={styles.etaPayBox}>
+                <View style={styles.etaPayLabelRow}>
+                  <Ionicons name="time-outline" size={12} color={ORANGE} />
+                  <Text style={styles.etaPayLabel}>ESTIMATED ARRIVAL</Text>
+                </View>
+                <Text style={styles.etaPayValue} numberOfLines={1}>
+                  {selectedDelivery.status === 'Completed'
+                    ? 'Delivered'
+                    : selectedDelivery.isMatched
+                      ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
+                      : 'Awaiting provider'}
+                </Text>
+              </View>
+              <View style={styles.etaPayBox}>
+                <View style={styles.etaPayLabelRow}>
+                  <Ionicons name="cash-outline" size={12} color={ORANGE} />
+                  <Text style={styles.etaPayLabel}>TOTAL PAY</Text>
+                </View>
+                <Text style={styles.etaPayValue}>₱{selectedDelivery.price}</Text>
+              </View>
+            </View>
+
+            {/* Provider */}
+            {selectedDelivery.isMatched ? (
+              <View style={styles.mapSection}>
+                {renderProviderIdentity(selectedDelivery)}
+                <View style={styles.courierActionsRow}>
+                  <TouchableOpacity
+                    style={styles.courierMsgBtn}
+                    activeOpacity={0.85}
+                    onPress={() => handleMessageProvider(selectedDelivery)}
+                    disabled={openingChat}
+                  >
+                    <Ionicons name="chatbubble-ellipses-outline" size={15} color="#FFFFFF" />
+                    <Text style={styles.courierMsgBtnText}>Message</Text>
+                  </TouchableOpacity>
+                  {!!selectedDelivery.provider_phone && (
+                    <TouchableOpacity
+                      style={styles.courierCallBtn}
+                      activeOpacity={0.85}
+                      onPress={() => Linking.openURL(`tel:${selectedDelivery.provider_phone}`)}
+                    >
+                      <Ionicons name="call-outline" size={15} color="#111827" />
+                      <Text style={styles.courierCallBtnText}>Call</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.mapSection, styles.waitingRow]}>
+                <ActivityIndicator size="small" color={ORANGE} />
+                <Text style={styles.waitingText}>Still finding a courier partner for this shipment.</Text>
+              </View>
+            )}
+
+            {/* Details */}
+            <View style={styles.mapSection}>
+              <View style={styles.detailLine}>
+                <Text style={styles.detailLineLabel}>Tracking code</Text>
+                <Text style={styles.detailLineValue}>#PNS-{String(selectedDelivery.request_id).padStart(4, '0')}</Text>
+              </View>
+              <View style={styles.detailLine}>
+                <Text style={styles.detailLineLabel}>Items</Text>
+                <Text style={styles.detailLineValue}>{selectedDelivery.total_items}</Text>
+              </View>
+              <View style={styles.detailLine}>
+                <Text style={styles.detailLineLabel}>Service</Text>
+                <Text style={styles.detailLineValue}>{selectedDelivery.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
+              </View>
+              <View style={styles.detailLine}>
+                <Text style={styles.detailLineLabel}>Pickup</Text>
+                <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.pickup_main}</Text>
+              </View>
+              <View style={styles.detailLine}>
+                <Text style={styles.detailLineLabel}>Drop-off</Text>
+                <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.dropoff_main}</Text>
+              </View>
+              {!!selectedDelivery.receiver && (
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Receiver</Text>
+                  <Text style={styles.detailLineValue} numberOfLines={1}>
+                    {selectedDelivery.receiver.receiver_name || selectedDelivery.receiver.receiver_phone || '—'}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Live tracker placeholder */}
+            <View style={styles.trackerPlaceholder}>
+              <View style={styles.trackerIconBox}>
+                <Ionicons name="radio-outline" size={18} color="#7C3AED" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trackerTitle}>Live Courier Tracking</Text>
+                <Text style={styles.trackerSub}>Real-time location is coming soon. Route shown is a preview.</Text>
+              </View>
+              <View style={styles.soonBadge}>
+                <Text style={styles.soonBadgeText}>SOON</Text>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      )}
     </View>
   );
 
@@ -1227,35 +1565,88 @@ const styles = StyleSheet.create({
   dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
   dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
 
-  pageTitle: { fontSize: 30, fontWeight: '800', color: '#111827', letterSpacing: -0.5, marginBottom: 16 },
+  pageTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.5,
+    marginBottom: 16,
+  },
 
   searchRow: {
     marginBottom: 4,
   },
   searchBar: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8,
-    paddingHorizontal: 12, paddingVertical: 10, gap: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: '#111827',
+    padding: 0,
+  },
 
-  tabBarScroll: { gap: 6, paddingTop: 14, paddingBottom: 2 },
+  tabBarScroll: {
+    gap: 8,
+    paddingTop: 16,
+    paddingBottom: 4,
+  },
   tabItem: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16,
-    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', gap: 6,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.03, shadowRadius: 3, elevation: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    gap: 6,
   },
   tabItemActive: {
-    backgroundColor: '#FFF7ED', borderColor: ORANGE,
+    backgroundColor: '#FFF7ED',
+    borderColor: ORANGE,
   },
-  tabText: { fontSize: 12, fontWeight: '700', color: '#4B5563' },
-  tabTextActive: { color: ORANGE },
-  tabCountBadge: { minWidth: 18, height: 18, borderRadius: 9, backgroundColor: '#F3F4F6', paddingHorizontal: 5, justifyContent: 'center', alignItems: 'center' },
-  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.15)' },
-  tabCountText: { fontSize: 10, fontWeight: '800', color: '#4B5563' },
-  tabCountTextActive: { color: ORANGE },
+  tabText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#4B5563',
+  },
+  tabTextActive: {
+    color: ORANGE,
+  },
+  tabCountBadge: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tabCountBadgeActive: {
+    backgroundColor: 'rgba(255, 117, 31, 0.18)',
+  },
+  tabCountText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#4B5563',
+  },
+  tabCountTextActive: {
+    color: ORANGE,
+  },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 80 },
@@ -1267,13 +1658,22 @@ const styles = StyleSheet.create({
   noResultsSubtext: { fontSize: 11, color: '#6B7280', marginTop: 3, textAlign: 'center' },
 
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 12, padding: 16, marginBottom: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   completedCard: {
     backgroundColor: '#FAFAF9',
-    borderColor: '#D1D5DB',
+    borderColor: '#E5E7EB',
+    opacity: 0.95,
   },
   activeCardStyle: {
     borderLeftWidth: 4,
@@ -1283,110 +1683,400 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: '#D97706',
   },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8 },
-  cardId: { fontSize: 11, fontWeight: '800', color: '#111827' },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    paddingRight: 8,
+  },
+  cardId: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6B7280',
+    letterSpacing: 0.2,
+  },
   serviceTypeBadge: {
-    backgroundColor: '#F3F4F6', paddingHorizontal: 6, paddingVertical: 2,
-    borderRadius: 6,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
   },
-  serviceTypeText: { fontSize: 9, fontWeight: '700', color: '#4B5563' },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, gap: 4 },
-  statusBadgeText: { fontSize: 9, fontWeight: '800' },
+  serviceTypeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#4B5563',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 4,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
 
-  cargoBanner: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF7ED',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, marginBottom: 10, gap: 6,
-    borderWidth: 1, borderColor: '#FFE4D2',
+  cargoTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    letterSpacing: -0.2,
+    marginBottom: 12,
   },
-  cargoBannerText: { fontSize: 11, fontWeight: '700', color: '#9A3412', flex: 1 },
+  cargoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF7ED',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginBottom: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+  },
+  cargoIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+  },
+  cargoBannerText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#9A3412',
+    flex: 1,
+  },
+  itemCountPill: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+  },
+  itemCountText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: ORANGE,
+  },
 
   routeBox: {
-    backgroundColor: '#F9FAFB', borderRadius: 10, padding: 10, marginBottom: 10,
-    borderWidth: 1, borderColor: '#F3F4F6', gap: 6,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
-  routeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  routeConnectorLine: { width: 1, height: 12, backgroundColor: '#D1D5DB', marginLeft: 3 },
-  routeAddressText: { fontSize: 12, fontWeight: '700', color: '#111827', flex: 1 },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  routeTextCol: {
+    flex: 1,
+  },
+  routeLabelMini: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#9CA3AF',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  routeConnectorLine: {
+    width: 2,
+    height: 10,
+    backgroundColor: '#D1D5DB',
+    marginLeft: 3,
+    marginVertical: 3,
+  },
+  routeAddressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    flex: 1,
+  },
 
   cardContextRow: {
-    flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 10,
-    paddingHorizontal: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+    gap: 4,
   },
-  contextItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  contextText: { fontSize: 10, color: '#6B7280', fontWeight: '600' },
+  contextItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  contextText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  contextProvider: {
+    fontWeight: '600',
+    color: '#16A34A',
+    flexShrink: 1,
+  },
 
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  footerLabel: { fontSize: 8, color: '#9CA3AF', fontWeight: '800', letterSpacing: 0.5 },
-  priceText: { fontSize: 14, fontWeight: '800', color: '#111827' },
+  cardFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  footerLabel: {
+    fontSize: 9,
+    color: '#9CA3AF',
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    marginBottom: 2,
+  },
+  priceText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
 
   actionBadgeActive: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#7C3AED',
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, gap: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 12,
+    gap: 6,
   },
-  actionBadgeActiveText: { color: '#FFFFFF', fontWeight: '700', fontSize: 11 },
+  actionBadgeActiveText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
   actionBadgeComplete: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7',
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4,
-    borderWidth: 1, borderColor: '#BBF7D0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
-  actionBadgeCompleteText: { fontSize: 11, fontWeight: '800', color: '#166534' },
+  actionBadgeCompleteText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#166534',
+  },
   actionBadgePending: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7',
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4,
-    borderWidth: 1, borderColor: '#FDE68A',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
   },
-  actionBadgePendingText: { fontSize: 10, fontWeight: '800', color: '#92400E' },
+  actionBadgePendingText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#92400E',
+  },
 
-  detailContainer: { paddingHorizontal: 20, paddingBottom: 40, paddingTop: 10 },
-  detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  detailContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 48,
+    paddingTop: 12,
+  },
+  detailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
   backCircleBtnDetail: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#E5E7EB',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  detailHeaderTitle: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  detailHeaderTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
   fullMapBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF7ED',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, gap: 4,
-    borderWidth: 1, borderColor: '#FFE4D2',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF7ED',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
   },
-  fullMapBtnText: { fontSize: 11, color: ORANGE, fontWeight: '800' },
+  fullMapBtnText: {
+    fontSize: 11,
+    color: ORANGE,
+    fontWeight: '800',
+  },
 
   // Hero Card & Stepper
   heroCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 14,
-    borderWidth: 1, borderColor: '#E5E7EB',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
   },
-  heroTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  heroTrackingLabel: { fontSize: 8, fontWeight: '900', color: '#9CA3AF', letterSpacing: 0.8 },
-  heroTrackingId: { fontSize: 17, fontWeight: '900', color: '#111827', marginTop: 2 },
-  heroStatusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 5 },
-  heroStatusText: { fontSize: 11, fontWeight: '800' },
+  heroTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  heroTrackingLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#9CA3AF',
+    letterSpacing: 0.8,
+  },
+  heroTrackingId: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#111827',
+    marginTop: 3,
+    letterSpacing: -0.4,
+  },
+  heroStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 12,
+    gap: 6,
+  },
+  heroStatusText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
 
   stepperContainer: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingTop: 8, borderTopWidth: 1, borderTopColor: '#F3F4F6',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
   },
   stepItem: { flex: 1, alignItems: 'center' },
-  stepRowIndicator: { flexDirection: 'row', alignItems: 'center', width: '100%', justifyContent: 'center' },
-  stepDot: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center', zIndex: 2 },
+  stepRowIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    justifyContent: 'center',
+  },
+  stepDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2,
+  },
   stepDotActive: { backgroundColor: ORANGE },
-  stepDotCurrent: { backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFE4D2' },
-  stepInnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#9CA3AF' },
-  stepLine: { position: 'absolute', left: '50%', right: '-50%', height: 2, backgroundColor: '#E5E7EB', zIndex: 1 },
+  stepDotCurrent: {
+    backgroundColor: ORANGE,
+    borderWidth: 3,
+    borderColor: '#FFE4D2',
+  },
+  stepInnerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#9CA3AF',
+  },
+  stepLine: {
+    position: 'absolute',
+    left: '50%',
+    right: '-50%',
+    height: 2,
+    backgroundColor: '#E5E7EB',
+    zIndex: 1,
+  },
   stepLineActive: { backgroundColor: ORANGE },
-  stepLabel: { fontSize: 9, fontWeight: '700', color: '#9CA3AF', marginTop: 6, textAlign: 'center' },
-  stepLabelActive: { color: ORANGE, fontWeight: '900' },
+  stepLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  stepLabelActive: {
+    color: ORANGE,
+    fontWeight: '900',
+  },
 
   sectionCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14, marginBottom: 12,
-    borderWidth: 1, borderColor: '#E5E7EB',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 4, elevation: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
-  sectionHeaderTitle: { fontSize: 9, fontWeight: '900', color: ORANGE, letterSpacing: 0.8 },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  sectionHeaderTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: ORANGE,
+    letterSpacing: 0.8,
+  },
   
   summaryGrid: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   summaryCol: { flex: 1, alignItems: 'center' },
@@ -1471,18 +2161,43 @@ const styles = StyleSheet.create({
   },
 
   detailActionsRow: {
-    flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 8,
+    marginBottom: 8,
   },
   editBtn: {
-    backgroundColor: ORANGE, paddingVertical: 14, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center', flex: 1,
+    backgroundColor: ORANGE,
+    paddingVertical: 16,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  editBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  editBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   deleteBtn: {
-    backgroundColor: '#EF4444', paddingVertical: 14, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center', flex: 1,
+    backgroundColor: '#EF4444',
+    paddingVertical: 16,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
   },
-  deleteBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  deleteBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
 
   fullMapContainer: { flex: 1 },
   topOverlay: {
@@ -1499,6 +2214,151 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#E5E7EB',
   },
   statusPillText: { fontSize: 11, fontWeight: '700', color: '#111827' },
+
+  headerSpacer: { width: 36, height: 36 },
+  itemsValueRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  reviewLink: { fontSize: 9, fontWeight: '800', color: ORANGE, marginTop: 2 },
+  mapTapHint: {
+    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
+  },
+  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
+
+  // Courier card
+  courierIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  courierAvatarWrap: { width: 52, height: 52 },
+  courierAvatar: {
+    width: 52, height: 52, borderRadius: 26, backgroundColor: '#111827',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  courierAvatarText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  courierVerifiedDot: {
+    position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, borderRadius: 9,
+    backgroundColor: '#16A34A', borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
+  },
+  courierName: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  courierSub: { fontSize: 10, color: '#16A34A', fontWeight: '700', marginTop: 1 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  infoChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F3F4F6',
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+  },
+  plateChip: { backgroundColor: '#FEF9C3', borderWidth: 1, borderColor: '#FDE68A' },
+  infoChipText: { fontSize: 10, fontWeight: '700', color: '#4B5563' },
+  courierActionsRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  courierMsgBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: ORANGE, paddingVertical: 11, borderRadius: 12,
+  },
+  courierMsgBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
+  courierCallBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#FFFFFF', paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB',
+  },
+  courierCallBtnText: { color: '#111827', fontWeight: '700', fontSize: 12 },
+
+  // Items modal / bottom sheets
+  sheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  bottomSheetCard: {
+    backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 20, paddingBottom: 28, alignItems: 'center',
+  },
+  sheetGrabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 12 },
+  itemRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
+  },
+  itemIndex: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#FFE4D2' },
+  itemIndexText: { fontSize: 11, fontWeight: '800', color: ORANGE },
+  itemName: { fontSize: 13, fontWeight: '800', color: '#111827' },
+  itemMeta: { fontSize: 10, color: '#6B7280', marginTop: 2, fontWeight: '600' },
+  itemNotes: { fontSize: 10, color: '#9CA3AF', marginTop: 3 },
+  cargoSummaryBox: { backgroundColor: '#F9FAFB', borderRadius: 14, borderWidth: 1, borderColor: '#F3F4F6', padding: 12, marginBottom: 6 },
+  cargoHeroPhoto: { width: '100%', height: 170, borderRadius: 12, backgroundColor: '#F3F4F6', marginBottom: 10 },
+  cargoDescText: { fontSize: 13, fontWeight: '700', color: '#111827', lineHeight: 18 },
+  fragileTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
+    backgroundColor: '#FEE2E2', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginTop: 8,
+  },
+  fragileTagText: { fontSize: 10, fontWeight: '700', color: '#EF4444' },
+  photoStrip: { gap: 8, paddingTop: 8 },
+  itemPhoto: { width: 96, height: 96, borderRadius: 12, backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
+  itemPhotoFallback: { justifyContent: 'center', alignItems: 'center' },
+  noPhotoRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
+  noPhotoText: { fontSize: 10, color: '#9CA3AF', fontWeight: '600' },
+  photoPreviewOverlay: {
+    ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  photoPreviewImage: { width: '92%', height: '70%' },
+  photoPreviewClose: {
+    position: 'absolute', top: 50, right: 20, width: 38, height: 38, borderRadius: 19,
+    backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
+  },
+  itemQtyBadge: { backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  itemQtyText: { fontSize: 12, fontWeight: '800', color: '#111827' },
+
+  // Full map info sheet
+  mapInfoSheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.12, shadowRadius: 16, elevation: 14,
+  },
+  etaPayRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  etaPayBox: { flex: 1, backgroundColor: '#FFF7ED', borderRadius: 12, borderWidth: 1, borderColor: '#FFE4D2', padding: 12 },
+  etaPayLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
+  etaPayLabel: { fontSize: 8, fontWeight: '900', color: '#9A3412', letterSpacing: 0.6 },
+  etaPayValue: { fontSize: 15, fontWeight: '900', color: '#111827' },
+  mapSection: { backgroundColor: '#F9FAFB', borderRadius: 14, borderWidth: 1, borderColor: '#F3F4F6', padding: 12, marginBottom: 12 },
+  waitingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  waitingText: { flex: 1, fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  detailLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5, gap: 12 },
+  detailLineLabel: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  detailLineValue: { fontSize: 11, color: '#111827', fontWeight: '800', flexShrink: 1, textAlign: 'right' },
+  trackerPlaceholder: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F5F3FF',
+    borderRadius: 14, borderWidth: 1, borderColor: '#DDD6FE', padding: 12, marginBottom: 6,
+  },
+  trackerIconBox: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
+  trackerTitle: { fontSize: 12, fontWeight: '800', color: '#5B21B6' },
+  trackerSub: { fontSize: 10, color: '#7C3AED', marginTop: 1 },
+  soonBadge: { backgroundColor: '#7C3AED', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
+  soonBadgeText: { fontSize: 8, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.6 },
+
+  itemsSheet: {
+    backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 18, paddingTop: 10, paddingBottom: 24, maxHeight: '88%',
+  },
+  itemsSheetHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  itemsSheetTitle: { fontSize: 18, fontWeight: '900', color: '#111827', letterSpacing: -0.3 },
+  itemsSheetSub: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginTop: 2 },
+  itemsCloseBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center' },
+  itemCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 18, borderWidth: 1, borderColor: '#E5E7EB',
+    padding: 12, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
+  },
+  itemCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  itemNumberPill: { backgroundColor: '#111827', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  itemNumberText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.8 },
+  itemChipsRow: { flexDirection: 'row', gap: 6 },
+  itemChip: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  itemChipText: { fontSize: 10, fontWeight: '800' },
+  itemPhotoWrap: { borderRadius: 14, overflow: 'hidden', marginBottom: 10 },
+  itemPhotoLarge: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
+  enlargeHint: {
+    position: 'absolute', right: 8, bottom: 8, width: 26, height: 26, borderRadius: 13,
+    backgroundColor: 'rgba(17,24,39,0.7)', justifyContent: 'center', alignItems: 'center',
+  },
+  itemPhotoFailed: {
+    height: 110, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
+    justifyContent: 'center', alignItems: 'center', gap: 4, marginBottom: 10,
+  },
+  itemNoPhoto: {
+    height: 64, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: '#E5E7EB',
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, marginBottom: 10, backgroundColor: '#FAFAFA',
+  },
+  itemTitle: { fontSize: 15, fontWeight: '800', color: '#111827', lineHeight: 20 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { width: '100%', maxWidth: 320, backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center' },

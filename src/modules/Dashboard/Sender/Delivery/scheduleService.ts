@@ -3,6 +3,71 @@ import { Alert } from 'react-native';
 import { supabase } from '../../../../utils/supabase';
 import { ScheduleState } from './ScheduleContext';
 
+// Storage bucket for package photos (create it in Supabase -> Storage, mark it Public)
+const CARGO_PHOTO_BUCKET = 'cargo-photos';
+
+// Uploads a local photo to Supabase Storage and returns its public URL.
+// Already-uploaded URLs are returned unchanged; failures return null so booking is not blocked.
+async function uploadCargoPhoto(uri: string | null | undefined): Promise<string | null> {
+  if (!uri) return null;
+  if (/^https?:\/\//i.test(uri)) return uri;
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    const folder = user?.id || 'anonymous';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
+    const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
+    // Random suffix: items are uploaded in parallel, so Date.now() alone could collide
+    const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext === 'png' ? 'png' : 'jpg'}`;
+
+    // Send the file through React Native's native FormData (reads the file itself).
+    // fetch(file://) can silently return the text "File not found", which used to get uploaded as the "photo".
+    const formData = new FormData();
+    formData.append('file', { uri, name: path.split('/').pop(), type: contentType } as any);
+    const { error } = await supabase.storage
+      .from(CARGO_PHOTO_BUCKET)
+      .upload(path, formData as any, { contentType, upsert: false });
+    if (error) throw error;
+
+    const publicUrl = supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(path).data.publicUrl;
+
+    // Make sure the public link really serves an image; if not (private bucket etc.), save a long-lived signed link
+    try {
+      const head = await fetch(publicUrl, { method: 'HEAD' });
+      const type = head.headers.get('content-type') || '';
+      const size = Number(head.headers.get('content-length') || 0);
+      if (head.ok && size > 0 && size < 500) {
+        // A real photo is never this small - the file content is wrong (e.g. an error message)
+        throw new Error(`Uploaded photo is only ${size} bytes - the picked image could not be read`);
+      }
+      if (head.ok && type.startsWith('image/')) return publicUrl;
+    } catch (checkErr: any) {
+      if (String(checkErr?.message || '').startsWith('Uploaded photo is only')) throw checkErr;
+      /* otherwise fall through to signed URL */
+    }
+
+    const { data: signed, error: signErr } = await supabase.storage
+      .from(CARGO_PHOTO_BUCKET)
+      .createSignedUrl(path, 60 * 60 * 24 * 365);
+    if (signErr || !signed?.signedUrl) throw signErr || new Error('Could not create a link for the uploaded photo');
+    return signed.signedUrl;
+  } catch (e: any) {
+    console.warn('Cargo photo upload failed:', e?.message || e, e?.statusCode ? `(status ${e.statusCode})` : '');
+    return null;
+  }
+}
+
+// Uploads every item's own photo and returns a per-item payload
+async function buildItemsPayload(items: ScheduleState['items']) {
+  return Promise.all(
+    items.map(async (i: any) => ({
+      size: i.size,
+      description: i.description,
+      fragile: !!i.fragile,
+      photo: await uploadCargoPhoto(i.photoUri),
+    }))
+  );
+}
+
 export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | 'schedule') {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
@@ -63,22 +128,32 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
   const largeQty = state.items.filter(i => i.size === 'Large').length;
   const isFragile = state.items.some(i => i.fragile);
   const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
-  const cargoPic = state.items.length > 0 ? state.items[0].photoUri : null;
+  const itemsPayload = await buildItemsPayload(state.items);
+  const cargoPic = itemsPayload.find(i => i.photo)?.photo ?? null;
 
-  const { data: cargo } = await supabase
+  const cargoBase = {
+    description: state.items.map(i => i.description).join(', '),
+    cargo_pic: cargoPic,
+    total_weight_kg: totalWeight,
+    small_box_qty: smallQty,
+    medium_box_qty: mediumQty,
+    large_box_qty: largeQty,
+    is_fragile: isFragile,
+    sender_id: dbUserId,
+  };
+
+  // items_json keeps each item's own photo/description. If the column hasn't been added yet, fall back.
+  let { data: cargo, error: cargoErr } = await supabase
     .from('cargo_profiles')
-    .insert({
-      description: state.items.map(i => i.description).join(', '),
-      cargo_pic: cargoPic,
-      total_weight_kg: totalWeight,
-      small_box_qty: smallQty,
-      medium_box_qty: mediumQty,
-      large_box_qty: largeQty,
-      is_fragile: isFragile,
-      sender_id: dbUserId,
-    })
+    .insert({ ...cargoBase, items_json: itemsPayload })
     .select()
     .single();
+  if (cargoErr) {
+    console.warn('items_json save failed, retrying without it:', cargoErr.message);
+    const retry = await supabase.from('cargo_profiles').insert(cargoBase).select().single();
+    cargo = retry.data;
+    if (retry.error) throw retry.error;
+  }
 
   // Get rate
   const { data: rate } = await supabase
@@ -95,10 +170,12 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
    *    Prefer receiver_id + receiver_phone from the picked receiver.
    *    Fall back to state.receiver's phone_number if needed.
    * ============================================================ */
-  const receiverId = state.receiver?.receiver_id ?? null;
+  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
+  const stateReceiver = (state as any).receiver;
+  const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =
-    state.receiver?.receiver_phone ||
-    state.receiver?.phone_number ||
+    stateReceiver?.receiver_phone ||
+    stateReceiver?.phone_number ||
     '';
 
   const { data: request } = await supabase
@@ -164,28 +241,36 @@ export async function updateScheduleInDB(
   const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
 
   // Use the first available photo from the items (if any)
-  const cargoPic = state.items.length > 0 ? state.items[0].photoUri : null;
+  const itemsPayload = await buildItemsPayload(state.items);
+  const cargoPic = itemsPayload.find(i => i.photo)?.photo ?? null;
 
-  await supabase
+  const cargoUpdate = {
+    description: state.items.map(i => i.description).join(', '),
+    total_weight_kg: totalWeight,
+    small_box_qty: smallQty,
+    medium_box_qty: mediumQty,
+    large_box_qty: largeQty,
+    is_fragile: isFragile,
+    cargo_pic: cargoPic,
+  };
+  const { error: cargoUpdErr } = await supabase
     .from('cargo_profiles')
-    .update({
-      description: state.items.map(i => i.description).join(', '),
-      total_weight_kg: totalWeight,
-      small_box_qty: smallQty,
-      medium_box_qty: mediumQty,
-      large_box_qty: largeQty,
-      is_fragile: isFragile,
-      cargo_pic: cargoPic,
-    })
+    .update({ ...cargoUpdate, items_json: itemsPayload })
     .eq('cargo_id', existingIds.cargoId);
+  if (cargoUpdErr) {
+    console.warn('items_json update failed, retrying without it:', cargoUpdErr.message);
+    await supabase.from('cargo_profiles').update(cargoUpdate).eq('cargo_id', existingIds.cargoId);
+  }
 
   /* ============================================================
    * ✅ FIX: Keep receiver in sync on edit.
    * ============================================================ */
-  const receiverId = state.receiver?.receiver_id ?? null;
+  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
+  const stateReceiver = (state as any).receiver;
+  const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =
-    state.receiver?.receiver_phone ||
-    state.receiver?.phone_number ||
+    stateReceiver?.receiver_phone ||
+    stateReceiver?.phone_number ||
     '';
 
   // Update request

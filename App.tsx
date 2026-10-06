@@ -83,6 +83,7 @@ export type RootStackParamList = {
   LegalPolicies: undefined;
   RegisterProvider: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
+  Profile: undefined;
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
   ScheduleCalendar: undefined;

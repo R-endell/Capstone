@@ -23,6 +23,8 @@ import { supabase } from '../../../utils/supabase';
 
 /** Brand */
 const ORANGE = '#F27024';
+const ORANGE_SOFT = '#FFF4EC';
+const ORANGE_BORDER = '#FFD9B8';
 
 /* ==================================================================== */
 /* HomeMap — Interactive HD Leaflet Map for Sender Dashboard            */
@@ -37,30 +39,47 @@ const HomeMap = ({ centerLat, centerLng }: { centerLat: number; centerLng: numbe
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .user-marker { background: #3B82F6; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; }
-          .pulse { width: 10px; height: 10px; background-color: white; border-radius: 50%; }
+          .user-marker {
+            background: #F27024;
+            border: 3px solid white;
+            border-radius: 50%;
+            width: 22px;
+            height: 22px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .pulse {
+            width: 10px;
+            height: 10px;
+            background-color: white;
+            border-radius: 50%;
+          }
         </style>
       </head>
       <body>
         <div id="map"></div>
         <script>
-          // Initialize map with HD Retina detection for crisp rendering
-          var map = L.map('map', { 
-            zoomControl: false, 
+          var map = L.map('map', {
+            zoomControl: false,
             attributionControl: false,
-            detectRetina: true 
+            detectRetina: true
           }).setView([${centerLat}, ${centerLng}], 15);
 
-          // Use high-res tile rendering parameters
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             tileSize: 256,
             zoomOffset: 0
           }).addTo(map);
 
-          // Render User's Current GPS Location Marker
-          L.marker([${centerLat}, ${centerLng}], { 
-            icon: L.divIcon({className: 'user-marker', html: '<div class="pulse"></div>', iconSize: [22, 22], iconAnchor: [11, 11]}) 
+          L.marker([${centerLat}, ${centerLng}], {
+            icon: L.divIcon({
+              className: 'user-marker',
+              html: '<div class="pulse"></div>',
+              iconSize: [22, 22],
+              iconAnchor: [11, 11]
+            })
           }).addTo(map);
         </script>
       </body>
@@ -86,7 +105,7 @@ const HomeMap = ({ centerLat, centerLng }: { centerLat: number; centerLng: numbe
 export default function HomeScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
-  
+
   // Real-time Location State (Defaults to Cebu City coordinates)
   const [userLocation, setUserLocation] = useState({ lat: 10.3157, lng: 123.8854 });
 
@@ -144,7 +163,7 @@ export default function HomeScreen() {
         let location = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
-        
+
         setUserLocation({
           lat: location.coords.latitude,
           lng: location.coords.longitude,
@@ -192,22 +211,34 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* TOP HALF: HD Interactive Map Section (Overlaps status bar completely, no orange bg) */}
+      {/* TOP HALF: HD Interactive Map */}
       <View style={styles.mapContainer}>
         <HomeMap centerLat={userLocation.lat} centerLng={userLocation.lng} />
 
-        {/* Floating Header Overlay (Positioned safely below status bar icons) */}
-        <Animated.View 
+        {/* Floating Header Overlay */}
+        <Animated.View
           style={[
-            styles.floatingHeader, 
-            { top: Math.max(insets.top + 8, Platform.OS === 'android' ? 36 : 14) }, 
-            fadeUp(headerAnim, -14)
+            styles.floatingHeader,
+            { top: Math.max(insets.top + 10, Platform.OS === 'android' ? 40 : 16) },
+            fadeUp(headerAnim, -14),
           ]}
         >
-          <View /> 
+          {/* App logo */}
+          <View style={styles.brandChip}>
+            <Image
+              source={require('../../../../assets/applogo.png')}
+              style={styles.brandLogo}
+              resizeMode="contain"
+            />
+          </View>
 
           <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
-            <TouchableOpacity style={styles.notificationIcon} onPress={handleViewNotifications} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={styles.notificationIcon}
+              onPress={handleViewNotifications}
+              activeOpacity={0.8}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
               <Ionicons name="notifications-outline" size={22} color="#111827" />
               <View style={styles.notificationBadge} />
             </TouchableOpacity>
@@ -215,34 +246,41 @@ export default function HomeScreen() {
         </Animated.View>
       </View>
 
-      {/* BOTTOM HALF: Professional Minimalist Action Sheet (Clean Neutral Background) */}
+      {/* BOTTOM HALF: Action Sheet */}
       <Animated.View style={[styles.bottomSheet, fadeUp(actionsAnim, 30)]}>
         <View style={styles.sheetDragHandle} />
-        
+
         <View style={styles.actionContainer}>
           <Text style={styles.bottomSheetTitle}>What would you like to do?</Text>
+          <Text style={styles.bottomSheetSubtitle}>
+            Choose how you want to ship your package
+          </Text>
 
-          {/* Send Package Now Card */}
+          {/* Primary: Send Package Now */}
           <TouchableOpacity
             style={[styles.actionCard, styles.actionCardPrimary]}
             onPress={handleSendPackage}
             activeOpacity={0.85}
           >
-            <View style={styles.actionIconContainer}>
+            <View style={[styles.actionIconContainer, styles.actionIconPrimary]}>
               <Image
-                source={require('../../../../assets/send-package-now.png')} 
+                source={require('../../../../assets/send-package-now.png')}
                 style={styles.actionCustomIcon}
                 resizeMode="contain"
               />
             </View>
             <View style={styles.actionTextContainer}>
               <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
-              <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
+              <Text style={styles.actionSubtitlePrimary}>
+                Instant booking & real-time tracking
+              </Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#F27024" />
+            <View style={styles.chevronPrimary}>
+              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+            </View>
           </TouchableOpacity>
 
-          {/* Schedule a Delivery Card */}
+          {/* Secondary: Schedule a Delivery */}
           <TouchableOpacity
             style={[styles.actionCard, styles.actionCardSecondary]}
             onPress={handleScheduleDelivery}
@@ -250,14 +288,16 @@ export default function HomeScreen() {
           >
             <View style={styles.actionIconContainer}>
               <Image
-                source={require('../../../../assets/schedule-delivery-calendar.png')} 
+                source={require('../../../../assets/schedule-delivery-calendar.png')}
                 style={styles.actionCustomIcon}
                 resizeMode="contain"
               />
             </View>
             <View style={styles.actionTextContainer}>
               <Text style={styles.actionTitle}>Schedule a Delivery</Text>
-              <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
+              <Text style={styles.actionSubtitle}>
+                Plan shipments for a future date
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
           </TouchableOpacity>
@@ -272,37 +312,51 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFFFF',
   },
+
+  /* ── Map ─────────────────────────────────────────────── */
   mapContainer: {
-    flex: 1, 
+    flex: 1,
     position: 'relative',
     backgroundColor: '#E5E7EB',
   },
   floatingHeader: {
     position: 'absolute',
-    left: 20,
+    left: 4,
     right: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     zIndex: 10,
   },
+  brandChip: {
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: -8,
+  },
+  brandLogo: {
+    width: 128,
+    height: 40,
+  },
   notificationIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
   },
   notificationBadge: {
     position: 'absolute',
-    top: 10,
-    right: 11,
+    top: 11,
+    right: 12,
     width: 9,
     height: 9,
     borderRadius: 4.5,
@@ -310,103 +364,123 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
   },
+
+  /* ── Bottom Sheet ────────────────────────────────────── */
   bottomSheet: {
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    paddingTop: 10,
-    paddingBottom: 36,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 10,
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 16,
     zIndex: 20,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
   },
   sheetDragHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#D1D5DB',
     alignSelf: 'center',
-    marginBottom: 18,
-  },
-  bottomSheetTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 16,
-    letterSpacing: -0.3,
+    marginBottom: 20,
   },
   actionContainer: {
     paddingHorizontal: 24,
   },
+  bottomSheetTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
+    letterSpacing: -0.4,
+    marginBottom: 4,
+  },
+  bottomSheetSubtitle: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginBottom: 20,
+    fontWeight: '400',
+  },
+
+  /* ── Action Cards ────────────────────────────────────── */
   actionCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 16,
-    paddingVertical: 16,
+    borderRadius: 18,
+    paddingVertical: 18,
     paddingHorizontal: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    backgroundColor: '#FFFFFF',
+    marginBottom: 14,
+    minHeight: 80,
   },
   actionCardPrimary: {
-    borderColor: '#F27024',
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#F27024',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
+    backgroundColor: ORANGE,
+    borderWidth: 0,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    elevation: 6,
   },
   actionCardSecondary: {
-    borderColor: '#E5E7EB',
     backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
   },
   actionIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: '#FFF7ED',
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: ORANGE_SOFT,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 14,
     borderWidth: 1,
-    borderColor: '#FFE4D2',
+    borderColor: ORANGE_BORDER,
+  },
+  actionIconPrimary: {
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderColor: 'rgba(255,255,255,0.35)',
   },
   actionCustomIcon: {
-    width: 26,
-    height: 26,
+    width: 28,
+    height: 28,
   },
   actionTextContainer: {
     flex: 1,
+    paddingRight: 8,
   },
   actionTitlePrimary: {
-    color: '#111827',
-    fontSize: 15,
+    color: '#FFFFFF',
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   actionSubtitlePrimary: {
-    color: '#6B7280',
+    color: 'rgba(255,255,255,0.88)',
     fontSize: 13,
-    marginTop: 2,
+    marginTop: 3,
     fontWeight: '400',
   },
   actionTitle: {
     color: '#111827',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: -0.2,
+    letterSpacing: -0.3,
   },
   actionSubtitle: {
     color: '#6B7280',
     fontSize: 13,
-    marginTop: 2,
+    marginTop: 3,
     fontWeight: '400',
+  },
+  chevronPrimary: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
