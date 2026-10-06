@@ -38,38 +38,38 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-  "expo-web-browser",
-  "expo-sqlite",
-  "expo-status-bar",
-  "@react-native-community/datetimepicker",
-  [
-    "expo-location",
-    {
-      "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
-    }
-  ],
-  [
-    "expo-build-properties",
-    {
-      "android": {
-        "ndkVersion": "26.1.10909125"
-      }
-    }
-  ],
-  [
-    "expo-gradle-properties",
-    {
-      "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
-      "org.gradle.parallel": "false",
-      "org.gradle.workers.max": "2",
-      "kotlin.daemon.jvmargs": "-Xmx2048m"
+      "expo-web-browser",
+      "expo-sqlite",
+      "expo-status-bar",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "ndkVersion": "26.1.10909125"
+          }
+        }
+      ],
+      [
+        "expo-gradle-properties",
+        {
+          "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
+          "org.gradle.parallel": "false",
+          "org.gradle.workers.max": "2",
+          "kotlin.daemon.jvmargs": "-Xmx2048m"
         }
       ]
     ],
     "extra": {
       "eas": {
-        "projectId": "341c2e19-38c9-4bbf-aa65-419406bc1150"
+        "projectId": "f365b88a-fd3d-4c2a-b6dd-9179e9102196"
       }
     }
   }
-} 
+}
