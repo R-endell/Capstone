@@ -1,69 +1,196 @@
-// src/modules/Dashboard/Provider/Manage/ManageVehicleScreen.tsx
+// src/modules/Dashboard/Provider/Manage/ManageRoutesScreen.tsx
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  FlatList,
-  Modal,
-  TextInput,
-  ScrollView,
-  StatusBar,
-  Alert,
-  ActivityIndicator,
-  Image,
-  Animated,
-  Easing,
-  Platform,
+  View, Text, StyleSheet, TouchableOpacity, FlatList, Modal, StatusBar,
+  Alert, ActivityIndicator, ScrollView, Platform, Animated, Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
-import * as DocumentPicker from 'expo-document-picker';
-import { File } from 'expo-file-system';
-import * as ImagePicker from 'expo-image-picker';
+import { WebView } from 'react-native-webview';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 const ORANGE = '#FA7A25';
 
-interface Vehicle {
-  vehicle_id: number;
-  vehicle_type: string;
-  plate_number: string;
-  max_volume_liters: number;
-  max_weight_kg: number;
-  cargo_length_cm: number;
-  cargo_width_cm: number;
-  cargo_height_cm: number;
-  vehicle_doc: string | null;
-  verification_status: 'Pending' | 'Verified' | 'Rejected';
-  provider_id: number;
+interface Location { location_id: number; street_address: string; barangay: string; city: string; province: string; zip_code: string; latitude: number; longitude: number; }
+interface Vehicle { vehicle_id: number; vehicle_type: string; plate_number: string; }
+interface Route {
+  route_id: number; departure_time: string; route_frequency: string; created_at: string;
+  start_location_id: number; end_location_id: number; provider_id: number; vehicle_id: number;
+  start_location?: Location; end_location?: Location; vehicle?: Vehicle;
 }
 
-const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck', 'Motorcycle'];
+/* ==================================================================== */
+/* Timezone helpers                                                      */
+/* ==================================================================== */
+const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  const hh = String(timeObj.getHours()).padStart(2, '0');
+  const mm = String(timeObj.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}:00`;
+};
 
-export default function ManageVehicleScreen() {
+const parseNaiveIsoString = (isoString: string) => {
+  if (!isoString) return new Date();
+  const parts = isoString.split(/[-T:+Z]/);
+  if (parts.length < 5) return new Date();
+
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10) - 1;
+  const d = parseInt(parts[2], 10);
+  const hh = parseInt(parts[3], 10);
+  const mm = parseInt(parts[4], 10);
+
+  return new Date(y, m, d, hh, mm);
+};
+
+/* ==================================================================== */
+/* InteractiveMap — with OSRM routing                                    */
+/* ==================================================================== */
+const InteractiveMap = ({
+  onLocationSelect,
+  startLat, startLng, endLat, endLng,
+  startName = 'Starting Point', endName = 'Destination',
+  mode = 'view',
+}: any) => {
+  const centerLat = startLat || endLat || 10.3157;
+  const centerLng = startLng || endLng || 123.8854;
+
+  const mapHtml = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
+          .marker-start { background: #3B82F6; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
+          .marker-end { background: #EF4444; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
+          .marker-temp { background: #F59E0B; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: white; z-index: 999; }
+          .popup-content { padding: 4px; }
+          .popup-content h4 { margin: 0; font-size: 13px; font-weight: bold; color: #111827; }
+          .popup-content p { margin: 2px 0 0 0; font-size: 11px; color: #6B7280; }
+          .select-instruction { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; z-index: 2000; text-align: center; white-space: nowrap; pointer-events: none; }
+        </style>
+      </head>
+      <body>
+        <div id="map"></div>
+        ${mode !== 'view' ? `<div class="select-instruction">Tap on the map to set ${mode === 'select_start' ? 'START' : 'END'} location</div>` : ''}
+        <script>
+          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${centerLat}, ${centerLng}], 13);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+          var tempMarker = null;
+
+          ${startLat && startLng ? `
+            L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${startName}</h4><p>Starting Point</p></div>');
+          ` : ''}
+          ${endLat && endLng ? `
+            L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${endName}</h4><p>Destination</p></div>');
+          ` : ''}
+
+          ${startLat && startLng && endLat && endLng ? `
+            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
+              + ${startLng} + ',' + ${startLat} + ';' 
+              + ${endLng} + ',' + ${endLat} 
+              + '?overview=full&geometries=geojson';
+
+            fetch(osrmUrl)
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                  var coords = data.routes[0].geometry.coordinates;
+                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+
+                  L.polyline(latlngs, {
+                    color: '#FA7A25',
+                    weight: 5,
+                    opacity: 0.85,
+                    lineJoin: 'round',
+                    lineCap: 'round'
+                  }).addTo(map);
+
+                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
+                } else {
+                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
+                    color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
+                  }).addTo(map);
+                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+                }
+              })
+              .catch(function() {
+                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
+                  color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
+                }).addTo(map);
+                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+              });
+          ` : ''}
+
+          ${mode !== 'view' ? `
+            map.on('click', function(e) {
+              if (tempMarker) map.removeLayer(tempMarker);
+              tempMarker = L.marker([e.latlng.lat, e.latlng.lng], { icon: L.divIcon({className: 'marker-temp', html: '?', iconSize: [20, 20], iconAnchor: [10, 10]}) })
+                .addTo(map).bindPopup('<div class="popup-content"><p>📍 Selected location</p></div>').openPopup();
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'location_select', lat: e.latlng.lat, lng: e.latlng.lng }));
+            });
+          ` : ''}
+        </script>
+      </body>
+    </html>
+  `;
+
+  return (
+    <WebView
+      originWhitelist={['*']}
+      source={{ html: mapHtml }}
+      style={{ flex: 1, backgroundColor: 'transparent' }}
+      scrollEnabled={true}
+      androidLayerType="hardware"
+      javaScriptEnabled
+      domStorageEnabled
+      useWebKit
+      onMessage={(event) => {
+        try {
+          const data = JSON.parse(event.nativeEvent.data);
+          if (data.type === 'location_select' && onLocationSelect) onLocationSelect(data.lat, data.lng);
+        } catch (error) {}
+      }}
+    />
+  );
+};
+
+const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'];
+
+export default function ManageRoutesScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
 
+  const [routes, setRoutes] = useState<Route[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
-  const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  const [modalVisible, setModalVisible] = useState(false);
+  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
 
-  const [vehicleType, setVehicleType] = useState('Sedan');
-  const [plateNumber, setPlateNumber] = useState('');
-  const [maxVolume, setMaxVolume] = useState('');
-  const [maxWeight, setMaxWeight] = useState('');
-  const [cargoLength, setCargoLength] = useState('');
-  const [cargoWidth, setCargoWidth] = useState('');
-  const [cargoHeight, setCargoHeight] = useState('');
-  const [vehicleDoc, setVehicleDoc] = useState<string | null>(null);
-  const [docFileName, setDocFileName] = useState<string | null>(null);
+  const [editingRoute, setEditingRoute] = useState<Route | null>(null);
+  const [selectedFrequency, setSelectedFrequency] = useState('Daily');
+  const [departureDate, setDepartureDate] = useState(new Date());
+  const [departureTime, setDepartureTime] = useState(new Date());
+  const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
+  const [startLocation, setStartLocation] = useState<Location | null>(null);
+  const [endLocation, setEndLocation] = useState<Location | null>(null);
+  const [mapMode, setMapMode] = useState<'view' | 'select_start' | 'select_end'>('view');
+
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const listAnim = useRef(new Animated.Value(0)).current;
@@ -81,7 +208,7 @@ export default function ManageVehicleScreen() {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(listAnim, 200),
+      animate(listAnim, 180),
     ]).start();
   }, [headerAnim, listAnim]);
 
@@ -98,220 +225,170 @@ export default function ManageVehicleScreen() {
   }, [modalVisible, modalAnim]);
 
   const fetchUserId = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return null;
-      const { data: userData, error } = await supabase
-        .from('users')
-        .select('user_id')
-        .eq('auth_id', user.id)
-        .single();
-      if (error) { console.error('Error fetching user:', error); return null; }
-      return userData?.user_id || null;
-    } catch (error) { console.error('Error fetching user ID:', error); return null; }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+    const { data } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
+    return data?.user_id || null;
   };
 
-  const fetchVehicles = async () => {
+  const fetchVehicles = async (providerId: number) => {
+    const { data } = await supabase
+      .from('vehicles')
+      .select('vehicle_id, vehicle_type, plate_number')
+      .eq('provider_id', providerId)
+      .eq('verification_status', 'Verified');
+    return data || [];
+  };
+
+  const fetchRoutes = async () => {
+    setLoading(true);
+    const id = await fetchUserId();
+    if (!id) return setLoading(false);
+    setUserId(id);
+    const { data } = await supabase
+      .from('provider_routes')
+      .select('*, start_location:start_location_id (*), end_location:end_location_id (*), vehicle:vehicle_id (*)')
+      .eq('provider_id', id)
+      .order('route_id', { ascending: false });
+    setRoutes(data || []);
+    setVehicles(await fetchVehicles(id));
+    setLoading(false);
+  };
+
+  useFocusEffect(useCallback(() => { fetchRoutes(); }, []));
+
+  const handleLocationSelect = async (lat: number, lng: number) => {
     try {
-      setLoading(true);
-      const id = await fetchUserId();
-      if (!id) { setLoading(false); return; }
-      setUserId(id);
-      const { data, error } = await supabase
-        .from('vehicles')
+      const { data: existing } = await supabase
+        .from('locations')
         .select('*')
-        .eq('provider_id', id)
-        .order('vehicle_id', { ascending: false });
-      if (error) { console.error('Error fetching vehicles:', error); Alert.alert('Error', 'Failed to load vehicles'); return; }
-      setVehicles(data || []);
-    } catch (error) { console.error('Error fetching vehicles:', error); Alert.alert('Error', 'Failed to load vehicles'); } finally { setLoading(false); }
-  };
+        .eq('latitude', lat)
+        .eq('longitude', lng)
+        .limit(1);
+      let location = existing && existing.length > 0 ? existing[0] : null;
 
-  useFocusEffect(useCallback(() => { fetchVehicles(); }, []));
+      if (!location) {
+        const { data: newLoc, error } = await supabase.from('locations').insert({
+          street_address: `Location at ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+          barangay: 'Unknown', city: 'Unknown', province: 'Unknown', zip_code: '0000',
+          latitude: lat, longitude: lng,
+        }).select('*').single();
+        if (error) throw error;
+        location = newLoc;
+      }
 
-  const pickDocument = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['image/*', 'application/pdf'],
-        copyToCacheDirectory: true,
-      });
-
-      if (result.canceled) return;
-
-      const asset = result.assets[0];
-      const uri = asset.uri;
-      const name = asset.name || 'document';
-      const mimeType = asset.mimeType || 'application/octet-stream';
-
-      await uploadDocument(uri, name, mimeType);
+      if (mapMode === 'select_start') {
+        setStartLocation(location);
+        setMapMode('view');
+        setIsMapFullscreen(false);
+      }
+      else if (mapMode === 'select_end') {
+        setEndLocation(location);
+        setMapMode('view');
+        setIsMapFullscreen(false);
+      }
     } catch (error) {
-      try {
-        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (status !== 'granted') {
-          Alert.alert('Permission Required', 'Please grant permission to access your photos.');
-          return;
-        }
-        const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'],
-          allowsEditing: true,
-          quality: 0.8,
-        });
-        if (!result.canceled && result.assets && result.assets.length > 0) {
-          const uri = result.assets[0].uri;
-          const name = 'image.jpg';
-          const mimeType = 'image/jpeg';
-          await uploadDocument(uri, name, mimeType);
-        }
-      } catch (err) {
-        console.error('Error picking document:', err);
-        Alert.alert('Error', 'Failed to pick document');
-      }
-    }
-  };
-
-  const uploadDocument = async (uri: string, fileName: string, mimeType: string) => {
-    try {
-      setUploading(true);
-
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user found');
-
-      const { data: buckets } = await supabase.storage.listBuckets();
-      const bucketExists = buckets?.some(b => b.name === 'vehicle-documents');
-      if (!bucketExists) {
-        await supabase.storage.createBucket('vehicle-documents', { public: true });
-      }
-
-      const fileExt = fileName.split('.').pop()?.toLowerCase() || 'jpg';
-      const storagePath = `vehicles/${user.id}/${Date.now()}.${fileExt}`;
-
-      const file = new File(uri);
-      const base64 = await file.base64();
-
-      const binaryString = atob(base64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const arrayBuffer = bytes.buffer;
-
-      const { error: uploadError } = await supabase.storage
-        .from('vehicle-documents')
-        .upload(storagePath, arrayBuffer, {
-          contentType: mimeType,
-          upsert: true,
-        });
-
-      if (uploadError) throw uploadError;
-
-      const { data: urlData } = supabase.storage
-        .from('vehicle-documents')
-        .getPublicUrl(storagePath);
-
-      setVehicleDoc(urlData.publicUrl);
-      setDocFileName(fileName);
-      Alert.alert('Success', 'Document uploaded successfully');
-    } catch (error: any) {
-      console.error('Upload error:', error);
-      Alert.alert('Error', error.message || 'Failed to upload document');
-    } finally {
-      setUploading(false);
+      Alert.alert('Error', 'Failed to save location.');
     }
   };
 
   const handleSubmit = async () => {
-    if (!vehicleType || !plateNumber || !maxVolume || !maxWeight ||
-        !cargoLength || !cargoWidth || !cargoHeight) {
-      Alert.alert('Required', 'Please fill in all fields');
-      return;
+    if (!startLocation || !endLocation || !selectedVehicleId || !userId) {
+      return Alert.alert('Required', 'Please fill all fields');
     }
-    if (!userId) { Alert.alert('Error', 'User not found'); return; }
+
+    const now = new Date();
+    const combinedDateTime = new Date(
+      departureDate.getFullYear(),
+      departureDate.getMonth(),
+      departureDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes()
+    );
+
+    if (combinedDateTime < now) {
+      return Alert.alert('Invalid Time', 'You cannot schedule a route in the past. Please select a valid future date and time.');
+    }
 
     setSubmitting(true);
     try {
-      const vehicleData = {
-        vehicle_type: vehicleType,
-        plate_number: plateNumber.toUpperCase(),
-        max_volume_liters: parseFloat(maxVolume),
-        max_weight_kg: parseFloat(maxWeight),
-        cargo_length_cm: parseFloat(cargoLength),
-        cargo_width_cm: parseFloat(cargoWidth),
-        cargo_height_cm: parseFloat(cargoHeight),
+      const departureValue = toNaiveIsoString(departureDate, departureTime);
+      const routeData = {
+        departure_time: departureValue,
+        route_frequency: selectedFrequency,
+        start_location_id: startLocation.location_id,
+        end_location_id: endLocation.location_id,
         provider_id: userId,
-        verification_status: 'Pending',
-        vehicle_doc: vehicleDoc,
+        vehicle_id: selectedVehicleId,
       };
 
       let error;
-      if (editingVehicle) {
-        const { error: updateError } = await supabase.from('vehicles').update(vehicleData).eq('vehicle_id', editingVehicle.vehicle_id);
+      if (editingRoute) {
+        const { error: updateError } = await supabase
+          .from('provider_routes')
+          .update(routeData)
+          .eq('route_id', editingRoute.route_id);
         error = updateError;
       } else {
-        const { error: insertError } = await supabase.from('vehicles').insert(vehicleData);
+        const { error: insertError } = await supabase.from('provider_routes').insert(routeData);
         error = insertError;
       }
+
       if (error) throw error;
 
-      Alert.alert('Success', editingVehicle ? 'Vehicle updated successfully!' : 'Vehicle added successfully!', [
-        { text: 'OK', onPress: () => { resetForm(); setModalVisible(false); fetchVehicles(); } }
-      ]);
+      Alert.alert('Success', editingRoute ? 'Route updated successfully!' : 'Route added successfully!');
+      resetForm();
+      setModalVisible(false);
+      fetchRoutes();
     } catch (error: any) {
-      console.error('Submit error:', error);
-      if (error.code === '23505') {
-        Alert.alert('Error', 'This plate number is already registered');
-      } else {
-        Alert.alert('Error', error.message || 'Failed to save vehicle');
-      }
-    } finally { setSubmitting(false); }
+      console.error(error);
+      Alert.alert('Error', editingRoute ? 'Failed to update route' : 'Failed to save route');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const handleDelete = (vehicle: Vehicle) => {
-    Alert.alert('Delete Vehicle', `Are you sure you want to delete ${vehicle.vehicle_type} (${vehicle.plate_number})?`, [
+  const handleDelete = (route: Route) => {
+    Alert.alert('Delete Route', 'Are you sure you want to delete this route?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive', onPress: async () => {
-          try {
-            const { error } = await supabase.from('vehicles').delete().eq('vehicle_id', vehicle.vehicle_id);
-            if (error) throw error;
-            setVehicles(prev => prev.filter(v => v.vehicle_id !== vehicle.vehicle_id));
-            Alert.alert('Success', 'Vehicle deleted successfully');
-          } catch (error: any) { console.error('Delete error:', error); Alert.alert('Error', error.message || 'Failed to delete vehicle'); }
+          await supabase.from('provider_routes').delete().eq('route_id', route.route_id);
+          setRoutes(prev => prev.filter(r => r.route_id !== route.route_id));
         }
-      },
+      }
     ]);
   };
 
-  const resetForm = () => {
-    setVehicleType('Sedan');
-    setPlateNumber('');
-    setMaxVolume('');
-    setMaxWeight('');
-    setCargoLength('');
-    setCargoWidth('');
-    setCargoHeight('');
-    setVehicleDoc(null);
-    setDocFileName(null);
-    setEditingVehicle(null);
-  };
-
-  const handleEdit = (vehicle: Vehicle) => {
-    setEditingVehicle(vehicle);
-    setVehicleType(vehicle.vehicle_type);
-    setPlateNumber(vehicle.plate_number);
-    setMaxVolume(vehicle.max_volume_liters.toString());
-    setMaxWeight(vehicle.max_weight_kg.toString());
-    setCargoLength(vehicle.cargo_length_cm.toString());
-    setCargoWidth(vehicle.cargo_width_cm.toString());
-    setCargoHeight(vehicle.cargo_height_cm.toString());
-    setVehicleDoc(vehicle.vehicle_doc);
-    if (vehicle.vehicle_doc) {
-      const parts = vehicle.vehicle_doc.split('/');
-      setDocFileName(parts[parts.length - 1] || 'document');
-    }
+  const handleEdit = (route: Route) => {
+    setEditingRoute(route);
+    const dt = parseNaiveIsoString(route.departure_time);
+    setDepartureDate(dt);
+    setDepartureTime(dt);
+    setSelectedFrequency(route.route_frequency || 'Daily');
+    setSelectedVehicleId(route.vehicle_id || null);
+    setStartLocation(route.start_location || null);
+    setEndLocation(route.end_location || null);
+    setMapMode('view');
     setModalVisible(true);
   };
 
-  const handleAdd = () => { resetForm(); setModalVisible(true); };
+  const handleAdd = () => {
+    resetForm();
+    setModalVisible(true);
+  };
+
+  const resetForm = () => {
+    setSelectedFrequency('Daily');
+    setDepartureDate(new Date());
+    setDepartureTime(new Date());
+    setSelectedVehicleId(null);
+    setStartLocation(null);
+    setEndLocation(null);
+    setMapMode('view');
+    setEditingRoute(null);
+    setIsMapFullscreen(false);
+  };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -325,81 +402,83 @@ export default function ManageVehicleScreen() {
 
   const modalScale = modalAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.95, 1],
+    outputRange: [0.97, 1],
   });
 
-  const renderVehicleItem = ({ item }: { item: Vehicle }) => {
-    const isVerified = item.verification_status === 'Verified';
-    const isPending = item.verification_status === 'Pending';
-    const isRejected = item.verification_status === 'Rejected';
+  const renderRouteCard = ({ item }: { item: Route }) => {
+    const dt = parseNaiveIsoString(item.departure_time);
 
-    const statusBg = isVerified ? '#DCFCE7' : isPending ? '#FEF3C7' : '#FEE2E2';
-    const statusColor = isVerified ? '#166534' : isPending ? '#D97706' : '#991B1B';
-    const statusIcon: any = isVerified ? 'checkmark-circle' : isPending ? 'time' : 'close-circle';
-    const accentColor = isVerified ? '#22C55E' : isPending ? '#F59E0B' : '#EF4444';
+    const freqColor =
+      item.route_frequency === 'Daily' ? { bg: '#DBEAFE', fg: '#2563EB' } :
+      item.route_frequency === 'Weekly' ? { bg: '#EDE9FE', fg: '#7C3AED' } :
+      item.route_frequency === 'One-time' ? { bg: '#FEF3C7', fg: '#D97706' } :
+      { bg: '#F3F4F6', fg: '#6B7280' };
 
     return (
-      <View style={styles.vehicleCard}>
-        <View style={[styles.cardAccent, { backgroundColor: accentColor }]} />
-
+      <View style={styles.routeCard}>
+        <View style={[styles.cardAccent, { backgroundColor: freqColor.fg }]} />
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
-            <View style={styles.vehicleIconBox}>
-              <Ionicons name="car-sport" size={22} color={ORANGE} />
+            <View style={styles.routeIconBox}>
+              <Ionicons name="map-outline" size={20} color={ORANGE} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.vehicleBrand} numberOfLines={1}>{item.vehicle_type}</Text>
-              <View style={styles.plateRow}>
-                <Ionicons name="pricetag-outline" size={11} color="#6B7280" />
-                <Text style={styles.vehiclePlate}>{item.plate_number}</Text>
-              </View>
+              <Text style={styles.routeDate}>
+                {dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+              </Text>
+              <Text style={styles.routeTime}>
+                {dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
             </View>
           </View>
-
-          <View style={[styles.statusBadge, { backgroundColor: statusBg }]}>
-            <Ionicons name={statusIcon} size={11} color={statusColor} />
-            <Text style={[styles.statusText, { color: statusColor }]}>
-              {item.verification_status}
+          <View style={[styles.frequencyBadge, { backgroundColor: freqColor.bg }]}>
+            <Text style={[styles.frequencyText, { color: freqColor.fg }]}>
+              {item.route_frequency}
             </Text>
           </View>
         </View>
 
-        <View style={styles.specsRow}>
-          <View style={styles.specItem}>
-            <Ionicons name="water-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>{item.max_volume_liters}</Text>
-            <Text style={styles.specLabel}>Liters</Text>
+        <View style={styles.timeline}>
+          <View style={styles.timelineItem}>
+            <View style={styles.timelineIconWrapper}>
+              <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
+              <View style={styles.timelineLine} />
+            </View>
+            <View style={styles.timelineText}>
+              <Text style={styles.timelineLabel}>PICKUP</Text>
+              <Text style={styles.timelineAddress} numberOfLines={2}>
+                {item.start_location?.street_address || 'N/A'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.specDivider} />
-          <View style={styles.specItem}>
-            <Ionicons name="barbell-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>{item.max_weight_kg}</Text>
-            <Text style={styles.specLabel}>kg</Text>
-          </View>
-          <View style={styles.specDivider} />
-          <View style={styles.specItem}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>
-              {item.cargo_length_cm}×{item.cargo_width_cm}×{item.cargo_height_cm}
-            </Text>
-            <Text style={styles.specLabel}>cm</Text>
+          <View style={styles.timelineItem}>
+            <View style={styles.timelineIconWrapper}>
+              <Ionicons name="location" size={16} color="#E11D48" />
+            </View>
+            <View style={styles.timelineText}>
+              <Text style={[styles.timelineLabel, { color: '#E11D48' }]}>DROPOFF</Text>
+              <Text style={styles.timelineAddress} numberOfLines={2}>
+                {item.end_location?.street_address || 'N/A'}
+              </Text>
+            </View>
           </View>
         </View>
+
+        {item.vehicle && (
+          <View style={styles.vehicleRow}>
+            <Ionicons name="car-sport-outline" size={14} color="#6B7280" />
+            <Text style={styles.vehicleText} numberOfLines={1}>
+              {item.vehicle.vehicle_type} · {item.vehicle.plate_number}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.cardFooter}>
-          <TouchableOpacity
-            style={styles.editBtn}
-            onPress={() => handleEdit(item)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)}>
             <Ionicons name="create-outline" size={14} color={ORANGE} />
             <Text style={styles.editBtnText}>Edit</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.deleteBtn}
-            onPress={() => handleDelete(item)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)}>
             <Ionicons name="trash-outline" size={14} color="#EF4444" />
             <Text style={styles.deleteBtnText}>Delete</Text>
           </TouchableOpacity>
@@ -410,69 +489,85 @@ export default function ManageVehicleScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      <Animated.View
-        style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}
-      >
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backBtn}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSubtitle}>
-              {vehicles.length} {vehicles.length === 1 ? 'vehicle' : 'vehicles'}
-            </Text>
-            <Text style={styles.headerTitle}>Manage Vehicles</Text>
-          </View>
-          <TouchableOpacity
-            style={styles.headerAddBtn}
-            onPress={handleAdd}
-            activeOpacity={0.9}
-          >
-            <Ionicons name="add" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
+      {/* Compact White Header */}
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="arrow-back" size={22} color="#111827" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Manage Routes</Text>
+        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.85}>
+          <Ionicons name="add" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
 
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={ORANGE} />
-          <Text style={styles.loadingText}>Loading vehicles...</Text>
+          <Text style={styles.loadingText}>Loading routes...</Text>
         </View>
-      ) : vehicles.length === 0 ? (
+      ) : routes.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
           <View style={styles.emptyIconCircle}>
-            <Ionicons name="car-outline" size={40} color={ORANGE} />
+            <Ionicons name="map-outline" size={40} color={ORANGE} />
           </View>
-          <Text style={styles.emptyTitle}>No vehicles yet</Text>
+          <Text style={styles.emptyTitle}>No routes yet</Text>
           <Text style={styles.emptySubtitle}>
-            Add your first vehicle to start accepting deliveries
+            Add a travel route so you can be matched with packages on your way.
           </Text>
-          <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
+          <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd}>
             <Ionicons name="add-circle" size={18} color="#FFFFFF" />
-            <Text style={styles.emptyAddBtnText}>Add Vehicle</Text>
+            <Text style={styles.emptyAddBtnText}>Add Route</Text>
           </TouchableOpacity>
         </Animated.View>
       ) : (
         <Animated.View style={{ flex: 1, opacity: listAnim }}>
           <FlatList
-            data={vehicles}
-            keyExtractor={(item) => item.vehicle_id.toString()}
-            renderItem={renderVehicleItem}
+            data={routes}
+            keyExtractor={(i) => i.route_id.toString()}
+            renderItem={renderRouteCard}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
             refreshing={loading}
-            onRefresh={fetchVehicles}
+            onRefresh={fetchRoutes}
             ListFooterComponent={<View style={{ height: 40 }} />}
           />
         </Animated.View>
       )}
 
+      {isMapFullscreen && (
+        <Modal animationType="fade" transparent={false} visible={isMapFullscreen} onRequestClose={() => setIsMapFullscreen(false)}>
+          <View style={{ flex: 1, backgroundColor: '#000' }}>
+            <InteractiveMap
+              onLocationSelect={handleLocationSelect}
+              startLat={startLocation?.latitude}
+              startLng={startLocation?.longitude}
+              endLat={endLocation?.latitude}
+              endLng={endLocation?.longitude}
+              mode={mapMode}
+            />
+            <View style={[styles.fullscreenMapHeader, { paddingTop: insets.top }]}>
+              <TouchableOpacity style={styles.fullscreenCloseBtn} onPress={() => setIsMapFullscreen(false)}>
+                <Ionicons name="close" size={28} color="#000" />
+              </TouchableOpacity>
+              <View style={styles.fullscreenInstructionBox}>
+                <Text style={styles.fullscreenInstructionText}>
+                  {mapMode === 'select_start' ? 'Tap map to set Starting Point' : mapMode === 'select_end' ? 'Tap map to set Destination' : 'Map View'}
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* ============================================================ */}
+      {/* Route Modal — Sender-style form                                */}
+      {/* ============================================================ */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -480,22 +575,14 @@ export default function ManageVehicleScreen() {
         onRequestClose={() => { resetForm(); setModalVisible(false); }}
       >
         <View style={styles.modalOverlay}>
-          <Animated.View
-            style={[
-              styles.modalContainer,
-              { transform: [{ scale: modalScale }], opacity: modalAnim },
-            ]}
-          >
+          <Animated.View style={[styles.modalContainer, { transform: [{ scale: modalScale }], opacity: modalAnim }]}>
+
             <View style={styles.modalHeader}>
-              <TouchableOpacity
-                onPress={() => { resetForm(); setModalVisible(false); }}
-                style={styles.modalCloseBtn}
-                activeOpacity={0.85}
-              >
+              <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color="#111827" />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
-                {editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}
+                {editingRoute ? 'Edit Route' : 'Add Route'}
               </Text>
               <View style={{ width: 40 }} />
             </View>
@@ -504,166 +591,161 @@ export default function ManageVehicleScreen() {
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.modalScrollContent}
             >
-              <View style={styles.formSection}>
-                <Text style={styles.sectionLabel}>Vehicle Type</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeGridScroll}>
-                  {VEHICLE_TYPES.map((type) => (
-                    <TouchableOpacity
-                      key={type}
-                      style={[styles.typeBtn, vehicleType === type && styles.typeBtnActive]}
-                      onPress={() => setVehicleType(type)}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={[styles.typeBtnText, vehicleType === type && styles.typeBtnTextActive]}>
-                        {type}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-
-              <View style={styles.formField}>
-                <Text style={styles.inputLabel}>Plate Number</Text>
-                <View style={styles.inputWrapper}>
-                  <Ionicons name="pricetag-outline" size={16} color="#9CA3AF" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.textInput}
-                    value={plateNumber}
-                    onChangeText={setPlateNumber}
-                    placeholder="ABC 1234"
-                    placeholderTextColor="#9CA3AF"
-                    autoCapitalize="characters"
+              <TouchableOpacity style={styles.modalMapContainer} onPress={() => setIsMapFullscreen(true)} activeOpacity={0.9}>
+                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                  <InteractiveMap
+                    onLocationSelect={handleLocationSelect}
+                    startLat={startLocation?.latitude}
+                    startLng={startLocation?.longitude}
+                    endLat={endLocation?.latitude}
+                    endLng={endLocation?.longitude}
+                    mode={mapMode}
                   />
                 </View>
-              </View>
+                <View style={styles.mapExpandOverlay}>
+                  <Ionicons name="expand" size={20} color="#FFF" />
+                  <Text style={styles.mapExpandText}>Tap to Expand Map</Text>
+                </View>
+              </TouchableOpacity>
 
-              <View style={styles.rowInputs}>
-                <View style={styles.halfField}>
-                  <Text style={styles.inputLabel}>Max Volume (L)</Text>
-                  <View style={styles.inputWrapper}>
-                    <Ionicons name="water-outline" size={16} color="#9CA3AF" style={styles.inputIcon} />
-                    <TextInput
-                      style={styles.textInput}
-                      value={maxVolume}
-                      onChangeText={setMaxVolume}
-                      placeholder="500"
-                      placeholderTextColor="#9CA3AF"
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-                <View style={styles.halfField}>
-                  <Text style={styles.inputLabel}>Max Weight (kg)</Text>
-                  <View style={styles.inputWrapper}>
-                    <Ionicons name="barbell-outline" size={16} color="#9CA3AF" style={styles.inputIcon} />
-                    <TextInput
-                      style={styles.textInput}
-                      value={maxWeight}
-                      onChangeText={setMaxWeight}
-                      placeholder="1000"
-                      placeholderTextColor="#9CA3AF"
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-              </View>
-
-              <Text style={styles.sectionLabel}>Cargo Dimensions (cm)</Text>
-              <View style={styles.rowInputs}>
-                <View style={styles.thirdField}>
-                  <Text style={styles.inputLabelSmall}>Length</Text>
-                  <TextInput
-                    style={styles.textInputCompact}
-                    value={cargoLength}
-                    onChangeText={setCargoLength}
-                    placeholder="200"
-                    placeholderTextColor="#9CA3AF"
-                    keyboardType="numeric"
-                  />
-                </View>
-                <View style={styles.thirdField}>
-                  <Text style={styles.inputLabelSmall}>Width</Text>
-                  <TextInput
-                    style={styles.textInputCompact}
-                    value={cargoWidth}
-                    onChangeText={setCargoWidth}
-                    placeholder="150"
-                    placeholderTextColor="#9CA3AF"
-                    keyboardType="numeric"
-                  />
-                </View>
-                <View style={styles.thirdField}>
-                  <Text style={styles.inputLabelSmall}>Height</Text>
-                  <TextInput
-                    style={styles.textInputCompact}
-                    value={cargoHeight}
-                    onChangeText={setCargoHeight}
-                    placeholder="100"
-                    placeholderTextColor="#9CA3AF"
-                    keyboardType="numeric"
-                  />
-                </View>
-              </View>
-
-              <View style={styles.formField}>
-                <Text style={styles.inputLabel}>OR/CR Document (Optional)</Text>
+              <View style={styles.locationSelectorsRow}>
                 <TouchableOpacity
-                  style={[styles.uploadBox, vehicleDoc && styles.uploadBoxFilled]}
-                  onPress={pickDocument}
-                  disabled={uploading}
-                  activeOpacity={0.85}
+                  style={[styles.locationSelectorBtn, startLocation && styles.locationSelected]}
+                  onPress={() => { setMapMode('select_start'); setIsMapFullscreen(true); }}
                 >
-                  {uploading ? (
-                    <View style={styles.uploadingContainer}>
-                      <ActivityIndicator size="large" color={ORANGE} />
-                      <Text style={styles.uploadingText}>Uploading...</Text>
-                    </View>
-                  ) : vehicleDoc ? (
-                    <View style={styles.uploadedContainer}>
-                      {vehicleDoc.endsWith('.pdf') ? (
-                        <View style={styles.docIconBox}>
-                          <Ionicons name="document-text" size={32} color={ORANGE} />
-                        </View>
-                      ) : (
-                        <Image source={{ uri: vehicleDoc }} style={styles.uploadedImage} />
-                      )}
-                      <Text style={styles.uploadedText} numberOfLines={1}>
-                        {docFileName || 'Document uploaded'}
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.removeDocBtn}
-                        onPress={() => { setVehicleDoc(null); setDocFileName(null); }}
-                      >
-                        <Ionicons name="trash-outline" size={14} color="#EF4444" />
-                        <Text style={styles.removeDocText}>Remove</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <>
-                      <View style={styles.uploadIconBox}>
-                        <Ionicons name="cloud-upload-outline" size={28} color={ORANGE} />
-                      </View>
-                      <Text style={styles.uploadText}>Tap to upload OR/CR</Text>
-                      <Text style={styles.uploadSubtext}>Image or PDF</Text>
-                    </>
-                  )}
+                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: '#3B82F6' }]}>
+                    <Ionicons name="radio-button-on" size={14} color={startLocation ? '#FFFFFF' : '#6B7280'} />
+                  </View>
+                  <Text style={[styles.locationSelectorText, startLocation && styles.locationSelectorTextSelected]}>
+                    {startLocation ? 'Start Set' : 'Set Start'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.locationSelectorBtn, endLocation && styles.locationSelected]}
+                  onPress={() => { setMapMode('select_end'); setIsMapFullscreen(true); }}
+                >
+                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: '#EF4444' }]}>
+                    <Ionicons name="location" size={14} color={endLocation ? '#FFFFFF' : '#6B7280'} />
+                  </View>
+                  <Text style={[styles.locationSelectorText, endLocation && styles.locationSelectorTextSelected]}>
+                    {endLocation ? 'End Set' : 'Set End'}
+                  </Text>
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity
-                style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
-                onPress={handleSubmit}
-                disabled={submitting}
-                activeOpacity={0.9}
-              >
+              <View style={styles.pickedLocationsDisplay}>
+                <View style={styles.pickedRow}>
+                  <View style={[styles.pickedDot, { backgroundColor: '#3B82F6' }]} />
+                  <Text style={styles.pickedLocationText} numberOfLines={1}>
+                    <Text style={{ fontWeight: '700' }}>Start: </Text>
+                    {startLocation?.street_address || 'Tap "Set Start" to pick on map'}
+                  </Text>
+                </View>
+                <View style={styles.pickedRow}>
+                  <View style={[styles.pickedDot, { backgroundColor: '#EF4444' }]} />
+                  <Text style={styles.pickedLocationText} numberOfLines={1}>
+                    <Text style={{ fontWeight: '700' }}>End: </Text>
+                    {endLocation?.street_address || 'Tap "Set End" to pick on map'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.dateTimeRow}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Date</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                    <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
+                  </TouchableOpacity>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={departureDate}
+                      mode="date"
+                      display="default"
+                      minimumDate={new Date()}
+                      onChange={(e, d) => {
+                        if (Platform.OS === 'android') setShowDatePicker(false);
+                        if (e.type === 'set' && d) {
+                          setDepartureDate(d);
+                        }
+                      }}
+                    />
+                  )}
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Time</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>
+                      {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </TouchableOpacity>
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={departureTime}
+                      mode="time"
+                      display="default"
+                      onChange={(e, t) => {
+                        if (Platform.OS === 'android') setShowTimePicker(false);
+                        if (e.type === 'set' && t) {
+                          setDepartureTime(t);
+                        }
+                      }}
+                    />
+                  )}
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Route Frequency</Text>
+                <View style={styles.frequencyOptions}>
+                  {FREQUENCIES.map((freq) => (
+                    <TouchableOpacity
+                      key={freq}
+                      style={[styles.frequencyOption, selectedFrequency === freq && styles.frequencyOptionSelected]}
+                      onPress={() => setSelectedFrequency(freq)}
+                    >
+                      <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>
+                        {freq}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Vehicle</Text>
+                {vehicles.length === 0 ? (
+                  <View style={styles.noVehiclesBox}>
+                    <Ionicons name="car-outline" size={20} color="#9CA3AF" />
+                    <Text style={styles.noVehiclesText}>No verified vehicles found</Text>
+                  </View>
+                ) : (
+                  <View style={styles.vehicleOptions}>
+                    {vehicles.map((v) => (
+                      <TouchableOpacity
+                        key={v.vehicle_id}
+                        style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
+                        onPress={() => setSelectedVehicleId(v.vehicle_id)}
+                      >
+                        <Ionicons name="car-sport" size={14} color={selectedVehicleId === v.vehicle_id ? '#FFFFFF' : '#6B7280'} />
+                        <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
+                          {v.plate_number}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              <TouchableOpacity style={[styles.submitBtn, submitting && styles.submitBtnDisabled]} onPress={handleSubmit} disabled={submitting}>
                 {submitting ? (
-                  <ActivityIndicator size="small" color="#FFF" />
+                  <ActivityIndicator color="#FFF" />
                 ) : (
                   <>
                     <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-                    <Text style={styles.submitBtnText}>
-                      {editingVehicle ? 'Update Vehicle' : 'Add Vehicle'}
-                    </Text>
+                    <Text style={styles.submitBtnText}>{editingRoute ? 'Update Route' : 'Save Route'}</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -678,278 +760,100 @@ export default function ManageVehicleScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
 
+  /* Compact white header */
   header: {
-    backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 26,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
-  },
-  headerTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
-    letterSpacing: 0.3,
-    marginBottom: 2,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.2,
-  },
-  headerAddBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-
-  listContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-  },
-  loadingText: {
-    marginTop: 4,
-    color: '#6B7280',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  emptyIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#111827',
-    marginTop: 4,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 24,
-    lineHeight: 18,
-  },
-  emptyAddBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: ORANGE,
-    paddingHorizontal: 22,
-    paddingVertical: 13,
-    borderRadius: 24,
-    gap: 8,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  emptyAddBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-
-  vehicleCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    paddingLeft: 20,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  cardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
-  },
-  cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
-  cardHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    marginRight: 8,
-  },
-  vehicleIconBox: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
-    backgroundColor: '#FFF7ED',
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  vehicleBrand: {
-    fontSize: 15,
+  headerTitle: {
+    fontSize: 17,
     fontWeight: '800',
     color: '#111827',
     letterSpacing: -0.2,
   },
-  plateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 3,
-  },
-  vehiclePlate: {
-    fontSize: 12,
-    color: '#6B7280',
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-    gap: 4,
-  },
-  statusText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-
-  specsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 14,
-    paddingVertical: 12,
-    marginBottom: 14,
-  },
-  specItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 3,
-  },
-  specValue: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
-  },
-  specLabel: {
-    fontSize: 9,
-    color: '#6B7280',
-    fontWeight: '600',
-    letterSpacing: 0.3,
-  },
-  specDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: '#E5E7EB',
-  },
-
-  cardFooter: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  editBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
+  headerAddBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: ORANGE,
     justifyContent: 'center',
-    backgroundColor: '#FFF7ED',
-    paddingVertical: 10,
-    borderRadius: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-  },
-  editBtnText: {
-    color: ORANGE,
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-  deleteBtn: {
-    flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FEF2F2',
-    paddingVertical: 10,
-    borderRadius: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-  },
-  deleteBtnText: {
-    color: '#EF4444',
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
   },
 
+  listContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
+  loadingText: { color: '#6B7280', fontSize: 13, fontWeight: '500' },
+
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginTop: 4 },
+  emptySubtitle: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 8, marginBottom: 24, lineHeight: 18 },
+  emptyAddBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ORANGE, paddingHorizontal: 22, paddingVertical: 13, borderRadius: 24, shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  emptyAddBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
+
+  routeCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, paddingLeft: 20, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: '#E5E7EB', overflow: 'hidden', position: 'relative',
+  },
+  cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
+  routeIconBox: { width: 46, height: 46, borderRadius: 14, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  routeDate: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  routeTime: { fontSize: 16, color: '#111827', fontWeight: '800', marginTop: 2, letterSpacing: -0.2 },
+  frequencyBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
+  frequencyText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4 },
+
+  timeline: { marginBottom: 12 },
+  timelineItem: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 },
+  timelineIconWrapper: { width: 22, alignItems: 'center', marginRight: 10, zIndex: 2 },
+  blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
+  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
+  timelineLine: { width: 1, height: 22, backgroundColor: '#E5E7EB', marginVertical: 2 },
+  timelineText: { flex: 1, paddingTop: 1 },
+  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 3 },
+  timelineAddress: { fontSize: 13, fontWeight: '600', color: '#111827', lineHeight: 16 },
+
+  vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F9FAFB', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 12, borderWidth: 1, borderColor: '#F3F4F6' },
+  vehicleText: { fontSize: 11, fontWeight: '600', color: '#6B7280', flex: 1 },
+
+  cardFooter: { flexDirection: 'row', gap: 10 },
+  editBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF7ED', paddingVertical: 10, borderRadius: 12, gap: 6, borderWidth: 1, borderColor: '#FFE4D2' },
+  editBtnText: { color: ORANGE, fontSize: 13, fontWeight: '700' },
+  deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', paddingVertical: 10, borderRadius: 12, gap: 6, borderWidth: 1, borderColor: '#FECACA' },
+  deleteBtnText: { color: '#EF4444', fontSize: 13, fontWeight: '700' },
+
+  fullscreenMapHeader: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', paddingHorizontal: 20, paddingTop: 20, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.9)' },
+  fullscreenCloseBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4 },
+  fullscreenInstructionBox: { flex: 1, marginLeft: 16, backgroundColor: '#FFF', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4 },
+  fullscreenInstructionText: { fontWeight: '700', color: '#111827', textAlign: 'center' },
+
+  /* ---------------- Modal (Sender-style) ---------------- */
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
@@ -958,9 +862,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     paddingTop: 8,
     maxHeight: '94%',
+    flex: 1,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.15,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
     shadowRadius: 20,
     elevation: 12,
   },
@@ -993,27 +898,101 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
 
-  formSection: { marginBottom: 20 },
-  sectionLabel: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 10,
-    letterSpacing: 0.2,
+  modalMapContainer: {
+    height: 180,
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  typeGridScroll: {
-    paddingRight: 20,
-    gap: 8,
-  },
-  typeBtn: {
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 9,
-    paddingHorizontal: 16,
+  mapExpandOverlay: {
+    position: 'absolute',
+    backgroundColor: 'rgba(17,24,39,0.7)',
     borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  mapExpandText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
+
+  locationSelectorsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  locationSelectorBtn: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
     borderWidth: 1.5,
     borderColor: '#E5E7EB',
   },
-  typeBtnActive: {
+  locationSelected: { backgroundColor: '#F0F9FF', borderColor: '#3B82F6' },
+  locSelectorIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  locationSelectorText: { fontWeight: '700', color: '#6B7280', fontSize: 13 },
+  locationSelectorTextSelected: { color: '#111827' },
+
+  pickedLocationsDisplay: {
+    marginBottom: 20,
+    padding: 14,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  pickedRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pickedDot: { width: 8, height: 8, borderRadius: 4 },
+  pickedLocationText: { flex: 1, fontSize: 12, color: '#4B5563', fontWeight: '500' },
+
+  dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
+  inputGroup: { flex: 1 },
+  inputLabel: {
+    marginBottom: 8,
+    fontWeight: '700',
+    color: '#374151',
+    fontSize: 12,
+    letterSpacing: 0.2,
+  },
+  dateTimeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  dateTimeValue: { fontSize: 13, color: '#111827', fontWeight: '600' },
+
+  formGroup: { marginBottom: 20 },
+  frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  frequencyOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+  },
+  frequencyOptionSelected: {
     backgroundColor: ORANGE,
     borderColor: ORANGE,
     shadowColor: ORANGE,
@@ -1022,150 +1001,44 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 3,
   },
-  typeBtnText: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '700',
-  },
-  typeBtnTextActive: { color: '#FFFFFF' },
+  frequencyOptionText: { fontSize: 13, color: '#6B7280', fontWeight: '700' },
+  frequencyOptionTextSelected: { color: '#FFFFFF' },
 
-  formField: { marginBottom: 18 },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#374151',
-    marginBottom: 8,
-    letterSpacing: 0.2,
-  },
-  inputLabelSmall: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#6B7280',
-    marginBottom: 6,
-    letterSpacing: 0.2,
-  },
-  inputWrapper: {
+  vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  vehicleOption: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
     backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 22,
     borderWidth: 1.5,
     borderColor: '#E5E7EB',
-    borderRadius: 14,
   },
-  inputIcon: {
-    paddingLeft: 14,
-    paddingRight: 4,
+  vehicleOptionActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  textInput: {
-    flex: 1,
-    paddingVertical: 13,
-    paddingHorizontal: 10,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '600',
-  },
-  textInputCompact: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-
-  rowInputs: {
+  vehicleOptionText: { fontSize: 13, color: '#6B7280', fontWeight: '700' },
+  vehicleOptionTextActive: { color: '#FFFFFF' },
+  noVehiclesBox: {
     flexDirection: 'row',
-    gap: 10,
-    marginBottom: 18,
-  },
-  halfField: { flex: 1 },
-  thirdField: { flex: 1 },
-
-  uploadBox: {
-    borderWidth: 2,
-    borderColor: '#E5E7EB',
-    borderStyle: 'dashed',
-    borderRadius: 16,
-    paddingVertical: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 130,
-    backgroundColor: '#FAFAFA',
-  },
-  uploadBoxFilled: {
-    borderStyle: 'solid',
-    borderColor: '#FFE4D2',
-    backgroundColor: '#FFF7ED',
-  },
-  uploadIconBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  uploadText: {
-    fontSize: 13,
-    color: '#111827',
-    fontWeight: '700',
-    marginTop: 8,
-  },
-  uploadSubtext: {
-    fontSize: 11,
-    color: '#9CA3AF',
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  uploadingContainer: { alignItems: 'center', gap: 10 },
-  uploadingText: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '600',
-  },
-  uploadedContainer: {
     alignItems: 'center',
     gap: 8,
-  },
-  docIconBox: {
-    width: 56,
-    height: 56,
+    backgroundColor: '#F9FAFB',
+    padding: 14,
     borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderStyle: 'dashed',
   },
-  uploadedImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 12,
-  },
-  uploadedText: {
-    fontSize: 12,
-    color: '#111827',
-    fontWeight: '700',
-    maxWidth: 220,
-  },
-  removeDocBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    backgroundColor: '#FEF2F2',
-  },
-  removeDocText: {
-    color: '#EF4444',
-    fontSize: 12,
-    fontWeight: '700',
-  },
+  noVehiclesText: { fontSize: 13, color: '#9CA3AF', fontWeight: '600' },
 
   submitBtn: {
     flexDirection: 'row',
@@ -1174,7 +1047,7 @@ const styles = StyleSheet.create({
     backgroundColor: ORANGE,
     paddingVertical: 16,
     borderRadius: 16,
-    marginTop: 12,
+    marginTop: 8,
     gap: 8,
     shadowColor: ORANGE,
     shadowOffset: { width: 0, height: 6 },
@@ -1182,15 +1055,6 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 5,
   },
-  submitBtnDisabled: {
-    backgroundColor: '#D1D5DB',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  submitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.2,
-  },
+  submitBtnDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  submitBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
 });

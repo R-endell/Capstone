@@ -150,7 +150,6 @@ export default function RegisterProviderScreen() {
     if (typeof field === 'string') return field.trim();
     if (typeof field === 'number') return String(field);
 
-    // ID Analyzer returns fields as arrays like [{value, confidence, index}]
     if (Array.isArray(field)) {
       if (field.length === 0) return null;
       return unwrapField(field[0]);
@@ -207,14 +206,12 @@ export default function RegisterProviderScreen() {
         };
       }
 
-      // Extract document type — from data.documentType (array)
       const rawDocType =
         result.data?.documentType ||
         result.documentType ||
         result.data?.document_type ||
         null;
 
-      // Extract human-readable name
       const rawDocName = result.data?.documentName || null;
 
       const docType = unwrapField(rawDocType);
@@ -261,8 +258,6 @@ export default function RegisterProviderScreen() {
       return;
     }
 
-    // ✅ WHITELIST: only accept if ID Analyzer identifies this as a Driver's License
-    // ID Analyzer codes: "D" = Driver's License, "I" = Identity Card, "P" = Passport
     const dt = (scan.documentType || '').toUpperCase();
     const dn = (scan.documentName || '').toLowerCase();
 
@@ -286,7 +281,6 @@ export default function RegisterProviderScreen() {
       return;
     }
 
-    // ✅ It's a driver's license — auto-fill fields
     const d = scan.data || {};
     const docNum = unwrapField(d.documentNumber || d.licenseNumber);
     const expiry = unwrapField(d.dateOfExpiry || d.expiryDate);
@@ -478,7 +472,6 @@ export default function RegisterProviderScreen() {
       return;
     }
 
-    // ✅ Final gate: only proceed if ID Analyzer confirmed it's a driver's license
     if (lastScanResult?.documentType || lastScanResult?.documentName) {
       const dt = (lastScanResult.documentType || '').toUpperCase();
       const dn = (lastScanResult.documentName || '').toLowerCase();
@@ -656,23 +649,20 @@ export default function RegisterProviderScreen() {
   /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      <Animated.View
-        style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}
-      >
+      {/* Compact White Header — matches Sender screens */}
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           style={styles.backBtn}
-          activeOpacity={0.85}
+          activeOpacity={0.8}
         >
-          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+          <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerSubtitle}>Become a partner</Text>
-          <Text style={styles.headerTitle}>Register as Provider</Text>
-        </View>
-      </Animated.View>
+        <Text style={styles.headerTitle}>Register as Provider</Text>
+        <View style={{ width: 40 }} />
+      </View>
 
       <ScrollView
         style={styles.content}
@@ -998,42 +988,31 @@ export default function RegisterProviderScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
 
+  /* Compact white header */
   header: {
-    backgroundColor: ORANGE,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 26,
-    gap: 12,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   backBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
-    letterSpacing: 0.3,
-    marginBottom: 2,
+    borderColor: '#E5E7EB',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#111827',
     letterSpacing: -0.2,
   },
 
@@ -1044,16 +1023,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 16,
     gap: 12,
     marginBottom: 20,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
+    borderColor: '#E5E7EB',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
     elevation: 2,
   },
   introIconBox: {
@@ -1301,11 +1280,11 @@ const styles = StyleSheet.create({
   },
   textInput: {
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#E5E7EB',
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 13,
     fontSize: 14,
     color: '#111827',
     fontWeight: '600',
@@ -1313,9 +1292,9 @@ const styles = StyleSheet.create({
 
   datePickerButton: {
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#E5E7EB',
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 14,
     flexDirection: 'row',

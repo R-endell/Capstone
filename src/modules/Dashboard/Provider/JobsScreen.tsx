@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Image, TouchableOpacity, Switch,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
-  Animated, Easing, Dimensions,
+  Animated, Easing, Dimensions, StatusBar,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -419,12 +419,30 @@ export default function JobsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-        {/* Header */}
-        <Animated.View style={[styles.header, fadeUp(headerAnim, -14)]}>
-          <View>
+      {/* TOP HALF: HD Interactive Map Section */}
+      <View style={styles.mapContainer}>
+        <RouteMap
+          key={`${isOnline ? 'online' : 'offline'}-${activeRoute?.route_id ?? 'none'}`}
+          startLat={activeRoute?.start_location?.latitude}
+          startLng={activeRoute?.start_location?.longitude}
+          endLat={activeRoute?.end_location?.latitude}
+          endLng={activeRoute?.end_location?.longitude}
+          centerLat={10.3157}
+          centerLng={123.8854}
+        />
+
+        {/* Floating Header Overlay */}
+        <Animated.View 
+          style={[
+            styles.floatingHeader, 
+            { top: Math.max(insets.top + 8, Platform.OS === 'android' ? 36 : 14) }, 
+            fadeUp(headerAnim, -14)
+          ]}
+        >
+          <View style={styles.headerLeft}>
             <Text style={styles.headerGreeting}>{isOnline ? 'You are online' : 'You are offline'}</Text>
             <Text style={styles.headerTitle}>Jobs</Text>
           </View>
@@ -441,369 +459,388 @@ export default function JobsScreen() {
               {isOnline ? 'LIVE' : 'OFFLINE'}
             </Text>
           </View>
-
-          <Image source={require('../../../../assets/Car-Grey.png')} style={styles.vanImage} />
         </Animated.View>
+      </View>
 
-        {/* Map */}
-        <View style={styles.mapContainer}>
-          <RouteMap
-            key={`${isOnline ? 'online' : 'offline'}-${activeRoute?.route_id ?? 'none'}`}
-            startLat={activeRoute?.start_location?.latitude}
-            startLng={activeRoute?.start_location?.longitude}
-            endLat={activeRoute?.end_location?.latitude}
-            endLng={activeRoute?.end_location?.longitude}
-            centerLat={10.3157}
-            centerLng={123.8854}
-          />
+      {/* BOTTOM HALF: Professional Minimalist Action Sheet */}
+      <Animated.View style={[styles.bottomSheet, fadeUp(sheetAnim, 30)]}>
+        <View style={styles.sheetDragHandle} />
+
+        {matchedCount > 0 && isOnline && (
+          <Animated.View
+            style={[
+              styles.matchBanner,
+              { opacity: matchBannerAnim, transform: [{ translateY: bannerTranslate }] },
+            ]}
+          >
+            <View style={styles.matchBannerIcon}>
+              <Ionicons name="flash" size={16} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.matchBannerTitle}>
+                {matchedCount} {matchedCount === 1 ? 'package matches' : 'packages match'} your route!
+              </Text>
+              <Text style={styles.matchBannerSub}>
+                Head to the Task tab to review and accept.
+              </Text>
+            </View>
+          </Animated.View>
+        )}
+
+        <View style={styles.vehicleRow}>
+          <View style={styles.vehicleInfoLeft}>
+            <View style={styles.vehicleIconBox}>
+              <Ionicons name="car-sport" size={22} color={ORANGE} />
+            </View>
+            <View style={styles.vehicleTextContainer}>
+              <Text style={styles.vehicleNameText}>
+                {activeRoute?.vehicle?.vehicle_type || 'No Active Route'}
+              </Text>
+              <Text style={styles.vehiclePlateText}>
+                {activeRoute?.vehicle?.plate_number || 'Pick a route below'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.toggleContainer}>
+            <Text style={styles.toggleText}>{isOnline ? 'Online' : 'Offline'}</Text>
+            <Switch
+              trackColor={{ false: '#E5E7EB', true: '#34C759' }}
+              thumbColor={'#FFFFFF'}
+              ios_backgroundColor="#E5E7EB"
+              onValueChange={toggleOnlineStatus}
+              value={isOnline}
+            />
+          </View>
         </View>
 
-        {/* Bottom Sheet */}
-        <Animated.View style={[styles.bottomSheet, fadeUp(sheetAnim, 40)]}>
-          <View style={styles.dragHandle} />
-
-          {matchedCount > 0 && isOnline && (
-            <Animated.View
-              style={[
-                styles.matchBanner,
-                { opacity: matchBannerAnim, transform: [{ translateY: bannerTranslate }] },
-              ]}
-            >
-              <View style={styles.matchBannerIcon}>
-                <Ionicons name="flash" size={16} color="#FFFFFF" />
+        <View style={styles.dynamicContentArea}>
+          {!isOnline ? (
+            <View style={styles.offlineContainer}>
+              <View style={styles.offlineIconBox}>
+                <Ionicons name="moon-outline" size={24} color="#6B7280" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.matchBannerTitle}>
-                  {matchedCount} {matchedCount === 1 ? 'package matches' : 'packages match'} your route!
-                </Text>
-                <Text style={styles.matchBannerSub}>
-                  Head to the Task tab to review and accept.
+                <Text style={styles.offlineTextMain}>You are offline</Text>
+                <Text style={styles.offlineTextSub}>
+                  Tap the switch to go online and start matching.
                 </Text>
               </View>
-            </Animated.View>
+            </View>
+          ) : !activeRoute ? (
+            <TouchableOpacity
+              style={styles.travelEarnBtn}
+              onPress={() => setRoutePickerVisible(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.travelEarnIconBox}>
+                <Ionicons name="add" size={24} color="#FFFFFF" />
+              </View>
+              <View style={styles.travelEarnTextCol}>
+                <Text style={styles.travelEarnTitle}>Select a Route</Text>
+                <Text style={styles.travelEarnDesc}>
+                  Pick which route you're driving today to start matching.
+                </Text>
+              </View>
+              <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.activeRouteBanner}
+              onPress={() => setRoutePickerVisible(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.activeRouteIconBox}>
+                <Ionicons name="location" size={20} color="#FFFFFF" />
+              </View>
+              <View style={styles.travelEarnTextCol}>
+                <Text style={styles.activeRouteTitle} numberOfLines={1}>
+                  {activeRoute.start_location?.city || 'Start'} → {activeRoute.end_location?.city || 'End'}
+                </Text>
+                <Text style={styles.activeRouteDesc} numberOfLines={1}>
+                  {activeRoute.start_location?.street_address || ''} → {activeRoute.end_location?.street_address || ''}
+                </Text>
+                <Text style={styles.activeRouteDeparture}>
+                  Departs {parseNaiveIsoString(activeRoute.departure_time).toLocaleString([], {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </Text>
+              </View>
+              <Ionicons name="chevron-up" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
           )}
+        </View>
+      </Animated.View>
 
-          <View style={styles.vehicleRow}>
-            <View style={styles.vehicleInfoLeft}>
-              <View style={styles.vehicleIconBox}>
-                <Ionicons name="car-sport" size={22} color={ORANGE} />
-              </View>
-              <View style={styles.vehicleTextContainer}>
-                <Text style={styles.vehicleNameText}>
-                  {activeRoute?.vehicle?.vehicle_type || 'No Active Route'}
-                </Text>
-                <Text style={styles.vehiclePlateText}>
-                  {activeRoute?.vehicle?.plate_number || 'Pick a route below'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.toggleContainer}>
-              <Text style={styles.toggleText}>{isOnline ? 'Online' : 'Offline'}</Text>
-              <Switch
-                trackColor={{ false: '#E5E7EB', true: '#34C759' }}
-                thumbColor={'#FFFFFF'}
-                ios_backgroundColor="#E5E7EB"
-                onValueChange={toggleOnlineStatus}
-                value={isOnline}
-              />
-            </View>
-          </View>
-
-          <View style={styles.dynamicContentArea}>
-            {!isOnline ? (
-              <View style={styles.offlineContainer}>
-                <View style={styles.offlineIconBox}>
-                  <Ionicons name="moon-outline" size={24} color="#6B7280" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.offlineTextMain}>You are offline</Text>
-                  <Text style={styles.offlineTextSub}>
-                    Tap the switch to go online and start matching.
-                  </Text>
-                </View>
-              </View>
-            ) : !activeRoute ? (
-              <TouchableOpacity
-                style={styles.travelEarnBtn}
-                onPress={() => setRoutePickerVisible(true)}
-                activeOpacity={0.9}
-              >
-                <View style={styles.travelEarnIconBox}>
-                  <Ionicons name="add" size={24} color="#FFFFFF" />
-                </View>
-                <View style={styles.travelEarnTextCol}>
-                  <Text style={styles.travelEarnTitle}>Select a Route</Text>
-                  <Text style={styles.travelEarnDesc}>
-                    Pick which route you're driving today to start matching.
-                  </Text>
-                </View>
-                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+      {/* ============================================================ */}
+      {/* Route Picker Modal                                            */}
+      {/* ============================================================ */}
+      <Modal
+        visible={routePickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRoutePickerVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.routePickerSheet}>
+            <View style={styles.routePickerHandle} />
+            <View style={styles.routePickerHeader}>
+              <Text style={styles.routePickerTitle}>Select a Route</Text>
+              <TouchableOpacity onPress={() => setRoutePickerVisible(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
               </TouchableOpacity>
+            </View>
+
+            {routes.length === 0 ? (
+              <View style={styles.routePickerEmpty}>
+                <Ionicons name="map-outline" size={40} color={ORANGE} />
+                <Text style={styles.routePickerEmptyTitle}>No routes yet</Text>
+                <Text style={styles.routePickerEmptySub}>
+                  Create routes in Manage Routes, then come back here to select one.
+                </Text>
+              </View>
             ) : (
-              <TouchableOpacity
-                style={styles.activeRouteBanner}
-                onPress={() => setRoutePickerVisible(true)}
-                activeOpacity={0.9}
-              >
-                <View style={styles.activeRouteIconBox}>
-                  <Ionicons name="location" size={20} color="#FFFFFF" />
-                </View>
-                <View style={styles.travelEarnTextCol}>
-                  <Text style={styles.activeRouteTitle} numberOfLines={1}>
-                    {activeRoute.start_location?.city || 'Start'} → {activeRoute.end_location?.city || 'End'}
-                  </Text>
-                  <Text style={styles.activeRouteDesc} numberOfLines={1}>
-                    {activeRoute.start_location?.street_address || ''} → {activeRoute.end_location?.street_address || ''}
-                  </Text>
-                  <Text style={styles.activeRouteDeparture}>
-                    Departs {parseNaiveIsoString(activeRoute.departure_time).toLocaleString([], {
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-up" size={22} color="#FFFFFF" />
-              </TouchableOpacity>
+              <ScrollView showsVerticalScrollIndicator={false}>
+                {routes.map((r) => {
+                  const isSelected = activeRoute?.route_id === r.route_id;
+                  const rDate = parseNaiveIsoString(r.departure_time);
+                  return (
+                    <TouchableOpacity
+                      key={r.route_id}
+                      style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
+                      onPress={() => openConfirmSheet(r)}
+                      activeOpacity={0.85}
+                    >
+                      <View
+                        style={[
+                          styles.routeOptionDot,
+                          { backgroundColor: isSelected ? ORANGE : '#D1D5DB' },
+                        ]}
+                      />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.routeOptionTitle} numberOfLines={1}>
+                          {r.start_location?.city || 'Start'} → {r.end_location?.city || 'End'}
+                        </Text>
+                        <Text style={styles.routeOptionSub} numberOfLines={1}>
+                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
+                        </Text>
+                        <Text style={styles.routeOptionAddr} numberOfLines={1}>
+                          {r.start_location?.street_address} → {r.end_location?.street_address}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+                <View style={{ height: 30 }} />
+              </ScrollView>
             )}
           </View>
-        </Animated.View>
+        </View>
+      </Modal>
 
-        {/* ============================================================ */}
-        {/* Route Picker Modal                                            */}
-        {/* ============================================================ */}
-        <Modal
-          visible={routePickerVisible}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setRoutePickerVisible(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.routePickerSheet}>
-              <View style={styles.routePickerHandle} />
-              <View style={styles.routePickerHeader}>
-                <Text style={styles.routePickerTitle}>Select a Route</Text>
-                <TouchableOpacity onPress={() => setRoutePickerVisible(false)}>
-                  <Ionicons name="close" size={22} color="#111827" />
-                </TouchableOpacity>
-              </View>
-
-              {routes.length === 0 ? (
-                <View style={styles.routePickerEmpty}>
-                  <Ionicons name="map-outline" size={40} color={ORANGE} />
-                  <Text style={styles.routePickerEmptyTitle}>No routes yet</Text>
-                  <Text style={styles.routePickerEmptySub}>
-                    Create routes in Manage Routes, then come back here to select one.
-                  </Text>
-                </View>
-              ) : (
-                <ScrollView showsVerticalScrollIndicator={false}>
-                  {routes.map((r) => {
-                    const isSelected = activeRoute?.route_id === r.route_id;
-                    const rDate = parseNaiveIsoString(r.departure_time);
-                    return (
-                      <TouchableOpacity
-                        key={r.route_id}
-                        style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
-                        onPress={() => openConfirmSheet(r)}
-                        activeOpacity={0.85}
-                      >
-                        <View
-                          style={[
-                            styles.routeOptionDot,
-                            { backgroundColor: isSelected ? ORANGE : '#D1D5DB' },
-                          ]}
-                        />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.routeOptionTitle} numberOfLines={1}>
-                            {r.start_location?.city || 'Start'} → {r.end_location?.city || 'End'}
-                          </Text>
-                          <Text style={styles.routeOptionSub} numberOfLines={1}>
-                            {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
-                          </Text>
-                          <Text style={styles.routeOptionAddr} numberOfLines={1}>
-                            {r.start_location?.street_address} → {r.end_location?.street_address}
-                          </Text>
-                        </View>
-                        {isSelected && (
-                          <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                  <View style={{ height: 30 }} />
-                </ScrollView>
-              )}
+      {/* ============================================================ */}
+      {/* Confirm Departure Time Sheet                                  */}
+      {/* ============================================================ */}
+      <Modal
+        visible={confirmSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setConfirmSheetVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
+            <View style={styles.routePickerHandle} />
+            <View style={styles.routePickerHeader}>
+              <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+              <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
+                <Ionicons name="close" size={22} color="#111827" />
+              </TouchableOpacity>
             </View>
-          </View>
-        </Modal>
 
-        {/* ============================================================ */}
-        {/* Confirm Departure Time Sheet                                  */}
-        {/* ============================================================ */}
-        <Modal
-          visible={confirmSheetVisible}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setConfirmSheetVisible(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
-              <View style={styles.routePickerHandle} />
-              <View style={styles.routePickerHeader}>
-                <Text style={styles.routePickerTitle}>Confirm Departure</Text>
-                <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
-                  <Ionicons name="close" size={22} color="#111827" />
-                </TouchableOpacity>
-              </View>
-
-              {pendingRoute && (
-                <>
-                  <View style={styles.confirmRoutePreview}>
-                    <View style={styles.confirmRouteRow}>
-                      <View style={[styles.confirmDot, { backgroundColor: '#3B82F6' }]} />
-                      <Text style={styles.confirmRouteText} numberOfLines={1}>
-                        {pendingRoute.start_location?.street_address || 'Start'}
-                      </Text>
-                    </View>
-                    <View style={styles.confirmRouteLine} />
-                    <View style={styles.confirmRouteRow}>
-                      <View style={[styles.confirmDot, { backgroundColor: '#EF4444' }]} />
-                      <Text style={styles.confirmRouteText} numberOfLines={1}>
-                        {pendingRoute.end_location?.street_address || 'End'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.dateTimeRow}>
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>Departure Date</Text>
-                      <TouchableOpacity
-                        style={styles.dateTimeButton}
-                        onPress={() => !showDatePicker && setShowDatePicker(true)}
-                      >
-                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                        <Text style={styles.dateTimeValue}>
-                          {departureDate.toLocaleDateString()}
-                        </Text>
-                      </TouchableOpacity>
-                      {showDatePicker && (
-                        <DateTimePicker
-                          value={departureDate}
-                          mode="date"
-                          display="default"
-                          minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
-                          onChange={(e, d) => {
-                            if (Platform.OS === 'android') setShowDatePicker(false);
-                            if (e.type === 'set' && d) {
-                              const merged = new Date(d);
-                              merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
-                              setDepartureDate(merged);
-                            }
-                          }}
-                        />
-                      )}
-                    </View>
-
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>Departure Time</Text>
-                      <TouchableOpacity
-                        style={styles.dateTimeButton}
-                        onPress={() => !showTimePicker && setShowTimePicker(true)}
-                      >
-                        <Ionicons name="time-outline" size={16} color={ORANGE} />
-                        <Text style={styles.dateTimeValue}>
-                          {departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </Text>
-                      </TouchableOpacity>
-                      {showTimePicker && (
-                        <DateTimePicker
-                          value={departureDate}
-                          mode="time"
-                          display="default"
-                          onChange={(e, t) => {
-                            if (Platform.OS === 'android') setShowTimePicker(false);
-                            if (e.type === 'set' && t) {
-                              const merged = new Date(departureDate);
-                              merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
-                              setDepartureDate(merged);
-                            }
-                          }}
-                        />
-                      )}
-                    </View>
-                  </View>
-
-                  <View style={styles.infoBox}>
-                    <Ionicons name="information-circle-outline" size={16} color="#1E40AF" />
-                    <Text style={styles.infoBoxText}>
-                      The app will match requests within ±5 minutes of this departure time.
+            {pendingRoute && (
+              <>
+                <View style={styles.confirmRoutePreview}>
+                  <View style={styles.confirmRouteRow}>
+                    <View style={[styles.confirmDot, { backgroundColor: '#3B82F6' }]} />
+                    <Text style={styles.confirmRouteText} numberOfLines={1}>
+                      {pendingRoute.start_location?.street_address || 'Start'}
                     </Text>
                   </View>
+                  <View style={styles.confirmRouteLine} />
+                  <View style={styles.confirmRouteRow}>
+                    <View style={[styles.confirmDot, { backgroundColor: '#EF4444' }]} />
+                    <Text style={styles.confirmRouteText} numberOfLines={1}>
+                      {pendingRoute.end_location?.street_address || 'End'}
+                    </Text>
+                  </View>
+                </View>
 
-                  <TouchableOpacity
-                    style={styles.confirmBtn}
-                    onPress={confirmDeparture}
-                    activeOpacity={0.9}
-                  >
-                    <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                    <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
+                <View style={styles.dateTimeRow}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Departure Date</Text>
+                    <TouchableOpacity
+                      style={styles.dateTimeButton}
+                      onPress={() => !showDatePicker && setShowDatePicker(true)}
+                    >
+                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureDate.toLocaleDateString()}
+                      </Text>
+                    </TouchableOpacity>
+                    {showDatePicker && (
+                      <DateTimePicker
+                        value={departureDate}
+                        mode="date"
+                        display="default"
+                        minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
+                        onChange={(e, d) => {
+                          if (Platform.OS === 'android') setShowDatePicker(false);
+                          if (e.type === 'set' && d) {
+                            const merged = new Date(d);
+                            merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
+                            setDepartureDate(merged);
+                          }
+                        }}
+                      />
+                    )}
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>Departure Time</Text>
+                    <TouchableOpacity
+                      style={styles.dateTimeButton}
+                      onPress={() => !showTimePicker && setShowTimePicker(true)}
+                    >
+                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureDate}
+                        mode="time"
+                        display="default"
+                        onChange={(e, t) => {
+                          if (Platform.OS === 'android') setShowTimePicker(false);
+                          if (e.type === 'set' && t) {
+                            const merged = new Date(departureDate);
+                            merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
+                            setDepartureDate(merged);
+                          }
+                        }}
+                      />
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.infoBox}>
+                  <Ionicons name="information-circle-outline" size={16} color="#1E40AF" />
+                  <Text style={styles.infoBoxText}>
+                    The app will match requests within ±5 minutes of this departure time.
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.confirmBtn}
+                  onPress={confirmDeparture}
+                  activeOpacity={0.9}
+                >
+                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                  <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
-        </Modal>
+        </View>
+      </Modal>
 
-      </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: ORANGE },
-  container: { flex: 1, backgroundColor: '#E5E7EB' },
+  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF', gap: 12 },
   loadingText: { color: '#6B7280', fontSize: 13, fontWeight: '500' },
 
-  header: {
-    backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 26 : 14,
-    paddingBottom: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    overflow: 'hidden',
-    zIndex: 10,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
+  // Map container (top half, full bleed)
+  mapContainer: {
+    flex: 1,
+    position: 'relative',
+    backgroundColor: '#E5E7EB',
   },
-  headerGreeting: { color: '#FFE0C7', fontSize: 12, fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { color: '#FFFFFF', fontSize: 28, fontWeight: '800', letterSpacing: -0.4 },
+
+  // Floating header overlay
+  floatingHeader: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    zIndex: 10,
+  },
+  headerLeft: {
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  headerGreeting: { color: '#6B7280', fontSize: 11, fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { color: '#111827', fontSize: 22, fontWeight: '800', letterSpacing: -0.4 },
+
   statusPill: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7,
-    borderRadius: 20, gap: 6, borderWidth: 1, zIndex: 5,
+    borderRadius: 20, gap: 6, borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  statusPillOnline: { backgroundColor: 'rgba(52,199,89,0.9)', borderColor: 'rgba(255,255,255,0.4)' },
-  statusPillOffline: { backgroundColor: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.3)' },
+  statusPillOnline: { backgroundColor: 'rgba(52,199,89,0.95)', borderColor: 'rgba(255,255,255,0.4)' },
+  statusPillOffline: { backgroundColor: 'rgba(255,255,255,0.95)', borderColor: 'rgba(0,0,0,0.05)' },
   statusPillDot: { width: 8, height: 8, borderRadius: 4 },
   statusPillText: { fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  vanImage: { position: 'absolute', right: -20, bottom: -18, width: 160, height: 90, opacity: 0.35, zIndex: 1 },
 
-  mapContainer: { position: 'absolute', top: 100, left: 0, right: 0, bottom: 0, zIndex: 1 },
-
+  // Bottom sheet
   bottomSheet: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 5,
-    backgroundColor: '#FFFFFF', paddingTop: 10, paddingHorizontal: 20,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12, shadowRadius: 16, elevation: 12,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    paddingTop: 10,
+    paddingBottom: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 10,
+    zIndex: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    paddingHorizontal: 20,
   },
-  dragHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 14 },
+  sheetDragHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#D1D5DB',
+    alignSelf: 'center',
+    marginBottom: 18,
+  },
 
   matchBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

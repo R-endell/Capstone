@@ -88,7 +88,6 @@ export default function BookingScreen({ route, navigation }: any) {
       progressAnim.setValue(0);
       Animated.timing(progressAnim, { toValue: 1, duration: 60000, useNativeDriver: false }).start();
 
-      // Radar Sonar Waves Animation Loop
       const createRadarWave = (anim: Animated.Value, delay: number) =>
         Animated.loop(
           Animated.sequence([
@@ -157,47 +156,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-            /* ===================================================== */
-            /* ✅ CONTIGUITY: Send OTP via Edge Function             */
-            /* ===================================================== */
-            const receiverPhone =
-              receiver?.receiver_phone || receiver?.phone_number;
-            const receiverName =
-              receiver?.receiver_name ||
-              `${receiver?.first_name || ''} ${receiver?.last_name || ''}`.trim() ||
-              'Receiver';
-
-            // Normalize to E.164 for Contiguity
-            let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
-            if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-            else if (e164.startsWith('63')) e164 = '+' + e164;
-            else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
-
-            if (e164) {
-              try {
-                const { data: otpResult, error: otpError } = await supabase.functions.invoke(
-                  'contiguity-otp',
-                  {
-                    body: {
-                      action: 'send',
-                      delivery_id: delivery.delivery_id,
-                      to: e164,
-                      name: receiverName || 'PNS Delivery',
-                    },
-                  }
-                );
-
-                if (otpError) {
-                  console.error('❌ Failed to send OTP via Contiguity:', otpError);
-                } else {
-                  console.log('✅ Contiguity OTP sent:', otpResult);
-                }
-              } catch (otpErr) {
-                console.error('❌ Contiguity invoke error:', otpErr);
-              }
-            } else {
-              console.warn('No receiver phone number available for OTP');
-            }
+            // NOTE: The delivery confirmation OTP is now sent by the
+            // PROVIDER when they accept the delivery (see TaskScreen).
+            // The BookingScreen only sets UI state on match.
 
             setMatchFound(true);
             setBookingState('matched');
@@ -510,7 +471,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <View style={styles.otpInfoBanner}>
                 <Ionicons name="shield-checkmark-outline" size={14} color="#7C3AED" />
                 <Text style={styles.otpInfoBannerText}>
-                  A confirmation OTP will be sent to the receiver's phone when booking.
+                  A confirmation OTP will be sent to the receiver's phone when the provider accepts.
                 </Text>
               </View>
             )}
@@ -552,7 +513,6 @@ export default function BookingScreen({ route, navigation }: any) {
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
             <View style={styles.sheetHandle} />
 
-            {/* Receiver Mini Context Card */}
             {receiver && (
               <View style={styles.searchingReceiverMiniCard}>
                 <View style={styles.searchMiniAvatar}>
@@ -568,7 +528,6 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
             )}
 
-            {/* 🌟 RADAR SONAR SCANNER ANIMATION */}
             <View style={styles.radarContainer}>
               <Animated.View
                 style={[
@@ -639,7 +598,6 @@ export default function BookingScreen({ route, navigation }: any) {
               </Text>
             </View>
 
-            {/* 🌟 BREATHABLE CLEAN COST BADGE */}
             <View style={styles.searchCostOnlyBox}>
               <Text style={styles.searchCostLabel}>TOTAL FARE</Text>
               <Text style={styles.searchCostValue}>
@@ -736,7 +694,7 @@ export default function BookingScreen({ route, navigation }: any) {
               <View style={styles.otpSentBanner}>
                 <Ionicons name="shield-checkmark" size={16} color="#22C55E" />
                 <Text style={styles.otpSentText}>
-                  Confirmation OTP sent to receiver's phone
+                  Confirmation OTP will be sent when the provider accepts
                 </Text>
               </View>
 
