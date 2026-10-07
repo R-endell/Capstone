@@ -6,12 +6,37 @@ import { ScheduleState } from './ScheduleContext';
 // Storage bucket for package photos (create it in Supabase -> Storage, mark it Public)
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
+// expo-file-system moved its classic API to "/legacy" in newer SDKs; support both
+let FileSystem: any = null;
+try { FileSystem = require('expo-file-system/legacy'); } catch {}
+if (!FileSystem?.readAsStringAsync) {
+  try { FileSystem = require('expo-file-system'); } catch {}
+}
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function base64ToBytes(b64: string): Uint8Array {
+  const clean = b64.replace(/[^A-Za-z0-9+/]/g, '');
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const n = (B64.indexOf(clean[i]) << 18) | (B64.indexOf(clean[i + 1]) << 12) |
+      ((B64.indexOf(clean[i + 2]) & 63) << 6) | (B64.indexOf(clean[i + 3]) & 63);
+    out[o++] = (n >> 16) & 255;
+    if (i + 2 < clean.length) out[o++] = (n >> 8) & 255;
+    if (i + 3 < clean.length) out[o++] = n & 255;
+  }
+  return out.slice(0, o);
+}
+
 // Uploads a local photo to Supabase Storage and returns its public URL.
 // Already-uploaded URLs are returned unchanged; failures return null so booking is not blocked.
 async function uploadCargoPhoto(uri: string | null | undefined): Promise<string | null> {
   if (!uri) return null;
   if (/^https?:\/\//i.test(uri)) return uri;
   try {
+    if (!FileSystem?.readAsStringAsync) {
+      throw new Error('expo-file-system is not installed. Run: npx expo install expo-file-system');
+    }
     const { data: { user } } = await supabase.auth.getUser();
     const folder = user?.id || 'anonymous';
     const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
@@ -19,13 +44,16 @@ async function uploadCargoPhoto(uri: string | null | undefined): Promise<string 
     // Random suffix: items are uploaded in parallel, so Date.now() alone could collide
     const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext === 'png' ? 'png' : 'jpg'}`;
 
-    // Send the file through React Native's native FormData (reads the file itself).
-    // fetch(file://) can silently return the text "File not found", which used to get uploaded as the "photo".
-    const formData = new FormData();
-    formData.append('file', { uri, name: path.split('/').pop(), type: contentType } as any);
+    // Read the picked file as base64 and upload the raw bytes (works on Android and iOS)
+    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+    const bytes = base64ToBytes(base64);
+    if (bytes.length < 500) {
+      throw new Error(`The picked image could not be read (${bytes.length} bytes)`);
+    }
+
     const { error } = await supabase.storage
       .from(CARGO_PHOTO_BUCKET)
-      .upload(path, formData as any, { contentType, upsert: false });
+      .upload(path, bytes, { contentType, upsert: false });
     if (error) throw error;
 
     const publicUrl = supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(path).data.publicUrl;
@@ -34,16 +62,8 @@ async function uploadCargoPhoto(uri: string | null | undefined): Promise<string 
     try {
       const head = await fetch(publicUrl, { method: 'HEAD' });
       const type = head.headers.get('content-type') || '';
-      const size = Number(head.headers.get('content-length') || 0);
-      if (head.ok && size > 0 && size < 500) {
-        // A real photo is never this small - the file content is wrong (e.g. an error message)
-        throw new Error(`Uploaded photo is only ${size} bytes - the picked image could not be read`);
-      }
       if (head.ok && type.startsWith('image/')) return publicUrl;
-    } catch (checkErr: any) {
-      if (String(checkErr?.message || '').startsWith('Uploaded photo is only')) throw checkErr;
-      /* otherwise fall through to signed URL */
-    }
+    } catch { /* fall through to signed URL */ }
 
     const { data: signed, error: signErr } = await supabase.storage
       .from(CARGO_PHOTO_BUCKET)

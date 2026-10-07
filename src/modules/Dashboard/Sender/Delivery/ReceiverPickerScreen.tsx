@@ -34,11 +34,38 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
   const selectedId = route.params?.selectedReceiverId || null;
 
-  const fetchUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data } = await supabase.from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
-    return data?.user_id || null;
+  // Finds the sender's row in `users`; creates it if the account has none yet
+  // (same fallback the booking flow uses), so "No user" can't happen for a signed-in sender.
+  const fetchUser = async (): Promise<number | null> => {
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) {
+      console.warn('fetchUser: no signed-in auth user', authErr?.message);
+      return null;
+    }
+    const { data, error } = await supabase
+      .from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
+    if (error) console.warn('fetchUser: users lookup failed:', error.message);
+    if (data?.user_id) return data.user_id;
+
+    const meta = user.user_metadata || {};
+    const { data: created, error: createErr } = await supabase
+      .from('users')
+      .insert({
+        auth_id: user.id,
+        first_name: meta.first_name || 'First',
+        last_name: meta.last_name || 'Last',
+        email: user.email || '',
+        phone_number: meta.phone_number || '',
+        is_verified: false,
+        is_active: true,
+      })
+      .select('user_id')
+      .single();
+    if (createErr) {
+      console.warn('fetchUser: could not create users row:', createErr.message);
+      return null;
+    }
+    return created?.user_id ?? null;
   };
 
   const fetchReceivers = async (uid: number) => {
@@ -107,14 +134,20 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
     try {
       setSaving(true);
-      if (!userId) throw new Error('No user');
+      // Don't trust the cached state: look the account up again if it was empty on load
+      let uid = userId;
+      if (!uid) {
+        uid = await fetchUser();
+        if (uid) setUserId(uid);
+      }
+      if (!uid) throw new Error('We could not find your account. Please sign out and sign in again.');
 
       const e164Phone = toE164(newPhone.trim());
 
       const { data, error } = await supabase
         .from('receivers')
         .insert({
-          sender_id: userId,
+          sender_id: uid,
           receiver_name: newName.trim(),
           receiver_phone: e164Phone,
           receiver_email: newEmail.trim() || null,
@@ -129,7 +162,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setNewName('');
       setNewPhone('');
       setNewEmail('');
-      if (userId) fetchReceivers(userId);
+      fetchReceivers(uid);
 
       if (data) handlePick(data);
     } catch (e: any) {

@@ -70,7 +70,7 @@ const InteractiveMap = ({
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
           .marker-start { background: #3B82F6; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
           .marker-end { background: #EF4444; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
-          .marker-temp { background: #F59E0B; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: white; z-index: 999; }
+          .marker-temp { background: #FA7A25; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: white; z-index: 999; }
           .popup-content { padding: 4px; }
           .popup-content h4 { margin: 0; font-size: 13px; font-weight: bold; color: #111827; }
           .popup-content p { margin: 2px 0 0 0; font-size: 11px; color: #6B7280; }
@@ -87,19 +87,18 @@ const InteractiveMap = ({
           var tempMarker = null;
 
           ${startLat && startLng ? `
-            L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+            L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
               .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${startName}</h4><p>Starting Point</p></div>');
           ` : ''}
           ${endLat && endLng ? `
-            L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
+            L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
               .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${endName}</h4><p>Destination</p></div>');
           ` : ''}
 
           ${startLat && startLng && endLat && endLng ? `
-            // Fetch road route from OSRM directly
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
-              + ${startLng} + ',' + ${startLat} + ';' 
-              + ${endLng} + ',' + ${endLat} 
+              + ${startLng} + ',' +${startLat} + ';' 
+              + ${endLng} + ',' +${endLat} 
               + '?overview=full&geometries=geojson';
 
             fetch(osrmUrl)
@@ -110,26 +109,11 @@ const InteractiveMap = ({
                   var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
 
                   L.polyline(latlngs, {
-                    color: '#FA7A25',
-                    weight: 5,
-                    opacity: 0.85,
-                    lineJoin: 'round',
-                    lineCap: 'round'
+                    color: '#FA7A25', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round'
                   }).addTo(map);
 
                   map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
-                    color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
-                  }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
                 }
-              })
-              .catch(function() {
-                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
-                  color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
-                }).addTo(map);
-                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
               });
           ` : ''}
 
@@ -152,10 +136,8 @@ const InteractiveMap = ({
       source={{ html: mapHtml }}
       style={{ flex: 1, backgroundColor: 'transparent' }}
       scrollEnabled={true}
-      androidLayerType="hardware"
       javaScriptEnabled
       domStorageEnabled
-      useWebKit
       onMessage={(event) => {
         try {
           const data = JSON.parse(event.nativeEvent.data);
@@ -407,63 +389,53 @@ export default function ManageRoutesScreen() {
       { bg: '#F3F4F6', fg: '#6B7280' };
 
     return (
-      <View style={styles.routeCard}>
-        <View style={[styles.cardAccent, { backgroundColor: freqColor.fg }]} />
+      <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
-            <View style={styles.routeIconBox}>
-              <Ionicons name="map-outline" size={20} color={ORANGE} />
+            <View style={styles.serviceTypeBadge}>
+              <Text style={styles.serviceTypeText}>Travel Route</Text>
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.routeDate}>
-                {dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-              </Text>
-              <Text style={styles.routeTime}>
-                {dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </Text>
-            </View>
-          </View>
-          <View style={[styles.frequencyBadge, { backgroundColor: freqColor.bg }]}>
-            <Text style={[styles.frequencyText, { color: freqColor.fg }]}>
-              {item.route_frequency}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.timeline}>
-          <View style={styles.timelineItem}>
-            <View style={styles.timelineIconWrapper}>
-              <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
-              <View style={styles.timelineLine} />
-            </View>
-            <View style={styles.timelineText}>
-              <Text style={styles.timelineLabel}>PICKUP</Text>
-              <Text style={styles.timelineAddress} numberOfLines={2}>
-                {item.start_location?.street_address || 'N/A'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.timelineItem}>
-            <View style={styles.timelineIconWrapper}>
-              <Ionicons name="location" size={16} color="#E11D48" />
-            </View>
-            <View style={styles.timelineText}>
-              <Text style={[styles.timelineLabel, { color: '#E11D48' }]}>DROPOFF</Text>
-              <Text style={styles.timelineAddress} numberOfLines={2}>
-                {item.end_location?.street_address || 'N/A'}
+            <View style={[styles.statusBadge, { backgroundColor: freqColor.bg }]}>
+              <Ionicons name="repeat-outline" size={12} color={freqColor.fg} />
+              <Text style={[styles.statusBadgeText, { color: freqColor.fg }]}>
+                {item.route_frequency}
               </Text>
             </View>
           </View>
         </View>
 
-        {item.vehicle && (
-          <View style={styles.vehicleRow}>
-            <Ionicons name="car-sport-outline" size={14} color="#6B7280" />
-            <Text style={styles.vehicleText} numberOfLines={1}>
-              {item.vehicle.vehicle_type} · {item.vehicle.plate_number}
+        <View style={styles.routeBox}>
+          <View style={styles.routeRow}>
+            <View style={styles.dotOrange} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>
+              {item.start_location?.street_address || 'N/A'}
             </Text>
           </View>
-        )}
+          <View style={styles.routeConnectorLine} />
+          <View style={styles.routeRow}>
+            <View style={styles.dotDark} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>
+              {item.end_location?.street_address || 'N/A'}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.cardContextRow}>
+          <View style={styles.contextDateBox}>
+            <Ionicons name="calendar-outline" size={13} color="#6B7280" />
+            <Text style={styles.contextText}>
+              {dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} • {dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+          </View>
+          {item.vehicle && (
+            <View style={styles.contextProviderPill}>
+              <Ionicons name="car-sport" size={13} color="#16A34A" />
+              <Text style={styles.contextProviderText} numberOfLines={1}>
+                {item.vehicle.vehicle_type} · {item.vehicle.plate_number}
+              </Text>
+            </View>
+          )}
+        </View>
 
         <View style={styles.cardFooter}>
           <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)}>
@@ -481,23 +453,23 @@ export default function ManageRoutesScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSubtitle}>
-              {routes.length} {routes.length === 1 ? 'route' : 'routes'}
-            </Text>
-            <Text style={styles.headerTitle}>Manage Routes</Text>
-          </View>
-          <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd}>
-            <Ionicons name="add" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
+      <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.8}>
+          <Ionicons name="arrow-back" size={22} color="#111827" />
+        </TouchableOpacity>
+        
+        <View style={{ flex: 1, paddingLeft: 14 }}>
+          <Text style={styles.headerTitle}>Manage Routes</Text>
+          <Text style={styles.headerSubtitle}>
+            {routes.length} {routes.length === 1 ? 'route' : 'routes'}
+          </Text>
         </View>
+
+        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.8}>
+          <Ionicons name="add" size={22} color={ORANGE} />
+        </TouchableOpacity>
       </Animated.View>
 
       {loading ? (
@@ -751,17 +723,48 @@ export default function ManageRoutesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
+  
   header: {
-    backgroundColor: ORANGE, paddingHorizontal: 20, paddingBottom: 26,
-    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  backBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
-  headerSubtitle: { fontSize: 11, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
-  headerAddBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
+  backBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  headerAddBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
+  },
 
   listContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
@@ -774,34 +777,120 @@ const styles = StyleSheet.create({
   emptyAddBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ORANGE, paddingHorizontal: 22, paddingVertical: 13, borderRadius: 24, shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
   emptyAddBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
 
-  routeCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
-    borderWidth: 1, borderColor: '#F3F4F6', overflow: 'hidden', position: 'relative',
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
-  routeIconBox: { width: 46, height: 46, borderRadius: 14, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  routeDate: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
-  routeTime: { fontSize: 16, color: '#111827', fontWeight: '800', marginTop: 2, letterSpacing: -0.2 },
-  frequencyBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
-  frequencyText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4 },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    paddingRight: 8,
+  },
+  serviceTypeBadge: {
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  serviceTypeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#374151',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 4,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  routeBox: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
+  routeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
+  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
+  routeConnectorLine: {
+    width: 2,
+    height: 10,
+    backgroundColor: '#D1D5DB',
+    marginLeft: 3,
+    marginVertical: 3,
+  },
+  routeAddressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    flex: 1,
+  },
+  cardContextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 8,
+  },
+  contextDateBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  contextText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '600',
+  },
+  contextProviderPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+    flexShrink: 1,
+  },
+  contextProviderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#166534',
+  },
 
-  timeline: { marginBottom: 12 },
-  timelineItem: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 },
-  timelineIconWrapper: { width: 22, alignItems: 'center', marginRight: 10, zIndex: 2 },
-  blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
-  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
-  timelineLine: { width: 1, height: 22, backgroundColor: '#E5E7EB', marginVertical: 2 },
-  timelineText: { flex: 1, paddingTop: 1 },
-  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 3 },
-  timelineAddress: { fontSize: 13, fontWeight: '600', color: '#111827', lineHeight: 16 },
-
-  vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F9FAFB', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6, marginBottom: 12, borderWidth: 1, borderColor: '#F3F4F6' },
-  vehicleText: { fontSize: 11, fontWeight: '600', color: '#6B7280', flex: 1 },
-
-  cardFooter: { flexDirection: 'row', gap: 10 },
+  cardFooter: { flexDirection: 'row', gap: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
   editBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF7ED', paddingVertical: 10, borderRadius: 12, gap: 6, borderWidth: 1, borderColor: '#FFE4D2' },
   editBtnText: { color: ORANGE, fontSize: 13, fontWeight: '700' },
   deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FEF2F2', paddingVertical: 10, borderRadius: 12, gap: 6, borderWidth: 1, borderColor: '#FECACA' },

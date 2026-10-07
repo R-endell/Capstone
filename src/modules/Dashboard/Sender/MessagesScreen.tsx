@@ -13,7 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 
-const ORANGE = '#FF751F';
+const ORANGE = '#F27024';
 const PAGE_SIZE = 30;
 
 // Style applied to the bottom tab bar while a chat is open.
@@ -156,6 +156,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   navigationRef.current = navigation;
   const tabBarHidden = useRef(false);
 
+  const listHeaderAnim = useRef(new Animated.Value(0)).current;
+  const listAnim = useRef(new Animated.Value(0)).current;
   const detailHeaderAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
@@ -222,27 +224,34 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }, [])
   );
 
-  // Chat open animation (layout effect so there is no flash of the previous animation state)
-  useLayoutEffect(() => {
-    if (!selectedRoom) return;
+  useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
       Animated.timing(value, {
         toValue: 1,
         duration,
         delay,
-        easing: Easing.out(Easing.quad),
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
 
-    detailHeaderAnim.setValue(0);
-    detailAnim.setValue(0);
-    inputAnim.setValue(0);
-    Animated.parallel([
-      animate(detailHeaderAnim, 0),
-      animate(detailAnim, 100),
-      animate(inputAnim, 150),
-    ]).start();
-  }, [selectedRoom, detailHeaderAnim, detailAnim, inputAnim]);
+    if (!selectedRoom) {
+      listHeaderAnim.setValue(0);
+      listAnim.setValue(0);
+      Animated.parallel([
+        animate(listHeaderAnim, 0),
+        animate(listAnim, 150),
+      ]).start();
+    } else {
+      detailHeaderAnim.setValue(0);
+      detailAnim.setValue(0);
+      inputAnim.setValue(0);
+      Animated.parallel([
+        animate(detailHeaderAnim, 0),
+        animate(detailAnim, 100),
+        animate(inputAnim, 150),
+      ]).start();
+    }
+  }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
 
   const fadeUp = (value: Animated.Value, distance = 15) => ({
     opacity: value,
@@ -675,40 +684,50 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const isUnread = item.unread_count > 0;
 
     return (
-      <TouchableOpacity
-        style={[styles.inboxItem, isUnread && styles.inboxItemUnread]}
-        onPress={() => openConversation(item)}
-        activeOpacity={0.7}
-        onLongPress={() => openChatOptions(item)}
-      >
-        <View style={styles.inboxAvatarWrapper}>
-          {renderAvatar(item.other, 48)}
-          {isUnread && <View style={styles.unreadDotIndicator} />}
-        </View>
+      <View style={styles.chatRowWrapper}>
+        <TouchableOpacity
+          style={[styles.inboxItem, isUnread && styles.inboxItemUnread]}
+          onPress={() => openConversation(item)}
+          activeOpacity={0.7}
+          onLongPress={() => openChatOptions(item)}
+        >
+          <View style={styles.inboxAvatarWrapper}>
+            {renderAvatar(item.other, 48)}
+            {isUnread && <View style={styles.unreadDotIndicator} />}
+          </View>
 
-        <View style={styles.inboxInfo}>
-          <View style={styles.inboxHeaderRow}>
-            <Text style={[styles.inboxName, isUnread && styles.inboxNameUnread]} numberOfLines={1}>
-              {item.other.first_name} {item.other.last_name}
-            </Text>
-            {item.latest_sent_at && (
-              <Text style={[styles.inboxTime, isUnread && styles.inboxTimeUnread]}>
-                {formatChatTime(item.latest_sent_at)}
+          <View style={styles.inboxInfo}>
+            <View style={styles.inboxHeaderRow}>
+              <Text style={[styles.inboxName, isUnread && styles.inboxNameUnread]} numberOfLines={1}>
+                {item.other.first_name} {item.other.last_name}
               </Text>
-            )}
+              {item.latest_sent_at && (
+                <Text style={[styles.inboxTime, isUnread && styles.inboxTimeUnread]}>
+                  {formatChatTime(item.latest_sent_at)}
+                </Text>
+              )}
+            </View>
+            <View style={styles.inboxMsgRow}>
+              <Text style={[styles.inboxLastMsg, isUnread && styles.inboxLastMsgUnread]} numberOfLines={2}>
+                {item.latest_message || 'No messages yet'}
+              </Text>
+              {isUnread && (
+                <View style={styles.unreadBadgeMoveIt}>
+                  <Text style={styles.unreadBadgeMoveItText}>{item.unread_count > 99 ? '99+' : item.unread_count}</Text>
+                </View>
+              )}
+            </View>
           </View>
-          <View style={styles.inboxMsgRow}>
-            <Text style={[styles.inboxLastMsg, isUnread && styles.inboxLastMsgUnread]} numberOfLines={2}>
-              {item.latest_message || 'No messages yet'}
-            </Text>
-            {isUnread && (
-              <View style={styles.unreadBadgeMoveIt}>
-                <Text style={styles.unreadBadgeMoveItText}>{item.unread_count > 99 ? '99+' : item.unread_count}</Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.optionsButton}
+          onPress={() => openChatOptions(item)}
+          activeOpacity={0.6}
+        >
+          <Ionicons name="ellipsis-vertical" size={18} color="#9CA3AF" />
+        </TouchableOpacity>
+      </View>
     );
   };
 
@@ -754,30 +773,27 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  // Same header is used while loading and when loaded, so the titles never change size
+  // Header UI copied from the Provider Messages screen
   const renderTabHeader = () => (
     <View style={styles.listHeaderFlat}>
-      <View style={styles.headerTabRow}>
+      <View style={styles.headerTopRow}>
+        <Text style={styles.mainTitle}>Messages</Text>
+      </View>
+
+      <View style={styles.tabContainer}>
         <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'messages' && styles.tabButtonActive]}
           onPress={() => setActiveTab('messages')}
           activeOpacity={0.8}
-          style={styles.tabButton}
         >
-          <Text style={[styles.headerTabTitle, activeTab === 'messages' && styles.headerTabTitleActive]}>
-            Messages
-          </Text>
-          <View style={[styles.activeTabIndicator, activeTab !== 'messages' && { opacity: 0 }]} />
+          <Text style={[styles.tabText, activeTab === 'messages' && styles.tabTextActive]}>Messages</Text>
         </TouchableOpacity>
-
         <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'notification' && styles.tabButtonActive]}
           onPress={() => setActiveTab('notification')}
           activeOpacity={0.8}
-          style={styles.tabButton}
         >
-          <Text style={[styles.headerTabTitle, activeTab === 'notification' && styles.headerTabTitleActive]}>
-            Notification
-          </Text>
-          <View style={[styles.activeTabIndicator, activeTab !== 'notification' && { opacity: 0 }]} />
+          <Text style={[styles.tabText, activeTab === 'notification' && styles.tabTextActive]}>Notification</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -880,14 +896,38 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {renderTabHeader()}
+      <Animated.View style={fadeUp(listHeaderAnim, -10)}>
+        <View style={styles.listHeaderFlat}>
+          <View style={styles.headerTopRow}>
+            <Text style={styles.mainTitle}>Messages</Text>
+          </View>
+
+          <View style={styles.tabContainer}>
+            <TouchableOpacity
+              style={[styles.tabButton, activeTab === 'messages' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('messages')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabText, activeTab === 'messages' && styles.tabTextActive]}>Messages</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.tabButton, activeTab === 'notification' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('notification')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabText, activeTab === 'notification' && styles.tabTextActive]}>Notification</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Animated.View>
 
       {loading ? (
         <View style={styles.centerLoader}>
           <ActivityIndicator size="large" color={ORANGE} />
         </View>
       ) : activeTab === 'messages' ? (
-        conversations.length === 0 ? (
+        <Animated.View style={[styles.flex, fadeUp(listAnim, 15)]}>
+        {conversations.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
             <Text style={styles.emptyTitle}>No messages yet</Text>
@@ -904,9 +944,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
             />
           </View>
-        )
+        )}
+        </Animated.View>
       ) : (
-        /* Notification Tab Placeholder */
         <View style={styles.emptyContainer}>
           <Ionicons name="notifications-outline" size={48} color="#D1D5DB" />
           <Text style={styles.emptyTitle}>Notifications</Text>
@@ -921,46 +961,54 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   flex: { flex: 1 },
 
-  // Header Tab Row
   listHeaderFlat: {
-    backgroundColor: 'transparent',
-    flexDirection: 'row',
-    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 20,
-    paddingTop: 32,
+    paddingTop: 24,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
   },
-  headerTabRow: {
+  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 24,
+    gap: 12,
+    marginBottom: 16,
+  },
+  mainTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.5,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 16,
+    padding: 4,
   },
   tabButton: {
-    position: 'relative',
-    paddingBottom: 4,
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 12,
   },
-  headerTabTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    letterSpacing: -0.5,
-    // Fixed height to prevent layout shift when the active tab changes
-    height: 32,
-    lineHeight: 32,
+  tabButtonActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  headerTabTitleActive: {
-    color: '#111827',
+  tabText: {
+    color: '#6B7280',
+    fontSize: 13,
+    fontWeight: '600',
   },
-  activeTabIndicator: {
-    position: 'absolute',
-    bottom: -6,
-    left: 0,
-    right: 0,
-    height: 3,
-    backgroundColor: ORANGE,
-    borderRadius: 1.5,
+  tabTextActive: {
+    color: ORANGE,
+    fontWeight: '800',
   },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -969,10 +1017,18 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 16, letterSpacing: -0.2 },
   emptySubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
-  // Edge-to-edge list styling
-  listContentFlat: { paddingBottom: 24 },
+  listContentFlat: { paddingBottom: 24, paddingTop: 8 },
+
+  chatRowWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F9FAFB',
+  },
 
   inboxItem: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 14,
@@ -1020,6 +1076,7 @@ const styles = StyleSheet.create({
   inboxLastMsgUnread: { color: '#374151', fontWeight: '600' },
   unreadBadgeMoveIt: { backgroundColor: ORANGE, borderRadius: 10, paddingHorizontal: 6, height: 20, minWidth: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   unreadBadgeMoveItText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
 
   // Detail Screen Flat Header
   detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },

@@ -336,12 +336,9 @@ export default function ManageVehicleScreen() {
     const statusBg = isVerified ? '#DCFCE7' : isPending ? '#FEF3C7' : '#FEE2E2';
     const statusColor = isVerified ? '#166534' : isPending ? '#D97706' : '#991B1B';
     const statusIcon: any = isVerified ? 'checkmark-circle' : isPending ? 'time' : 'close-circle';
-    const accentColor = isVerified ? '#22C55E' : isPending ? '#F59E0B' : '#EF4444';
 
     return (
-      <View style={styles.vehicleCard}>
-        <View style={[styles.cardAccent, { backgroundColor: accentColor }]} />
-
+      <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
             <View style={styles.vehicleIconBox}>
@@ -350,14 +347,14 @@ export default function ManageVehicleScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.vehicleBrand} numberOfLines={1}>{item.vehicle_type}</Text>
               <View style={styles.plateRow}>
-                <Ionicons name="pricetag-outline" size={11} color="#6B7280" />
+                <Ionicons name="pricetag-outline" size={12} color="#6B7280" />
                 <Text style={styles.vehiclePlate}>{item.plate_number}</Text>
               </View>
             </View>
           </View>
 
           <View style={[styles.statusBadge, { backgroundColor: statusBg }]}>
-            <Ionicons name={statusIcon} size={11} color={statusColor} />
+            <Ionicons name={statusIcon} size={12} color={statusColor} />
             <Text style={[styles.statusText, { color: statusColor }]}>
               {item.verification_status}
             </Text>
@@ -387,19 +384,11 @@ export default function ManageVehicleScreen() {
         </View>
 
         <View style={styles.cardFooter}>
-          <TouchableOpacity
-            style={styles.editBtn}
-            onPress={() => handleEdit(item)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)} activeOpacity={0.85}>
             <Ionicons name="create-outline" size={14} color={ORANGE} />
             <Text style={styles.editBtnText}>Edit</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.deleteBtn}
-            onPress={() => handleDelete(item)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)} activeOpacity={0.85}>
             <Ionicons name="trash-outline" size={14} color="#EF4444" />
             <Text style={styles.deleteBtnText}>Delete</Text>
           </TouchableOpacity>
@@ -410,33 +399,21 @@ export default function ManageVehicleScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      <Animated.View
-        style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}
-      >
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backBtn}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSubtitle}>
-              {vehicles.length} {vehicles.length === 1 ? 'vehicle' : 'vehicles'}
-            </Text>
-            <Text style={styles.headerTitle}>Manage Vehicles</Text>
-          </View>
-          <TouchableOpacity
-            style={styles.headerAddBtn}
-            onPress={handleAdd}
-            activeOpacity={0.9}
-          >
-            <Ionicons name="add" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
+      <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={22} color="#111827" />
+        </TouchableOpacity>
+        <View style={{ flex: 1, paddingLeft: 14 }}>
+          <Text style={styles.headerTitle}>Manage Vehicles</Text>
+          <Text style={styles.headerSubtitle}>
+            {vehicles.length} {vehicles.length === 1 ? 'vehicle' : 'vehicles'}
+          </Text>
         </View>
+        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
+          <Ionicons name="add" size={22} color={ORANGE} />
+        </TouchableOpacity>
       </Animated.View>
 
       {loading ? (
@@ -480,18 +457,9 @@ export default function ManageVehicleScreen() {
         onRequestClose={() => { resetForm(); setModalVisible(false); }}
       >
         <View style={styles.modalOverlay}>
-          <Animated.View
-            style={[
-              styles.modalContainer,
-              { transform: [{ scale: modalScale }], opacity: modalAnim },
-            ]}
-          >
+          <Animated.View style={[styles.modalContainer, { transform: [{ scale: modalScale }], opacity: modalAnim }]}>
             <View style={styles.modalHeader}>
-              <TouchableOpacity
-                onPress={() => { resetForm(); setModalVisible(false); }}
-                style={styles.modalCloseBtn}
-                activeOpacity={0.85}
-              >
+              <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn} activeOpacity={0.85}>
                 <Ionicons name="close" size={20} color="#111827" />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
@@ -500,10 +468,7 @@ export default function ManageVehicleScreen() {
               <View style={{ width: 40 }} />
             </View>
 
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.modalScrollContent}
-            >
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalScrollContent}>
               <View style={styles.formSection}>
                 <Text style={styles.sectionLabel}>Vehicle Type</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeGridScroll}>
@@ -630,10 +595,7 @@ export default function ManageVehicleScreen() {
                       <Text style={styles.uploadedText} numberOfLines={1}>
                         {docFileName || 'Document uploaded'}
                       </Text>
-                      <TouchableOpacity
-                        style={styles.removeDocBtn}
-                        onPress={() => { setVehicleDoc(null); setDocFileName(null); }}
-                      >
+                      <TouchableOpacity style={styles.removeDocBtn} onPress={() => { setVehicleDoc(null); setDocFileName(null); }}>
                         <Ionicons name="trash-outline" size={14} color="#EF4444" />
                         <Text style={styles.removeDocText}>Remove</Text>
                       </TouchableOpacity>
@@ -650,12 +612,7 @@ export default function ManageVehicleScreen() {
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity
-                style={[styles.submitBtn, submitting && styles.submitBtnDisabled]}
-                onPress={handleSubmit}
-                disabled={submitting}
-                activeOpacity={0.9}
-              >
+              <TouchableOpacity style={[styles.submitBtn, submitting && styles.submitBtnDisabled]} onPress={handleSubmit} disabled={submitting} activeOpacity={0.9}>
                 {submitting ? (
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
@@ -679,54 +636,45 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
 
   header: {
-    backgroundColor: ORANGE,
-    paddingHorizontal: 20,
-    paddingBottom: 26,
-    borderBottomLeftRadius: 28,
-    borderBottomRightRadius: 28,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    elevation: 6,
-  },
-  headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   backBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: '#F3F4F6',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  headerSubtitle: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
-    letterSpacing: 0.3,
-    marginBottom: 2,
+    borderColor: '#E5E7EB',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: -0.2,
+    color: '#111827',
+    letterSpacing: -0.3,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   headerAddBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: '#FFE4D2',
   },
 
   listContent: {
@@ -797,30 +745,18 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  vehicleCard: {
+  card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 16,
-    paddingLeft: 20,
     marginBottom: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 3,
+    shadowRadius: 8,
+    elevation: 2,
     borderWidth: 1,
-    borderColor: '#F3F4F6',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  cardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
+    borderColor: '#E5E7EB',
   },
   cardHeader: {
     flexDirection: 'row',
@@ -835,9 +771,9 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   vehicleIconBox: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
+    width: 42,
+    height: 42,
+    borderRadius: 12,
     backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
@@ -866,11 +802,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
     gap: 4,
   },
   statusText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.3,
   },
@@ -879,9 +815,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#F9FAFB',
-    borderRadius: 14,
+    borderRadius: 12,
     paddingVertical: 12,
     marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
   },
   specItem: {
     flex: 1,
@@ -895,7 +833,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
   specLabel: {
-    fontSize: 9,
+    fontSize: 10,
     color: '#6B7280',
     fontWeight: '600',
     letterSpacing: 0.3,
@@ -909,6 +847,9 @@ const styles = StyleSheet.create({
   cardFooter: {
     flexDirection: 'row',
     gap: 10,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6'
   },
   editBtn: {
     flex: 1,
