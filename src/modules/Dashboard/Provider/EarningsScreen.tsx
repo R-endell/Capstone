@@ -1,6 +1,5 @@
 // src/modules/Dashboard/Provider/EarningsScreen.tsx
-import React, { useState, useCallback } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -12,10 +11,15 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Animated,
+  Easing
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
+
+const ORANGE = '#FA7A25';
 
 // Types based on your schema
 interface Transaction {
@@ -44,6 +48,7 @@ interface ProviderWallet {
 }
 
 export default function EarningsScreen() {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [walletData, setWalletData] = useState<ProviderWallet | null>(null);
@@ -52,92 +57,70 @@ export default function EarningsScreen() {
   const [totalJobs, setTotalJobs] = useState(0);
   const [averageRating, setAverageRating] = useState(0);
 
+  // Animations
+  const headerAnim = useRef(new Animated.Value(0)).current;
+  const contentAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animate = (value: Animated.Value, delay: number, duration = 600) =>
+      Animated.timing(value, {
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      });
+
+    Animated.parallel([
+      animate(headerAnim, 0),
+      animate(contentAnim, 150),
+    ]).start();
+  }, [headerAnim, contentAnim]);
+
   // Get provider ID from user_roles
   const getProviderId = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        console.error('No user found');
-        return null;
-      }
+      if (!user) return null;
 
-      // Get user_id from users table
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select('user_id')
         .eq('auth_id', user.id)
         .maybeSingle();  
 
-      if (userError || !userData) {
-        console.error('Error fetching user:', userError);
-        return null;
-      }
+      if (userError || !userData) return null;
 
-      console.log('User ID:', userData.user_id);
-
-      // Check if user has Provider role (may have multiple roles)
-      const { data: userRoles, error: roleError } = await supabase
-        .from('user_roles')
-        .select(`
-          role_id,
-          roles!inner (role_name)
-        `)
-        .eq('user_id', userData.user_id);  // ✅ No .single() — get all roles
-
-      if (roleError) {
-        console.error('Error checking user role:', roleError);
-      } else {
-        const roleNames = (userRoles || []).map((r: any) => r.roles?.role_name);
-        console.log('User roles:', roleNames);
-        if (!roleNames.includes('Provider')) {
-          console.log('User does not have Provider role');
-        }
-      }
-
-      // Get provider_id from provider_wallet
       const { data: walletData, error: walletError } = await supabase
         .from('provider_wallet')
         .select('provider_id')
         .eq('provider_id', userData.user_id)
-        .maybeSingle();  // ✅ Use maybeSingle — 0 rows is OK
-
-      if (walletError) {
-        console.error('Error fetching from provider_wallet:', walletError);
-      }
+        .maybeSingle();
 
       if (walletData) {
         setProviderId(walletData.provider_id);
         return walletData.provider_id;
       }
 
-      // Fallback: try provider_routes
-      const { data: routeData, error: routeError } = await supabase
+      const { data: routeData } = await supabase
         .from('provider_routes')
         .select('provider_id')
         .eq('provider_id', userData.user_id)
-        .maybeSingle();  // ✅ Use maybeSingle — 0 rows is OK
-
-      if (routeError) {
-        console.error('Error fetching from provider_routes:', routeError);
-      }
+        .maybeSingle();
 
       if (routeData) {
         setProviderId(routeData.provider_id);
         return routeData.provider_id;
       }
 
-      // Last resort: assume user_id IS the provider_id (common pattern)
-      console.log('No wallet/routes found — defaulting to user_id as provider_id');
       setProviderId(userData.user_id);
       return userData.user_id;
-
     } catch (error) {
       console.error('Error in getProviderId:', error);
       return null;
     }
   };
 
-  // Fetch wallet data from provider_wallet table
   const fetchWalletData = async (providerId: number) => {
     try {
       const { data, error } = await supabase
@@ -155,10 +138,8 @@ export default function EarningsScreen() {
     }
   };
 
-  // Fetch transactions through escrow_payments
   const fetchTransactions = async (providerId: number) => {
     try {
-      // First get escrow payments for this provider
       const { data: escrowData, error: escrowError } = await supabase
         .from('escrow_payments')
         .select('escrow_id')
@@ -174,7 +155,6 @@ export default function EarningsScreen() {
 
       const escrowIds = escrowData.map(e => e.escrow_id);
 
-      // Then get transactions for these escrow payments
       const { data: transactionData, error: transactionError } = await supabase
         .from('transactions')
         .select('*')
@@ -184,7 +164,6 @@ export default function EarningsScreen() {
 
       if (transactionError) throw transactionError;
 
-      // Add provider_id to transactions for display
       const transactionsWithProvider = (transactionData || []).map(t => ({
         ...t,
         provider_id: providerId
@@ -192,7 +171,6 @@ export default function EarningsScreen() {
 
       setTransactions(transactionsWithProvider);
       
-      // Count completed transactions
       const completedJobs = transactionsWithProvider.filter(
         (t: Transaction) => t.status === 'completed' || t.status === 'Completed'
       );
@@ -206,7 +184,6 @@ export default function EarningsScreen() {
     }
   };
 
-  // Fetch average rating from ratings_reviews table
   const fetchAverageRating = async (providerId: number) => {
     try {
       const { data, error } = await supabase
@@ -229,7 +206,6 @@ export default function EarningsScreen() {
     }
   };
 
-  // Load all data
   const loadData = async () => {
     try {
       setLoading(true);
@@ -250,31 +226,26 @@ export default function EarningsScreen() {
     }
   };
 
-  // Refresh on focus
   useFocusEffect(
     useCallback(() => {
       loadData();
     }, [])
   );
 
-  // Handle refresh
   const onRefresh = () => {
     setRefreshing(true);
     loadData();
   };
 
-  // Handle withdraw to GCash
   const handleWithdraw = async () => {
     if (!walletData) {
       Alert.alert('Error', 'No wallet found');
       return;
     }
-
     if (walletData.balance <= 0) {
       Alert.alert('Insufficient Balance', 'You need at least ₱1.00 to withdraw');
       return;
     }
-
     if (!walletData.gcash_number) {
       Alert.alert('No GCash Account', 'Please set up your GCash account in your profile');
       return;
@@ -290,7 +261,6 @@ export default function EarningsScreen() {
           style: 'default',
           onPress: async () => {
             try {
-              // Create withdrawal request
               const { error: withdrawalError } = await supabase
                 .from('withdrawal_requests')
                 .insert({
@@ -303,7 +273,6 @@ export default function EarningsScreen() {
 
               if (withdrawalError) throw withdrawalError;
 
-              // Update wallet balance to 0
               const { error: updateError } = await supabase
                 .from('provider_wallet')
                 .update({ 
@@ -319,8 +288,6 @@ export default function EarningsScreen() {
                 `Your withdrawal of ₱${walletData.balance.toFixed(2)} is being processed.`,
                 [{ text: 'OK' }]
               );
-
-              // Refresh data
               await loadData();
             } catch (error) {
               console.error('Withdrawal error:', error);
@@ -332,348 +299,360 @@ export default function EarningsScreen() {
     );
   };
 
-  // Format date helper
   const formatDate = (timestamp: string | null) => {
     if (!timestamp) return 'Pending';
-    
     const date = new Date(timestamp);
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (date >= today) {
+    if (date.toDateString() === today.toDateString()) {
       return `Today, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-    } else if (date >= yesterday) {
+    } else if (date.toDateString() === yesterday.toDateString()) {
       return `Yesterday, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-    } else {
-      return date.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: 'numeric',
-        year: 'numeric' 
-      });
     }
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  // Render transaction item
+  const fadeUp = (value: Animated.Value, distance = 24) => ({
+    opacity: value,
+    transform: [{
+      translateY: value.interpolate({
+        inputRange: [0, 1],
+        outputRange: [distance, 0],
+      }),
+    }],
+  });
+
   const renderTransaction = ({ item }: { item: Transaction }) => {
     const isCompleted = item.status === 'completed' || item.status === 'Completed';
     const isPending = item.status === 'pending' || item.status === 'Pending';
-    const isFailed = item.status === 'failed' || item.status === 'Failed';
     
     let statusColor = '#6B7280';
-    let statusIcon = 'time-outline';
-    let statusText = item.status;
+    let statusBg = '#F3F4F6';
+    let statusIcon: any = 'time-outline';
 
     if (isCompleted) {
-      statusColor = '#0AA505';
+      statusColor = '#16A34A';
+      statusBg = '#DCFCE7';
       statusIcon = 'checkmark-circle';
     } else if (isPending) {
-      statusColor = '#F59E0B';
-      statusIcon = 'time-outline';
-    } else if (isFailed) {
-      statusColor = '#EF4444';
+      statusColor = '#D97706';
+      statusBg = '#FEF3C7';
+      statusIcon = 'time';
+    } else {
+      statusColor = '#DC2626';
+      statusBg = '#FEE2E2';
       statusIcon = 'close-circle';
     }
 
     return (
       <View style={styles.transactionCard}>
         <View style={styles.transactionLeft}>
-          <View style={[styles.iconContainer, { backgroundColor: isCompleted ? '#95F25C' : isPending ? '#FCD34D' : '#FCA5A5' }]}>
-            <Ionicons 
-              name={statusIcon} 
-              size={24} 
-              color={isCompleted ? '#0AA505' : isPending ? '#D97706' : '#EF4444'} 
-            />
+          <View style={[styles.iconContainer, { backgroundColor: statusBg }]}>
+            <Ionicons name={statusIcon} size={20} color={statusColor} />
           </View>
           <View style={styles.transactionDetails}>
-            <Text style={styles.transactionTitle}>
-              Transaction #{item.transaction_id}
-            </Text>
+            <Text style={styles.transactionTitle}>Transaction #{item.transaction_id}</Text>
             <Text style={styles.transactionSubtitle}>
-              <Text style={{ color: statusColor }}>{statusText}</Text>
+              <Text style={{ color: statusColor, fontWeight: '600' }}>{item.status}</Text>
               {' • '}
               {formatDate(item.processed_at)}
             </Text>
-            <Text style={styles.transactionPayment}>
-              {item.payment_method} • Fee: ₱{item.service_fee.toFixed(2)}
-            </Text>
+            <View style={styles.paymentMethodRow}>
+              <Ionicons name="card-outline" size={11} color="#9CA3AF" />
+              <Text style={styles.transactionPayment}>
+                {item.payment_method} • Fee: ₱{item.service_fee.toFixed(2)}
+              </Text>
+            </View>
           </View>
         </View>
         <View style={styles.transactionRight}>
-          <Text style={[styles.transactionAmount, { color: isCompleted ? '#0AA505' : '#6B7280' }]}>
+          <Text style={[styles.transactionAmount, { color: isCompleted ? '#16A34A' : '#111827' }]}>
             {isCompleted ? '+' : ''}₱{item.total_amount.toFixed(2)}
           </Text>
           {item.penalty_fee && item.penalty_fee > 0 && (
-            <Text style={styles.penaltyText}>
-              Penalty: -₱{item.penalty_fee.toFixed(2)}
-            </Text>
+            <Text style={styles.penaltyText}>-₱{item.penalty_fee.toFixed(2)} Penalty</Text>
           )}
         </View>
       </View>
     );
   };
 
-  // Loading state
-  if (loading) {
+  if (loading && !refreshing) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#000000" />
-          <Text style={styles.loadingText}>Loading earnings...</Text>
-        </View>
-      </SafeAreaView>
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={ORANGE} />
+        <Text style={styles.loadingText}>Loading earnings...</Text>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
-      <View style={styles.container}>
-        
-        {/* Header */}
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+
+      {/* Modern Header */}
+      <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.headerTitle}>My Earnings</Text>
+      </Animated.View>
 
-        {/* Main Earnings Card */}
-        <View style={styles.earningsCard}>
-          <Text style={styles.earningsLabel}>Total Earnings</Text>
-          <Text style={styles.earningsAmount}>
-            ₱{walletData?.balance?.toFixed(2) || '0.00'}
-          </Text>
-          
-          <View style={styles.divider} />
-          
-          <View style={styles.statsRow}>
-            <View style={styles.statBox}>
-              <Text style={styles.statValue}>{totalJobs}</Text>
-              <Text style={styles.statLabel}>Jobs Done</Text>
-            </View>
-            
-            <View style={styles.verticalDivider} />
-            
-            <View style={styles.statBox}>
-              <Text style={styles.statValue}>
-                {averageRating > 0 ? averageRating.toFixed(1) : 'N/A'}
-              </Text>
-              <Text style={styles.statLabel}>
-                {averageRating > 0 ? '⭐ Ratings' : 'No Ratings'}
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Recent Transactions Header */}
-        <View style={styles.recentHeaderRow}>
-          <Text style={styles.recentTitle}>Recent Transactions</Text>
-          
-          <TouchableOpacity 
-            style={styles.withdrawButton} 
-            activeOpacity={0.7}
-            onPress={handleWithdraw}
-          >
-            <View style={styles.withdrawTextContainer}>
-              <Text style={styles.withdrawText}>Withdraw via</Text>
-              <Text style={styles.withdrawTextBold}>GCash</Text>
-            </View>
-            <View style={styles.gcashIcon}>
-              <Text style={styles.gcashG}>G</Text>
-              <Ionicons name="wifi" size={10} color="#FFFFFF" style={styles.gcashWifi} />
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        {/* Transactions List */}
+      <Animated.View style={[styles.mainContent, fadeUp(contentAnim, 20)]}>
         <FlatList
           data={transactions}
           keyExtractor={(item) => item.transaction_id.toString()}
           renderItem={renderTransaction}
-          contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#000000"
-            />
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+          ListHeaderComponent={
+            <>
+              {/* Main Wallet Card */}
+              <View style={styles.walletCard}>
+                <View style={styles.walletHeader}>
+                  <View style={styles.walletIconBox}>
+                    <Ionicons name="wallet" size={20} color={ORANGE} />
+                  </View>
+                  <TouchableOpacity style={styles.withdrawBtn} activeOpacity={0.8} onPress={handleWithdraw}>
+                    <Text style={styles.withdrawBtnText}>Cash Out</Text>
+                    <View style={styles.gcashPill}>
+                      <Text style={styles.gcashText}>GCash</Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.balanceSection}>
+                  <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
+                  <Text style={styles.balanceAmount}>
+                    <Text style={styles.currencySymbol}>₱</Text>
+                    {walletData?.balance?.toFixed(2) || '0.00'}
+                  </Text>
+                </View>
+
+                <View style={styles.statsDivider} />
+
+                <View style={styles.statsRow}>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>{totalJobs}</Text>
+                    <Text style={styles.statLabel}>Completed Jobs</Text>
+                  </View>
+                  <View style={styles.verticalDivider} />
+                  <View style={styles.statBox}>
+                    <View style={styles.ratingRow}>
+                      <Ionicons name="star" size={14} color="#F59E0B" />
+                      <Text style={styles.statValue}>{averageRating > 0 ? averageRating.toFixed(1) : 'N/A'}</Text>
+                    </View>
+                    <Text style={styles.statLabel}>Average Rating</Text>
+                  </View>
+                </View>
+              </View>
+
+              <Text style={styles.sectionTitle}>Recent Transactions</Text>
+            </>
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="receipt-outline" size={50} color="#D1D5DB" />
+              <View style={styles.emptyIconCircle}>
+                <Ionicons name="receipt-outline" size={36} color={ORANGE} />
+              </View>
               <Text style={styles.emptyText}>No transactions yet</Text>
-              <Text style={styles.emptySubText}>
-                Your completed deliveries will appear here
-              </Text>
+              <Text style={styles.emptySubText}>Your completed deliveries and payouts will appear here.</Text>
             </View>
           }
         />
-
-      </View>
-    </SafeAreaView>
+      </Animated.View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
   container: {
     flex: 1,
-    paddingHorizontal: 20,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F9FAFB',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#F9FAFB',
   },
   loadingText: {
     marginTop: 12,
     color: '#6B7280',
     fontSize: 14,
+    fontWeight: '500',
+  },
+  
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
   headerTitle: {
-    fontSize: 35,
-    fontWeight: '600',
-    color: '#000000',
-    marginTop: Platform.OS === 'android' ? 80 : 10,
-    marginBottom: 20,
-  },
-  earningsCard: {
-    backgroundColor: '#1E1E1E',
-    borderRadius: 16,
-    padding: 24,
-    marginBottom: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  earningsLabel: {
-    color: '#E5E7EB',
-    fontSize: 15,
-    marginBottom: 8,
-  },
-  earningsAmount: {
-    color: '#FFFFFF',
-    fontSize: 40,
-    fontWeight: 'bold',
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#111827',
     letterSpacing: -0.5,
   },
-  divider: {
-    height: 1,
-    backgroundColor: '#4B5563',
-    marginVertical: 20,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  statBox: {
+  
+  mainContent: {
     flex: 1,
-    alignItems: 'center',
   },
-  statValue: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 4,
+  listContent: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 40,
   },
-  statLabel: {
-    color: '#E5E7EB',
-    fontSize: 12,
+
+  walletCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  verticalDivider: {
-    width: 1,
-    height: 35,
-    backgroundColor: '#4B5563',
-  },
-  recentHeaderRow: {
+  walletHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
-  recentTitle: {
-    fontSize: 18,
-    fontWeight: '500',
-    color: '#000000',
-  },
-  withdrawButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  withdrawTextContainer: {
-    marginRight: 8,
-    alignItems: 'flex-end',
-  },
-  withdrawText: {
-    fontSize: 10,
-    color: '#111827',
-  },
-  withdrawTextBold: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#111827',
-  },
-  gcashIcon: {
-    backgroundColor: '#0070F0',
-    width: 24,
-    height: 24,
-    borderRadius: 4,
+  walletIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: '#FFF7ED',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  withdrawBtn: {
     flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    gap: 8,
   },
-  gcashG: {
+  withdrawBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#374151',
+  },
+  gcashPill: {
+    backgroundColor: '#0070F0',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  gcashText: {
     color: '#FFFFFF',
-    fontWeight: 'bold',
-    fontSize: 14,
-    marginRight: -2,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
-  gcashWifi: {
-    transform: [{ rotate: '90deg' }],
+  
+  balanceSection: {
+    marginBottom: 20,
   },
-  listContent: {
-    paddingBottom: 20,
+  balanceLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#6B7280',
+    letterSpacing: 0.8,
+    marginBottom: 4,
   },
+  balanceAmount: {
+    fontSize: 40,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -1,
+  },
+  currencySymbol: {
+    fontSize: 28,
+    color: '#4B5563',
+    marginRight: 2,
+  },
+  
+  statsDivider: {
+    height: 1,
+    backgroundColor: '#F3F4F6',
+    marginBottom: 16,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  statBox: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  ratingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  statValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 2,
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  verticalDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: '#E5E7EB',
+  },
+
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#374151',
+    marginBottom: 14,
+    letterSpacing: -0.2,
+  },
+  
   transactionCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
     borderRadius: 16,
     padding: 16,
     marginBottom: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   transactionLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    marginRight: 12,
   },
   iconContainer: {
-    width: 44,
-    height: 44,
+    width: 42,
+    height: 42,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
@@ -684,47 +663,69 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   transactionTitle: {
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '700',
     color: '#111827',
-    marginBottom: 4,
+    marginBottom: 2,
+    letterSpacing: -0.2,
   },
   transactionSubtitle: {
     fontSize: 12,
     color: '#6B7280',
   },
+  paymentMethodRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 4,
+  },
   transactionPayment: {
     fontSize: 11,
-    color: '#9CA3AF',
-    marginTop: 2,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   transactionRight: {
     alignItems: 'flex-end',
   },
   transactionAmount: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
   penaltyText: {
-    fontSize: 10,
+    fontSize: 11,
     color: '#EF4444',
-    marginTop: 2,
+    fontWeight: '600',
+    marginTop: 4,
   },
+
   emptyContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 60,
+    paddingVertical: 40,
+  },
+  emptyIconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#FFF7ED',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#FFE4D2',
   },
   emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#374151',
-    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 6,
   },
   emptySubText: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    marginTop: 4,
+    fontSize: 13,
+    color: '#6B7280',
     textAlign: 'center',
+    lineHeight: 18,
+    paddingHorizontal: 20,
   },
 });
