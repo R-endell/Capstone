@@ -20,19 +20,24 @@ const extractVerified = (result: any): { verified: boolean; message?: string } =
   if (!result || typeof result !== 'object') {
     return { verified: false, message: 'Empty response' };
   }
+  // Nested: { data: { verified: true } }
   if (result.data && typeof result.data === 'object' && typeof result.data.verified === 'boolean') {
     return { verified: result.data.verified, message: result.data.message || result.message };
   }
+  // Direct: { verified: true, message: "..." }
   if (typeof result.verified === 'boolean') {
     return { verified: result.verified, message: result.message };
   }
+  // Status flag: { status: "verified" | "success" | "ok" }
   if (typeof result.status === 'string') {
     const ok = ['verified', 'success', 'ok', 'valid'].includes(result.status.toLowerCase());
     return { verified: ok, message: result.message };
   }
+  // Sometimes Contiguity returns { success: true } on verify
   if (typeof result.success === 'boolean') {
     return { verified: result.success, message: result.message };
   }
+  // Also try valid flag
   if (typeof result.valid === 'boolean') {
     return { verified: result.valid, message: result.message };
   }
@@ -70,8 +75,7 @@ serve(async (req) => {
       let phoneNumber = to;
       let receiverName = name;
 
-      // Look up the receiver phone when it wasn't passed in
-      if (!phoneNumber) {
+      if (action === 'regenerate') {
         const { data: requestData, error: reqErr } = await supabase
           .from('deliveries')
           .select(`
@@ -85,7 +89,7 @@ serve(async (req) => {
           .single();
 
         if (reqErr || !requestData) {
-          console.error(`[${action.toUpperCase()}] Delivery lookup failed:`, reqErr);
+          console.error('[REGENERATE] Delivery lookup failed:', reqErr);
           return jsonResponse({ success: false, error: 'Delivery not found' });
         }
 
@@ -95,7 +99,7 @@ serve(async (req) => {
       }
 
       if (!phoneNumber) {
-        console.error(`[${action.toUpperCase()}] phoneNumber missing`);
+        console.error('[SEND] phoneNumber missing');
         return jsonResponse({ success: false, error: 'Receiver phone number missing' });
       }
 
@@ -105,7 +109,7 @@ serve(async (req) => {
       else if (e164.startsWith('63')) e164 = '+' + e164;
       else if (!e164.startsWith('+')) e164 = '+63' + e164;
 
-      console.log(`[${action.toUpperCase()}] calling Contiguity for`, e164);
+      console.log('[SEND] calling Contiguity for', e164);
 
       const response = await fetch(`${CONTIGUITY_API_URL}/otp/new`, {
         method: 'POST',
@@ -121,7 +125,7 @@ serve(async (req) => {
       });
 
       const result = await response.json();
-      console.log(`[${action.toUpperCase()}] Contiguity status:`, response.status, 'body:', JSON.stringify(result));
+      console.log('[SEND] Contiguity status:', response.status, 'body:', JSON.stringify(result));
 
       if (!response.ok) {
         return jsonResponse({
@@ -132,11 +136,11 @@ serve(async (req) => {
 
       const otpId = extractOtpId(result);
       if (!otpId) {
-        console.error(`[${action.toUpperCase()}] Contiguity did not return an otp_id:`, result);
+        console.error('[SEND] Contiguity did not return an otp_id:', result);
         return jsonResponse({ success: false, error: 'Contiguity did not return otp_id' });
       }
 
-      console.log(`[${action.toUpperCase()}] extracted otpId:`, otpId);
+      console.log('[SEND] extracted otpId:', otpId);
 
       const expiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
@@ -154,11 +158,11 @@ serve(async (req) => {
         .select('confirmation_id');
 
       if (updateErr) {
-        console.error(`[${action.toUpperCase()}] UPDATE failed:`, updateErr);
+        console.error('[SEND] UPDATE failed:', updateErr);
         return jsonResponse({ success: false, error: 'Update failed: ' + updateErr.message });
       }
 
-      console.log(`[${action.toUpperCase()}] UPDATE affected rows:`, updated?.length ?? 0);
+      console.log('[SEND] UPDATE affected rows:', updated?.length ?? 0);
 
       // STEP 2: If no row existed, INSERT
       if (!updated || updated.length === 0) {
@@ -174,14 +178,14 @@ serve(async (req) => {
           });
 
         if (insertErr) {
-          console.error(`[${action.toUpperCase()}] INSERT failed:`, insertErr);
+          console.error('[SEND] INSERT failed:', insertErr);
           return jsonResponse({ success: false, error: 'Insert failed: ' + insertErr.message });
         }
 
-        console.log(`[${action.toUpperCase()}] INSERT succeeded`);
+        console.log('[SEND] INSERT succeeded');
       }
 
-      console.log(`[${action.toUpperCase()}] saved otp_id:`, otpId, 'for delivery', delivery_id);
+      console.log('[SEND] saved otp_id:', otpId, 'for delivery', delivery_id);
       return jsonResponse({ success: true, otp_id: otpId });
     }
 
@@ -216,6 +220,7 @@ serve(async (req) => {
         return jsonResponse({ success: false, message: 'OTP was never sent' });
       }
 
+      // Local expiry check
       if (confirmation.otp_expires_at && new Date() > new Date(confirmation.otp_expires_at)) {
         console.log('[VERIFY] local expiry check says expired');
         return jsonResponse({
@@ -253,6 +258,7 @@ serve(async (req) => {
       const { verified, message } = extractVerified(verifyResult);
 
       if (!verified) {
+        // Increment attempts so repeated failures are visible in DB
         await supabase
           .from('delivery_confirmations')
           .update({ attempts: (confirmation.attempts || 0) + 1 })

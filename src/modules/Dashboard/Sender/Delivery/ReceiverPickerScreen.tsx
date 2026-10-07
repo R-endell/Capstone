@@ -73,34 +73,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     navigation.navigate('Booking', { pickedReceiver: receiver }, { merge: true });
   };
 
-  const handleDeleteReceiver = (receiverId: number, receiverName: string) => {
-    Alert.alert(
-      'Delete Receiver',
-      `Are you sure you want to remove ${receiverName} from your saved receivers?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const { error } = await supabase
-                .from('receivers')
-                .delete()
-                .eq('receiver_id', receiverId);
-              
-              if (error) throw error;
-              setReceivers(prev => prev.filter(r => r.receiver_id !== receiverId));
-            } catch (e: any) {
-              console.error('Delete receiver error:', e);
-              Alert.alert('Error', 'Failed to delete receiver.');
-            }
-          }
-        }
-      ]
-    );
-  };
-
   const handleAddNew = async () => {
     if (!newName.trim()) return Alert.alert('Required', 'Please enter the receiver name.');
     if (!newPhone.trim()) return Alert.alert('Required', 'Please enter the receiver phone.');
@@ -109,6 +81,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setSaving(true);
       if (!userId) throw new Error('No user');
 
+      // ✅ Normalize phone to E.164 for Contiguity
       const e164Phone = toE164(newPhone.trim());
 
       const { data, error } = await supabase
@@ -129,7 +102,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setNewName('');
       setNewPhone('');
       setNewEmail('');
-      if (userId) fetchReceivers(userId);
 
       if (data) handlePick(data);
     } catch (e: any) {
@@ -152,43 +124,32 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   const renderItem = ({ item }: any) => {
     const isSelected = item.receiver_id === selectedId;
     return (
-      <View style={[styles.itemCard, isSelected && styles.itemCardSelected]}>
-        <TouchableOpacity
-          style={styles.itemMainTouchable}
-          onPress={() => handlePick(item)}
-          activeOpacity={0.8}
-        >
-          {/* Avatar always keeps the orange background and white text for high visibility */}
-          <View style={styles.itemAvatar}>
-            <Text style={styles.itemAvatarText}>
-              {(item.receiver_name || '?').trim().charAt(0).toUpperCase()}
-            </Text>
-          </View>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <View style={styles.itemNameRow}>
-              <Text style={styles.itemName} numberOfLines={1}>{item.receiver_name}</Text>
-              {item.is_favorite && <Ionicons name="star" size={12} color="#F59E0B" style={{ marginLeft: 4 }} />}
-            </View>
-            <Text style={styles.itemPhone} numberOfLines={1}>{item.receiver_phone}</Text>
-            {item.receiver_email ? (
-              <Text style={styles.itemEmail} numberOfLines={1}>{item.receiver_email}</Text>
-            ) : null}
-          </View>
-        </TouchableOpacity>
-
-        <View style={styles.itemActions}>
-          {isSelected && (
-            <Ionicons name="checkmark-circle" size={20} color={ORANGE} style={{ marginRight: 10 }} />
-          )}
-          <TouchableOpacity
-            style={styles.deleteBtn}
-            onPress={() => handleDeleteReceiver(item.receiver_id, item.receiver_name)}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="trash-outline" size={18} color="#EF4444" />
-          </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.item, isSelected && styles.itemSelected]}
+        onPress={() => handlePick(item)}
+        activeOpacity={0.85}
+      >
+        <View style={[styles.itemAvatar, isSelected && styles.itemAvatarSelected]}>
+          <Text style={styles.itemAvatarText}>
+            {(item.receiver_name || '?').trim().charAt(0).toUpperCase()}
+          </Text>
         </View>
-      </View>
+        <View style={{ flex: 1 }}>
+          <View style={styles.itemNameRow}>
+            <Text style={styles.itemName} numberOfLines={1}>{item.receiver_name}</Text>
+            {item.is_favorite && <Ionicons name="star" size={12} color="#F59E0B" />}
+          </View>
+          <Text style={styles.itemPhone} numberOfLines={1}>{item.receiver_phone}</Text>
+          {item.receiver_email ? (
+            <Text style={styles.itemEmail} numberOfLines={1}>{item.receiver_email}</Text>
+          ) : null}
+        </View>
+        {isSelected ? (
+          <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
+        ) : (
+          <Ionicons name="chevron-forward" size={18} color="#D1D5DB" />
+        )}
+      </TouchableOpacity>
     );
   };
 
@@ -300,7 +261,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                   onChangeText={setNewPhone}
                 />
                 <Text style={styles.fieldHint}>
-                  Auto-formatted to +63 for dispatch notifications
+                  We'll auto-format to +63 for SMS delivery
                 </Text>
               </View>
 
@@ -341,11 +302,11 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+  container: { flex: 1, backgroundColor: '#FAFAFA' },
 
   header: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingBottom: 14, paddingTop: 6, gap: 12,
+    paddingHorizontal: 16, paddingBottom: 12, gap: 12,
   },
   backBtn: {
     width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
@@ -354,7 +315,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     flex: 1, fontSize: 18, fontWeight: '800', color: '#111827',
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
   addBtn: {
     width: 42, height: 42, borderRadius: 21, backgroundColor: ORANGE,
@@ -365,55 +326,41 @@ const styles = StyleSheet.create({
 
   searchBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB',
-    borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12,
-    marginHorizontal: 20, marginBottom: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.02, shadowRadius: 4, elevation: 1,
+    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB',
+    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    marginHorizontal: 20, marginBottom: 12,
   },
   searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
 
   listContent: { paddingHorizontal: 20, paddingBottom: 40 },
 
-  itemCard: {
-    flexDirection: 'row', alignItems: 'center',
+  item: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: '#FFFFFF',
-    borderRadius: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: '#E5E7EB',
-    overflow: 'hidden',
+    borderRadius: 16, padding: 14, marginBottom: 10,
+    borderWidth: 1.5, borderColor: '#F3F4F6',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+    shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
   },
-  itemCardSelected: {
+  itemSelected: {
     borderColor: ORANGE, backgroundColor: '#FFFBF5',
-    borderWidth: 1.5,
-  },
-  itemMainTouchable: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12,
-    padding: 14,
+    shadowColor: ORANGE, shadowOpacity: 0.15,
   },
   itemAvatar: {
-    width: 46, height: 46, borderRadius: 23, backgroundColor: ORANGE,
+    width: 46, height: 46, borderRadius: 23, backgroundColor: '#F3F4F6',
     justifyContent: 'center', alignItems: 'center',
   },
+  itemAvatarSelected: { backgroundColor: ORANGE },
   itemAvatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
   itemNameRow: {
-    flexDirection: 'row', alignItems: 'center', marginBottom: 3,
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2,
   },
   itemName: {
-    fontSize: 15, fontWeight: '700', color: '#111827',
+    fontSize: 14, fontWeight: '800', color: '#111827',
     letterSpacing: -0.2, flexShrink: 1,
   },
-  itemPhone: { fontSize: 13, color: '#4B5563', fontWeight: '500' },
-  itemEmail: { fontSize: 11, color: '#9CA3AF', marginTop: 2, fontWeight: '400' },
-
-  itemActions: {
-    flexDirection: 'row', alignItems: 'center', paddingRight: 14,
-  },
-  deleteBtn: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: '#FEF2F2',
-    justifyContent: 'center', alignItems: 'center',
-  },
+  itemPhone: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
+  itemEmail: { fontSize: 11, color: '#9CA3AF', marginTop: 1, fontWeight: '500' },
 
   loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { color: '#6B7280', fontWeight: '500', fontSize: 13 },
@@ -448,37 +395,37 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34,
+    borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    paddingHorizontal: 22, paddingTop: 18, paddingBottom: 30,
     maxHeight: '85%',
   },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 20,
+    alignItems: 'center', marginBottom: 18,
   },
   modalTitle: {
-    fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3,
+    fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.2,
   },
-  fieldGroup: { marginBottom: 16 },
+  fieldGroup: { marginBottom: 14 },
   fieldLabel: {
-    fontSize: 13, fontWeight: '700', color: '#374151',
-    marginBottom: 6, letterSpacing: 0.1,
+    fontSize: 12, fontWeight: '700', color: '#374151',
+    marginBottom: 6, letterSpacing: 0.2,
   },
   fieldHint: {
-    fontSize: 11, color: '#9CA3AF', marginTop: 4, fontWeight: '500',
+    fontSize: 10, color: '#9CA3AF', marginTop: 4, fontWeight: '500',
   },
   textInput: {
-    backgroundColor: '#F9FAFB',
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 14, color: '#111827', fontWeight: '500',
+    fontSize: 14, color: '#111827', fontWeight: '600',
   },
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
-    gap: 8, marginTop: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 15,
+    gap: 8, marginTop: 8,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   saveBtnDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
   saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
