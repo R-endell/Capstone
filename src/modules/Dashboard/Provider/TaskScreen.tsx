@@ -478,6 +478,29 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
+  /**
+   * Texts the receiver their drop-off OTP via the contiguity-otp edge function.
+   * Never throws: pickup has already been recorded, so an SMS failure must not undo it.
+   * The courier can always retry with "Send New OTP" on the drop-off screen.
+   */
+  const sendDeliveryOTP = async (deliveryId: number): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const { data, error } = await supabase.functions.invoke('contiguity-otp', {
+        body: { action: 'send', delivery_id: deliveryId },
+      });
+
+      if (error || !data?.success) {
+        const msg = data?.error || error?.message || 'Could not send OTP.';
+        console.warn('[OTP] send failed:', msg);
+        return { ok: false, error: msg };
+      }
+      return { ok: true };
+    } catch (e: any) {
+      console.warn('[OTP] send threw:', e);
+      return { ok: false, error: e?.message || 'Could not send OTP.' };
+    }
+  };
+
   const markPickupVerified = async (deliveryId: number, requestId: number) => {
     try {
       const { error: qrErr } = await supabase
@@ -516,7 +539,15 @@ export default function TaskScreen() {
       setActiveDeliveries(prev => patchDelivery(prev));
       setCompletedDeliveries(prev => patchDelivery(prev));
 
-      Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
+      // Item is now in transit: text the receiver their drop-off OTP.
+      const otpResult = await sendDeliveryOTP(deliveryId);
+
+      Alert.alert(
+        '✅ Item Collected',
+        otpResult.ok
+          ? 'Pickup verified. A confirmation OTP was texted to the receiver. Ask them for it when you arrive.'
+          : `Pickup verified, but the receiver's OTP could not be sent (${otpResult.error}). You can resend it from the drop-off screen.`
+      );
       closeVerifyModal();
 
       if (providerId) await fetchDeliveries(providerId);
@@ -621,7 +652,7 @@ export default function TaskScreen() {
                 return;
               }
 
-              Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
+              Alert.alert('OTP Sent', `A new OTP has been sent to ${data?.sent_to || 'the receiver'}.`);
               setDeliveryOTPInput('');
             } catch (err: any) {
               Alert.alert('Error', err.message || 'Failed to send new OTP.');

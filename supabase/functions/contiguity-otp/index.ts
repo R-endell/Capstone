@@ -5,15 +5,46 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const CONTIGUITY_API_KEY = Deno.env.get('CONTIGUITY_API_KEY');
 const CONTIGUITY_API_URL = 'https://api.contiguity.com';
 
+// Shown in the SMS as: "Your <APP_NAME> code is 123456"
+const APP_NAME = 'PNS Delivery';
+// Contiguity OTPs expire 15 minutes after sending (resending does not extend this).
+const OTP_TTL_MS = 15 * 60 * 1000;
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Content-Type': 'application/json',
 };
 
+// Always HTTP 200 so supabase.functions.invoke() hands the real error text back in `data`
+// instead of collapsing it into a generic FunctionsHttpError.
 const jsonResponse = (body: Record<string, unknown>) =>
   new Response(JSON.stringify(body), { status: 200, headers: CORS_HEADERS });
+
+/** Normalize a Philippine (or already-international) number to E.164. Returns null if it can't be made valid. */
+const normalizePhone = (raw: unknown): string | null => {
+  if (!raw) return null;
+  let s = String(raw).trim().replace(/[\s\-().]/g, '');
+
+  if (s.startsWith('+')) {
+    // "+630917..." (user typed the leading 0 after the country code)
+    if (s.startsWith('+630')) s = '+63' + s.slice(4);
+  } else if (s.startsWith('00')) {
+    s = '+' + s.slice(2);
+  } else if (s.startsWith('0')) {
+    s = '+63' + s.slice(1); // 0917... -> +63917...
+  } else if (s.startsWith('63')) {
+    s = '+' + s; // 63917... -> +63917...
+  } else {
+    s = '+63' + s; // 917... -> +63917...
+  }
+
+  return /^\+[1-9]\d{7,14}$/.test(s) ? s : null;
+};
+
+/** e.g. +639171234567 -> +63•••••••4567 (safe to return to the client) */
+const maskPhone = (e164: string) => e164.slice(0, 3) + '•'.repeat(Math.max(e164.length - 7, 0)) + e164.slice(-4);
 
 /** Helper: pull `verified` boolean from Contiguity's response regardless of shape */
 const extractVerified = (result: any): { verified: boolean; message?: string } => {
@@ -55,6 +86,41 @@ const extractOtpId = (result: any): string | null => {
   );
 };
 
+/** POST to Contiguity with a timeout; never throws on non-JSON bodies. */
+const callContiguity = async (path: string, body: Record<string, unknown>) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(`${CONTIGUITY_API_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CONTIGUITY_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* non-JSON body — fall back to raw text in errors */
+    }
+    return { ok: res.ok, status: res.status, json, text };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/** Best-effort human-readable error out of a Contiguity response. */
+const contiguityError = (r: { status: number; json: any; text: string }, fallback: string): string => {
+  const e = r.json?.error ?? r.json?.data?.error ?? r.json?.message ?? r.json?.data?.message;
+  if (typeof e === 'string' && e) return e;
+  if (e) return JSON.stringify(e);
+  return r.text ? r.text.slice(0, 200) : `${fallback} (HTTP ${r.status})`;
+};
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
 
@@ -64,135 +130,129 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     );
 
-    const { action, delivery_id, to, otp, name } = await req.json();
+    const { action, delivery_id, otp } = await req.json();
 
     console.log(`[REQUEST] action=${action} delivery_id=${delivery_id}`);
 
+    if (!CONTIGUITY_API_KEY) {
+      console.error('[CONFIG] CONTIGUITY_API_KEY secret is not set. Run: supabase secrets set CONTIGUITY_API_KEY=...');
+      return jsonResponse({ success: false, error: 'SMS service is not configured' });
+    }
+
     // ====================================================================
-    // SEND / REGENERATE — Create a fresh OTP and persist it
+    // SEND / REGENERATE — Create a fresh OTP and persist it.
+    // Both actions behave the same: the receiver's phone is ALWAYS read from
+    // the database (never trusted from the client), and the confirmation row
+    // is created if missing or reset if it already exists.
+    //   'send'       -> call when pickup is verified (first OTP)
+    //   'regenerate' -> call when the courier taps "Send New OTP"
     // ====================================================================
     if (action === 'send' || action === 'regenerate') {
-      let phoneNumber = to;
-      let receiverName = name;
+      if (!delivery_id) return jsonResponse({ success: false, error: 'delivery_id is required' });
 
-      if (action === 'regenerate') {
-        const { data: requestData, error: reqErr } = await supabase
-          .from('deliveries')
-          .select(`
-            delivery_id,
-            delivery_requests!inner (
-              receiver_phone,
-              receiver:receivers (receiver_name, receiver_phone)
-            )
-          `)
-          .eq('delivery_id', delivery_id)
-          .single();
+      // 1) Look up the receiver's phone from the delivery
+      const { data: delivery, error: lookupErr } = await supabase
+        .from('deliveries')
+        .select(`
+          delivery_id,
+          delivery_requests!inner (
+            receiver_phone,
+            receiver:receivers (receiver_name, receiver_phone)
+          )
+        `)
+        .eq('delivery_id', delivery_id)
+        .maybeSingle();
 
-        if (reqErr || !requestData) {
-          console.error('[REGENERATE] Delivery lookup failed:', reqErr);
-          return jsonResponse({ success: false, error: 'Delivery not found' });
-        }
-
-        const dr: any = (requestData as any).delivery_requests;
-        phoneNumber = dr?.receiver?.receiver_phone || dr?.receiver_phone;
-        receiverName = dr?.receiver?.receiver_name || 'Receiver';
+      if (lookupErr || !delivery) {
+        console.error('[SEND] Delivery lookup failed:', lookupErr);
+        return jsonResponse({ success: false, error: 'Delivery not found' });
       }
 
-      if (!phoneNumber) {
-        console.error('[SEND] phoneNumber missing');
-        return jsonResponse({ success: false, error: 'Receiver phone number missing' });
-      }
+      const pick = (v: any) => (Array.isArray(v) ? v[0] : v);
+      const dr: any = pick((delivery as any).delivery_requests);
+      const rcv: any = pick(dr?.receiver);
+      const rawPhone = rcv?.receiver_phone || dr?.receiver_phone;
 
-      // Normalize to E.164
-      let e164 = String(phoneNumber).replace(/\s+/g, '').replace(/-/g, '');
-      if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-      else if (e164.startsWith('63')) e164 = '+' + e164;
-      else if (!e164.startsWith('+')) e164 = '+63' + e164;
-
-      console.log('[SEND] calling Contiguity for', e164);
-
-      const response = await fetch(`${CONTIGUITY_API_URL}/otp/new`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${CONTIGUITY_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          to: e164,
-          language: 'en',
-          name: receiverName || 'PNS Delivery',
-        }),
-      });
-
-      const result = await response.json();
-      console.log('[SEND] Contiguity status:', response.status, 'body:', JSON.stringify(result));
-
-      if (!response.ok) {
+      const e164 = normalizePhone(rawPhone);
+      if (!e164) {
+        console.error('[SEND] Invalid receiver phone on record:', rawPhone);
         return jsonResponse({
           success: false,
-          error: result.error || result.data?.error || result.message || 'Failed to send OTP',
+          error: `Receiver phone number is missing or invalid (${rawPhone || 'empty'})`,
         });
       }
 
-      const otpId = extractOtpId(result);
-      if (!otpId) {
-        console.error('[SEND] Contiguity did not return an otp_id:', result);
-        return jsonResponse({ success: false, error: 'Contiguity did not return otp_id' });
-      }
-
-      console.log('[SEND] extracted otpId:', otpId);
-
-      const expiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-      // STEP 1: Try UPDATE (row almost always exists for a delivery)
-      const { data: updated, error: updateErr } = await supabase
+      // 2) Don't let a completed delivery be reset
+      const { data: existing } = await supabase
         .from('delivery_confirmations')
-        .update({
-          contiguity_otp_id: otpId,
-          otp_expires_at: expiry,
-          otp_verified: false,
-          otp_verified_at: null,
-          attempts: 0,
-        })
+        .select('otp_verified')
         .eq('delivery_id', delivery_id)
-        .select('confirmation_id');
+        .maybeSingle();
 
-      if (updateErr) {
-        console.error('[SEND] UPDATE failed:', updateErr);
-        return jsonResponse({ success: false, error: 'Update failed: ' + updateErr.message });
+      if (existing?.otp_verified) {
+        return jsonResponse({ success: false, error: 'This delivery has already been confirmed' });
       }
 
-      console.log('[SEND] UPDATE affected rows:', updated?.length ?? 0);
+      // 3) Ask Contiguity to generate + text the code
+      console.log('[SEND] calling Contiguity for', maskPhone(e164));
 
-      // STEP 2: If no row existed, INSERT
-      if (!updated || updated.length === 0) {
-        const { error: insertErr } = await supabase
-          .from('delivery_confirmations')
-          .insert({
+      let sendRes;
+      try {
+        sendRes = await callContiguity('/otp/new', { to: e164, language: 'en', name: APP_NAME });
+      } catch (fetchErr: any) {
+        console.error('[SEND] Contiguity request failed:', fetchErr);
+        return jsonResponse({
+          success: false,
+          error: fetchErr?.name === 'AbortError' ? 'SMS service timed out' : 'SMS service unavailable',
+        });
+      }
+
+      console.log('[SEND] Contiguity status:', sendRes.status, 'body:', sendRes.text);
+
+      if (!sendRes.ok) {
+        return jsonResponse({ success: false, error: contiguityError(sendRes, 'Failed to send OTP') });
+      }
+
+      const otpId = extractOtpId(sendRes.json);
+      if (!otpId) {
+        console.error('[SEND] Contiguity did not return an otp_id:', sendRes.text);
+        return jsonResponse({
+          success: false,
+          error: `Contiguity did not return an otp_id: ${contiguityError(sendRes, 'no details')}`,
+        });
+      }
+
+      // 4) Persist (delivery_confirmations.delivery_id is UNIQUE, so upsert is safe)
+      const expiry = new Date(Date.now() + OTP_TTL_MS).toISOString();
+
+      const { error: saveErr } = await supabase
+        .from('delivery_confirmations')
+        .upsert(
+          {
             delivery_id,
             contiguity_otp_id: otpId,
             otp_expires_at: expiry,
             otp_verified: false,
             otp_verified_at: null,
             attempts: 0,
-          });
+          },
+          { onConflict: 'delivery_id' }
+        );
 
-        if (insertErr) {
-          console.error('[SEND] INSERT failed:', insertErr);
-          return jsonResponse({ success: false, error: 'Insert failed: ' + insertErr.message });
-        }
-
-        console.log('[SEND] INSERT succeeded');
+      if (saveErr) {
+        console.error('[SEND] Saving confirmation failed:', saveErr);
+        return jsonResponse({ success: false, error: 'Could not save OTP: ' + saveErr.message });
       }
 
-      console.log('[SEND] saved otp_id:', otpId, 'for delivery', delivery_id);
-      return jsonResponse({ success: true, otp_id: otpId });
+      console.log('[SEND] OTP sent and saved. otp_id:', otpId, 'delivery:', delivery_id);
+      return jsonResponse({ success: true, otp_id: otpId, sent_to: maskPhone(e164), expires_at: expiry });
     }
 
     // ====================================================================
     // VERIFY
     // ====================================================================
     if (action === 'verify') {
+      if (!delivery_id) return jsonResponse({ success: false, message: 'delivery_id is required' });
       if (!otp) return jsonResponse({ success: false, message: 'OTP is required' });
 
       const { data: confirmation, error: fetchError } = await supabase
@@ -210,7 +270,7 @@ serve(async (req) => {
       if (!confirmation) {
         return jsonResponse({
           success: false,
-          message: 'Confirmation record not found. Ask the sender to resend the OTP.',
+          message: 'No OTP has been sent yet. Tap "Send New OTP" to text the receiver a code.',
         });
       }
       if (confirmation.otp_verified) {
@@ -225,37 +285,26 @@ serve(async (req) => {
         console.log('[VERIFY] local expiry check says expired');
         return jsonResponse({
           success: false,
-          message: 'OTP has expired. Please send a new OTP.',
+          message: 'OTP has expired. Tap "Send New OTP" to send a fresh code.',
         });
       }
 
-      console.log('[VERIFY] calling Contiguity with otp_id:', confirmation.contiguity_otp_id, 'otp:', otp);
+      console.log('[VERIFY] calling Contiguity with otp_id:', confirmation.contiguity_otp_id);
 
-      let verifyResult: any = null;
-      let contiguityStatus = 0;
+      let verifyRes;
       try {
-        const response = await fetch(`${CONTIGUITY_API_URL}/otp/verify`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${CONTIGUITY_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            otp_id: confirmation.contiguity_otp_id,
-            otp: String(otp).trim(),
-          }),
+        verifyRes = await callContiguity('/otp/verify', {
+          otp_id: confirmation.contiguity_otp_id,
+          otp: String(otp).trim(),
         });
-        contiguityStatus = response.status;
-        verifyResult = await response.json();
       } catch (fetchErr) {
         console.error('Contiguity verify fetch error:', fetchErr);
         return jsonResponse({ success: false, message: 'Verification service unavailable' });
       }
 
-      console.log('[VERIFY] Contiguity status:', contiguityStatus);
-      console.log('[VERIFY] Contiguity body:', JSON.stringify(verifyResult));
+      console.log('[VERIFY] Contiguity status:', verifyRes.status, 'body:', verifyRes.text);
 
-      const { verified, message } = extractVerified(verifyResult);
+      const { verified, message } = extractVerified(verifyRes.json);
 
       if (!verified) {
         // Increment attempts so repeated failures are visible in DB
@@ -266,8 +315,8 @@ serve(async (req) => {
 
         const failMessage =
           message ||
-          verifyResult?.data?.error ||
-          verifyResult?.error ||
+          verifyRes.json?.data?.error ||
+          verifyRes.json?.error ||
           'Invalid or expired OTP';
 
         console.log('[VERIFY] FAILED — message:', failMessage);
