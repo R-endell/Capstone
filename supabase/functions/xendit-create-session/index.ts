@@ -1,4 +1,3 @@
-
 // @ts-expect-error Deno resolves HTTPS imports at runtime.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -16,6 +15,23 @@ const SUPABASE_SERVICE_ROLE_KEY = denoEnv.get('SUPABASE_SERVICE_ROLE_KEY')!
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+/** Strip commas (Xendit rejects them), collapse whitespace, cap length. */
+const sanitizeName = (s: string | null | undefined): string =>
+  (s || '')
+    .replace(/,/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 50)
+
+/** Return E.164 (+63XXXXXXXXXX) only for valid PH mobiles, otherwise undefined. */
+const normalizePhone = (raw: string | null | undefined): string | undefined => {
+  const digits = (raw || '').replace(/\D/g, '')
+  if (/^09\d{9}$/.test(digits)) return `+63${digits.slice(1)}`
+  if (/^639\d{9}$/.test(digits)) return `+${digits}`
+  if (/^9\d{9}$/.test(digits)) return `+63${digits}`
+  return undefined
 }
 
 deno.Deno.serve(async (req) => {
@@ -43,6 +59,7 @@ deno.Deno.serve(async (req) => {
       .single()
 
     if (userError || !user) {
+      console.error('[USER_LOOKUP_FAIL]', userError)
       throw new Error('User not found')
     }
 
@@ -50,6 +67,29 @@ deno.Deno.serve(async (req) => {
 
     // Create Xendit customer if not exists
     if (!customerId) {
+      const givenName = sanitizeName(user.first_name) || 'Customer'
+      const surname = sanitizeName(user.last_name) || 'User'
+      const mobileNumber = normalizePhone(user.phone_number)
+
+      console.log('[CUSTOMER_CREATE]', {
+        userId,
+        givenName,
+        surname,
+        email: user.email,
+        hasPhone: Boolean(mobileNumber),
+      })
+
+      const customerPayload: Record<string, unknown> = {
+        reference_id: `user_${userId}`,
+        type: 'INDIVIDUAL',
+        email: user.email,
+        individual_detail: {
+          given_names: givenName,
+          surname,
+        },
+      }
+      if (mobileNumber) customerPayload.mobile_number = mobileNumber
+
       const customerResponse = await fetch('https://api.xendit.co/customers', {
         method: 'POST',
         headers: {
@@ -57,20 +97,12 @@ deno.Deno.serve(async (req) => {
           'Content-Type': 'application/json',
           'api-version': '2020-10-31',
         },
-        body: JSON.stringify({
-          reference_id: `user_${userId}`,
-          type: 'INDIVIDUAL',
-          email: user.email,
-          mobile_number: user.phone_number ? `+63${user.phone_number.replace(/^0/, '')}` : undefined,
-          individual_detail: {
-            given_names: user.first_name,
-            surname: user.last_name,
-          },
-        }),
+        body: JSON.stringify(customerPayload),
       })
 
       if (!customerResponse.ok) {
         const errorText = await customerResponse.text()
+        console.error('[XENDIT_CUSTOMER_FAIL]', customerResponse.status, errorText)
         throw new Error(`Xendit customer creation failed: ${errorText}`)
       }
 
@@ -86,40 +118,51 @@ deno.Deno.serve(async (req) => {
     // Create SAVE session with PAYMENT_LINK mode
     const channelCode = provider === 'gcash' ? 'GCASH_LINK_AND_PAY' : 'PAYMAYA'
 
+    const sessionPayload = {
+      reference_id: `link_${userId}_${provider}_${Date.now()}`,
+      session_type: 'SAVE',
+      mode: 'PAYMENT_LINK',
+      amount: 0,
+      currency: 'PHP',
+      country: 'PH',
+      customer_id: customerId,
+      channel_code: channelCode,
+      allowed_payment_channels: [channelCode],
+      success_return_url:
+        'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-success',
+      cancel_return_url:
+        'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-cancel',
+    }
+
+    console.log('[SESSION_CREATE]', { userId, provider, channelCode, customerId })
+
     const sessionResponse = await fetch('https://api.xendit.co/sessions', {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${btoa(XENDIT_SECRET_KEY + ':')}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        reference_id: `link_${userId}_${provider}_${Date.now()}`,
-        session_type: 'SAVE',
-        mode: 'PAYMENT_LINK',
-        amount: 0,
-        currency: 'PHP',
-        country: 'PH',
-        customer_id: customerId,
-        channel_code: channelCode,
-        allowed_payment_channels: ['GCASH_LINK_AND_PAY'],
-        success_return_url: 'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-success',
-        cancel_return_url: 'https://ellqwkalvvedtyivdozd.supabase.co/functions/v1/redirect-bridge?to=payment-cancel',
-      }),
+      body: JSON.stringify(sessionPayload),
     })
 
     if (!sessionResponse.ok) {
       const errorText = await sessionResponse.text()
+      console.error('[XENDIT_SESSION_FAIL]', sessionResponse.status, errorText)
       throw new Error(`Xendit session creation failed: ${errorText}`)
     }
 
     const sessionData = await sessionResponse.json()
 
-    return new Response(JSON.stringify({ payment_link_url: sessionData.payment_link_url }), {
-      status: 200,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    })
+    return new Response(
+      JSON.stringify({ payment_link_url: sessionData.payment_link_url }),
+      {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      }
+    )
   } catch (error: any) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    console.error('[UNHANDLED]', error?.message || error)
+    return new Response(JSON.stringify({ error: error?.message || 'Unexpected error' }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

@@ -133,46 +133,58 @@ export default function LoginScreen() {
   };
 
   const handleGoogleLogin = async () => {
-    setLoading(true);
-    try {
-      const redirectTo = 'https://auth.expo.io/@rendelljames/Capstone';
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
+  setLoading(true);
+  try {
+    const redirectTo = 'packnship://auth/callback';
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+        skipBrowserRedirect: true,   // we open the browser ourselves
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
         },
-      });
+      },
+    });
 
-      if (error) throw error;
+    if (error) throw error;
+    if (!data?.url) throw new Error('No OAuth URL returned');
 
-      if (data?.url) {
-        const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+    const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
 
-        if (result.type === 'success') {
-          const { data: sessionData } = await supabase.auth.getSession();
-          if (sessionData?.session) {
-            navigation.reset({
-              index: 0,
-              routes: [{ name: 'MainTabs' }],
-            });
-          } else {
-            Alert.alert('Error', 'Could not retrieve session.');
-          }
-        } else if (result.type === 'cancel') {
-          Alert.alert('Cancelled', 'Google login was cancelled.');
-        }
+    if (result.type === 'success' && result.url) {
+      const url = new URL(result.url);
+      const code = url.searchParams.get('code');
+
+      if (!code) throw new Error('No auth code in redirect URL');
+
+      const { data: exchangeData, error: exchangeError } =
+        await supabase.auth.exchangeCodeForSession(code);
+
+      if (exchangeError) throw exchangeError;
+
+      if (exchangeData?.session) {
+        const lastMode = await AsyncStorage.getItem('last_mode');
+        const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+        navigation.reset({
+          index: 0,
+          routes: [{ name: route }],
+        });
+      } else {
+        Alert.alert('Error', 'Could not retrieve session.');
       }
-    } catch (error: any) {
-      console.error('Google login error:', error);
-      Alert.alert('Google Login Failed', error.message || 'Something went wrong.');
-    } finally {
-      setLoading(false);
+    } else if (result.type === 'cancel') {
+      Alert.alert('Cancelled', 'Google login was cancelled.');
     }
-  };
+  } catch (error: any) {
+    console.error('Google login error:', error);
+    Alert.alert('Google Login Failed', error.message || 'Something went wrong.');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const glowScale = glowAnim.interpolate({
     inputRange: [0, 1],
