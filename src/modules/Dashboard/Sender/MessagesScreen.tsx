@@ -8,19 +8,13 @@ import {
   Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView, BackHandler,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 
 const ORANGE = '#FF751F';
 const PAGE_SIZE = 30;
-
-// Style applied to the bottom tab bar while a chat is open.
-const TAB_BAR_HIDDEN_STYLE = { display: 'none' as const };
-// Style restored when the chat is closed. `undefined` = fall back to the navigator's default.
-// If your tab bar has a custom `tabBarStyle`, put the same object here so it is restored exactly.
-const TAB_BAR_VISIBLE_STYLE: any = undefined;
 
 type Party = {
   user_id: number;
@@ -38,6 +32,7 @@ type ChatRoom = {
   latest_message: string | null;
   latest_sent_at: string | null;
   unread_count: number;
+  is_archived: boolean;
 };
 
 type ChatMessage = {
@@ -62,7 +57,6 @@ const formatChatTime = (timestamp: string) => {
   return formatDate(timestamp, 'MMM d');
 };
 
-// `previous` = the message that appears right before `current` in time (the older one)
 const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
   if (!previous) return true;
   const currDay = formatDate(current.sent_at, 'yyyy-MM-dd');
@@ -93,7 +87,6 @@ const sortByLatest = (list: ChatRoom[]) =>
 const messageKey = (m: ChatMessage) =>
   m._temp_id !== undefined ? `temp-${m._temp_id}` : `msg-${m.message_id}`;
 
-// Merge two message lists (dedupe) and keep them in ascending (oldest -> newest) order
 const mergeMessages = (a: ChatMessage[], b: ChatMessage[]) => {
   const map = new Map<string, ChatMessage>();
   [...a, ...b].forEach(m => map.set(messageKey(m), m));
@@ -102,40 +95,20 @@ const mergeMessages = (a: ChatMessage[], b: ChatMessage[]) => {
   );
 };
 
-// Finds every navigator in the parent chain that is a tab navigator
-const getTabNavigations = (nav: any): any[] => {
-  const found: any[] = [];
-  let current = nav;
-  while (current) {
-    try {
-      if (current.getState?.()?.type === 'tab') found.push(current);
-    } catch {
-      /* ignore */
-    }
-    current = current.getParent?.();
-  }
-  if (found.length === 0) {
-    // Fallback: apply to this screen and its direct parent
-    [nav, nav?.getParent?.()].forEach(n => n && found.push(n));
-  }
-  return found;
-};
-
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const route = useRoute<any>();
-  const isFocused = useIsFocused();
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
-  const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
+  const [activeTab, setActiveTab] = useState<'inbox' | 'archived'>('inbox');
 
   const [conversations, setConversations] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<ChatRoom | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]); // ascending (oldest -> newest)
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [loadMore, setLoadMore] = useState(false);
@@ -152,40 +125,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const openRoomIdRef = useRef<number | undefined>(openRoomIdParam);
   openRoomIdRef.current = openRoomIdParam;
 
-  const navigationRef = useRef(navigation);
-  navigationRef.current = navigation;
-  const tabBarHidden = useRef(false);
-
   const detailHeaderAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
 
-  // Newest first, used by the inverted chat list (so the latest message is always shown first)
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
-
-  // ---------------------------------------------------------------------------
-  // Bottom tab bar: hidden ONLY while a specific chat is open
-  // ---------------------------------------------------------------------------
-  const setTabBarHidden = useCallback((hidden: boolean) => {
-    if (tabBarHidden.current === hidden) return;
-    tabBarHidden.current = hidden;
-    getTabNavigations(navigationRef.current).forEach(nav => {
-      try {
-        nav.setOptions({ tabBarStyle: hidden ? TAB_BAR_HIDDEN_STYLE : TAB_BAR_VISIBLE_STYLE });
-      } catch {
-        /* ignore */
-      }
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    setTabBarHidden(isFocused && !!selectedRoom);
-  }, [isFocused, selectedRoom, setTabBarHidden]);
-
-  // Always bring the tab bar back when this screen unmounts
-  useEffect(() => {
-    return () => setTabBarHidden(false);
-  }, [setTabBarHidden]);
 
   // Android hardware back: close the chat first
   useEffect(() => {
@@ -203,7 +147,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   // Fetch conversations when screen gains focus
   useFocusEffect(
     useCallback(() => {
-      // Coming back to the tab always shows the inbox, unless we are auto-opening a room
       if (!openRoomIdRef.current) {
         openToken.current++;
         setSelectedRoom(null);
@@ -222,7 +165,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }, [])
   );
 
-  // Chat open animation (layout effect so there is no flash of the previous animation state)
+  // Chat open animation
   useLayoutEffect(() => {
     if (!selectedRoom) return;
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
@@ -264,7 +207,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const { data: roomStates } = await supabase
         .from('chat_room_states')
-        .select('room_id, is_deleted')
+        .select('room_id, is_archived, is_deleted')
         .eq('user_id', userId);
 
       const stateMap = new Map();
@@ -342,13 +285,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             latest_message: latestResult.data?.message || null,
             latest_sent_at: latestResult.data?.sent_at || null,
             unread_count: unreadResult.count || 0,
+            is_archived: rState?.is_archived || false,
           };
         })
       );
 
       const list = sortByLatest(built.filter((c): c is ChatRoom => c !== null));
 
-      // Merge rooms that belong to the same person into one conversation (latest room is the main one)
       const uniqueConversations: ChatRoom[] = [];
       const seenUsers = new Map<number, ChatRoom>();
 
@@ -379,7 +322,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     fetchConversations();
   };
 
-  // Returns messages in ascending order (oldest -> newest)
   const fetchMessages = async (roomIds: number[], olderThan?: string) => {
     let query = supabase
       .from('chat_messages')
@@ -428,7 +370,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         );
 
         if (!isMine) {
-          // NOTE: Supabase queries only run when awaited / .then() is called
           supabase
             .from('chat_messages')
             .update({ is_read: true })
@@ -453,7 +394,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const openConversation = async (room: ChatRoom) => {
     const token = ++openToken.current;
 
-    // Reset chat state so the newest messages are loaded fresh and shown at the bottom
     setMessages([]);
     setHasMore(true);
     setLoadMore(false);
@@ -461,11 +401,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setChatLoading(true);
     setSelectedRoom(room);
 
-    // Subscribe first so nothing is missed while the history is loading
     subscribeToRoom(room.all_room_ids);
 
     const latest = await fetchMessages(room.all_room_ids);
-    if (token !== openToken.current) return; // chat was closed / another one was opened
+    if (token !== openToken.current) return;
 
     setMessages(prev => mergeMessages(latest, prev));
     setHasMore(latest.length >= PAGE_SIZE);
@@ -512,7 +451,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   const scrollToLatest = (animated = true) => {
-    // The chat list is inverted, so offset 0 is the newest message
     flatListRef.current?.scrollToOffset({ offset: 0, animated });
   };
 
@@ -541,20 +479,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         allRoomIds.map(id => ({
           room_id: id,
           user_id: currentUserId.current,
+          is_archived: false,
           is_deleted: false,
         }))
       );
 
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
-        if (hasReal) return prev.filter(m => m._temp_id !== tempId); // realtime already replaced it
+        if (hasReal) return prev.filter(m => m._temp_id !== tempId);
         return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
       });
       setConversations(prev =>
         sortByLatest(
           prev.map(c =>
             c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
+              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
               : c
           )
         )
@@ -567,15 +506,40 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Archive / Delete options                                            */
+  /* ------------------------------------------------------------------ */
   const openChatOptions = (room: ChatRoom) => {
+    const isArchived = room.is_archived;
+
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
       [
         { text: 'Cancel', style: 'cancel' },
+        {
+          text: isArchived ? 'Unarchive' : 'Archive',
+          onPress: () => toggleArchiveChat(room, !isArchived),
+        },
         { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(room) },
       ]
     );
+  };
+
+  const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
+    setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
+    try {
+      const payloads = room.all_room_ids.map(id => ({
+        room_id: id,
+        user_id: currentUserId.current,
+        is_archived: archive,
+        is_deleted: false,
+      }));
+      await supabase.from('chat_room_states').upsert(payloads);
+    } catch (error) {
+      console.error('Error toggling archive:', error);
+      fetchConversations();
+    }
   };
 
   const deleteChat = async (room: ChatRoom) => {
@@ -594,6 +558,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 room_id: id,
                 user_id: currentUserId.current,
                 is_deleted: true,
+                is_archived: false,
               }));
               await supabase.from('chat_room_states').upsert(payloads);
             } catch (error) {
@@ -606,7 +571,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  // Auto-open a chat when navigated here with `openRoomId`
   useEffect(() => {
     if (!openRoomIdParam) {
       autoOpenHandled.current = null;
@@ -619,20 +583,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const target = conversations.find(c => c.all_room_ids.includes(openRoomIdParam));
     if (target) {
       autoOpenHandled.current = openRoomIdParam;
-      // Consume the param so clicking the Messages tab later never re-opens this chat
       navigation.setParams({ openRoomId: undefined });
       openConversation(target);
       return;
     }
 
-    // Room not in the list yet (e.g. it was just created) - refresh once and look again
     if (autoOpenFetched.current !== openRoomIdParam) {
       autoOpenFetched.current = openRoomIdParam;
       fetchConversations();
     }
   }, [openRoomIdParam, conversations, loading]);
 
-  // Realtime updates for the inbox list
   useEffect(() => {
     roomsSubscription.current = supabase
       .channel(`chat-rooms-list-${Date.now()}`)
@@ -675,44 +636,61 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const isUnread = item.unread_count > 0;
 
     return (
-      <TouchableOpacity
-        style={[styles.inboxItem, isUnread && styles.inboxItemUnread]}
-        onPress={() => openConversation(item)}
-        activeOpacity={0.7}
-        onLongPress={() => openChatOptions(item)}
-      >
-        <View style={styles.inboxAvatarWrapper}>
-          {renderAvatar(item.other, 48)}
-          {isUnread && <View style={styles.unreadDotIndicator} />}
-        </View>
-
-        <View style={styles.inboxInfo}>
-          <View style={styles.inboxHeaderRow}>
-            <Text style={[styles.inboxName, isUnread && styles.inboxNameUnread]} numberOfLines={1}>
-              {item.other.first_name} {item.other.last_name}
-            </Text>
-            {item.latest_sent_at && (
-              <Text style={[styles.inboxTime, isUnread && styles.inboxTimeUnread]}>
-                {formatChatTime(item.latest_sent_at)}
-              </Text>
-            )}
-          </View>
-          <View style={styles.inboxMsgRow}>
-            <Text style={[styles.inboxLastMsg, isUnread && styles.inboxLastMsgUnread]} numberOfLines={2}>
-              {item.latest_message || 'No messages yet'}
-            </Text>
-            {isUnread && (
-              <View style={styles.unreadBadgeMoveIt}>
-                <Text style={styles.unreadBadgeMoveItText}>{item.unread_count > 99 ? '99+' : item.unread_count}</Text>
+      <View style={styles.chatRowWrapper}>
+        <TouchableOpacity
+          style={styles.chatRow}
+          onPress={() => openConversation(item)}
+          activeOpacity={0.7}
+        >
+          <View style={styles.avatarWrapper}>
+            {item.other.profile_photo ? (
+              <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Text style={styles.avatarText}>
+                  {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
+                </Text>
               </View>
             )}
+            {isUnread && <View style={styles.onlineDot} />}
           </View>
-        </View>
-      </TouchableOpacity>
+
+          <View style={styles.chatInfo}>
+            <View style={styles.chatNameRow}>
+              <Text style={styles.chatName} numberOfLines={1}>
+                {item.other.first_name} {item.other.last_name}
+              </Text>
+              {item.latest_sent_at && (
+                <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>
+                  {formatChatTime(item.latest_sent_at)}
+                </Text>
+              )}
+            </View>
+            <View style={styles.chatMsgRow}>
+              <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
+                {item.latest_message || 'Say hi 👋'}
+              </Text>
+              {isUnread && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {/* Dropdown Options Icon */}
+        <TouchableOpacity
+          style={styles.optionsButton}
+          onPress={() => openChatOptions(item)}
+          activeOpacity={0.6}
+        >
+          <Ionicons name="ellipsis-vertical" size={18} color="#9CA3AF" />
+        </TouchableOpacity>
+      </View>
     );
   };
 
-  // The chat list is inverted: index 0 = newest message, index + 1 = the older neighbour
   const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
     const isMe = item.sender_id === currentUserId.current;
     const older = index + 1 < displayMessages.length ? displayMessages[index + 1] : null;
@@ -724,14 +702,16 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       <View>
         {showDateSeparator && (
           <View style={styles.dateSeparator}>
+            <View style={styles.dateSeparatorLine} />
             <Text style={styles.dateSeparatorText}>{formatDateSeparator(item.sent_at)}</Text>
+            <View style={styles.dateSeparatorLine} />
           </View>
         )}
 
         <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
           {!isMe && (
             <View style={styles.msgAvatarSlot}>
-              {showAvatar ? renderAvatar(selectedRoom!.other, 28) : <View style={{ width: 28 }} />}
+              {showAvatar ? renderAvatar(selectedRoom!.other, 32) : <View style={{ width: 32 }} />}
             </View>
           )}
 
@@ -742,8 +722,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               {isMe && (
                 <Ionicons
                   name={item.is_read ? 'checkmark-done' : 'checkmark'}
-                  size={14}
-                  color={item.is_read ? '#FFFFFF' : 'rgba(255,255,255,0.7)'}
+                  size={12}
+                  color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
                   style={{ marginLeft: 4 }}
                 />
               )}
@@ -754,36 +734,44 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  // Same header is used while loading and when loaded, so the titles never change size
+  /* ------------------------------------------------------------------ */
+  /* Filter conversations based on the active tab                        */
+  /* ------------------------------------------------------------------ */
+  const filteredConversations = conversations.filter(c =>
+    activeTab === 'archived' ? c.is_archived : !c.is_archived
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Header with Inbox / Archived tabs                                   */
+  /* ------------------------------------------------------------------ */
   const renderTabHeader = () => (
     <View style={styles.listHeaderFlat}>
       <View style={styles.headerTabRow}>
         <TouchableOpacity
-          onPress={() => setActiveTab('messages')}
+          onPress={() => setActiveTab('inbox')}
           activeOpacity={0.8}
           style={styles.tabButton}
         >
-          <Text style={[styles.headerTabTitle, activeTab === 'messages' && styles.headerTabTitleActive]}>
+          <Text style={[styles.headerTabTitle, activeTab === 'inbox' && styles.headerTabTitleActive]}>
             Messages
           </Text>
-          <View style={[styles.activeTabIndicator, activeTab !== 'messages' && { opacity: 0 }]} />
+          <View style={[styles.activeTabIndicator, activeTab !== 'inbox' && { opacity: 0 }]} />
         </TouchableOpacity>
 
         <TouchableOpacity
-          onPress={() => setActiveTab('notification')}
+          onPress={() => setActiveTab('archived')}
           activeOpacity={0.8}
           style={styles.tabButton}
         >
-          <Text style={[styles.headerTabTitle, activeTab === 'notification' && styles.headerTabTitleActive]}>
-            Notification
+          <Text style={[styles.headerTabTitle, activeTab === 'archived' && styles.headerTabTitleActive]}>
+            Archived
           </Text>
-          <View style={[styles.activeTabIndicator, activeTab !== 'notification' && { opacity: 0 }]} />
+          <View style={[styles.activeTabIndicator, activeTab !== 'archived' && { opacity: 0 }]} />
         </TouchableOpacity>
       </View>
     </View>
   );
 
-  // If a chat room is open, render the active chat view
   if (selectedRoom) {
     return (
       <View style={styles.detailContainer}>
@@ -812,7 +800,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
         >
           <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: '#F9FAFB' }]}>
             {chatLoading ? (
@@ -875,7 +864,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   }
 
-  // Inbox screen with Messages & Notification tabs (bottom tab bar stays visible here)
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
@@ -886,31 +874,32 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <View style={styles.centerLoader}>
           <ActivityIndicator size="large" color={ORANGE} />
         </View>
-      ) : activeTab === 'messages' ? (
-        conversations.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
-            <Text style={styles.emptyTitle}>No messages yet</Text>
-            <Text style={styles.emptySubtext}>When you contact a provider or sender, your conversation will show up here.</Text>
-          </View>
-        ) : (
-          <View style={{ flex: 1 }}>
-            <FlatList
-              data={conversations}
-              keyExtractor={(item) => item.room_id.toString()}
-              renderItem={renderConversationItem}
-              contentContainerStyle={styles.listContentFlat}
-              showsVerticalScrollIndicator={false}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
-            />
-          </View>
-        )
-      ) : (
-        /* Notification Tab Placeholder */
+      ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons name="notifications-outline" size={48} color="#D1D5DB" />
-          <Text style={styles.emptyTitle}>Notifications</Text>
-          <Text style={styles.emptySubtext}>Your notifications and updates will appear here soon.</Text>
+          <Ionicons
+            name={activeTab === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
+            size={48}
+            color="#D1D5DB"
+          />
+          <Text style={styles.emptyTitle}>
+            {activeTab === 'inbox' ? 'No messages yet' : 'No archived chats'}
+          </Text>
+          <Text style={styles.emptySubtext}>
+            {activeTab === 'inbox'
+              ? 'When you contact a provider or sender, your conversation will show up here.'
+              : 'Chats you archive will be saved here.'}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ flex: 1 }}>
+          <FlatList
+            data={filteredConversations}
+            keyExtractor={(item) => item.room_id.toString()}
+            renderItem={renderConversationItem}
+            contentContainerStyle={styles.listContentFlat}
+            showsVerticalScrollIndicator={false}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
+          />
         </View>
       )}
     </SafeAreaView>
@@ -921,7 +910,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   flex: { flex: 1 },
 
-  // Header Tab Row
+  /* Header Tab Row */
   listHeaderFlat: {
     backgroundColor: 'transparent',
     flexDirection: 'row',
@@ -946,7 +935,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#9CA3AF',
     letterSpacing: -0.5,
-    // Fixed height to prevent layout shift when the active tab changes
     height: 32,
     lineHeight: 32,
   },
@@ -969,59 +957,43 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 16, letterSpacing: -0.2 },
   emptySubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
-  // Edge-to-edge list styling
-  listContentFlat: { paddingBottom: 24 },
+  /* Edge-to-edge list styling */
+  listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
 
-  inboxItem: {
+  chatRowWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
     backgroundColor: '#FFFFFF',
+    marginBottom: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
   },
-  inboxItemUnread: {
-    backgroundColor: '#F9FAFB',
-  },
-  inboxAvatarWrapper: {
-    marginRight: 16,
-    position: 'relative',
-  },
-  avatarBadge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-  },
-  unreadDotIndicator: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: ORANGE,
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-  },
-  inboxInfo: { flex: 1, justifyContent: 'center' },
-  inboxHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  inboxName: { fontSize: 16, fontWeight: '600', color: '#111827', flex: 1, marginRight: 8 },
-  inboxNameUnread: { fontWeight: '700' },
-  inboxTime: { fontSize: 12, color: '#9CA3AF', fontWeight: '500' },
-  inboxTimeUnread: { color: ORANGE, fontWeight: '600' },
-  inboxMsgRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 4 },
-  inboxLastMsg: { fontSize: 14, color: '#6B7280', flex: 1, lineHeight: 20 },
-  inboxLastMsgUnread: { color: '#374151', fontWeight: '600' },
-  unreadBadgeMoveIt: { backgroundColor: ORANGE, borderRadius: 10, paddingHorizontal: 6, height: 20, minWidth: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
-  unreadBadgeMoveItText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 12 },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
 
-  // Detail Screen Flat Header
+  avatarWrapper: { position: 'relative', marginRight: 14 },
+  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#F3F4F6' },
+  avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2.5, borderColor: '#FFFFFF' },
+
+  chatInfo: { flex: 1, marginRight: 8 },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  chatName: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  chatTimeUnread: { color: ORANGE, fontWeight: '800' },
+  chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  chatLastMsg: { fontSize: 13, color: '#6B7280', flex: 1, fontWeight: '500' },
+  chatLastMsgUnread: { color: '#111827', fontWeight: '700' },
+  unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
+
   detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
   chatHeaderFlat: {
     flexDirection: 'row',
@@ -1030,6 +1002,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 16,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
   },
   backBtnFlat: { padding: 4, marginRight: 8, marginLeft: -8 },
   chatHeaderInfo: { flex: 1 },
@@ -1037,35 +1016,26 @@ const styles = StyleSheet.create({
   chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
   callBtnFlat: { padding: 8, backgroundColor: '#FFFFFF', borderRadius: 20 },
 
-  // Chat Content (list is inverted, so top/bottom padding are swapped:
-  // paddingTop = space under the newest message, paddingBottom = space above the oldest one)
-  chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
-  dateSeparator: { alignItems: 'center', marginVertical: 16 },
-  dateSeparatorText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
+  dateSeparatorLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
+  dateSeparatorText: { fontSize: 11, color: '#9CA3AF', fontWeight: '700', letterSpacing: 0.3 },
 
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 12 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4, paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
-  msgAvatarSlot: { marginRight: 8, paddingBottom: 2 },
+  msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
+  avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFFFFF' },
 
-  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 18 },
-  myMsg: {
-    backgroundColor: ORANGE,
-    borderBottomRightRadius: 4,
-  },
-  theirMsg: {
-    backgroundColor: '#FFFFFF',
-    borderBottomLeftRadius: 4,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  msgText: { fontSize: 15, lineHeight: 22 },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
+  theirMsg: { backgroundColor: '#FFFFFF', borderBottomLeftRadius: 6, borderWidth: 1, borderColor: '#F3F4F6', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
+  msgText: { fontSize: 14.5, color: '#111827', lineHeight: 20, fontWeight: '500' },
   myMsgText: { color: '#FFFFFF' },
   msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4 },
-  msgTime: { fontSize: 11, color: '#9CA3AF' },
-  myMsgTime: { color: 'rgba(255,255,255,0.7)' },
-  loadingMore: { paddingVertical: 12 },
+  msgTime: { fontSize: 10, color: '#9CA3AF', fontWeight: '600' },
+  myMsgTime: { color: 'rgba(255,255,255,0.85)' },
+  loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
-  // Bottom Input Bar
   inputContainerFlat: {
     flexDirection: 'row',
     alignItems: 'flex-end',

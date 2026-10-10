@@ -21,19 +21,48 @@ export default function PaymentMethodsScreen() {
 
   useFocusEffect(useCallback(() => { loadMethods(); }, []));
 
-  const loadMethods = async () => {
-    try {
-      setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data: userData } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
-      if (!userData) return;
-      setUserId(userData.user_id);
-      const data = await fetchPaymentMethods(userData.user_id);
-      setMethods(data);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
-  };
+  const loadMethods = useCallback(async () => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return;
+  const { data: userData } = await supabase
+    .from('users')
+    .select('user_id')
+    .eq('auth_id', user.id)
+    .single();
+  if (!userData) return;
+  setUserId(userData.user_id);
+  const data = await fetchPaymentMethods(userData.user_id);
+  setMethods(data);
+}, []);
+
+useFocusEffect(
+  useCallback(() => {
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    const refresh = async () => {
+      if (cancelled) return;
+      try {
+        await loadMethods();
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
+    setLoading(true);
+    refresh().finally(() => setLoading(false));
+
+    // Webhook lag — poll a few times after focus so newly linked methods appear
+    timers.push(setTimeout(refresh, 3000));
+    timers.push(setTimeout(refresh, 6000));
+    timers.push(setTimeout(refresh, 10000));
+
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [loadMethods])
+);
 
   const handleSetDefault = async (provider: 'gcash' | 'maya') => {
     if (!userId) return;

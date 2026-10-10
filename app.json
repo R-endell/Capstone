@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Capstone",
-    "slug": "Capstone",
+    "name": "Pack-N-Ship",
+    "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/applogo.jpeg",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
@@ -57,14 +57,15 @@
     }
   ],
   [
-    "expo-gradle-properties",
-    {
-      "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
-      "org.gradle.parallel": "false",
-      "org.gradle.workers.max": "2",
-      "kotlin.daemon.jvmargs": "-Xmx2048m"
-        }
-      ]
+  "expo-gradle-properties",
+  {
+    "ndkVersion": "26.1.10909125",
+    "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
+    "org.gradle.parallel": "false",
+    "org.gradle.workers.max": "2",
+    "kotlin.daemon.jvmargs": "-Xmx2048m"
+  }
+]
     ],
     "extra": {
       "eas": {

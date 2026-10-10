@@ -1,5 +1,6 @@
 import { supabase } from '../utils/supabase';
 import { PaymentMethod, PaymentProvider, CreateSessionResponse } from '../types/payment';
+import { FunctionsHttpError } from '@supabase/supabase-js';
 
 export async function fetchPaymentMethods(userId: number): Promise<PaymentMethod[]> {
   const { data, error } = await supabase
@@ -21,7 +22,19 @@ export async function createLinkSession(
     { body: { userId, provider } }
   );
 
-  if (error) throw error;
+  if (error) {
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await error.context.json();
+        console.error('xendit-create-session error:', body);
+        throw new Error(body?.error || JSON.stringify(body));
+      } catch (e: any) {
+        throw new Error(e?.message || 'Payment session failed');
+      }
+    }
+    throw error;
+  }
+
   if (!data) throw new Error('Payment session data was not returned');
   return data.payment_link_url;
 }

@@ -58,22 +58,35 @@ serve(async (req) => {
 
       console.log('Found user:', user.user_id)
 
-      const { error: upsertError } = await supabase
-        .from('user_payment_methods')
-        .upsert(
-          {
-            user_id: user.user_id,
-            provider,
-            payment_token_id,
-            linked_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id,provider' }
-        )
+      // Check if this is the user's first payment method
+const { data: existing } = await supabase
+  .from('user_payment_methods')
+  .select('id')
+  .eq('user_id', user.user_id);
 
-      if (upsertError) {
-        console.error('Upsert error:', upsertError)
-        return new Response('OK', { status: 200 })
-      }
+const isFirstMethod = !existing || existing.length === 0;
+
+const upsertPayload: Record<string, unknown> = {
+  user_id: user.user_id,
+  provider,
+  payment_token_id,
+  linked_at: new Date().toISOString(),
+};
+
+if (isFirstMethod) {
+  upsertPayload.is_default = true;
+}
+
+const { error: upsertError } = await supabase
+  .from('user_payment_methods')
+  .upsert(upsertPayload, { onConflict: 'user_id,provider' });
+
+if (upsertError) {
+  console.error('Upsert error:', upsertError);
+  return new Response('OK', { status: 200 });
+}
+
+console.log('Saved payment method; is_default:', isFirstMethod);
 
       console.log('Successfully saved payment method')
     }

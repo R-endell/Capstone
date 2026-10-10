@@ -37,18 +37,18 @@ const parseNaiveIsoString = (isoString: string) => {
   if (!isoString) return new Date();
   const parts = isoString.split(/[-T:+Z]/);
   if (parts.length < 5) return new Date();
-  
+
   const y = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10) - 1;
   const d = parseInt(parts[2], 10);
   const hh = parseInt(parts[3], 10);
   const mm = parseInt(parts[4], 10);
-  
+
   return new Date(y, m, d, hh, mm);
 };
 
 /* ==================================================================== */
-/* InteractiveMap — now with OSRM routing                                */
+/* InteractiveMap — with OSRM routing                                    */
 /* ==================================================================== */
 const InteractiveMap = ({
   onLocationSelect,
@@ -96,7 +96,6 @@ const InteractiveMap = ({
           ` : ''}
 
           ${startLat && startLng && endLat && endLng ? `
-            // Fetch road route from OSRM directly
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
               + ${startLng} + ',' + ${startLat} + ';' 
               + ${endLng} + ',' + ${endLat} 
@@ -233,7 +232,11 @@ export default function ManageRoutesScreen() {
   };
 
   const fetchVehicles = async (providerId: number) => {
-    const { data } = await supabase.from('vehicles').select('vehicle_id, vehicle_type, plate_number').eq('provider_id', providerId).eq('verification_status', 'Verified');
+    const { data } = await supabase
+      .from('vehicles')
+      .select('vehicle_id, vehicle_type, plate_number')
+      .eq('provider_id', providerId)
+      .eq('verification_status', 'Verified');
     return data || [];
   };
 
@@ -256,7 +259,12 @@ export default function ManageRoutesScreen() {
 
   const handleLocationSelect = async (lat: number, lng: number) => {
     try {
-      const { data: existing } = await supabase.from('locations').select('*').eq('latitude', lat).eq('longitude', lng).limit(1);
+      const { data: existing } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('latitude', lat)
+        .eq('longitude', lng)
+        .limit(1);
       let location = existing && existing.length > 0 ? existing[0] : null;
 
       if (!location) {
@@ -394,12 +402,12 @@ export default function ManageRoutesScreen() {
 
   const modalScale = modalAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.95, 1],
+    outputRange: [0.97, 1],
   });
 
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
-    
+
     const freqColor =
       item.route_frequency === 'Daily' ? { bg: '#DBEAFE', fg: '#2563EB' } :
       item.route_frequency === 'Weekly' ? { bg: '#EDE9FE', fg: '#7C3AED' } :
@@ -481,24 +489,22 @@ export default function ManageRoutesScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
-        <View style={styles.headerTopRow}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headerSubtitle}>
-              {routes.length} {routes.length === 1 ? 'route' : 'routes'}
-            </Text>
-            <Text style={styles.headerTitle}>Manage Routes</Text>
-          </View>
-          <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd}>
-            <Ionicons name="add" size={22} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
+      {/* Compact White Header */}
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="arrow-back" size={22} color="#111827" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Manage Routes</Text>
+        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.85}>
+          <Ionicons name="add" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -559,6 +565,9 @@ export default function ManageRoutesScreen() {
         </Modal>
       )}
 
+      {/* ============================================================ */}
+      {/* Route Modal — Sender-style form                                */}
+      {/* ============================================================ */}
       <Modal
         animationType="slide"
         transparent={true}
@@ -578,8 +587,10 @@ export default function ManageRoutesScreen() {
               <View style={{ width: 40 }} />
             </View>
 
-            <View style={styles.modalScrollContent}>
-
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.modalScrollContent}
+            >
               <TouchableOpacity style={styles.modalMapContainer} onPress={() => setIsMapFullscreen(true)} activeOpacity={0.9}>
                 <View pointerEvents="none" style={StyleSheet.absoluteFill}>
                   <InteractiveMap
@@ -592,156 +603,153 @@ export default function ManageRoutesScreen() {
                   />
                 </View>
                 <View style={styles.mapExpandOverlay}>
-                  <Ionicons name="expand" size={24} color="#FFF" />
+                  <Ionicons name="expand" size={20} color="#FFF" />
                   <Text style={styles.mapExpandText}>Tap to Expand Map</Text>
                 </View>
               </TouchableOpacity>
 
-              <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
-                <View style={styles.locationSelectorsRow}>
-                  <TouchableOpacity
-                    style={[styles.locationSelectorBtn, startLocation && styles.locationSelected]}
-                    onPress={() => { setMapMode('select_start'); setIsMapFullscreen(true); }}
-                  >
-                    <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: '#3B82F6' }]}>
-                      <Ionicons name="radio-button-on" size={14} color={startLocation ? '#FFFFFF' : '#6B7280'} />
-                    </View>
-                    <Text style={[styles.locationSelectorText, startLocation && styles.locationSelectorTextSelected]}>
-                      {startLocation ? 'Start Set' : 'Set Start'}
-                    </Text>
+              <View style={styles.locationSelectorsRow}>
+                <TouchableOpacity
+                  style={[styles.locationSelectorBtn, startLocation && styles.locationSelected]}
+                  onPress={() => { setMapMode('select_start'); setIsMapFullscreen(true); }}
+                >
+                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: '#3B82F6' }]}>
+                    <Ionicons name="radio-button-on" size={14} color={startLocation ? '#FFFFFF' : '#6B7280'} />
+                  </View>
+                  <Text style={[styles.locationSelectorText, startLocation && styles.locationSelectorTextSelected]}>
+                    {startLocation ? 'Start Set' : 'Set Start'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.locationSelectorBtn, endLocation && styles.locationSelected]}
+                  onPress={() => { setMapMode('select_end'); setIsMapFullscreen(true); }}
+                >
+                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: '#EF4444' }]}>
+                    <Ionicons name="location" size={14} color={endLocation ? '#FFFFFF' : '#6B7280'} />
+                  </View>
+                  <Text style={[styles.locationSelectorText, endLocation && styles.locationSelectorTextSelected]}>
+                    {endLocation ? 'End Set' : 'Set End'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.pickedLocationsDisplay}>
+                <View style={styles.pickedRow}>
+                  <View style={[styles.pickedDot, { backgroundColor: '#3B82F6' }]} />
+                  <Text style={styles.pickedLocationText} numberOfLines={1}>
+                    <Text style={{ fontWeight: '700' }}>Start: </Text>
+                    {startLocation?.street_address || 'Tap "Set Start" to pick on map'}
+                  </Text>
+                </View>
+                <View style={styles.pickedRow}>
+                  <View style={[styles.pickedDot, { backgroundColor: '#EF4444' }]} />
+                  <Text style={styles.pickedLocationText} numberOfLines={1}>
+                    <Text style={{ fontWeight: '700' }}>End: </Text>
+                    {endLocation?.street_address || 'Tap "Set End" to pick on map'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.dateTimeRow}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Date</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                    <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.locationSelectorBtn, endLocation && styles.locationSelected]}
-                    onPress={() => { setMapMode('select_end'); setIsMapFullscreen(true); }}
-                  >
-                    <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: '#EF4444' }]}>
-                      <Ionicons name="location" size={14} color={endLocation ? '#FFFFFF' : '#6B7280'} />
-                    </View>
-                    <Text style={[styles.locationSelectorText, endLocation && styles.locationSelectorTextSelected]}>
-                      {endLocation ? 'End Set' : 'Set End'}
-                    </Text>
-                  </TouchableOpacity>
+                  {showDatePicker && (
+                    <DateTimePicker
+                      value={departureDate}
+                      mode="date"
+                      display="default"
+                      minimumDate={new Date()}
+                      onChange={(e, d) => {
+                        if (Platform.OS === 'android') setShowDatePicker(false);
+                        if (e.type === 'set' && d) {
+                          setDepartureDate(d);
+                        }
+                      }}
+                    />
+                  )}
                 </View>
 
-                <View style={styles.pickedLocationsDisplay}>
-                  <View style={styles.pickedRow}>
-                    <View style={[styles.pickedDot, { backgroundColor: '#3B82F6' }]} />
-                    <Text style={styles.pickedLocationText} numberOfLines={1}>
-                      <Text style={{ fontWeight: '700' }}>Start: </Text>
-                      {startLocation?.street_address || 'Tap "Set Start" to pick on map'}
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Time</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>
+                      {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </Text>
-                  </View>
-                  <View style={styles.pickedRow}>
-                    <View style={[styles.pickedDot, { backgroundColor: '#EF4444' }]} />
-                    <Text style={styles.pickedLocationText} numberOfLines={1}>
-                      <Text style={{ fontWeight: '700' }}>End: </Text>
-                      {endLocation?.street_address || 'Tap "Set End" to pick on map'}
-                    </Text>
-                  </View>
+                  </TouchableOpacity>
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={departureTime}
+                      mode="time"
+                      display="default"
+                      onChange={(e, t) => {
+                        if (Platform.OS === 'android') setShowTimePicker(false);
+                        if (e.type === 'set' && t) {
+                          setDepartureTime(t);
+                        }
+                      }}
+                    />
+                  )}
                 </View>
+              </View>
 
-                <View style={styles.dateTimeRow}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Date</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
-                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
-                    </TouchableOpacity>
-                    {showDatePicker && (
-                      <DateTimePicker
-                        value={departureDate}
-                        mode="date"
-                        display="default"
-                        minimumDate={new Date()}
-                        onChange={(e, d) => {
-                          if (Platform.OS === 'android') setShowDatePicker(false);
-                          if (e.type === 'set' && d) {
-                            setDepartureDate(d);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Time</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
-                      <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>
-                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Route Frequency</Text>
+                <View style={styles.frequencyOptions}>
+                  {FREQUENCIES.map((freq) => (
+                    <TouchableOpacity
+                      key={freq}
+                      style={[styles.frequencyOption, selectedFrequency === freq && styles.frequencyOptionSelected]}
+                      onPress={() => setSelectedFrequency(freq)}
+                    >
+                      <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>
+                        {freq}
                       </Text>
                     </TouchableOpacity>
-                    {showTimePicker && (
-                      <DateTimePicker
-                        value={departureTime}
-                        mode="time"
-                        display="default"
-                        onChange={(e, t) => {
-                          if (Platform.OS === 'android') setShowTimePicker(false);
-                          if (e.type === 'set' && t) {
-                            setDepartureTime(t);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
+                  ))}
                 </View>
+              </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.inputLabel}>Route Frequency</Text>
-                  <View style={styles.frequencyOptions}>
-                    {FREQUENCIES.map((freq) => (
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Vehicle</Text>
+                {vehicles.length === 0 ? (
+                  <View style={styles.noVehiclesBox}>
+                    <Ionicons name="car-outline" size={20} color="#9CA3AF" />
+                    <Text style={styles.noVehiclesText}>No verified vehicles found</Text>
+                  </View>
+                ) : (
+                  <View style={styles.vehicleOptions}>
+                    {vehicles.map((v) => (
                       <TouchableOpacity
-                        key={freq}
-                        style={[styles.frequencyOption, selectedFrequency === freq && styles.frequencyOptionSelected]}
-                        onPress={() => setSelectedFrequency(freq)}
+                        key={v.vehicle_id}
+                        style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
+                        onPress={() => setSelectedVehicleId(v.vehicle_id)}
                       >
-                        <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>
-                          {freq}
+                        <Ionicons name="car-sport" size={14} color={selectedVehicleId === v.vehicle_id ? '#FFFFFF' : '#6B7280'} />
+                        <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
+                          {v.plate_number}
                         </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
-                </View>
+                )}
+              </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.inputLabel}>Vehicle</Text>
-                  {vehicles.length === 0 ? (
-                    <View style={styles.noVehiclesBox}>
-                      <Ionicons name="car-outline" size={20} color="#9CA3AF" />
-                      <Text style={styles.noVehiclesText}>No verified vehicles found</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.vehicleOptions}>
-                      {vehicles.map((v) => (
-                        <TouchableOpacity
-                          key={v.vehicle_id}
-                          style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
-                          onPress={() => setSelectedVehicleId(v.vehicle_id)}
-                        >
-                          <Ionicons name="car-sport" size={14} color={selectedVehicleId === v.vehicle_id ? '#FFFFFF' : '#6B7280'} />
-                          <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
-                            {v.plate_number}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  )}
-                </View>
-
-                <TouchableOpacity style={[styles.submitBtn, submitting && styles.submitBtnDisabled]} onPress={handleSubmit} disabled={submitting}>
-                  {submitting ? (
-                    <ActivityIndicator color="#FFF" />
-                  ) : (
-                    <>
-                      <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-                      <Text style={styles.submitBtnText}>{editingRoute ? 'Update Route' : 'Save Route'}</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-
-              </ScrollView>
-            </View>
+              <TouchableOpacity style={[styles.submitBtn, submitting && styles.submitBtnDisabled]} onPress={handleSubmit} disabled={submitting}>
+                {submitting ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                    <Text style={styles.submitBtnText}>{editingRoute ? 'Update Route' : 'Save Route'}</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
           </Animated.View>
         </View>
       </Modal>
@@ -751,17 +759,47 @@ export default function ManageRoutesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
+
+  /* Compact white header */
   header: {
-    backgroundColor: ORANGE, paddingHorizontal: 20, paddingBottom: 26,
-    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
   },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  backBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
-  headerSubtitle: { fontSize: 11, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
-  headerAddBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.2,
+  },
+  headerAddBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: ORANGE,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
 
   listContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
@@ -775,9 +813,9 @@ const styles = StyleSheet.create({
   emptyAddBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', letterSpacing: 0.2 },
 
   routeCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
-    borderWidth: 1, borderColor: '#F3F4F6', overflow: 'hidden', position: 'relative',
+    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, paddingLeft: 20, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: '#E5E7EB', overflow: 'hidden', position: 'relative',
   },
   cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
@@ -812,51 +850,211 @@ const styles = StyleSheet.create({
   fullscreenInstructionBox: { flex: 1, marginLeft: 16, backgroundColor: '#FFF', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4 },
   fullscreenInstructionText: { fontWeight: '700', color: '#111827', textAlign: 'center' },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  modalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 8, maxHeight: '94%', flex: 1, shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.15, shadowRadius: 20, elevation: 12 },
-  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  modalCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center' },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
-  modalScrollContent: { flex: 1, paddingHorizontal: 20, paddingTop: 20 },
+  /* ---------------- Modal (Sender-style) ---------------- */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContainer: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 8,
+    maxHeight: '94%',
+    flex: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  modalCloseBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.2,
+  },
+  modalScrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 40,
+  },
 
-  modalMapContainer: { height: 180, borderRadius: 16, overflow: 'hidden', marginBottom: 16, borderWidth: 1, borderColor: '#E5E7EB', backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center' },
-  mapExpandOverlay: { position: 'absolute', backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  mapExpandText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
+  modalMapContainer: {
+    height: 180,
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mapExpandOverlay: {
+    position: 'absolute',
+    backgroundColor: 'rgba(17,24,39,0.7)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  mapExpandText: { color: '#FFF', fontWeight: '700', fontSize: 12 },
 
   locationSelectorsRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
-  locationSelectorBtn: { flex: 1, backgroundColor: '#F9FAFB', paddingVertical: 12, paddingHorizontal: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8, borderWidth: 1.5, borderColor: '#E5E7EB' },
+  locationSelectorBtn: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+  },
   locationSelected: { backgroundColor: '#F0F9FF', borderColor: '#3B82F6' },
-  locSelectorIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center' },
+  locSelectorIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#E5E7EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   locationSelectorText: { fontWeight: '700', color: '#6B7280', fontSize: 13 },
   locationSelectorTextSelected: { color: '#111827' },
 
-  pickedLocationsDisplay: { marginBottom: 20, padding: 14, backgroundColor: '#F9FAFB', borderRadius: 14, gap: 8, borderWidth: 1, borderColor: '#F3F4F6' },
+  pickedLocationsDisplay: {
+    marginBottom: 20,
+    padding: 14,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+  },
   pickedRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   pickedDot: { width: 8, height: 8, borderRadius: 4 },
   pickedLocationText: { flex: 1, fontSize: 12, color: '#4B5563', fontWeight: '500' },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   inputGroup: { flex: 1 },
-  inputLabel: { marginBottom: 8, fontWeight: '700', color: '#374151', fontSize: 12, letterSpacing: 0.2 },
-  dateTimeButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12 },
+  inputLabel: {
+    marginBottom: 8,
+    fontWeight: '700',
+    color: '#374151',
+    fontSize: 12,
+    letterSpacing: 0.2,
+  },
+  dateTimeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   dateTimeValue: { fontSize: 13, color: '#111827', fontWeight: '600' },
 
   formGroup: { marginBottom: 20 },
   frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  frequencyOption: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 22, borderWidth: 1.5, borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' },
-  frequencyOptionSelected: { backgroundColor: ORANGE, borderColor: ORANGE, shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3 },
+  frequencyOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#FFFFFF',
+  },
+  frequencyOptionSelected: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
   frequencyOptionText: { fontSize: 13, color: '#6B7280', fontWeight: '700' },
   frequencyOptionTextSelected: { color: '#FFFFFF' },
 
   vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  vehicleOption: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22, borderWidth: 1.5, borderColor: '#E5E7EB' },
-  vehicleOptionActive: { backgroundColor: ORANGE, borderColor: ORANGE, shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3 },
+  vehicleOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+  },
+  vehicleOptionActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
   vehicleOptionText: { fontSize: 13, color: '#6B7280', fontWeight: '700' },
   vehicleOptionTextActive: { color: '#FFFFFF' },
-  noVehiclesBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F9FAFB', padding: 14, borderRadius: 14, borderWidth: 1.5, borderColor: '#E5E7EB', borderStyle: 'dashed' },
+  noVehiclesBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F9FAFB',
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderStyle: 'dashed',
+  },
   noVehiclesText: { fontSize: 13, color: '#9CA3AF', fontWeight: '600' },
 
-  submitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 16, marginTop: 8, gap: 8, shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5 },
+  submitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: ORANGE,
+    paddingVertical: 16,
+    borderRadius: 16,
+    marginTop: 8,
+    gap: 8,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 5,
+  },
   submitBtnDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
   submitBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
 });

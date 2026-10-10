@@ -3,56 +3,28 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Platform
+  Dimensions, Platform, Image, Linking, Share, BackHandler,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries, findMatches
 } from '../../../services/matchingService';
+import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
-const ORANGE = '#FA7A25';
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const ORANGE = '#FF751F';
+const CARGO_PHOTO_BUCKET = 'cargo-photos';
+
+let Clipboard: any = null;
+try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
+const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
-
-/* ==================================================================== */
-/* LeafletMap — single-point map (kept for reference)                    */
-/* ==================================================================== */
-const LeafletMap = ({ lat, lng, zoom }: { lat: number, lng: number, zoom: number }) => {
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }</style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${lat}, ${lng}], ${zoom});
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-          L.circleMarker([${lat}, ${lng}], { radius: 8, fillColor: "#3B82F6", color: "#FFFFFF", weight: 2, opacity: 1, fillOpacity: 1 }).addTo(map);
-        </script>
-      </body>
-    </html>
-  `;
-  return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
-      androidLayerType="hardware"
-    />
-  );
-};
 
 /* ==================================================================== */
 /* TaskRouteMap — two-point map with OSRM road-following route          */
@@ -91,8 +63,8 @@ const TaskRouteMap = ({
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <style>
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-pickup { background: #0000CC; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #D90429; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-pickup { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
+          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
         </style>
       </head>
       <body>
@@ -117,12 +89,8 @@ const TaskRouteMap = ({
           var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
           var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
 
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
+          if (pickupLat != null && pickupLng != null) L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          if (dropoffLat != null && dropoffLng != null) L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
 
           if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
@@ -136,15 +104,15 @@ const TaskRouteMap = ({
                 if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
                   var coords = data.routes[0].geometry.coordinates;
                   var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FA7A25', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
+                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
                   map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
                 } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
+                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
                   map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
                 }
               })
               .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FA7A25', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
+                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
                 map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
               });
           } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
@@ -200,8 +168,119 @@ const hydrateQr = async (deliveries: any[]) => {
   }));
 };
 
+const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
+const trackingCode = (id: any) => `PNS-${String(id).padStart(4, '0')}`;
+const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
+
+const splitAddress = (full?: string | null) => {
+  if (!full) return { main: 'Selected location', sub: '' };
+  const parts = full.split(', ');
+  return { main: parts[0], sub: parts.slice(1).join(', ') };
+};
+
+const toPhotoUrl = (v: any): string | null => {
+  if (!v || typeof v !== 'string') return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^(file|content):/i.test(v)) return null;
+  try {
+    return supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(v.replace(/^\/+/, '')).data.publicUrl;
+  } catch { return null; }
+};
+
+const buildCargoItems = (cargo: any) => {
+  let itemsJson: any = cargo?.items_json;
+  if (typeof itemsJson === 'string') {
+    try { itemsJson = JSON.parse(itemsJson); } catch { itemsJson = null; }
+  }
+  if (Array.isArray(itemsJson) && itemsJson.length > 0) {
+    const items = itemsJson.map((it: any) => ({
+      description: it?.description || `${it?.size || 'Standard'} package`,
+      size: it?.size ?? null,
+      fragile: !!it?.fragile,
+      photo: toPhotoUrl(it?.photo),
+    }));
+    const fallback = toPhotoUrl(cargo?.cargo_pic);
+    if (fallback && !items.some((i: any) => i.photo)) items[0].photo = fallback;
+    return items;
+  }
+  return [{
+    description: cargo?.description || 'Package',
+    size: null as string | null,
+    fragile: !!cargo?.is_fragile,
+    photo: toPhotoUrl(cargo?.cargo_pic),
+  }];
+};
+
+const buildTaskInfo = (d: any) => {
+  const request = d?.delivery_requests || null;
+  const cargo = Array.isArray(request?.cargo) ? request.cargo[0] : request?.cargo;
+  const receiver = Array.isArray(request?.receiver) ? request.receiver[0] : request?.receiver;
+  const pickup = splitAddress(request?.pickup_location?.street_address);
+  const dropoff = splitAddress(request?.dropoff_location?.street_address);
+  const items = buildCargoItems(cargo);
+  const qtyTotal = (Number(cargo?.small_box_qty) || 0) + (Number(cargo?.medium_box_qty) || 0) + (Number(cargo?.large_box_qty) || 0);
+  const dims = [cargo?.cargo_length_cm, cargo?.cargo_width_cm, cargo?.cargo_height_cm];
+  const sender = d?.sender || null;
+  return {
+    request,
+    cargo,
+    receiver,
+    pickup: { ...pickup, lat: request?.pickup_location?.latitude ?? null, lng: request?.pickup_location?.longitude ?? null },
+    dropoff: { ...dropoff, lat: request?.dropoff_location?.latitude ?? null, lng: request?.dropoff_location?.longitude ?? null },
+    items,
+    totalItems: items.length > 1 ? items.length : (qtyTotal || items.length),
+    weightKg: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
+    fragile: items.some((i: any) => i.fragile) || !!cargo?.is_fragile,
+    dims: dims.every(v => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
+    receiverName: receiver?.receiver_name || null,
+    receiverPhone: request?.receiver_phone || receiver?.receiver_phone || null,
+    senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
+    senderPhone: sender?.phone_number || null,
+    earnings: Number(request?.estimated_cost) || 0,
+  };
+};
+
+const openMaps = (lat?: number | null, lng?: number | null) => {
+  if (lat == null || lng == null) {
+    Alert.alert('No location', 'This stop has no map coordinates.');
+    return;
+  }
+  Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`);
+};
+
+const enrichDeliveries = async (list: any[]) => {
+  if (!list || list.length === 0) return list;
+  const senderIds = Array.from(new Set(list.map(d => d.delivery_requests?.sender_id).filter(Boolean)));
+  const deliveryIds = list.map(d => d.delivery_id).filter(Boolean);
+  const senders: Record<number, any> = {};
+  const escrows: Record<number, any> = {};
+  try {
+    if (senderIds.length) {
+      const { data } = await supabase.from('users').select('user_id, first_name, last_name, phone_number').in('user_id', senderIds as number[]);
+      (data || []).forEach((u: any) => { senders[u.user_id] = u; });
+    }
+  } catch { }
+  try {
+    if (deliveryIds.length) {
+      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status').in('delivery_id', deliveryIds);
+      (data || []).forEach((e: any) => { escrows[e.delivery_id] = e; });
+    }
+  } catch { }
+  return list.map(d => ({
+    ...d,
+    sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
+    escrow: d.escrow || escrows[d.delivery_id] || null,
+  }));
+};
+
+/* ==================================================================== */
+/* TaskScreen                                                           */
+/* ==================================================================== */
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<any>();
+  const hasLoadedRef = useRef(false);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [providerId, setProviderId] = useState<number | null>(null);
@@ -218,24 +297,37 @@ export default function TaskScreen() {
   const [pinVerifying, setPinVerifying] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
-  const [viewTarget, setViewTarget] = useState<any>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'all'>('active');
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [mapModalVisible, setMapModalVisible] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
+  const [openingChat, setOpeningChat] = useState(false);
 
   const [deliveryOTPModalVisible, setDeliveryOTPModalVisible] = useState(false);
   const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
   const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
-  const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const matchingPulse = useRef(new Animated.Value(0)).current;
   const scanLineAnim = useRef(new Animated.Value(0)).current;
+  const detailAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
     Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
   }, [headerAnim, contentAnim]);
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    detailAnim.setValue(0);
+    Animated.timing(detailAnim, { toValue: 1, duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [selectedId, detailAnim]);
 
   useEffect(() => {
     if (!isMatching) return;
@@ -262,6 +354,16 @@ export default function TaskScreen() {
     return () => loop.stop();
   }, [verifyModalVisible, scanLineAnim]);
 
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (photoPreview) { setPhotoPreview(null); return true; }
+      if (mapModalVisible) { setMapModalVisible(false); return true; }
+      if (selectedId != null) { setSelectedId(null); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [photoPreview, mapModalVisible, selectedId]);
+
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -280,7 +382,7 @@ export default function TaskScreen() {
         a.findIndex(t => (t.request_id === v.request_id)) === i,
       );
 
-      const hydrated = await hydrateQr(uniqueDeliveries);
+      const hydrated = await enrichDeliveries(await hydrateQr(uniqueDeliveries));
 
       setActiveDeliveries(hydrated.filter((d: any) => !d.completed_at));
       setCompletedDeliveries(hydrated.filter((d: any) => d.completed_at));
@@ -413,7 +515,10 @@ export default function TaskScreen() {
       setActiveDeliveries(prev => patchDelivery(prev));
       setCompletedDeliveries(prev => patchDelivery(prev));
 
-      Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
+      Alert.alert(
+        '✅ Item Collected',
+        'Pickup verified. The sender will receive a delivery OTP to forward to the receiver.'
+      );
       closeVerifyModal();
 
       if (providerId) await fetchDeliveries(providerId);
@@ -481,107 +586,23 @@ export default function TaskScreen() {
     }
   };
 
-  /* ==================================================================== */
-  /* DELIVERY CONFIRMATION (OTP via Contiguity)                           */
-  /* ==================================================================== */
-  const openDeliveryOTPModal = (delivery: any) => {
-    setDeliveryOTPTarget(delivery);
-    setDeliveryOTPInput('');
-    setDeliveryOTPModalVisible(true);
-  };
+  /* ================================================================ */
+  /* DELIVERY OTP — courier enters the 6-digit code from the receiver */
+  /* ================================================================ */
 
-  const closeDeliveryOTPModal = () => {
-    setDeliveryOTPModalVisible(false);
-    setDeliveryOTPTarget(null);
-    setDeliveryOTPInput('');
-    setDeliveryOTPVerifying(false);
-    setDeliveryOTPResending(false);
-  };
-
-  /* ✅ Calls Edge Function with action: 'regenerate' (creates a brand new OTP) */
-  const handleResendDeliveryOTP = async () => {
-    if (!deliveryOTPTarget) return;
-
-    Alert.alert(
-      'Send New OTP',
-      'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send New OTP',
-          onPress: async () => {
-            try {
-              setDeliveryOTPResending(true);
-
-              const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-                body: {
-                  action: 'regenerate',
-                  delivery_id: deliveryOTPTarget.delivery_id,
-                },
-              });
-
-              if (error || !data?.success) {
-                Alert.alert('Error', data?.error || error?.message || 'Could not send new OTP.');
-                return;
-              }
-
-              Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
-              setDeliveryOTPInput('');
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to send new OTP.');
-            } finally {
-              setDeliveryOTPResending(false);
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  /* ✅ Calls Edge Function with action: 'verify' */
-  const completeDelivery = async () => {
-    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
-
-    const deliveryId = deliveryOTPTarget.delivery_id;
-    const requestId = deliveryOTPTarget.delivery_requests?.request_id;
-
-    setDeliveryOTPVerifying(true);
+  const finalizeDelivery = async (deliveryId: number) => {
     try {
-      const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
-        'contiguity-otp',
-        {
-          body: {
-            action: 'verify',
-            delivery_id: deliveryId,
-            otp: deliveryOTPInput.trim(),
-          },
-        }
-      );
-
-      if (verifyError) {
-        Alert.alert('Verification Failed', verifyError.message || 'Could not verify OTP.');
-        return;
-      }
-
-      if (!verifyResult?.success) {
-        Alert.alert(
-          'Invalid OTP',
-          verifyResult?.message || 'The code is incorrect or has expired. Please try again.'
-        );
-        return;
-      }
-
-      /* ✅ OTP VERIFIED — Proceed with completion */
+      setDeliveryOTPVerifying(true);
+      const target = deliveryOTPTarget;
+      const requestId = target?.delivery_requests?.request_id;
       const now = new Date().toISOString();
 
-      // 1. Complete the delivery
       const { error: delError } = await supabase
         .from('deliveries')
         .update({ completed_at: now })
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
-      // 2. Update request status
       if (requestId) {
         const { error: reqError } = await supabase
           .from('delivery_requests')
@@ -590,13 +611,11 @@ export default function TaskScreen() {
         if (reqError) throw reqError;
       }
 
-      // 3. Mark dropoff verified in QR verifications
       await supabase
         .from('qr_verifications')
         .update({ dropoff_verified: true })
         .eq('delivery_id', deliveryId);
 
-      // 4. Release escrow payment
       const { data: escrowData } = await supabase
         .from('escrow_payments')
         .update({ escrow_status: 'Completed' })
@@ -604,7 +623,6 @@ export default function TaskScreen() {
         .select('*')
         .single();
 
-      // 5. Credit provider wallet
       if (escrowData && escrowData.provider_id) {
         const { data: wallet } = await supabase
           .from('provider_wallet')
@@ -620,19 +638,13 @@ export default function TaskScreen() {
         }
       }
 
-      // 6. Status history
       await supabase.from('delivery_status_history').insert({
         delivery_id: deliveryId,
         status: 'Delivered',
         updated_at: now,
       });
 
-      Alert.alert(
-        '✅ Delivery Complete!',
-        'Payment has been released to your wallet.',
-        [{ text: 'OK' }]
-      );
-
+      Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
       closeDeliveryOTPModal();
       await loadData();
     } catch (error: any) {
@@ -642,15 +654,51 @@ export default function TaskScreen() {
     }
   };
 
+  const openDeliveryOTPModal = (delivery: any) => {
+    setDeliveryOTPTarget(delivery);
+    setDeliveryOTPInput('');
+    setDeliveryOTPModalVisible(true);
+  };
+
+  const closeDeliveryOTPModal = () => {
+    setDeliveryOTPModalVisible(false);
+    setDeliveryOTPTarget(null);
+    setDeliveryOTPInput('');
+    setDeliveryOTPVerifying(false);
+  };
+
+  const verifyDeliveryOTP = async () => {
+    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
+    const deliveryId = deliveryOTPTarget.delivery_id;
+
+    setDeliveryOTPVerifying(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-delivery-otp', {
+        body: { action: 'verify', delivery_id: deliveryId, otp: deliveryOTPInput.trim() },
+      });
+
+      if (error || !data?.success) {
+        Alert.alert('Invalid Code', data?.message || error?.message || 'Please check the code and try again.');
+        return;
+      }
+
+      await finalizeDelivery(deliveryId);
+    } catch (e: any) {
+      Alert.alert('Verification Failed', e?.message || 'Could not verify the code.');
+    } finally {
+      setDeliveryOTPVerifying(false);
+    }
+  };
+
   const loadData = async () => {
     try {
-      setLoading(true);
+      if (!hasLoadedRef.current) setLoading(true);
       const pid = await getProviderData();
       if (pid) {
         await fetchDeliveries(pid);
         await runMatching(false);
       }
-    } finally { setLoading(false); setRefreshing(false); }
+    } finally { hasLoadedRef.current = true; setLoading(false); setRefreshing(false); }
   };
 
   const onRefresh = () => {
@@ -697,229 +745,679 @@ export default function TaskScreen() {
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
+    // Strictly QR/PIN based. Do NOT fall back to delivery_status, otherwise
+    // a courier could see "Item Collected" highlighted before scanning.
     const qr = delivery?.qr_verifications;
-    if (qr) {
-      if (Array.isArray(qr)) {
-        if (qr[0]?.pickup_verified) return true;
-      } else if (qr.pickup_verified) {
-        return true;
-      }
-    }
-    const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Completed';
+    if (!qr) return false;
+    if (Array.isArray(qr)) return qr[0]?.pickup_verified === true;
+    return qr.pickup_verified === true;
   };
 
-  const renderTaskCard = (delivery: any, isActive: boolean) => {
-    const request = delivery.delivery_requests;
-    if (!request) return null;
-    const cargo = request.cargo;
-    const receiver = request.receiver;
-    const pickupVerified = isPickupVerified(delivery);
+  const stageOf = (d: any): 'pickup' | 'transit' | 'done' =>
+    d?.completed_at ? 'done' : isPickupVerified(d) ? 'transit' : 'pickup';
+
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done') =>
+    stage === 'done'
+      ? { label: 'Completed', bg: '#DCFCE7', fg: '#166534', icon: 'checkmark-circle' }
+      : stage === 'transit'
+        ? { label: 'In Transit', bg: '#FFF4EC', fg: ORANGE, icon: 'navigate' }
+        : { label: 'Awaiting Pickup', bg: '#FEF3C7', fg: '#92400E', icon: 'time-outline' };
+
+  const dateLabel = (request: any) => {
+    try {
+      return formatDate(request?.scheduled_time || request?.created_at, 'MMM d, yyyy');
+    } catch { return ''; }
+  };
+
+  const copyTracking = async (text: string) => {
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(text);
+        setCopied(true);
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => setCopied(false), 1800);
+      } else {
+        await Share.share({ message: text });
+      }
+    } catch { }
+  };
+
+  const messageSender = async (d: any) => {
+    try {
+      setOpeningChat(true);
+      const roomId = await getOrCreateChatRoom(d.delivery_id);
+      if (!roomId) { Alert.alert('Error', 'Could not open chat.'); return; }
+      let current: any = navigation;
+      while (current) {
+        try {
+          const names: string[] = current.getState?.()?.routeNames || [];
+          const match = names.find(n => /message|chat|inbox/i.test(n));
+          if (match) { current.navigate(match, { openRoomId: roomId }); return; }
+        } catch { }
+        current = current.getParent?.();
+      }
+      navigation.navigate('MainTabs', { screen: 'Messages', params: { openRoomId: roomId } });
+    } catch {
+      Alert.alert('Chat unavailable', 'Could not open the conversation with the sender.');
+    } finally {
+      setOpeningChat(false);
+    }
+  };
+
+  const allTasks = [...activeDeliveries, ...completedDeliveries];
+  const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
+  const tabCount = (t: 'active' | 'completed' | 'all') =>
+    t === 'active' ? activeDeliveries.length : t === 'completed' ? completedDeliveries.length : allTasks.length;
+
+  const filteredTasks =
+    activeTab === 'active' ? activeDeliveries :
+    activeTab === 'completed' ? completedDeliveries :
+    allTasks;
+
+  /* ---------------------------- list card ---------------------------- */
+  const renderTaskCard = (d: any) => {
+    const info = buildTaskInfo(d);
+    if (!info.request) return null;
+    const stage = stageOf(d);
+    const meta = statusMeta(stage);
+    const target = stage === 'pickup' ? info.pickup : info.dropoff;
 
     return (
-      <View key={delivery.delivery_id} style={styles.taskCard}>
-        <View style={[styles.cardAccent, { backgroundColor: isActive ? '#3B82F6' : '#22C55E' }]} />
-
+      <TouchableOpacity
+        key={d.delivery_id}
+        style={[styles.card, stage === 'done' && styles.cardDone]}
+        onPress={() => setSelectedId(d.delivery_id)}
+        activeOpacity={0.9}
+      >
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
-            <View style={[styles.typeBadge, { backgroundColor: isActive ? '#DBEAFE' : '#DCFCE7' }]}>
-              <Ionicons name="cube-outline" size={12} color={isActive ? '#3B82F6' : '#22C55E'} />
-              <Text style={[styles.typeBadgeText, { color: isActive ? '#3B82F6' : '#22C55E' }]}>
-                {request.pickup_type || 'Curb-side'}
-              </Text>
+            <View style={styles.serviceBadge}>
+              <Text style={styles.serviceBadgeText}>{serviceLabel(info.request.pickup_type)}</Text>
             </View>
-            <Text style={styles.taskId}>#{request.request_id}</Text>
+            <View style={[styles.statusBadge, { backgroundColor: meta.bg }]}>
+              <Ionicons name={meta.icon as any} size={12} color={meta.fg} />
+              <Text style={[styles.statusBadgeText, { color: meta.fg }]}>{meta.label}</Text>
+            </View>
           </View>
-          <View style={[styles.statusBadge, isActive ? styles.statusActive : styles.statusCompleted]}>
-            <View style={[styles.statusDot, { backgroundColor: isActive ? '#2563EB' : '#166534' }]} />
-            <Text style={[styles.statusText, isActive ? styles.statusTextActive : styles.statusTextCompleted]}>
-              {isActive ? (pickupVerified ? 'In Transit' : 'Awaiting Pickup') : 'Completed'}
-            </Text>
+          <View style={styles.itemsChip}>
+            <Ionicons name="cube-outline" size={12} color="#6B7280" />
+            <Text style={styles.itemsChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
           </View>
         </View>
 
-        <Text style={styles.taskDateTime}>
-          {formatDate(request.created_at, 'MMM d, yyyy')} · {formatDate(request.created_at, 'h:mm a')}
-        </Text>
+        <Text style={styles.cardDate}>{dateLabel(info.request)}</Text>
 
-        <View style={styles.locationSection}>
-          <View style={styles.locationDetails}>
-            <View style={styles.locationItem}>
-              <View style={styles.iconWrapper}><View style={styles.blueDot}><View style={styles.blueDotInner} /></View></View>
-              <View style={styles.locationTextWrapper}>
-                <Text style={styles.locationLabel}>PICKUP</Text>
-                <Text style={styles.locationAddress} numberOfLines={2}>{request.pickup_location?.street_address || 'N/A'}</Text>
-              </View>
-            </View>
-            <View style={styles.connectingLine} />
-            <View style={styles.locationItem}>
-              <View style={styles.iconWrapper}><Ionicons name="location" size={16} color="#D90429" /></View>
-              <View style={styles.locationTextWrapper}>
-                <Text style={[styles.locationLabel, { color: '#D90429' }]}>DROPOFF</Text>
-                <Text style={styles.locationAddress} numberOfLines={2}>{request.dropoff_location?.street_address || 'N/A'}</Text>
-              </View>
-            </View>
+        <View style={styles.routeBox}>
+          <View style={styles.routeRow}>
+            <View style={styles.dotOrange} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{info.pickup.main}</Text>
           </View>
-          <View style={styles.miniMapWrapper}>
-            <TaskRouteMap
-              pickupLat={request.pickup_location?.latitude}
-              pickupLng={request.pickup_location?.longitude}
-              dropoffLat={request.dropoff_location?.latitude}
-              dropoffLng={request.dropoff_location?.longitude}
-              zoom={12}
-              interactive={false}
-            />
+          <View style={styles.routeConnectorLine} />
+          <View style={styles.routeRow}>
+            <View style={styles.dotDark} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{info.dropoff.main}</Text>
           </View>
         </View>
 
-        <View style={styles.taskDetails}>
-          {cargo && (
-            <View style={styles.detailChip}>
-              <Ionicons name="cube-outline" size={12} color="#6B7280" />
-              <Text style={styles.detailChipText}>{cargo.total_weight_kg || 0}kg {cargo.is_fragile && '• Fragile'}</Text>
+        {stage !== 'done' && (
+          <TouchableOpacity
+            style={styles.nextStopRow}
+            onPress={() => openMaps(target.lat, target.lng)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.nextStopIcon}>
+              <Ionicons name="navigate" size={14} color={ORANGE} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.nextStopEyebrow}>NEXT STOP · {stage === 'pickup' ? 'PICKUP' : 'DROP-OFF'}</Text>
+              <Text style={styles.nextStopMain} numberOfLines={1}>{target.main}</Text>
+            </View>
+            <Text style={styles.nextStopLink}>Navigate</Text>
+          </TouchableOpacity>
+        )}
+
+        <View style={styles.cardChipRow}>
+          {info.weightKg != null && (
+            <View style={styles.infoChip}>
+              <Ionicons name="barbell-outline" size={12} color="#6B7280" />
+              <Text style={styles.infoChipText}>{info.weightKg} kg</Text>
             </View>
           )}
-          {receiver && (
-            <View style={styles.detailChip}>
+          {info.fragile && (
+            <View style={[styles.infoChip, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+              <Ionicons name="warning" size={12} color="#EF4444" />
+              <Text style={[styles.infoChipText, { color: '#EF4444' }]}>Fragile</Text>
+            </View>
+          )}
+          {!!info.receiverName && (
+            <View style={styles.infoChip}>
               <Ionicons name="person-outline" size={12} color="#6B7280" />
-              <Text style={styles.detailChipText} numberOfLines={1}>{receiver.receiver_name || 'Unknown'}</Text>
+              <Text style={styles.infoChipText} numberOfLines={1}>{info.receiverName}</Text>
             </View>
           )}
         </View>
-
-        <View style={styles.divider} />
 
         <View style={styles.cardFooter}>
-          <View style={styles.footerLeft}>
-            <Text style={styles.footerLabel}>Earnings</Text>
-            <Text style={styles.priceText}>₱{request.estimated_cost?.toFixed(2)}</Text>
+          <View>
+            <Text style={styles.footerLabel}>YOU EARN</Text>
+            <Text style={styles.priceText}>{money(info.earnings)}</Text>
           </View>
-          <View style={styles.footerRight}>
-            {isActive ? (
-              <>
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.viewBtn]}
-                  onPress={() => setViewTarget(delivery)}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="eye-outline" size={14} color="#6B7280" />
-                  <Text style={styles.viewBtnText}>View</Text>
-                </TouchableOpacity>
+          {stage === 'pickup' ? (
+            <TouchableOpacity style={styles.actionBtn} onPress={() => openVerifyModal(d)} activeOpacity={0.9}>
+              <Ionicons name="qr-code-outline" size={15} color="#FFFFFF" />
+              <Text style={styles.actionBtnText}>Verify Pickup</Text>
+            </TouchableOpacity>
+          ) : stage === 'transit' ? (
+            <TouchableOpacity style={[styles.actionBtn, styles.actionBtnGreen]} onPress={() => openDeliveryOTPModal(d)} activeOpacity={0.9}>
+              <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
+              <Text style={styles.actionBtnText}>Complete</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.doneBadge}>
+              <Ionicons name="checkmark-circle" size={14} color="#166534" />
+              <Text style={styles.doneBadgeText}>Delivered</Text>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
-                {!pickupVerified ? (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.scanBtn]}
-                    onPress={() => openVerifyModal(delivery)}
-                    activeOpacity={0.9}
-                  >
-                    <Ionicons name="qr-code-outline" size={14} color="#FFFFFF" />
-                    <Text style={styles.actionBtnText}>Verify</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.completeBtn]}
-                    onPress={() => openDeliveryOTPModal(delivery)}
-                    activeOpacity={0.9}
-                  >
-                    <Ionicons name="shield-checkmark" size={14} color="#FFFFFF" />
-                    <Text style={styles.actionBtnText}>Complete</Text>
-                  </TouchableOpacity>
-                )}
-              </>
-            ) : (
-              <TouchableOpacity
-                style={[styles.actionBtn, styles.viewBtn]}
-                onPress={() => setViewTarget(delivery)}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="eye-outline" size={14} color="#6B7280" />
-                <Text style={styles.viewBtnText}>View</Text>
-              </TouchableOpacity>
-            )}
+  /* --------------------------- pending request card --------------------------- */
+  const renderPendingRequest = (request: any) => {
+    const cargo = request.cargo;
+    const pickup = splitAddress(request.pickup_location?.street_address);
+    const dropoff = splitAddress(request.dropoff_location?.street_address);
+
+    return (
+      <View key={request.request_id} style={[styles.card, styles.pendingCard]}>
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={[styles.serviceBadge, { backgroundColor: '#FFF7ED' }]}>
+              <Ionicons name="flash" size={12} color={ORANGE} />
+              <Text style={[styles.serviceBadgeText, { color: ORANGE, marginLeft: 4 }]}>NEW</Text>
+            </View>
+            <View style={[styles.statusBadge, { backgroundColor: '#FEF3C7' }]}>
+              <Ionicons name="time-outline" size={12} color="#92400E" />
+              <Text style={[styles.statusBadgeText, { color: '#92400E' }]}>Available</Text>
+            </View>
           </View>
+          <View style={styles.itemsChip}>
+            <Ionicons name="cube-outline" size={12} color="#6B7280" />
+            <Text style={styles.itemsChipText}>{cargo?.total_weight_kg || 0} kg</Text>
+          </View>
+        </View>
+
+        <Text style={styles.cardDate}>
+          {formatDate(request.created_at, 'MMM d, yyyy')} · {formatDate(request.scheduled_time || request.created_at, 'h:mm a')}
+        </Text>
+
+        <View style={styles.routeBox}>
+          <View style={styles.routeRow}>
+            <View style={styles.dotOrange} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{pickup.main}</Text>
+          </View>
+          <View style={styles.routeConnectorLine} />
+          <View style={styles.routeRow}>
+            <View style={styles.dotDark} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{dropoff.main}</Text>
+          </View>
+        </View>
+
+        <View style={styles.cardChipRow}>
+          {cargo && (
+            <View style={styles.infoChip}>
+              <Ionicons name="cube-outline" size={12} color="#6B7280" />
+              <Text style={styles.infoChipText}>{cargo.total_weight_kg || 0} kg {cargo.is_fragile && '· Fragile'}</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.cardFooter}>
+          <View>
+            <Text style={styles.footerLabel}>YOU EARN</Text>
+            <Text style={styles.priceText}>{money(request.estimated_cost)}</Text>
+          </View>
+          <TouchableOpacity style={styles.actionBtn} onPress={() => acceptDelivery(request.request_id)} activeOpacity={0.9}>
+            <Ionicons name="checkmark" size={15} color="#FFFFFF" />
+            <Text style={styles.actionBtnText}>Accept</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
   };
 
-  const renderPendingRequest = (request: any) => {
-    const cargo = request.cargo;
+  /* ---------------------------- list view ---------------------------- */
+  const renderListView = () => (
+    <View style={{ flex: 1 }}>
+      <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+        <Text style={styles.pageTitle}>My Tasks</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
+          {(['active', 'completed', 'all'] as const).map(t => {
+            const on = activeTab === t;
+            const count = tabCount(t);
+            return (
+              <TouchableOpacity
+                key={t}
+                style={[styles.tabItem, on && styles.tabItemActive]}
+                onPress={() => setActiveTab(t)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabText, on && styles.tabTextActive]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
+                {count > 0 && (
+                  <View style={[styles.tabCountBadge, on && styles.tabCountBadgeActive]}>
+                    <Text style={[styles.tabCountText, on && styles.tabCountTextActive]}>{count}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </Animated.View>
+
+      <ScrollView
+        contentContainerStyle={styles.listContainer}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+      >
+        <Animated.View style={{ opacity: contentAnim }}>
+          {isMatching && (
+            <Animated.View style={[styles.matchingStatus, { opacity: pulseOpacity }]}>
+              <ActivityIndicator size="small" color={ORANGE} />
+              <Text style={styles.matchingStatusText}>Looking for matches...</Text>
+            </Animated.View>
+          )}
+
+          {filteredTasks.length === 0 && pendingRequests.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <View style={styles.emptyIconCircle}>
+                <Ionicons name={allTasks.length === 0 ? 'briefcase-outline' : 'search-outline'} size={30} color={ORANGE} />
+              </View>
+              <Text style={styles.emptyTitle}>
+                {allTasks.length === 0 ? 'No tasks yet' : 'No deliveries here'}
+              </Text>
+              <Text style={styles.emptySubtext}>
+                {allTasks.length === 0
+                  ? 'Deliveries you accept appear here. Review matched requests in the Jobs tab.'
+                  : 'Try another tab to view history.'}
+              </Text>
+            </View>
+          ) : (
+            <>
+              {filteredTasks.map(renderTaskCard)}
+              {activeTab !== 'completed' && pendingRequests.length > 0 && (
+                <>
+                  <View style={styles.sectionHeaderRow}>
+                    <Text style={styles.sectionHeaderTitle}>Available Jobs</Text>
+                    <View style={styles.sectionHeaderCount}>
+                      <Text style={styles.sectionHeaderCountText}>{pendingRequests.length}</Text>
+                    </View>
+                  </View>
+                  {pendingRequests.map(renderPendingRequest)}
+                </>
+              )}
+            </>
+          )}
+          <View style={styles.bottomSpacer} />
+        </Animated.View>
+      </ScrollView>
+    </View>
+  );
+
+  /* --------------------------- detail view --------------------------- */
+  const renderContactRow = (o: { role: string; name: string | null; phone: string | null; icon: string; onMessage?: () => void }) => (
+    <View style={styles.contactRow}>
+      <View style={styles.contactAvatar}>
+        <Ionicons name={o.icon as any} size={18} color={ORANGE} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.eyebrow}>{o.role}</Text>
+        <Text style={styles.contactName} numberOfLines={1}>{o.name || 'Not available'}</Text>
+        {!!o.phone && <Text style={styles.contactPhone}>{o.phone}</Text>}
+      </View>
+      {!!o.onMessage && (
+        <TouchableOpacity style={styles.roundBtn} onPress={o.onMessage} disabled={openingChat} activeOpacity={0.85}>
+          {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-ellipses-outline" size={18} color={ORANGE} />}
+        </TouchableOpacity>
+      )}
+      {!!o.phone && (
+        <TouchableOpacity style={[styles.roundBtn, styles.roundBtnPrimary]} onPress={() => Linking.openURL(`tel:${o.phone}`)} activeOpacity={0.85}>
+          <Ionicons name="call" size={17} color="#FFFFFF" />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+
+  const renderDetailView = (d: any) => {
+    const info = buildTaskInfo(d);
+    const stage = stageOf(d);
+    const meta = statusMeta(stage);
+    const code = trackingCode(info.request?.request_id ?? d.delivery_id);
+    const stepIndex = stage === 'pickup' ? 0 : stage === 'transit' ? 1 : 2;
+    const target = stage === 'pickup' ? info.pickup : info.dropoff;
+    const escrowStatus = String(d.escrow?.escrow_status || '');
+    const released = stage === 'done' || /complet|releas/i.test(escrowStatus);
+    const paymentLabel = released ? 'Released to your wallet' : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
 
     return (
-      <View key={request.request_id} style={[styles.taskCard, styles.pendingCard]}>
-        <View style={[styles.cardAccent, { backgroundColor: ORANGE }]} />
+      <View style={{ flex: 1 }}>
+        <Animated.View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+          <TouchableOpacity onPress={() => setSelectedId(null)} style={styles.backCircleBtn} activeOpacity={0.8}>
+            <Ionicons name="arrow-back" size={20} color="#111827" />
+          </TouchableOpacity>
+          <Text style={styles.detailHeaderTitle}>Task Details</Text>
+          <View style={styles.headerSpacer} />
+        </Animated.View>
 
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={[styles.typeBadge, { backgroundColor: '#FFF7ED' }]}>
-              <Ionicons name="flash" size={12} color={ORANGE} />
-              <Text style={[styles.typeBadgeText, { color: ORANGE }]}>NEW</Text>
-            </View>
-            <Text style={styles.taskId}>#{request.request_id}</Text>
-          </View>
-          <View style={[styles.statusBadge, styles.statusPending]}>
-            <View style={[styles.statusDot, { backgroundColor: '#D97706' }]} />
-            <Text style={styles.statusTextPending}>Available</Text>
-          </View>
-        </View>
+        <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
+          <Animated.View style={{ opacity: detailAnim }}>
+            {/* 1. Tracking ID + status + progress */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdTrackRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.eyebrow}>TRACKING ID</Text>
+                  <Text style={styles.sdTrackId} numberOfLines={1}>#{code}</Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.sdCopyBtn, copied && styles.sdCopyBtnDone]}
+                  onPress={() => copyTracking(code)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={14} color={copied ? '#FFFFFF' : ORANGE} />
+                  <Text style={[styles.sdCopyBtnText, copied && { color: '#FFFFFF' }]}>{copied ? 'Copied' : 'Copy'}</Text>
+                </TouchableOpacity>
+              </View>
 
-        <Text style={styles.taskDateTime}>
-          {formatDate(request.created_at, 'MMM d, yyyy')} · {formatDate(request.scheduled_time || request.created_at, 'h:mm a')}
-        </Text>
+              <View style={styles.sdChipRow}>
+                <View style={[styles.sdStatusChip, { backgroundColor: meta.bg }]}>
+                  <Ionicons name={meta.icon as any} size={12} color={meta.fg} />
+                  <Text style={[styles.sdStatusChipText, { color: meta.fg }]}>{meta.label}</Text>
+                </View>
+                <View style={styles.infoChip}>
+                  <Ionicons name="cube-outline" size={12} color="#6B7280" />
+                  <Text style={styles.infoChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
+                </View>
+                <View style={styles.infoChip}>
+                  <Ionicons name={/door/i.test(info.request?.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#6B7280" />
+                  <Text style={styles.infoChipText}>{serviceLabel(info.request?.pickup_type)}</Text>
+                </View>
+              </View>
 
-        <View style={styles.locationSection}>
-          <View style={styles.locationDetails}>
-            <View style={styles.locationItem}>
-              <View style={styles.iconWrapper}><View style={styles.blueDot}><View style={styles.blueDotInner} /></View></View>
-              <View style={styles.locationTextWrapper}>
-                <Text style={styles.locationLabel}>PICKUP</Text>
-                <Text style={styles.locationAddress} numberOfLines={2}>{request.pickup_location?.street_address || 'N/A'}</Text>
+              <View style={styles.stepperContainer}>
+                {['Accepted', 'Picked up', 'Delivered'].map((label, i) => {
+                  const passed = i === 0 || stepIndex >= i;
+                  const current = stepIndex === i;
+                  return (
+                    <View key={label} style={styles.stepItem}>
+                      <View style={styles.stepRowIndicator}>
+                        <View style={[styles.stepDot, passed && styles.stepDotActive, current && styles.stepDotCurrent]}>
+                          {passed ? <Ionicons name="checkmark" size={10} color="#FFF" /> : <View style={styles.stepInnerDot} />}
+                        </View>
+                        {i < 2 && <View style={[styles.stepLine, stepIndex > i && styles.stepLineActive]} />}
+                      </View>
+                      <Text style={[styles.stepLabel, current && styles.stepLabelActive]} numberOfLines={1}>{label}</Text>
+                    </View>
+                  );
+                })}
               </View>
             </View>
-            <View style={styles.connectingLine} />
-            <View style={styles.locationItem}>
-              <View style={styles.iconWrapper}><Ionicons name="location" size={16} color="#D90429" /></View>
-              <View style={styles.locationTextWrapper}>
-                <Text style={[styles.locationLabel, { color: '#D90429' }]}>DROPOFF</Text>
-                <Text style={styles.locationAddress} numberOfLines={2}>{request.dropoff_location?.street_address || 'N/A'}</Text>
+
+            {/* 2. Next step */}
+            {stage !== 'done' ? (
+              <View style={styles.nextCard}>
+                <View style={styles.nextTop}>
+                  <View style={styles.nextIcon}>
+                    <Ionicons name={stage === 'pickup' ? 'qr-code' : 'shield-checkmark'} size={22} color={ORANGE} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.nextEyebrow}>NEXT STEP</Text>
+                    <Text style={styles.nextTitle}>{stage === 'pickup' ? 'Pick up the package' : 'Deliver to the receiver'}</Text>
+                  </View>
+                </View>
+                <Text style={styles.nextDesc}>
+                  {stage === 'pickup'
+                    ? `Head to ${info.pickup.main}. Scan the sender's QR code, or ask for their 4-digit PIN, to confirm pickup.`
+                    : `Head to ${info.dropoff.main}. Ask the receiver for the 6-digit delivery OTP sent by the sender.`}
+                </Text>
+                <View style={styles.nextBtnRow}>
+                  <TouchableOpacity style={styles.nextGhostBtn} onPress={() => openMaps(target.lat, target.lng)} activeOpacity={0.85}>
+                    <Ionicons name="navigate-outline" size={17} color="#FFFFFF" />
+                    <Text style={styles.nextGhostText}>Navigate</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.nextPrimaryBtn}
+                    onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color={ORANGE} />
+                    <Text style={styles.nextPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete Delivery'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.doneCard}>
+                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color="#16A34A" /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.doneTitle}>Delivered successfully</Text>
+                  <Text style={styles.doneSub}>
+                    {d.completed_at ? formatDateTime(d.completed_at) : ''}
+                    {released ? `  ·  ${money(info.earnings)} added to your wallet` : ''}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* 3. Map + pickup / drop-off */}
+            <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
+              <TouchableOpacity style={styles.sdMap} activeOpacity={0.9} onPress={() => setMapModalVisible(true)}>
+                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                  <TaskRouteMap
+                    pickupLat={info.pickup.lat}
+                    pickupLng={info.pickup.lng}
+                    dropoffLat={info.dropoff.lat}
+                    dropoffLng={info.dropoff.lng}
+                    zoom={12}
+                    interactive={false}
+                  />
+                </View>
+                <View style={styles.mapTapHint}>
+                  <Text style={styles.mapTapHintText}>Full map</Text>
+                  <Ionicons name="expand-outline" size={11} color="#FFFFFF" />
+                </View>
+              </TouchableOpacity>
+
+              <View style={styles.sdRoutePad}>
+                <View style={styles.sdRouteRow}>
+                  <View style={styles.sdRouteRail}>
+                    <View style={styles.sdPinPickup}><View style={styles.sdPinPickupInner} /></View>
+                    <View style={styles.sdRailLine} />
+                  </View>
+                  <View style={styles.sdRouteText}>
+                    <Text style={styles.eyebrow}>PICKUP</Text>
+                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
+                    {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
+                  </View>
+                  <TouchableOpacity style={styles.navMini} onPress={() => openMaps(info.pickup.lat, info.pickup.lng)} activeOpacity={0.85}>
+                    <Ionicons name="navigate" size={16} color={ORANGE} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.sdRouteRow}>
+                  <View style={styles.sdRouteRail}>
+                    <View style={styles.sdPinDropoff}><Ionicons name="location" size={11} color="#FFFFFF" /></View>
+                  </View>
+                  <View style={[styles.sdRouteText, { paddingBottom: 0 }]}>
+                    <Text style={styles.eyebrow}>DROP-OFF</Text>
+                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
+                    {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
+                  </View>
+                  <TouchableOpacity style={styles.navMini} onPress={() => openMaps(info.dropoff.lat, info.dropoff.lng)} activeOpacity={0.85}>
+                    <Ionicons name="navigate" size={16} color={ORANGE} />
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
-          </View>
-          <View style={styles.miniMapWrapper}>
-            <TaskRouteMap
-              pickupLat={request.pickup_location?.latitude}
-              pickupLng={request.pickup_location?.longitude}
-              dropoffLat={request.dropoff_location?.latitude}
-              dropoffLng={request.dropoff_location?.longitude}
-              zoom={12}
-              interactive={false}
-            />
-          </View>
-        </View>
 
-        <View style={styles.taskDetails}>
-          {cargo && (
-            <View style={styles.detailChip}>
-              <Ionicons name="cube-outline" size={12} color="#6B7280" />
-              <Text style={styles.detailChipText}>{cargo.total_weight_kg || 0}kg {cargo.is_fragile && '• Fragile'}</Text>
+            {/* 4. Contacts */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="people-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Contacts</Text>
+              </View>
+              {renderContactRow({
+                role: 'SENDER · PICKUP', name: info.senderName, phone: info.senderPhone, icon: 'person-outline',
+                onMessage: () => messageSender(d),
+              })}
+              <View style={styles.contactDivider} />
+              {renderContactRow({
+                role: 'RECEIVER · DROP-OFF', name: info.receiverName, phone: info.receiverPhone, icon: 'person',
+              })}
             </View>
-          )}
-        </View>
 
-        <View style={styles.divider} />
+            {/* 5. Package */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="cube-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Package details</Text>
+              </View>
 
-        <View style={styles.cardFooter}>
-          <View style={styles.footerLeft}>
-            <Text style={styles.footerLabel}>Earnings</Text>
-            <Text style={styles.priceText}>₱{request.estimated_cost?.toFixed(2)}</Text>
-          </View>
-          <View style={styles.footerRight}>
-            <TouchableOpacity style={[styles.actionBtn, styles.acceptBtn]} onPress={() => acceptDelivery(request.request_id)} activeOpacity={0.9}>
-              <Ionicons name="checkmark" size={14} color="#FFFFFF" />
-              <Text style={styles.actionBtnText}>Accept</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+              <View style={styles.statsRow}>
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>ITEMS</Text>
+                  <Text style={styles.statValue}>{info.totalItems}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>WEIGHT</Text>
+                  <Text style={styles.statValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>FRAGILE</Text>
+                  <Text style={[styles.statValue, info.fragile && { color: '#EF4444' }]}>{info.fragile ? 'Yes' : 'No'}</Text>
+                </View>
+              </View>
+
+              {!!info.dims && (
+                <View style={styles.noteRow}>
+                  <Ionicons name="resize-outline" size={15} color="#6B7280" />
+                  <Text style={styles.noteText}>Size {info.dims}</Text>
+                </View>
+              )}
+
+              <View style={[styles.handlingBox, info.fragile && styles.handlingBoxWarn]}>
+                <Ionicons
+                  name={info.fragile ? 'warning' : 'information-circle-outline'}
+                  size={16}
+                  color={info.fragile ? '#EF4444' : ORANGE}
+                />
+                <Text style={[styles.handlingText, info.fragile && { color: '#B91C1C' }]}>
+                  {info.fragile ? 'Fragile — handle with care and keep upright. ' : ''}
+                  {/door/i.test(info.request?.pickup_type || '')
+                    ? 'Door-to-door: collect from and hand over at the door.'
+                    : 'Curb-side: collect from and hand over at the curb or entrance.'}
+                </Text>
+              </View>
+
+              {info.items.map((it: any, i: number) => {
+                const ok = !!it.photo && !failedPhotos[it.photo];
+                return (
+                  <View key={i} style={styles.itemBlock}>
+                    {ok ? (
+                      <TouchableOpacity activeOpacity={0.92} onPress={() => setPhotoPreview(it.photo)} style={styles.itemPhotoWrap}>
+                        <Image
+                          source={{ uri: it.photo }}
+                          style={styles.itemPhoto}
+                          resizeMode="cover"
+                          onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
+                        />
+                        <View style={styles.enlargeHint}><Ionicons name="expand-outline" size={12} color="#FFFFFF" /></View>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.itemNoPhoto}>
+                        <Ionicons name="image-outline" size={18} color="#9CA3AF" />
+                        <Text style={styles.itemNoPhotoText}>{it.photo ? "Photo couldn't be loaded" : 'No photo provided'}</Text>
+                      </View>
+                    )}
+                    <View style={styles.itemInfoRow}>
+                      <View style={{ flex: 1 }}>
+                        {info.items.length > 1 && <Text style={styles.eyebrow}>ITEM {i + 1}</Text>}
+                        <Text style={styles.itemTitle} numberOfLines={3}>{it.description}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        {!!it.size && <View style={styles.infoChip}><Text style={styles.infoChipText}>{it.size}</Text></View>}
+                        {it.fragile && (
+                          <View style={[styles.infoChip, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
+                            <Ionicons name="warning" size={11} color="#EF4444" />
+                            <Text style={[styles.infoChipText, { color: '#EF4444' }]}>Fragile</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* 6. Timeline */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="time-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Delivery timeline</Text>
+              </View>
+              <View style={styles.tlRow}>
+                <Ionicons name="checkmark-circle" size={20} color={ORANGE} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.tlTitle}>Accepted</Text>
+                  <Text style={styles.tlSub}>{d.accepted_at ? formatDateTime(d.accepted_at) : '—'}</Text>
+                </View>
+              </View>
+              <View style={styles.tlRow}>
+                <Ionicons name={stage !== 'pickup' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage !== 'pickup' ? ORANGE : '#D1D5DB'} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.tlTitle, stage === 'pickup' && { color: '#9CA3AF' }]}>Package picked up</Text>
+                  <Text style={styles.tlSub}>{stage !== 'pickup' ? 'Verified with sender QR / PIN' : 'Waiting for pickup verification'}</Text>
+                </View>
+              </View>
+              <View style={styles.tlRow}>
+                <Ionicons name={stage === 'done' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage === 'done' ? ORANGE : '#D1D5DB'} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.tlTitle, stage !== 'done' && { color: '#9CA3AF' }]}>Delivered</Text>
+                  <Text style={styles.tlSub}>
+                    {stage === 'done' && d.completed_at
+                      ? formatDateTime(d.completed_at)
+                      : d.estimated_eta ? `Estimated arrival ${formatDateTime(d.estimated_eta)}` : 'Awaiting delivery'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* 7. Earnings */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Earnings</Text>
+              </View>
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payment type</Text>
+                <View style={styles.payValueRow}>
+                  <Ionicons name="shield-checkmark-outline" size={15} color="#4B5563" />
+                  <Text style={styles.payValue}>Escrow payment</Text>
+                </View>
+              </View>
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payment status</Text>
+                <View style={[styles.payChip, released && styles.payChipDone]}>
+                  <Text style={[styles.payChipText, released && styles.payChipTextDone]}>{paymentLabel}</Text>
+                </View>
+              </View>
+              <View style={styles.sdTotalBox}>
+                <Text style={styles.sdTotalLabel}>You earn</Text>
+                <Text style={styles.sdTotalValue}>{money(info.earnings)}</Text>
+              </View>
+            </View>
+          </Animated.View>
+        </ScrollView>
       </View>
     );
   };
@@ -967,18 +1465,15 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
           <View style={styles.sheetHandle} />
-
           <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
           <Text style={styles.sheetSubheading}>
             Point your camera at the Sender's screen to automatically verify pickup.
           </Text>
-
           <View style={styles.orRow}>
             <View style={styles.orLine} />
             <Text style={styles.orText}>OR ENTER PIN</Text>
             <View style={styles.orLine} />
           </View>
-
           <View style={styles.pinRow}>
             <TextInput
               style={styles.pinInput}
@@ -1007,243 +1502,64 @@ export default function TaskScreen() {
     </Modal>
   );
 
-  const renderViewModal = () => {
-    if (!viewTarget) return null;
-    const request = viewTarget.delivery_requests;
-    if (!request) return null;
-    const cargo = request.cargo;
-    const receiver = request.receiver;
-    const pickupVerified = isPickupVerified(viewTarget);
-    const isCompleted = !!viewTarget.completed_at;
-
+  const renderMapModal = () => {
+    if (!selectedTask) return null;
+    const info = buildTaskInfo(selectedTask);
     return (
-      <Modal
-        visible={!!viewTarget}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setViewTarget(null)}
-      >
-        <View style={styles.viewOverlay}>
-          <View style={styles.viewSheet}>
-            <View style={styles.viewHeader}>
-              <View>
-                <Text style={styles.viewEyebrow}>DELIVERY DETAILS</Text>
-                <Text style={styles.viewTitle}>#{request.request_id}</Text>
+      <Modal visible={mapModalVisible} animationType="slide" onRequestClose={() => setMapModalVisible(false)}>
+        <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+          <View style={StyleSheet.absoluteFill}>
+            <TaskRouteMap
+              pickupLat={info.pickup.lat}
+              pickupLng={info.pickup.lng}
+              dropoffLat={info.dropoff.lat}
+              dropoffLng={info.dropoff.lng}
+              zoom={12}
+              interactive
+            />
+          </View>
+          <TouchableOpacity
+            style={[styles.mapCloseBtn, { top: insets.top + 12 }]}
+            onPress={() => setMapModalVisible(false)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="arrow-back" size={20} color="#111827" />
+          </TouchableOpacity>
+
+          <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
+            <TouchableOpacity style={styles.mapSheetRow} onPress={() => openMaps(info.pickup.lat, info.pickup.lng)} activeOpacity={0.85}>
+              <View style={styles.sdPinPickup}><View style={styles.sdPinPickupInner} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.eyebrow}>PICKUP</Text>
+                <Text style={styles.sdRouteMain} numberOfLines={1}>{info.pickup.main}</Text>
               </View>
-              <TouchableOpacity
-                onPress={() => setViewTarget(null)}
-                style={styles.viewCloseBtn}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="close" size={22} color="#111827" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.viewScrollContent}
-            >
-              <View
-                style={[
-                  styles.viewStatusPill,
-                  isCompleted
-                    ? { backgroundColor: '#DCFCE7' }
-                    : pickupVerified
-                      ? { backgroundColor: '#E0F2FE' }
-                      : { backgroundColor: '#FEF3C7' },
-                ]}
-              >
-                <Ionicons
-                  name={isCompleted ? 'checkmark-done-circle' : pickupVerified ? 'cube-outline' : 'time-outline'}
-                  size={14}
-                  color={isCompleted ? '#166534' : pickupVerified ? '#0369A1' : '#92400E'}
-                />
-                <Text
-                  style={[
-                    styles.viewStatusPillText,
-                    isCompleted
-                      ? { color: '#166534' }
-                      : pickupVerified
-                        ? { color: '#0369A1' }
-                        : { color: '#92400E' },
-                  ]}
-                >
-                  {isCompleted ? 'Completed' : pickupVerified ? 'In Transit' : 'Awaiting Pickup'}
-                </Text>
+              <View style={styles.navMini}><Ionicons name="navigate" size={16} color={ORANGE} /></View>
+            </TouchableOpacity>
+            <View style={styles.contactDivider} />
+            <TouchableOpacity style={styles.mapSheetRow} onPress={() => openMaps(info.dropoff.lat, info.dropoff.lng)} activeOpacity={0.85}>
+              <View style={styles.sdPinDropoff}><Ionicons name="location" size={11} color="#FFFFFF" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.eyebrow}>DROP-OFF</Text>
+                <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
-
-              <View style={styles.viewMapWrap}>
-                <TaskRouteMap
-                  pickupLat={request.pickup_location?.latitude}
-                  pickupLng={request.pickup_location?.longitude}
-                  dropoffLat={request.dropoff_location?.latitude}
-                  dropoffLng={request.dropoff_location?.longitude}
-                  zoom={12}
-                  interactive={true}
-                />
-              </View>
-
-              <Text style={styles.viewSectionTitle}>Route</Text>
-              <View style={styles.viewCard}>
-                <View style={styles.viewRouteRow}>
-                  <View style={styles.viewRouteDotBlue}>
-                    <View style={styles.viewRouteDotBlueInner} />
-                  </View>
-                  <View style={styles.viewRouteTextWrap}>
-                    <Text style={styles.viewRouteLabelBlue}>PICKUP</Text>
-                    <Text style={styles.viewRouteAddress}>{request.pickup_location?.street_address || 'N/A'}</Text>
-                  </View>
-                </View>
-                <View style={styles.viewRouteDivider} />
-                <View style={styles.viewRouteRow}>
-                  <Ionicons name="location" size={18} color="#D90429" />
-                  <View style={styles.viewRouteTextWrap}>
-                    <Text style={styles.viewRouteLabelRed}>DROPOFF</Text>
-                    <Text style={styles.viewRouteAddress}>{request.dropoff_location?.street_address || 'N/A'}</Text>
-                  </View>
-                </View>
-              </View>
-
-              <Text style={styles.viewSectionTitle}>Package</Text>
-              <View style={styles.viewCard}>
-                <View style={styles.viewInfoRow}>
-                  <Ionicons name="cube-outline" size={16} color="#6B7280" />
-                  <Text style={styles.viewInfoLabel}>Weight</Text>
-                  <Text style={styles.viewInfoValue}>{cargo?.total_weight_kg ?? 0} kg</Text>
-                </View>
-                <View style={styles.viewInfoRow}>
-                  <Ionicons name="resize-outline" size={16} color="#6B7280" />
-                  <Text style={styles.viewInfoLabel}>Size (L × W × H)</Text>
-                  <Text style={styles.viewInfoValue}>
-                    {cargo?.cargo_length_cm ?? '-'} × {cargo?.cargo_width_cm ?? '-'} × {cargo?.cargo_height_cm ?? '-'} cm
-                  </Text>
-                </View>
-                <View style={styles.viewInfoRow}>
-                  <Ionicons name="warning-outline" size={16} color="#6B7280" />
-                  <Text style={styles.viewInfoLabel}>Fragile</Text>
-                  <Text style={styles.viewInfoValue}>{cargo?.is_fragile ? 'Yes' : 'No'}</Text>
-                </View>
-                <View style={styles.viewInfoRow}>
-                  <Ionicons name="pricetag-outline" size={16} color="#6B7280" />
-                  <Text style={styles.viewInfoLabel}>Type</Text>
-                  <Text style={styles.viewInfoValue}>{request.pickup_type || 'Curb-side'}</Text>
-                </View>
-              </View>
-
-              {receiver && (
-                <>
-                  <Text style={styles.viewSectionTitle}>Receiver</Text>
-                  <View style={styles.viewCard}>
-                    <View style={styles.viewInfoRow}>
-                      <Ionicons name="person-outline" size={16} color="#6B7280" />
-                      <Text style={styles.viewInfoLabel}>Name</Text>
-                      <Text style={styles.viewInfoValue}>{receiver.receiver_name || 'Unknown'}</Text>
-                    </View>
-                    <View style={styles.viewInfoRow}>
-                      <Ionicons name="call-outline" size={16} color="#6B7280" />
-                      <Text style={styles.viewInfoLabel}>Phone</Text>
-                      <Text style={styles.viewInfoValue}>{request.receiver_phone || 'N/A'}</Text>
-                    </View>
-                  </View>
-                </>
-              )}
-
-              <Text style={styles.viewSectionTitle}>Status</Text>
-              <View style={styles.viewCard}>
-                <View style={styles.viewTimelineRow}>
-                  <Ionicons name="checkmark-circle" size={20} color="#22C55E" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.viewTimelineTitle}>Accepted</Text>
-                    <Text style={styles.viewTimelineTime}>
-                      {formatDateTime(viewTarget.accepted_at)}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.viewTimelineRow}>
-                  <Ionicons
-                    name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'}
-                    size={20}
-                    color={pickupVerified ? '#8B5CF6' : '#D1D5DB'}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.viewTimelineTitle, !pickupVerified && { color: '#9CA3AF' }]}>
-                      Item Collected
-                    </Text>
-                    <Text style={styles.viewTimelineTime}>
-                      {pickupVerified ? 'Verified by QR' : 'Waiting for QR'}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.viewTimelineRow}>
-                  <Ionicons
-                    name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'}
-                    size={20}
-                    color={isCompleted ? '#22C55E' : '#D1D5DB'}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.viewTimelineTitle, !isCompleted && { color: '#9CA3AF' }]}>
-                      Delivered
-                    </Text>
-                    <Text style={styles.viewTimelineText}>
-                      {isCompleted && viewTarget.completed_at
-                        ? formatDateTime(viewTarget.completed_at)
-                        : 'Awaiting delivery'}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.viewEarningsCard}>
-                <Text style={styles.viewEarningsLabel}>You earn</Text>
-                <Text style={styles.viewEarningsValue}>
-                  ₱{Number(request.estimated_cost || 0).toFixed(2)}
-                </Text>
-              </View>
-            </ScrollView>
-
-            <View style={styles.viewFooter}>
-              <TouchableOpacity
-                style={styles.viewFooterClose}
-                onPress={() => setViewTarget(null)}
-                activeOpacity={0.9}
-              >
-                <Text style={styles.viewFooterCloseText}>Close</Text>
-              </TouchableOpacity>
-
-              {!isCompleted && !pickupVerified && (
-                <TouchableOpacity
-                  style={styles.viewFooterPrimary}
-                  onPress={() => {
-                    const t = viewTarget;
-                    setViewTarget(null);
-                    setTimeout(() => openVerifyModal(t), 150);
-                  }}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="qr-code-outline" size={16} color="#FFF" />
-                  <Text style={styles.viewFooterPrimaryText}>Verify Pickup</Text>
-                </TouchableOpacity>
-              )}
-              {!isCompleted && pickupVerified && (
-                <TouchableOpacity
-                  style={[styles.viewFooterPrimary, { backgroundColor: '#22C55E' }]}
-                  onPress={() => {
-                    const t = viewTarget;
-                    setViewTarget(null);
-                    setTimeout(() => openDeliveryOTPModal(t), 150);
-                  }}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="shield-checkmark" size={16} color="#FFF" />
-                  <Text style={styles.viewFooterPrimaryText}>Complete Delivery</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+              <View style={styles.navMini}><Ionicons name="navigate" size={16} color={ORANGE} /></View>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
     );
   };
+
+  const renderPhotoModal = () => (
+    <Modal visible={!!photoPreview} transparent animationType="fade" onRequestClose={() => setPhotoPreview(null)}>
+      <View style={styles.previewOverlay}>
+        {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
+        <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
+          <Ionicons name="close" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </Modal>
+  );
 
   const renderDeliveryOTPModal = () => (
     <Modal
@@ -1265,7 +1581,8 @@ export default function TaskScreen() {
 
           <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
           <Text style={styles.otpModalSubtitle}>
-            Ask the receiver for the 6-digit OTP sent to their phone. Verifying will release payment to your wallet.
+            Ask the receiver for the 6-digit code the sender sent them. Enter it below to
+            release payment to your wallet.
           </Text>
 
           <View style={styles.otpInputContainer}>
@@ -1277,6 +1594,7 @@ export default function TaskScreen() {
               placeholder="000000"
               placeholderTextColor="#9CA3AF"
               maxLength={6}
+              autoFocus
             />
           </View>
 
@@ -1296,7 +1614,7 @@ export default function TaskScreen() {
               (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
             ]}
             disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
-            onPress={completeDelivery}
+            onPress={verifyDeliveryOTP}
             activeOpacity={0.9}
           >
             {deliveryOTPVerifying ? (
@@ -1308,22 +1626,6 @@ export default function TaskScreen() {
               </>
             )}
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.otpResendButton}
-            onPress={handleResendDeliveryOTP}
-            disabled={deliveryOTPResending}
-            activeOpacity={0.85}
-          >
-            {deliveryOTPResending ? (
-              <ActivityIndicator size="small" color="#6B7280" />
-            ) : (
-              <>
-                <Ionicons name="refresh" size={14} color="#6B7280" />
-                <Text style={styles.otpResendText}>Send New OTP</Text>
-              </>
-            )}
-          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -1331,253 +1633,291 @@ export default function TaskScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
-          <Text style={styles.loadingText}>Loading tasks...</Text>
-        </View>
-      </SafeAreaView>
+      <View style={[styles.safeArea, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={ORANGE} />
+        <Text style={styles.loadingText}>Loading tasks...</Text>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
-
-      <Animated.View style={[styles.header, fadeUp(headerAnim, 14)]}>
-        <View>
-          <Text style={styles.headerGreeting}>
-            {userData?.first_name ? `Hi, ${userData.first_name}` : 'Welcome back'}
-          </Text>
-          <Text style={styles.pageTitle}>My Tasks</Text>
-        </View>
-        <View style={styles.headerStats}>
-          <View style={styles.statPill}>
-            <Text style={styles.statPillValue}>{activeDeliveries.length}</Text>
-            <Text style={styles.statPillLabel}>Active</Text>
-          </View>
-          <View style={[styles.statPill, styles.statPillOrange]}>
-            <Text style={[styles.statPillValue, { color: ORANGE }]}>{pendingRequests.length}</Text>
-            <Text style={[styles.statPillLabel, { color: ORANGE }]}>New</Text>
-          </View>
-        </View>
-      </Animated.View>
-
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} colors={[ORANGE]} />
-        }
-      >
-        <Animated.View style={{ opacity: contentAnim }}>
-          {isMatching && (
-            <Animated.View style={[styles.matchingStatus, { opacity: pulseOpacity }]}>
-              <ActivityIndicator size="small" color={ORANGE} />
-              <Text style={styles.matchingStatusText}>Looking for matches...</Text>
-            </Animated.View>
-          )}
-
-          {activeDeliveries.length > 0 && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
-                  <View style={[styles.sectionDot, { backgroundColor: '#3B82F6' }]} />
-                  <Text style={styles.sectionTitle}>Active</Text>
-                </View>
-                <View style={styles.sectionCountBadge}>
-                  <Text style={styles.sectionCountText}>{activeDeliveries.length}</Text>
-                </View>
-              </View>
-              {activeDeliveries.map(d => renderTaskCard(d, true))}
-            </View>
-          )}
-
-          {pendingRequests.length > 0 && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
-                  <View style={[styles.sectionDot, { backgroundColor: ORANGE }]} />
-                  <Text style={styles.sectionTitle}>Available Jobs</Text>
-                </View>
-                <View style={[styles.sectionCountBadge, { backgroundColor: '#FFF7ED' }]}>
-                  <Text style={[styles.sectionCountText, { color: ORANGE }]}>{pendingRequests.length}</Text>
-                </View>
-              </View>
-              {pendingRequests.map(renderPendingRequest)}
-            </View>
-          )}
-
-          {completedDeliveries.length > 0 && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
-                  <View style={[styles.sectionDot, { backgroundColor: '#22C55E' }]} />
-                  <Text style={styles.sectionTitle}>Completed</Text>
-                </View>
-                <View style={[styles.sectionCountBadge, { backgroundColor: '#DCFCE7' }]}>
-                  <Text style={[styles.sectionCountText, { color: '#166534' }]}>{completedDeliveries.length}</Text>
-                </View>
-              </View>
-              {completedDeliveries.map(d => renderTaskCard(d, false))}
-            </View>
-          )}
-
-          {activeDeliveries.length === 0 && pendingRequests.length === 0 && completedDeliveries.length === 0 && (
-            <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons name="briefcase-outline" size={40} color={ORANGE} />
-              </View>
-              <Text style={styles.emptyTitle}>No tasks yet</Text>
-              <Text style={styles.emptySubtext}>
-                New delivery requests will appear here when they match your route.
-              </Text>
-              <TouchableOpacity
-                style={styles.matchNowButton}
-                onPress={() => runMatching(true)}
-                disabled={isMatching}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="search" size={16} color="#FFFFFF" />
-                <Text style={styles.matchNowButtonText}>
-                  {isMatching ? 'Searching...' : 'Check for Matches'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          <View style={styles.bottomSpacer} />
-        </Animated.View>
-      </ScrollView>
+    <View style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      {selectedTask ? renderDetailView(selectedTask) : renderListView()}
 
       {renderScannerModal()}
-      {renderViewModal()}
+      {renderMapModal()}
+      {renderPhotoModal()}
       {renderDeliveryOTPModal()}
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#FFFFFF' },
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 40 },
-
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: ORANGE, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 24,
-    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
-  },
-  headerGreeting: { fontSize: 12, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  pageTitle: { fontSize: 26, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.4 },
-  headerStats: { flexDirection: 'row', gap: 8 },
-  statPill: {
-    backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14,
-    alignItems: 'center', minWidth: 52, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
-  },
-  statPillOrange: { backgroundColor: '#FFFFFF', borderColor: '#FFFFFF' },
-  statPillValue: { fontSize: 15, fontWeight: '800', color: '#FFFFFF' },
-  statPillLabel: { fontSize: 9, fontWeight: '700', color: '#FFE0C7', letterSpacing: 0.5, marginTop: 1 },
-
-  section: { marginBottom: 22 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
-  sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sectionDot: { width: 8, height: 8, borderRadius: 4 },
-  sectionTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
-  sectionCountBadge: { backgroundColor: '#F3F4F6', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, minWidth: 28, alignItems: 'center' },
-  sectionCountText: { fontSize: 11, fontWeight: '800', color: '#6B7280' },
-
-  taskCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, paddingLeft: 20, marginBottom: 12,
-    borderWidth: 1, borderColor: '#F3F4F6',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
-    overflow: 'hidden', position: 'relative',
-  },
-  pendingCard: { borderColor: '#FFE4D2', borderWidth: 1.5 },
-  cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  typeBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, gap: 4 },
-  typeBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.4 },
-  taskId: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', letterSpacing: 0.3 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, gap: 5 },
-  statusPending: { backgroundColor: '#FEF3C7' },
-  statusActive: { backgroundColor: '#DBEAFE' },
-  statusCompleted: { backgroundColor: '#DCFCE7' },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  statusText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
-  statusTextPending: { fontSize: 10, fontWeight: '800', color: '#D97706', letterSpacing: 0.3 },
-  statusTextActive: { color: '#2563EB' },
-  statusTextCompleted: { color: '#166534' },
-
-  taskDateTime: { fontSize: 12, fontWeight: '600', color: '#6B7280', marginBottom: 14 },
-
-  locationSection: { flexDirection: 'row', justifyContent: 'space-between' },
-  locationDetails: { flex: 1, marginRight: 12, position: 'relative' },
-  locationItem: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
-  iconWrapper: { width: 22, alignItems: 'center', marginRight: 10, zIndex: 2, backgroundColor: '#FFFFFF' },
-  blueDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#0000CC', justifyContent: 'center', alignItems: 'center' },
-  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
-  connectingLine: { position: 'absolute', left: 10, top: 18, bottom: 22, width: 1, backgroundColor: '#E5E7EB', zIndex: 1 },
-  locationTextWrapper: { flex: 1 },
-  locationLabel: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
-  locationAddress: { fontSize: 12, fontWeight: '600', color: '#111827', lineHeight: 16 },
-  miniMapWrapper: { width: 110, height: 88, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
-
-  taskDetails: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 10, gap: 6 },
-  detailChip: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB',
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 5,
-    borderWidth: 1, borderColor: '#F3F4F6',
-  },
-  detailChipText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
-
-  divider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  footerLeft: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  footerLabel: { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
-  priceText: { fontSize: 17, fontWeight: '800', color: '#111827' },
-  footerRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  actionBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 20, gap: 5,
-  },
-  acceptBtn: {
-    backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
-  },
-  scanBtn: {
-    backgroundColor: '#7C3AED',
-    shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
-  },
-  completeBtn: {
-    backgroundColor: '#22C55E',
-    shadowColor: '#22C55E', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
-  },
-  viewBtn: { backgroundColor: '#F3F4F6' },
-  actionBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700', letterSpacing: 0.2 },
-  viewBtnText: { color: '#4B5563', fontSize: 11, fontWeight: '700' },
-
+  safeArea: { flex: 1, backgroundColor: '#F9FAFB' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+
+  /* list header */
+  headerSection: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  pageTitle: { fontSize: 28, fontWeight: '800', color: '#111827', letterSpacing: -0.5 },
+  tabBarScroll: { gap: 8, paddingTop: 14 },
+  tabItem: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', gap: 6,
+  },
+  tabItemActive: { backgroundColor: '#FFF7ED', borderColor: ORANGE, borderWidth: 1.5 },
+  tabText: { fontSize: 13, fontWeight: '700', color: '#4B5563' },
+  tabTextActive: { color: ORANGE },
+  tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: '#F3F4F6', paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
+  tabCountText: { fontSize: 11, fontWeight: '800', color: '#4B5563' },
+  tabCountTextActive: { color: ORANGE },
+
+  listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
+  bottomSpacer: { height: 60 },
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
+  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: '#FFE4D2' },
+  emptyTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
+  emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 6, lineHeight: 19 },
+
   matchingStatus: {
     flexDirection: 'row', alignItems: 'center', padding: 12, backgroundColor: '#FFF7ED',
     borderRadius: 14, marginBottom: 16, borderWidth: 1, borderColor: '#FFE4D2', gap: 10,
   },
   matchingStatusText: { fontSize: 13, color: ORANGE, fontWeight: '700' },
 
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: '#111827', marginTop: 4 },
-  emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 18 },
-  matchNowButton: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
-    paddingHorizontal: 20, paddingVertical: 13, borderRadius: 24, marginTop: 20, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, marginBottom: 12 },
+  sectionHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
+  sectionHeaderCount: { backgroundColor: '#FFF7ED', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, minWidth: 28, alignItems: 'center' },
+  sectionHeaderCountText: { fontSize: 11, fontWeight: '800', color: ORANGE },
+
+  /* list card */
+  card: {
+    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: '#E5E7EB',
   },
-  matchNowButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14, letterSpacing: 0.2 },
-  bottomSpacer: { height: 60 },
+  cardDone: { backgroundColor: '#FAFAF9', opacity: 0.95 },
+  pendingCard: { borderColor: '#FFE4D2', borderWidth: 1.5 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8, flexWrap: 'wrap' },
+  serviceBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  serviceBadgeText: { fontSize: 11, fontWeight: '800', color: '#374151' },
+  statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4 },
+  statusBadgeText: { fontSize: 11, fontWeight: '800' },
+  itemsChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F9FAFB', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 10, borderWidth: 1, borderColor: '#F1F1F1' },
+  itemsChipText: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
+  cardDate: { fontSize: 12, fontWeight: '700', color: '#6B7280', marginBottom: 10 },
+
+  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
+  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
+  routeBox: { backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 10, borderWidth: 1, borderColor: '#F3F4F6' },
+  routeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  routeConnectorLine: { width: 1, height: 12, backgroundColor: '#D1D5DB', marginLeft: 3.5, marginVertical: 3 },
+  routeAddressText: { flex: 1, fontSize: 14, fontWeight: '700', color: '#111827' },
+
+  nextStopRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFF7ED',
+    borderWidth: 1, borderColor: '#FFE4D2', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10,
+  },
+  nextStopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  nextStopEyebrow: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
+  nextStopMain: { fontSize: 13, fontWeight: '800', color: '#111827', marginTop: 1 },
+  nextStopLink: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  cardChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  infoChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F9FAFB',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: '#F1F1F1',
+  },
+  infoChipText: { fontSize: 11, fontWeight: '700', color: '#4B5563', maxWidth: 160 },
+
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+  footerLabel: { fontSize: 9, color: '#9CA3AF', fontWeight: '800', letterSpacing: 0.6, marginBottom: 2 },
+  priceText: { fontSize: 20, fontWeight: '900', color: '#111827', letterSpacing: -0.4 },
+  actionBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
+    paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+  },
+  actionBtnGreen: { backgroundColor: '#22C55E', shadowColor: '#22C55E' },
+  actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  doneBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 5, borderWidth: 1, borderColor: '#BBF7D0' },
+  doneBadgeText: { fontSize: 13, fontWeight: '700', color: '#166534' },
+
+  /* detail */
+  detailContainer: { paddingHorizontal: 20, paddingBottom: 60, paddingTop: 16 },
+  detailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  backCircleBtn: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6',
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB',
+  },
+  detailHeaderTitle: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  headerSpacer: { width: 40, height: 40 },
+
+  sdCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 14,
+    borderWidth: 1, borderColor: '#E5E7EB',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+  },
+  eyebrow: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1 },
+  sdTrackRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sdTrackId: { fontSize: 26, fontWeight: '900', color: '#111827', letterSpacing: -0.6, marginTop: 4 },
+  sdCopyBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF4EC',
+    borderWidth: 1, borderColor: '#FFD9BF', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
+  },
+  sdCopyBtnDone: { backgroundColor: ORANGE, borderColor: ORANGE },
+  sdCopyBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  sdChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, marginBottom: 16 },
+  sdStatusChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
+  sdStatusChipText: { fontSize: 11, fontWeight: '800' },
+
+  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+  stepItem: { flex: 1, alignItems: 'center' },
+  stepRowIndicator: { flexDirection: 'row', alignItems: 'center', width: '100%', justifyContent: 'center' },
+  stepDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center', zIndex: 2 },
+  stepDotActive: { backgroundColor: ORANGE },
+  stepDotCurrent: { backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFE4D2' },
+  stepInnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#9CA3AF' },
+  stepLine: { position: 'absolute', left: '50%', right: '-50%', height: 2, backgroundColor: '#E5E7EB', zIndex: 1 },
+  stepLineActive: { backgroundColor: ORANGE },
+  stepLabel: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', marginTop: 8, textAlign: 'center' },
+  stepLabelActive: { color: ORANGE, fontWeight: '900' },
+
+  nextCard: {
+    backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 14, elevation: 6,
+  },
+  nextTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  nextIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  nextEyebrow: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
+  nextTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.3, marginTop: 2 },
+  nextDesc: { fontSize: 13, lineHeight: 19, color: '#FFF1E6', marginTop: 12, fontWeight: '500' },
+  nextBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  nextGhostBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 14, borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.7)',
+  },
+  nextGhostText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  nextPrimaryBtn: {
+    flex: 1.5, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 14, borderRadius: 14, backgroundColor: '#FFFFFF',
+  },
+  nextPrimaryText: { color: ORANGE, fontSize: 14, fontWeight: '900' },
+  doneCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F0FDF4',
+    borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 20, padding: 16, marginBottom: 14,
+  },
+  doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center' },
+  doneTitle: { fontSize: 15, fontWeight: '800', color: '#166534' },
+  doneSub: { fontSize: 12, color: '#4B5563', marginTop: 2, lineHeight: 17 },
+
+  sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
+  mapTapHint: {
+    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
+  },
+  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
+  sdRoutePad: { padding: 18 },
+  sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
+  sdPinPickup: { width: 20, height: 20, borderRadius: 10, borderWidth: 4, borderColor: ORANGE, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
+  sdPinPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
+  sdPinDropoff: { width: 20, height: 20, borderRadius: 10, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: '#FFD9BF', marginVertical: 3, borderRadius: 1 },
+  sdRouteText: { flex: 1, paddingBottom: 16 },
+  sdRouteMain: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 3 },
+  sdRouteSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 16 },
+  navMini: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+
+  sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
+  sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF4EC', justifyContent: 'center', alignItems: 'center' },
+  sdCardTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+
+  contactRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  contactAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center' },
+  contactName: { fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 2 },
+  contactPhone: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginTop: 1 },
+  contactDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 14 },
+  roundBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center' },
+  roundBtnPrimary: { backgroundColor: ORANGE },
+
+  statsRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderRadius: 14, paddingVertical: 12, borderWidth: 1, borderColor: '#F3F4F6' },
+  stat: { flex: 1, alignItems: 'center' },
+  statLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
+  statValue: { fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 4 },
+  statDivider: { width: 1, height: 28, backgroundColor: '#E5E7EB' },
+  noteRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  noteText: { fontSize: 13, color: '#4B5563', fontWeight: '600' },
+  handlingBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 12,
+    backgroundColor: '#FFF7ED', borderRadius: 12, padding: 12,
+  },
+  handlingBoxWarn: { backgroundColor: '#FEF2F2' },
+  handlingText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#9A4A12', fontWeight: '600' },
+
+  itemBlock: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+  itemPhotoWrap: { width: '100%', height: 170, borderRadius: 14, overflow: 'hidden', backgroundColor: '#F3F4F6' },
+  itemPhoto: { width: '100%', height: '100%' },
+  enlargeHint: { position: 'absolute', right: 8, bottom: 8, width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(17,24,39,0.7)', alignItems: 'center', justifyContent: 'center' },
+  itemNoPhoto: { height: 64, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
+  itemNoPhotoText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  itemInfoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 10 },
+  itemTitle: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 2 },
+
+  tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 8 },
+  tlTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
+  tlSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+
+  payRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+  payLabel: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  payValueRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  payValue: { fontSize: 13, color: '#111827', fontWeight: '800' },
+  payChip: { backgroundColor: '#FFF4EC', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  payChipDone: { backgroundColor: '#DCFCE7' },
+  payChipText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  payChipTextDone: { color: '#166534' },
+  sdTotalBox: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: ORANGE, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 16, marginTop: 14,
+  },
+  sdTotalLabel: { fontSize: 13, fontWeight: '700', color: '#FFE4D2' },
+  sdTotalValue: { fontSize: 24, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5 },
+
+  /* full map + photo preview */
+  mapCloseBtn: {
+    position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
+  },
+  mapSheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.12, shadowRadius: 12, elevation: 12,
+  },
+  mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
+  previewImg: { width: '100%', height: '80%' },
+  previewClose: {
+    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
+  },
 
   scannerRoot: { flex: 1, backgroundColor: '#000' },
   scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 1, shadowRadius: 8 },
@@ -1624,85 +1964,6 @@ const styles = StyleSheet.create({
   },
   pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
 
-  viewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  viewSheet: {
-    backgroundColor: '#F9FAFB', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingTop: 18, maxHeight: '92%',
-  },
-  viewHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 22, paddingBottom: 14,
-  },
-  viewEyebrow: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1.2, marginBottom: 4 },
-  viewTitle: { fontSize: 22, fontWeight: '800', color: '#111827' },
-  viewCloseBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  viewScrollContent: { paddingHorizontal: 22, paddingBottom: 24 },
-  viewStatusPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, marginBottom: 14,
-  },
-  viewStatusPillText: { fontSize: 12, fontWeight: '800', letterSpacing: 0.3 },
-  viewMapWrap: {
-    height: 180, borderRadius: 18, overflow: 'hidden', marginBottom: 18,
-    borderWidth: 1, borderColor: '#E5E7EB',
-  },
-  viewSectionTitle: { fontSize: 13, fontWeight: '800', color: '#111827', marginBottom: 8, letterSpacing: 0.2 },
-  viewCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 14, marginBottom: 18,
-    borderWidth: 1, borderColor: '#F3F4F6',
-  },
-  viewRouteRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  viewRouteDotBlue: {
-    width: 16, height: 16, borderRadius: 8, borderWidth: 3, borderColor: '#0000CC',
-    justifyContent: 'center', alignItems: 'center', marginTop: 2,
-  },
-  viewRouteDotBlueInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#0000CC' },
-  viewRouteTextWrap: { flex: 1 },
-  viewRouteLabelBlue: { fontSize: 9, fontWeight: '800', color: '#0000CC', letterSpacing: 1, marginBottom: 2 },
-  viewRouteLabelRed: { fontSize: 9, fontWeight: '800', color: '#D90429', letterSpacing: 1, marginBottom: 2 },
-  viewRouteAddress: { fontSize: 13, color: '#111827', fontWeight: '600', lineHeight: 18 },
-  viewRouteDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12, marginLeft: 26 },
-
-  viewInfoRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F9FAFB',
-  },
-  viewInfoLabel: { flex: 1, fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  viewInfoValue: { fontSize: 12, color: '#111827', fontWeight: '700' },
-
-  viewTimelineRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 8 },
-  viewTimelineTitle: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
-  viewTimelineTime: { fontSize: 11, color: '#6B7280' },
-  viewTimelineText: { fontSize: 11, color: '#6B7280' },
-
-  viewEarningsCard: {
-    backgroundColor: '#111827', borderRadius: 16, padding: 16,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-  },
-  viewEarningsLabel: { color: '#9CA3AF', fontSize: 12, fontWeight: '700', letterSpacing: 0.4 },
-  viewEarningsValue: { color: '#FFFFFF', fontSize: 22, fontWeight: '900' },
-
-  viewFooter: {
-    flexDirection: 'row', gap: 10, paddingHorizontal: 22,
-    paddingTop: 14, paddingBottom: 20,
-    borderTopWidth: 1, borderTopColor: '#F3F4F6', backgroundColor: '#FFF',
-  },
-  viewFooterClose: {
-    flex: 1, paddingVertical: 14, borderRadius: 30, alignItems: 'center',
-    backgroundColor: '#F3F4F6',
-  },
-  viewFooterCloseText: { color: '#4B5563', fontWeight: '800', fontSize: 14 },
-  viewFooterPrimary: {
-    flex: 1.4, paddingVertical: 14, borderRadius: 30, alignItems: 'center',
-    flexDirection: 'row', justifyContent: 'center', gap: 8,
-    backgroundColor: '#7C3AED',
-    shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
-  },
-  viewFooterPrimaryText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
-
   otpModalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center', alignItems: 'center', padding: 20,
@@ -1742,15 +2003,10 @@ const styles = StyleSheet.create({
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#22C55E', borderRadius: 16,
-    paddingVertical: 16, gap: 8, marginBottom: 12,
+    paddingVertical: 16, gap: 8,
     shadowColor: '#22C55E', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   otpVerifyButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  otpResendButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12,
-  },
-  otpResendText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });
