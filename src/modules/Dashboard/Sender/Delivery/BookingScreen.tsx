@@ -19,9 +19,9 @@ const SEARCH_DURATION_MS = 60000;
 
 const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
-  { key: 'radar', label: 'Radar' },       
-  { key: 'vehicle', label: 'Vehicle' },   
-  { key: 'combined', label: 'Combo' },    
+  { key: 'radar', label: 'Radar' },
+  { key: 'vehicle', label: 'Vehicle' },
+  { key: 'combined', label: 'Combo' },
 ] as const;
 type FindingAnimation = typeof ANIMATION_STYLES[number]['key'];
 const DEFAULT_FINDING_ANIMATION: FindingAnimation = 'radar';
@@ -87,7 +87,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const resumedRef = useRef<number | null>(null);
   const resumeReceiverRef = useRef<any>(null);
   const searchStartRef = useRef<number | null>(null);
-  
+
   const [longSearch, setLongSearch] = useState(false);
   const [dotCount, setDotCount] = useState(0);
   const [statusIndex, setStatusIndex] = useState(0);
@@ -135,7 +135,7 @@ export default function BookingScreen({ route, navigation }: any) {
       progressAnim.setValue(Math.min(elapsed / SEARCH_DURATION_MS, 1));
       setLongSearch(remaining === 0);
       let longSearchTimer: ReturnType<typeof setTimeout> | null = null;
-      
+
       if (remaining > 0) {
         Animated.timing(progressAnim, {
           toValue: 1, duration: remaining, easing: Easing.linear, useNativeDriver: false,
@@ -174,7 +174,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const r3 = createRadarWave(radarAnim3, 1300);
 
       r1.start(); r2.start(); r3.start();
-      
+
       return () => {
         r1.stop(); r2.stop(); r3.stop();
         spinLoop.stop(); pulseLoop.stop();
@@ -187,10 +187,10 @@ export default function BookingScreen({ route, navigation }: any) {
 
   useEffect(() => {
     if (bookingState !== 'finding') return;
-    
+
     setStatusIndex(0);
     textAnim.setValue(1);
-    
+
     const timer = setInterval(() => {
       Animated.timing(textAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => {
         setStatusIndex(i => (i + 1) % FINDING_STATUS_MESSAGES.length);
@@ -198,8 +198,8 @@ export default function BookingScreen({ route, navigation }: any) {
           toValue: 1, duration: 300, easing: Easing.out(Easing.quad), useNativeDriver: true,
         }).start();
       });
-    }, 4000); 
-    
+    }, 4000);
+
     return () => {
       clearInterval(timer);
       textAnim.stopAnimation();
@@ -253,23 +253,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-            const receiverPhone = receiver?.receiver_phone || receiver?.phone_number;
-            const receiverName = receiver?.receiver_name || `${receiver?.first_name || ''} ${receiver?.last_name || ''}`.trim() || 'Receiver';
-
-            let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
-            if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-            else if (e164.startsWith('63')) e164 = '+' + e164;
-            else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
-
-            if (e164) {
-              try {
-                await supabase.functions.invoke('contiguity-otp', {
-                  body: { action: 'send', delivery_id: delivery.delivery_id, to: e164, name: receiverName || 'PNS Delivery' },
-                });
-              } catch (otpErr) {
-                console.error('Contiguity invoke error:', otpErr);
-              }
-            }
+            // NOTE: OTP is no longer sent at booking time. The sender will
+            // generate and forward the delivery OTP from ActivityScreen after
+            // the courier scans the pickup QR / enters the PIN.
 
             setMatchFound(true);
             setBookingState('matched');
@@ -294,23 +280,6 @@ export default function BookingScreen({ route, navigation }: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
       setBookingState('review');
     }
-  };
-
-  const sendReceiverOtp = async (deliveryId: number, rcv: any) => {
-    const receiverPhone = rcv?.receiver_phone || rcv?.phone_number;
-    const receiverName = rcv?.receiver_name || `${rcv?.first_name || ''} ${rcv?.last_name || ''}`.trim() || 'Receiver';
-
-    let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
-    if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-    else if (e164.startsWith('63')) e164 = '+' + e164;
-    else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
-    if (!e164) return;
-
-    try {
-      await supabase.functions.invoke('contiguity-otp', {
-        body: { action: 'send', delivery_id: deliveryId, to: e164, name: receiverName || 'PNS Delivery' },
-      });
-    } catch (err) {}
   };
 
   const loadProviderForDelivery = async (delivery: any) => {
@@ -354,7 +323,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const rcv = req.receiver
         ? { receiver_id: req.receiver.receiver_id ?? req.receiver_id ?? null, receiver_name: req.receiver.receiver_name ?? null, receiver_phone: req.receiver.receiver_phone ?? req.receiver_phone ?? '', receiver_email: req.receiver.receiver_email ?? null, is_favorite: req.receiver.is_favorite ?? false }
         : req.receiver_phone ? { receiver_id: req.receiver_id ?? null, receiver_name: null, receiver_phone: req.receiver_phone } : null;
-      
+
       resumeReceiverRef.current = rcv;
       if (rcv) setReceiver(rcv);
 
@@ -362,9 +331,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       if (delivery) {
         await loadProviderForDelivery(delivery);
-        const { data: confirmation } = await supabase.from('delivery_confirmations').select('confirmation_id').eq('delivery_id', delivery.delivery_id).maybeSingle();
-        if (!confirmation && rcv) await sendReceiverOtp(delivery.delivery_id, rcv);
-
+        // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
         setMatchFound(true);
         setIsSearching(false);
         setBookingState('matched');
@@ -408,7 +375,7 @@ export default function BookingScreen({ route, navigation }: any) {
         async (payload) => {
           const delivery = payload.new;
           await loadProviderForDelivery(delivery);
-          if (resumeReceiverRef.current) await sendReceiverOtp(delivery.delivery_id, resumeReceiverRef.current);
+          // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
@@ -513,7 +480,7 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   const mapTopPad = Math.round(insets.top + 120);
-  const mapBottomPad = 320; 
+  const mapBottomPad = 320;
 
   const mapHtml = `
     <!DOCTYPE html>
@@ -643,7 +610,7 @@ export default function BookingScreen({ route, navigation }: any) {
       </View>
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
-        
+
         {/* --- REVIEW STATE --- */}
         {bookingState === 'review' && (
           <Animated.View style={[styles.sheetCard, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
@@ -687,9 +654,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
             {receiver && (
               <View style={styles.otpInfoBanner}>
-                <Ionicons name="shield-checkmark-outline" size={14} color="#7C3AED" />
+                <Ionicons name="qr-code-outline" size={14} color="#7C3AED" />
                 <Text style={styles.otpInfoBannerText}>
-                  A confirmation OTP will be sent to the receiver's phone when booking.
+                  When the courier arrives, show your pickup QR code (or read them the 4-digit PIN) to confirm pickup. After that, a delivery OTP will be generated for you to forward to the receiver.
                 </Text>
               </View>
             )}
@@ -719,12 +686,12 @@ export default function BookingScreen({ route, navigation }: any) {
               <View style={styles.sheetHandle} />
             </View>
 
-            <ScrollView 
-              style={styles.findingScrollView} 
+            <ScrollView
+              style={styles.findingScrollView}
               contentContainerStyle={[styles.findingScrollContent, { paddingBottom: Math.max(insets.bottom, 24) }]}
               showsVerticalScrollIndicator={false}
             >
-              
+
               {/* TWO COLUMN LAYOUT FOR SEARCHING UI - Animation Left, Text Right */}
               <View style={styles.findingTopRow}>
                 <View style={styles.radarContainer}>
@@ -899,8 +866,10 @@ export default function BookingScreen({ route, navigation }: any) {
               )}
 
               <View style={styles.otpSentBanner}>
-                <Ionicons name="shield-checkmark" size={16} color="#22C55E" />
-                <Text style={styles.otpSentText}>Confirmation OTP sent to receiver's phone</Text>
+                <Ionicons name="qr-code-outline" size={16} color="#22C55E" />
+                <Text style={styles.otpSentText}>
+                  Show your pickup QR code when the courier arrives
+                </Text>
               </View>
 
               <View style={styles.matchedDivider} />
@@ -1020,7 +989,7 @@ const styles = StyleSheet.create({
   costLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   costSub: { fontSize: 10, color: '#9CA3AF', fontWeight: '500', marginTop: 2 },
   costValue: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.4 },
-  
+
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
@@ -1036,7 +1005,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
-    maxHeight: height * 0.45, 
+    maxHeight: height * 0.45,
     minHeight: 320,
   },
   findingScrollView: { flex: 1, width: '100%' },
@@ -1044,17 +1013,17 @@ const styles = StyleSheet.create({
 
   // TWO COLUMN STRUCTURE
   findingTopRow: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    width: '100%', 
-    marginTop: 4, 
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 4,
     marginBottom: 16,
   },
-  
+
   // Scaled Down Radar Animation
-  radarContainer: { 
-    width: 80, height: 80, 
-    justifyContent: 'center', alignItems: 'center', 
+  radarContainer: {
+    width: 80, height: 80,
+    justifyContent: 'center', alignItems: 'center',
     marginRight: 16 // Spacing between animation and text
   },
   radarGuideRing: { position: 'absolute', borderWidth: 1, borderColor: '#FFEDD5' },
@@ -1067,7 +1036,7 @@ const styles = StyleSheet.create({
     width: 30, height: 30, borderRadius: 15, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 6, elevation: 5, zIndex: 2,
   },
-  
+
   // Left-aligned Text Group
   findingTextGroup: { flex: 1, alignItems: 'flex-start' },
   findingTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
@@ -1097,7 +1066,7 @@ const styles = StyleSheet.create({
 
   progressContainer: { width: '100%', height: 5, backgroundColor: '#F3F4F6', borderRadius: 3, marginBottom: 16, overflow: 'hidden' },
   progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 3 },
-  
+
   cancelTextButton: {
     width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 14, borderRadius: 14, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
@@ -1140,7 +1109,7 @@ const styles = StyleSheet.create({
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
-  
+
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111827', borderRadius: 16,
     paddingVertical: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
