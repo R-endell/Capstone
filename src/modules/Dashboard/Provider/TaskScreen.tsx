@@ -310,7 +310,6 @@ export default function TaskScreen() {
   const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
   const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
-  const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -478,29 +477,6 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
-  /**
-   * Texts the receiver their drop-off OTP via the contiguity-otp edge function.
-   * Never throws: pickup has already been recorded, so an SMS failure must not undo it.
-   * The courier can always retry with "Send New OTP" on the drop-off screen.
-   */
-  const sendDeliveryOTP = async (deliveryId: number): Promise<{ ok: boolean; error?: string }> => {
-    try {
-      const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-        body: { action: 'send', delivery_id: deliveryId },
-      });
-
-      if (error || !data?.success) {
-        const msg = data?.error || error?.message || 'Could not send OTP.';
-        console.warn('[OTP] send failed:', msg);
-        return { ok: false, error: msg };
-      }
-      return { ok: true };
-    } catch (e: any) {
-      console.warn('[OTP] send threw:', e);
-      return { ok: false, error: e?.message || 'Could not send OTP.' };
-    }
-  };
-
   const markPickupVerified = async (deliveryId: number, requestId: number) => {
     try {
       const { error: qrErr } = await supabase
@@ -539,14 +515,9 @@ export default function TaskScreen() {
       setActiveDeliveries(prev => patchDelivery(prev));
       setCompletedDeliveries(prev => patchDelivery(prev));
 
-      // Item is now in transit: text the receiver their drop-off OTP.
-      const otpResult = await sendDeliveryOTP(deliveryId);
-
       Alert.alert(
         '✅ Item Collected',
-        otpResult.ok
-          ? 'Pickup verified. A confirmation OTP was texted to the receiver. Ask them for it when you arrive.'
-          : `Pickup verified, but the receiver's OTP could not be sent (${otpResult.error}). You can resend it from the drop-off screen.`
+        'Pickup verified. The sender will receive a delivery OTP to forward to the receiver.'
       );
       closeVerifyModal();
 
@@ -615,79 +586,15 @@ export default function TaskScreen() {
     }
   };
 
-  /* ---------------- DELIVERY CONFIRMATION (OTP via Contiguity) ---------------- */
-  const openDeliveryOTPModal = (delivery: any) => {
-    setDeliveryOTPTarget(delivery);
-    setDeliveryOTPInput('');
-    setDeliveryOTPModalVisible(true);
-  };
+  /* ================================================================ */
+  /* DELIVERY OTP — courier enters the 6-digit code from the receiver */
+  /* ================================================================ */
 
-  const closeDeliveryOTPModal = () => {
-    setDeliveryOTPModalVisible(false);
-    setDeliveryOTPTarget(null);
-    setDeliveryOTPInput('');
-    setDeliveryOTPVerifying(false);
-    setDeliveryOTPResending(false);
-  };
-
-  const handleResendDeliveryOTP = async () => {
-    if (!deliveryOTPTarget) return;
-
-    Alert.alert(
-      'Send New OTP',
-      'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send New OTP',
-          onPress: async () => {
-            try {
-              setDeliveryOTPResending(true);
-              const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-                body: { action: 'regenerate', delivery_id: deliveryOTPTarget.delivery_id },
-              });
-
-              if (error || !data?.success) {
-                Alert.alert('Error', data?.error || error?.message || 'Could not send new OTP.');
-                return;
-              }
-
-              Alert.alert('OTP Sent', `A new OTP has been sent to ${data?.sent_to || 'the receiver'}.`);
-              setDeliveryOTPInput('');
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to send new OTP.');
-            } finally {
-              setDeliveryOTPResending(false);
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const completeDelivery = async () => {
-    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
-
-    const deliveryId = deliveryOTPTarget.delivery_id;
-    const requestId = deliveryOTPTarget.delivery_requests?.request_id;
-
-    setDeliveryOTPVerifying(true);
+  const finalizeDelivery = async (deliveryId: number) => {
     try {
-      const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
-        'contiguity-otp',
-        { body: { action: 'verify', delivery_id: deliveryId, otp: deliveryOTPInput.trim() } }
-      );
-
-      if (verifyError) {
-        Alert.alert('Verification Failed', verifyError.message || 'Could not verify OTP.');
-        return;
-      }
-
-      if (!verifyResult?.success) {
-        Alert.alert('Invalid OTP', verifyResult?.message || 'The code is incorrect or has expired. Please try again.');
-        return;
-      }
-
+      setDeliveryOTPVerifying(true);
+      const target = deliveryOTPTarget;
+      const requestId = target?.delivery_requests?.request_id;
       const now = new Date().toISOString();
 
       const { error: delError } = await supabase
@@ -738,11 +645,46 @@ export default function TaskScreen() {
       });
 
       Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
-
       closeDeliveryOTPModal();
       await loadData();
     } catch (error: any) {
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
+    } finally {
+      setDeliveryOTPVerifying(false);
+    }
+  };
+
+  const openDeliveryOTPModal = (delivery: any) => {
+    setDeliveryOTPTarget(delivery);
+    setDeliveryOTPInput('');
+    setDeliveryOTPModalVisible(true);
+  };
+
+  const closeDeliveryOTPModal = () => {
+    setDeliveryOTPModalVisible(false);
+    setDeliveryOTPTarget(null);
+    setDeliveryOTPInput('');
+    setDeliveryOTPVerifying(false);
+  };
+
+  const verifyDeliveryOTP = async () => {
+    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
+    const deliveryId = deliveryOTPTarget.delivery_id;
+
+    setDeliveryOTPVerifying(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-delivery-otp', {
+        body: { action: 'verify', delivery_id: deliveryId, otp: deliveryOTPInput.trim() },
+      });
+
+      if (error || !data?.success) {
+        Alert.alert('Invalid Code', data?.message || error?.message || 'Please check the code and try again.');
+        return;
+      }
+
+      await finalizeDelivery(deliveryId);
+    } catch (e: any) {
+      Alert.alert('Verification Failed', e?.message || 'Could not verify the code.');
     } finally {
       setDeliveryOTPVerifying(false);
     }
@@ -803,16 +745,12 @@ export default function TaskScreen() {
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
+    // Strictly QR/PIN based. Do NOT fall back to delivery_status, otherwise
+    // a courier could see "Item Collected" highlighted before scanning.
     const qr = delivery?.qr_verifications;
-    if (qr) {
-      if (Array.isArray(qr)) {
-        if (qr[0]?.pickup_verified) return true;
-      } else if (qr.pickup_verified) {
-        return true;
-      }
-    }
-    const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Completed';
+    if (!qr) return false;
+    if (Array.isArray(qr)) return qr[0]?.pickup_verified === true;
+    return qr.pickup_verified === true;
   };
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' =>
@@ -1240,7 +1178,7 @@ export default function TaskScreen() {
                 <Text style={styles.nextDesc}>
                   {stage === 'pickup'
                     ? `Head to ${info.pickup.main}. Scan the sender's QR code, or ask for their 4-digit PIN, to confirm pickup.`
-                    : `Head to ${info.dropoff.main}. Ask the receiver for the 6-digit OTP to confirm delivery and release your payment.`}
+                    : `Head to ${info.dropoff.main}. Ask the receiver for the 6-digit delivery OTP sent by the sender.`}
                 </Text>
                 <View style={styles.nextBtnRow}>
                   <TouchableOpacity style={styles.nextGhostBtn} onPress={() => openMaps(target.lat, target.lng)} activeOpacity={0.85}>
@@ -1643,7 +1581,8 @@ export default function TaskScreen() {
 
           <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
           <Text style={styles.otpModalSubtitle}>
-            Ask the receiver for the 6-digit OTP sent to their phone. Verifying will release payment to your wallet.
+            Ask the receiver for the 6-digit code the sender sent them. Enter it below to
+            release payment to your wallet.
           </Text>
 
           <View style={styles.otpInputContainer}>
@@ -1655,6 +1594,7 @@ export default function TaskScreen() {
               placeholder="000000"
               placeholderTextColor="#9CA3AF"
               maxLength={6}
+              autoFocus
             />
           </View>
 
@@ -1674,7 +1614,7 @@ export default function TaskScreen() {
               (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
             ]}
             disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
-            onPress={completeDelivery}
+            onPress={verifyDeliveryOTP}
             activeOpacity={0.9}
           >
             {deliveryOTPVerifying ? (
@@ -1683,22 +1623,6 @@ export default function TaskScreen() {
               <>
                 <Ionicons name="checkmark-circle" size={18} color="#FFF" />
                 <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.otpResendButton}
-            onPress={handleResendDeliveryOTP}
-            disabled={deliveryOTPResending}
-            activeOpacity={0.85}
-          >
-            {deliveryOTPResending ? (
-              <ActivityIndicator size="small" color="#6B7280" />
-            ) : (
-              <>
-                <Ionicons name="refresh" size={14} color="#6B7280" />
-                <Text style={styles.otpResendText}>Send New OTP</Text>
               </>
             )}
           </TouchableOpacity>
@@ -2079,15 +2003,10 @@ const styles = StyleSheet.create({
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#22C55E', borderRadius: 16,
-    paddingVertical: 16, gap: 8, marginBottom: 12,
+    paddingVertical: 16, gap: 8,
     shadowColor: '#22C55E', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   otpVerifyButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  otpResendButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12,
-  },
-  otpResendText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });

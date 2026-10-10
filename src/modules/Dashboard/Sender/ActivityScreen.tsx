@@ -289,6 +289,33 @@ const formatEta = (iso?: string | null): string => {
   return clock;
 };
 
+const formatDateTimeShort = (iso?: string | null): string => {
+  if (!iso) return '';
+
+  // Postgres `timestamp without time zone` values come back from Supabase as
+  // strings without a trailing 'Z'. Parse them as UTC explicitly so the
+  // conversion to local time is correct.
+  let raw = String(iso);
+  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
+    raw = raw.replace(' ', 'T') + 'Z';
+  }
+
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return '';
+
+  const month = d.toLocaleDateString('en-US', { month: 'short' });
+  const day = d.getDate();
+  const year = d.getFullYear();
+
+  let hours = d.getHours();
+  const minutes = d.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+
+  return `${month} ${day}, ${year} · ${hours}:${minutes} ${ampm}`;
+};
+
 interface DeliveryRequest {
   request_id: number;
   pickup_type: string;
@@ -343,6 +370,7 @@ interface DeliveryConfirmation {
   confirmation_id: number;
   delivery_id: number;
   contiguity_otp_id?: string | null;
+  system_otp?: string | null;
   otp_expires_at: string;
   otp_verified: boolean;
   otp_verified_at: string | null;
@@ -672,13 +700,67 @@ export default function ActivityScreen() {
     }
   };
 
+  // ---------- REALTIME: subscribe to changes on the sender's deliveries ----------
+  useEffect(() => {
+    if (!userId) return;
+
+    const channel = supabase
+      .channel(`sender-activity-${userId}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, () => {
+        fetchData();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
+  // Auto-generate the system OTP once pickup is verified and there is no OTP yet.
+  useEffect(() => {
+    const pending = deliveries.filter(
+      (d) =>
+        d.isMatched &&
+        d.qr?.pickup_verified &&
+        !d.deliveryData?.completed_at &&
+        !d.confirmation?.system_otp,
+    );
+
+    pending.forEach(async (d) => {
+      const deliveryId = d.deliveryData?.delivery_id;
+      if (!deliveryId) return;
+      try {
+        const { data, error } = await supabase.functions.invoke('generate-delivery-otp', {
+          body: { action: 'generate', delivery_id: deliveryId },
+        });
+        if (error || !data?.success) {
+          console.warn('[OTP] generate failed for', deliveryId, data?.error || error?.message);
+          return;
+        }
+        fetchData();
+      } catch (e) {
+        console.warn('[OTP] generate threw', e);
+      }
+    });
+  }, [deliveries]);
+
   useEffect(() => {
     if (!selectedDelivery) return;
     const updatedMatch = deliveries.find(d => d.request_id === selectedDelivery.request_id);
     if (!updatedMatch) return;
-    if (updatedMatch.status !== selectedDelivery.status) {
-      setSelectedDelivery(updatedMatch);
-    }
+    setSelectedDelivery(updatedMatch);
   }, [deliveries]);
 
   const detailRequestId = selectedDelivery?.request_id ?? null;
@@ -1100,12 +1182,13 @@ export default function ActivityScreen() {
 
   const renderDetailView = () => {
     const d = selectedDelivery;
-    const pickupVerified =
-      d?.qr?.pickup_verified === true ||
-      d?.status === 'In Transit' ||
-      d?.status === 'Completed';
+    // STRICT: pickup is only "verified" when the courier actually scanned the QR
+    // or entered the PIN. Do NOT fall back to delivery_status.
+    const pickupVerified = d?.qr?.pickup_verified === true;
 
-    const isCompleted = d?.status === 'Completed' || !!d?.deliveryData?.completed_at;
+    // STRICT: completion is driven by deliveries.completed_at, which is only set
+    // after the courier enters the correct OTP.
+    const isCompleted = !!d?.deliveryData?.completed_at;
 
     const showPickupQRButton =
       !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted;
@@ -1117,10 +1200,14 @@ export default function ActivityScreen() {
       d?.receiver?.receiver_name?.trim() || d?.receiver?.receiver_phone || 'Receiver';
 
     const currentStatus = d?.status || 'Waiting for Provider';
+
+    // --- Stepper index ---
+    // 0 = Placed, 1 = Matched, 2 = Item Collected, 3 = In Transit, 4 = Delivered
     let stepIndex = 0;
-    if (currentStatus === 'Matched') stepIndex = 1;
-    else if (currentStatus === 'In Progress' || currentStatus === 'In Transit') stepIndex = 2;
-    else if (currentStatus === 'Completed') stepIndex = 3;
+    if (d?.isMatched) stepIndex = 1;
+    if (pickupVerified) stepIndex = 2;
+    if (pickupVerified && !isCompleted) stepIndex = 3;
+    if (isCompleted) stepIndex = 4;
 
     const trackingId = `PNS-${String(d?.request_id).padStart(4, '0')}`;
     const canResume = !!d && !d.isMatched && currentStatus === 'Waiting for Provider';
@@ -1307,18 +1394,26 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           )}
 
-          {pickupVerified && !isCompleted && hasConfirmation && (
-            <TouchableOpacity style={styles.sdOtpCard} onPress={() => setShowDeliveryOTP(true)} activeOpacity={0.9}>
-              <View style={styles.sdOtpIcon}>
-                <Ionicons name={otpVerified ? 'shield-checkmark' : 'lock-closed'} size={18} color={ORANGE} />
+          {pickupVerified && !isCompleted && (
+            <TouchableOpacity
+              style={styles.pickupQRCard}
+              onPress={() => setShowDeliveryOTP(true)}
+              activeOpacity={0.9}
+            >
+              <View style={styles.pickupQRIconBox}>
+                <Ionicons name="key" size={20} color="#FFF" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.sdOtpTitle}>{otpVerified ? 'Delivery Confirmed' : 'Receiver OTP Code'}</Text>
-                <Text style={styles.sdOtpSub} numberOfLines={1}>
-                  {otpVerified ? 'Funds successfully released.' : 'Tap to view the drop-off confirmation code.'}
+                <Text style={styles.pickupQRTitle}>
+                  {hasConfirmation && selectedDelivery?.confirmation?.system_otp
+                    ? 'Delivery OTP Ready'
+                    : 'Generating OTP…'}
+                </Text>
+                <Text style={styles.pickupQRDesc}>
+                  Tap to view the code and send it to the receiver
                 </Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color={ORANGE} />
+              <Ionicons name="chevron-forward" size={16} color="#FFF" />
             </TouchableOpacity>
           )}
 
@@ -1545,6 +1640,77 @@ export default function ActivityScreen() {
             </View>
           </View>
 
+          {/* Delivery timeline */}
+          <View style={styles.sdCard}>
+            <View style={styles.sdCardHeader}>
+              <View style={styles.sdCardHeaderIcon}>
+                <Ionicons name="time-outline" size={14} color={ORANGE} />
+              </View>
+              <Text style={styles.sdCardTitle}>Delivery timeline</Text>
+            </View>
+
+            {/* 1. Accepted */}
+            <View style={styles.tlRow}>
+              <Ionicons
+                name={d?.isMatched ? 'checkmark-circle' : 'ellipse-outline'}
+                size={20}
+                color={d?.isMatched ? ORANGE : '#D1D5DB'}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.tlTitle, !d?.isMatched && { color: '#9CA3AF' }]}>
+                  Accepted
+                </Text>
+                <Text style={styles.tlSub}>
+                  {d?.deliveryData?.accepted_at
+                    ? formatDateTimeShort(d.deliveryData.accepted_at)
+                    : d?.isMatched ? 'Courier assigned' : 'Waiting for a courier'}
+                </Text>
+              </View>
+            </View>
+
+            {/* 2. Package picked up */}
+            <View style={styles.tlRow}>
+              <Ionicons
+                name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'}
+                size={20}
+                color={pickupVerified ? ORANGE : '#D1D5DB'}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.tlTitle, !pickupVerified && { color: '#9CA3AF' }]}>
+                  Package picked up
+                </Text>
+                <Text style={styles.tlSub}>
+                  {pickupVerified
+                    ? 'Verified with sender QR / PIN'
+                    : d?.isMatched
+                      ? 'Waiting for courier to scan QR or enter PIN'
+                      : 'Awaiting courier'}
+                </Text>
+              </View>
+            </View>
+
+            {/* 3. Delivered */}
+            <View style={[styles.tlRow, { paddingBottom: 0 }]}>
+              <Ionicons
+                name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'}
+                size={20}
+                color={isCompleted ? ORANGE : '#D1D5DB'}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.tlTitle, !isCompleted && { color: '#9CA3AF' }]}>
+                  Delivered
+                </Text>
+                <Text style={styles.tlSub}>
+                  {isCompleted && d?.deliveryData?.completed_at
+                    ? formatDateTimeShort(d.deliveryData.completed_at)
+                    : d?.deliveryData?.estimated_eta
+                      ? `Estimated arrival ${formatDateTimeShort(d.deliveryData.estimated_eta)}`
+                      : 'Awaiting delivery'}
+                </Text>
+              </View>
+            </View>
+          </View>
+
           {!isCompleted && (
             <View style={styles.detailActionsRow}>
               {!d?.isMatched && (
@@ -1591,7 +1757,7 @@ export default function ActivityScreen() {
                   <Text style={styles.etaPayLabel}>ESTIMATED ARRIVAL</Text>
                 </View>
                 <Text style={styles.etaPayValue} numberOfLines={1}>
-                  {selectedDelivery.status === 'Completed'
+                  {selectedDelivery.deliveryData?.completed_at
                     ? 'Delivered'
                     : selectedDelivery.isMatched
                       ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
@@ -1693,12 +1859,15 @@ export default function ActivityScreen() {
       <View style={styles.modalOverlay}>
         <View style={styles.modalCard}>
           <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Pickup QR Code</Text>
+            <Text style={styles.modalTitle}>Pickup Verification</Text>
             <TouchableOpacity onPress={() => setShowPickupQR(false)}>
               <Ionicons name="close" size={20} color="#111827" />
             </TouchableOpacity>
           </View>
-          <Text style={styles.modalSubtitle}>Present this code to your courier partner.</Text>
+          <Text style={styles.modalSubtitle}>
+            Show this QR to your courier. Or read them the 4-digit PIN below.
+          </Text>
+
           {selectedDelivery?.qr?.pickup_qr ? (
             <View style={styles.qrWrap}>
               <QRCode value={selectedDelivery.qr.pickup_qr} size={200} color="#111827" backgroundColor="#FFFFFF" />
@@ -1706,6 +1875,17 @@ export default function ActivityScreen() {
           ) : (
             <ActivityIndicator color={ORANGE} style={{ margin: 40 }} />
           )}
+
+          {!!selectedDelivery?.qr?.pickup_pin && (
+            <View style={styles.pinRevealBox}>
+              <Text style={styles.pinRevealLabel}>PIN CODE</Text>
+              <Text style={styles.pinRevealValue}>{selectedDelivery.qr.pickup_pin}</Text>
+              <Text style={styles.pinRevealHint}>
+                Courier can enter this PIN instead of scanning the QR.
+              </Text>
+            </View>
+          )}
+
           <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setShowPickupQR(false)}>
             <Text style={styles.modalDoneBtnText}>Done</Text>
           </TouchableOpacity>
@@ -1715,34 +1895,99 @@ export default function ActivityScreen() {
   );
 
   const renderDeliveryOTPModal = () => {
-    if (!selectedDelivery?.confirmation) return null;
-    const otpVerified = selectedDelivery.confirmation.otp_verified;
+    if (!selectedDelivery) return null;
+    const otp = selectedDelivery.confirmation?.system_otp;
+    const verified = selectedDelivery.confirmation?.otp_verified;
+    const receiverPhone = selectedDelivery.receiver?.receiver_phone || '';
+    const receiverName = selectedDelivery.receiver?.receiver_name || 'the receiver';
+
+    const trackingId = `PNS-${String(selectedDelivery.request_id).padStart(4, '0')}`;
+    const smsMessage = `Hi ${receiverName}, here is your delivery OTP for shipment #${trackingId}: ${otp || '------'}. Please read this code to the courier when they arrive.`;
+
+    const sendSMS = () => {
+      if (!otp) return;
+      const url = Platform.select({
+        ios: `sms:${receiverPhone}&body=${encodeURIComponent(smsMessage)}`,
+        android: `sms:${receiverPhone}?body=${encodeURIComponent(smsMessage)}`,
+      });
+      if (url) Linking.openURL(url);
+    };
+
+    const copySMS = async () => {
+      if (!otp) return;
+      try {
+        if (Clipboard?.setStringAsync) {
+          await Clipboard.setStringAsync(smsMessage);
+        } else {
+          await Share.share({ message: smsMessage });
+        }
+      } catch {}
+    };
 
     return (
-      <Modal visible={showDeliveryOTP} transparent animationType="slide" onRequestClose={() => setShowDeliveryOTP(false)}>
+      <Modal
+        visible={showDeliveryOTP}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowDeliveryOTP(false)}
+      >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
+          <View style={[styles.modalCard, { maxWidth: 360 }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Receiver Confirmation OTP</Text>
+              <Text style={styles.modalTitle}>Delivery OTP</Text>
               <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
                 <Ionicons name="close" size={20} color="#111827" />
               </TouchableOpacity>
             </View>
+
             <Text style={styles.modalSubtitle}>
-              {otpVerified ? 'Delivery verified by receiver.' : 'Code sent to receiver phone for validation upon drop-off.'}
+              {verified
+                ? 'The receiver has confirmed this delivery.'
+                : 'Send this code to the receiver. They will read it back to the courier on arrival.'}
             </Text>
-            {otpVerified ? (
+
+            {verified ? (
               <View style={styles.verifiedBox}>
                 <Ionicons name="checkmark-circle" size={40} color="#16A34A" />
                 <Text style={styles.verifiedText}>Verified & Completed</Text>
               </View>
             ) : (
-              <View style={styles.otpBox}>
-                <Ionicons name="phone-portrait-outline" size={24} color="#7C3AED" />
-                <Text style={styles.otpHint}>Sent to {selectedDelivery.receiver?.receiver_phone || 'receiver'}</Text>
-              </View>
+              <>
+                <View style={styles.otpBigBox}>
+                  <Text style={styles.otpBigLabel}>DELIVERY OTP</Text>
+                  <Text style={styles.otpBigValue}>{otp || '------'}</Text>
+                </View>
+
+                {!!receiverPhone && (
+                  <TouchableOpacity
+                    style={styles.otpSendBtn}
+                    onPress={sendSMS}
+                    disabled={!otp}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name="chatbubble-ellipses" size={16} color="#FFF" />
+                    <Text style={styles.otpSendBtnText}>
+                      Send to {receiverName}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={styles.otpCopyBtn}
+                  onPress={copySMS}
+                  disabled={!otp}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="copy-outline" size={16} color={ORANGE} />
+                  <Text style={styles.otpCopyBtnText}>Copy message</Text>
+                </TouchableOpacity>
+              </>
             )}
-            <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setShowDeliveryOTP(false)}>
+
+            <TouchableOpacity
+              style={styles.modalDoneBtn}
+              onPress={() => setShowDeliveryOTP(false)}
+            >
               <Text style={styles.modalDoneBtnText}>Done</Text>
             </TouchableOpacity>
           </View>
@@ -2168,15 +2413,74 @@ const styles = StyleSheet.create({
   soonBadgeText: { fontSize: 8, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.6 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalCard: { width: '100%', maxWidth: 320, backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center' },
+  modalCard: { width: '100%', maxWidth: 340, backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center' },
   modalHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   modalTitle: { fontSize: 16, fontWeight: '800', color: '#111827' },
   modalSubtitle: { fontSize: 11, color: '#6B7280', textAlign: 'center', marginBottom: 14 },
   qrWrap: { width: 200, height: 200, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, marginBottom: 14 },
-  modalDoneBtn: { width: '100%', backgroundColor: '#111827', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
+  modalDoneBtn: { width: '100%', backgroundColor: '#111827', paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 8 },
   modalDoneBtnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
   verifiedBox: { alignItems: 'center', paddingVertical: 20, marginBottom: 14 },
   verifiedText: { fontSize: 15, fontWeight: '800', color: '#16A34A', marginTop: 8 },
   otpBox: { alignItems: 'center', paddingVertical: 20, marginBottom: 14, backgroundColor: '#F5F3FF', width: '100%', borderRadius: 12 },
   otpHint: { fontSize: 12, fontWeight: '700', color: '#5B21B6', marginTop: 8 },
+
+  pinRevealBox: {
+    width: '100%',
+    backgroundColor: '#FFF7ED',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#FFD9BF',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  pinRevealLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#9A3412',
+    letterSpacing: 1.2,
+    marginBottom: 6,
+  },
+  pinRevealValue: {
+    fontSize: 34,
+    fontWeight: '900',
+    color: '#111827',
+    letterSpacing: 10,
+  },
+  pinRevealHint: {
+    fontSize: 10,
+    color: '#9A3412',
+    marginTop: 8,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+
+  otpBigBox: {
+    backgroundColor: '#FFF7ED', borderWidth: 2, borderColor: ORANGE,
+    borderRadius: 16, paddingVertical: 20, paddingHorizontal: 16,
+    alignItems: 'center', marginBottom: 16, width: '100%',
+  },
+  otpBigLabel: {
+    fontSize: 10, fontWeight: '800', color: '#9A3412',
+    letterSpacing: 1, marginBottom: 8,
+  },
+  otpBigValue: {
+    fontSize: 34, fontWeight: '900', color: '#111827', letterSpacing: 6,
+  },
+  otpSendBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
+    marginBottom: 10, width: '100%',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25, shadowRadius: 8, elevation: 4,
+  },
+  otpSendBtnText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
+  otpCopyBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: '#FFF4EC', borderRadius: 14, paddingVertical: 12, width: '100%',
+    borderWidth: 1.5, borderColor: ORANGE,
+  },
+  otpCopyBtnText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
 });
