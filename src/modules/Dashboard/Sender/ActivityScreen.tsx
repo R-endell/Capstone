@@ -291,15 +291,10 @@ const formatEta = (iso?: string | null): string => {
 
 const formatDateTimeShort = (iso?: string | null): string => {
   if (!iso) return '';
-
-  // Postgres `timestamp without time zone` values come back from Supabase as
-  // strings without a trailing 'Z'. Parse them as UTC explicitly so the
-  // conversion to local time is correct.
   let raw = String(iso);
   if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
     raw = raw.replace(' ', 'T') + 'Z';
   }
-
   const d = new Date(raw);
   if (isNaN(d.getTime())) return '';
 
@@ -700,7 +695,7 @@ export default function ActivityScreen() {
     }
   };
 
-  // ---------- REALTIME: subscribe to changes on the sender's deliveries ----------
+  // ---------- REALTIME ----------
   useEffect(() => {
     if (!userId) return;
 
@@ -728,7 +723,7 @@ export default function ActivityScreen() {
     };
   }, [userId]);
 
-  // Auto-generate the system OTP once pickup is verified and there is no OTP yet.
+  // Auto-generate OTP after pickup verification
   useEffect(() => {
     const pending = deliveries.filter(
       (d) =>
@@ -765,6 +760,10 @@ export default function ActivityScreen() {
 
   const detailRequestId = selectedDelivery?.request_id ?? null;
   const detailDeliveryId: number | null = (selectedDelivery?.deliveryData as any)?.delivery_id ?? null;
+
+  /* ---------------------------------------------------------------- */
+  /* Load existing rating / escrow for the selected delivery          */
+  /* ---------------------------------------------------------------- */
   useEffect(() => {
     setRatingSaved(null);
     setRatingValue(0);
@@ -772,25 +771,39 @@ export default function ActivityScreen() {
     setRatingComment('');
     setEscrowRow(null);
     setCopied(false);
+
     if (!detailDeliveryId) return;
+
     let cancelled = false;
     (async () => {
       const { data: esc } = await supabase
-        .from('escrow_payments').select('*').eq('delivery_id', detailDeliveryId).limit(1).maybeSingle();
+        .from('escrow_payments')
+        .select('*')
+        .eq('delivery_id', detailDeliveryId)
+        .limit(1)
+        .maybeSingle();
       if (!cancelled && esc) setEscrowRow(esc);
 
+      // Only fetch the caller's own review
+      if (!userId) return;
       const { data: rt } = await supabase
-        .from('provider_ratings').select('*').eq('delivery_id', detailDeliveryId).limit(1).maybeSingle();
+        .from('ratings_reviews')
+        .select('*')
+        .eq('delivery_id', detailDeliveryId)
+        .eq('reviewer_id', userId)
+        .maybeSingle();
+
       if (!cancelled && rt) {
         setRatingSaved({
           rating: Number(rt.rating) || 0,
-          tags: Array.isArray(rt.tags) ? rt.tags : [],
-          comment: rt.comment ?? null,
+          tags: Array.isArray((rt as any).tags) ? (rt as any).tags : [],
+          comment: rt.review_text ?? null,
         });
       }
     })();
+
     return () => { cancelled = true; };
-  }, [detailRequestId, detailDeliveryId]);
+  }, [detailRequestId, detailDeliveryId, userId]);
 
   const copyTrackingId = async (text: string) => {
     try {
@@ -805,28 +818,49 @@ export default function ActivityScreen() {
     } catch { /* user dismissed */ }
   };
 
+  /* ---------------------------------------------------------------- */
+  /* Submit rating — writes to public.ratings_reviews                 */
+  /* ---------------------------------------------------------------- */
   const submitRating = async () => {
     const dd: any = selectedDelivery?.deliveryData;
     if (!dd?.delivery_id || ratingValue < 1) return;
+
+    if (!userId) {
+      Alert.alert('Please wait', 'Your account is still loading.');
+      return;
+    }
+
+    const providerId = dd.provider_id ?? selectedDelivery?.provider_id ?? null;
+    if (!providerId) {
+      Alert.alert('Error', 'No provider found for this delivery.');
+      return;
+    }
+
     setRatingSubmitting(true);
     try {
       const comment = ratingComment.trim() || null;
-      const { error } = await supabase.from('provider_ratings').upsert(
-        {
-          delivery_id: dd.delivery_id,
-          provider_id: dd.provider_id ?? selectedDelivery?.provider_id ?? null,
-          sender_id: userId,
-          rating: ratingValue,
-          tags: ratingTags,
-          comment,
-        },
-        { onConflict: 'delivery_id' }
-      );
+
+      const { error } = await supabase
+        .from('ratings_reviews')
+        .upsert(
+          {
+            delivery_id: dd.delivery_id,
+            reviewer_id: userId,
+            reviewee_id: providerId,
+            rating: ratingValue,
+            review_text: comment,
+            tags: ratingTags,
+          },
+          { onConflict: 'delivery_id,reviewer_id' }
+        );
+
       if (error) throw error;
+
       setRatingSaved({ rating: ratingValue, tags: ratingTags, comment });
+      Alert.alert('Thanks!', 'Your rating has been saved.');
     } catch (e: any) {
       console.warn('Rating save failed:', e?.message || e);
-      Alert.alert('Could not save rating', 'Please try again in a moment.');
+      Alert.alert('Could not save rating', e?.message || 'Please try again in a moment.');
     } finally {
       setRatingSubmitting(false);
     }
@@ -1182,12 +1216,7 @@ export default function ActivityScreen() {
 
   const renderDetailView = () => {
     const d = selectedDelivery;
-    // STRICT: pickup is only "verified" when the courier actually scanned the QR
-    // or entered the PIN. Do NOT fall back to delivery_status.
     const pickupVerified = d?.qr?.pickup_verified === true;
-
-    // STRICT: completion is driven by deliveries.completed_at, which is only set
-    // after the courier enters the correct OTP.
     const isCompleted = !!d?.deliveryData?.completed_at;
 
     const showPickupQRButton =
@@ -1201,8 +1230,6 @@ export default function ActivityScreen() {
 
     const currentStatus = d?.status || 'Waiting for Provider';
 
-    // --- Stepper index ---
-    // 0 = Placed, 1 = Matched, 2 = Item Collected, 3 = In Transit, 4 = Delivered
     let stepIndex = 0;
     if (d?.isMatched) stepIndex = 1;
     if (pickupVerified) stepIndex = 2;
@@ -1640,7 +1667,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* Delivery timeline */}
           <View style={styles.sdCard}>
             <View style={styles.sdCardHeader}>
               <View style={styles.sdCardHeaderIcon}>
@@ -1649,7 +1675,6 @@ export default function ActivityScreen() {
               <Text style={styles.sdCardTitle}>Delivery timeline</Text>
             </View>
 
-            {/* 1. Accepted */}
             <View style={styles.tlRow}>
               <Ionicons
                 name={d?.isMatched ? 'checkmark-circle' : 'ellipse-outline'}
@@ -1668,7 +1693,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* 2. Package picked up */}
             <View style={styles.tlRow}>
               <Ionicons
                 name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'}
@@ -1689,7 +1713,6 @@ export default function ActivityScreen() {
               </View>
             </View>
 
-            {/* 3. Delivered */}
             <View style={[styles.tlRow, { paddingBottom: 0 }]}>
               <Ionicons
                 name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'}
@@ -2228,14 +2251,6 @@ const styles = StyleSheet.create({
   pickupQRIconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
   pickupQRTitle: { color: '#FFF', fontSize: 13, fontWeight: '800' },
   pickupQRDesc: { color: '#FFE0C7', fontSize: 10, marginTop: 1 },
-
-  sdOtpCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#FFFFFF',
-    borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1.5, borderColor: ORANGE,
-  },
-  sdOtpIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#FFF4EC', justifyContent: 'center', alignItems: 'center' },
-  sdOtpTitle: { fontSize: 13, fontWeight: '800', color: '#111827' },
-  sdOtpSub: { fontSize: 11, color: '#6B7280', marginTop: 2 },
 
   sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
   sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF4EC', justifyContent: 'center', alignItems: 'center' },

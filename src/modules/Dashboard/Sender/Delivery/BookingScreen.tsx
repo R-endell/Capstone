@@ -68,6 +68,12 @@ const nowManilaNaive = (): string => {
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
+interface ProviderRating {
+  avg: number;
+  count: number;
+  recent: { rating: number; comment: string | null; created_at: string }[];
+}
+
 export default function BookingScreen({ route, navigation }: any) {
   const { mode: routeMode } = route.params || {};
   const { state, dispatch } = useSchedule();
@@ -79,6 +85,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
+
+  const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
 
   const resumeRequestId: number | undefined = route.params?.requestId ?? route.params?.request_id;
   const isResume = !!route.params?.resume && !!resumeRequestId;
@@ -213,6 +221,43 @@ export default function BookingScreen({ route, navigation }: any) {
     });
   };
 
+  /* ---------------------------------------------------------------- */
+  /* Fetch provider ratings                                           */
+  /* ---------------------------------------------------------------- */
+  const loadProviderRating = async (providerId: number) => {
+    try {
+      const { data, error } = await supabase
+        .from('ratings_reviews')
+        .select('rating, review_text, created_at')
+        .eq('reviewee_id', providerId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (error) throw error;
+
+      const rows = data || [];
+      if (rows.length === 0) {
+        setProviderRating({ avg: 0, count: 0, recent: [] });
+        return;
+      }
+      const sum = rows.reduce((s: number, r: any) => s + Number(r.rating || 0), 0);
+      const avg = sum / rows.length;
+
+      setProviderRating({
+        avg: Number(avg.toFixed(1)),
+        count: rows.length,
+        recent: rows.slice(0, 2).map((r: any) => ({
+          rating: Number(r.rating) || 0,
+          comment: r.review_text ?? null,
+          created_at: r.created_at,
+        })),
+      });
+    } catch (e: any) {
+      console.warn('[Booking] rating fetch failed', e?.message || e);
+      setProviderRating(null);
+    }
+  };
+
   const startMatching = async () => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
@@ -253,9 +298,8 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-            // NOTE: OTP is no longer sent at booking time. The sender will
-            // generate and forward the delivery OTP from ActivityScreen after
-            // the courier scans the pickup QR / enters the PIN.
+            // NEW: load ratings
+            if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
             setMatchFound(true);
             setBookingState('matched');
@@ -294,6 +338,9 @@ export default function BookingScreen({ route, navigation }: any) {
       .eq('vehicle_id', delivery.vehicle_id)
       .single();
     if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
+
+    // NEW: load ratings
+    if (delivery.provider_id) loadProviderRating(delivery.provider_id);
   };
 
   const resumeBooking = async (requestId: number) => {
@@ -331,7 +378,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
       if (delivery) {
         await loadProviderForDelivery(delivery);
-        // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
         setMatchFound(true);
         setIsSearching(false);
         setBookingState('matched');
@@ -375,7 +421,6 @@ export default function BookingScreen({ route, navigation }: any) {
         async (payload) => {
           const delivery = payload.new;
           await loadProviderForDelivery(delivery);
-          // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
@@ -692,7 +737,6 @@ export default function BookingScreen({ route, navigation }: any) {
               showsVerticalScrollIndicator={false}
             >
 
-              {/* TWO COLUMN LAYOUT FOR SEARCHING UI - Animation Left, Text Right */}
               <View style={styles.findingTopRow}>
                 <View style={styles.radarContainer}>
                   <View style={[styles.radarGuideRing, { width: 56, height: 56, borderRadius: 28 }]} />
@@ -756,7 +800,6 @@ export default function BookingScreen({ route, navigation }: any) {
                 </View>
               </View>
 
-              {/* DETAILS CARDS BELOW ANIMATION */}
               <View style={styles.findingInfoRow}>
                 {receiver && (
                   <View style={styles.searchingReceiverMiniCard}>
@@ -846,6 +889,54 @@ export default function BookingScreen({ route, navigation }: any) {
                   </View>
                 </View>
               </View>
+
+              {/* NEW: Provider ratings summary + recent reviews */}
+              {providerRating && (
+                <>
+                  <View style={styles.matchedDivider} />
+                  <View style={styles.ratingSummaryRow}>
+                    <View style={styles.ratingStarsInline}>
+                      {[1, 2, 3, 4, 5].map(n => (
+                        <Ionicons
+                          key={n}
+                          name={n <= Math.round(providerRating.avg) ? 'star' : 'star-outline'}
+                          size={14}
+                          color="#F59E0B"
+                        />
+                      ))}
+                    </View>
+                    <Text style={styles.ratingAvgText}>
+                      {providerRating.count > 0
+                        ? `${providerRating.avg.toFixed(1)} · ${providerRating.count} review${providerRating.count === 1 ? '' : 's'}`
+                        : 'No reviews yet'}
+                    </Text>
+                  </View>
+
+                  {providerRating.recent.length > 0 && (
+                    <View style={styles.recentReviewsWrap}>
+                      {providerRating.recent.map((r, i) => (
+                        <View key={i} style={styles.recentReviewItem}>
+                          <View style={styles.recentReviewHead}>
+                            {[1, 2, 3, 4, 5].map(n => (
+                              <Ionicons
+                                key={n}
+                                name={n <= r.rating ? 'star' : 'star-outline'}
+                                size={11}
+                                color="#F59E0B"
+                              />
+                            ))}
+                          </View>
+                          {!!r.comment && (
+                            <Text style={styles.recentReviewComment} numberOfLines={2}>
+                              "{r.comment}"
+                            </Text>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </>
+              )}
 
               {receiver && (
                 <>
@@ -999,7 +1090,6 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
   primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 8, fontWeight: '500' },
 
-  // Finding Sheet Layout (Two-Column Flow)
   sheetCardFinding: {
     width: '100%', backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
@@ -1011,7 +1101,6 @@ const styles = StyleSheet.create({
   findingScrollView: { flex: 1, width: '100%' },
   findingScrollContent: { paddingHorizontal: 20, paddingTop: 10, alignItems: 'center' },
 
-  // TWO COLUMN STRUCTURE
   findingTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1020,11 +1109,10 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
 
-  // Scaled Down Radar Animation
   radarContainer: {
     width: 80, height: 80,
     justifyContent: 'center', alignItems: 'center',
-    marginRight: 16 // Spacing between animation and text
+    marginRight: 16
   },
   radarGuideRing: { position: 'absolute', borderWidth: 1, borderColor: '#FFEDD5' },
   radarWaveRing: {
@@ -1037,7 +1125,6 @@ const styles = StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 6, elevation: 5, zIndex: 2,
   },
 
-  // Left-aligned Text Group
   findingTextGroup: { flex: 1, alignItems: 'flex-start' },
   findingTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
   findingTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
@@ -1109,6 +1196,45 @@ const styles = StyleSheet.create({
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+
+  /* NEW: provider rating styles in matched card */
+  ratingSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  ratingStarsInline: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  ratingAvgText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#374151',
+  },
+  recentReviewsWrap: {
+    marginTop: 10,
+    gap: 8,
+  },
+  recentReviewItem: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  recentReviewHead: {
+    flexDirection: 'row',
+    gap: 2,
+    marginBottom: 4,
+  },
+  recentReviewComment: {
+    fontSize: 12,
+    color: '#78350F',
+    fontWeight: '600',
+    lineHeight: 16,
+  },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111827', borderRadius: 16,
