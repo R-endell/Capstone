@@ -229,7 +229,7 @@ export default function ProviderAccountScreen() {
   }, []);
 
   /* ------------------------------------------------------------------ */
-  /* Fetch user data                                                     */
+  /* Fetch user data + provider stats                                    */
   /* ------------------------------------------------------------------ */
   useFocusEffect(
     useCallback(() => {
@@ -272,6 +272,7 @@ export default function ProviderAccountScreen() {
           console.error('Error fetching provider data:', error);
         }
       };
+
       fetchUserData();
 
       return () => {
@@ -544,9 +545,13 @@ export default function ProviderAccountScreen() {
 
           <Text style={styles.sectionTitle}>Account & Services</Text>
 
-          {/* Menu Card */}
+          {/* Menu Card 1 — Provider tools */}
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToSender} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={handleSwitchToSender}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#FFF7ED' }]}>
                   <Ionicons name="swap-horizontal-outline" size={19} color={ORANGE} />
@@ -563,7 +568,11 @@ export default function ProviderAccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate('PaymentMethods' as any)}
+              activeOpacity={0.7}
+            >
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: '#EFF6FF' }]}>
                   <Ionicons name="card-outline" size={19} color="#3B82F6" />

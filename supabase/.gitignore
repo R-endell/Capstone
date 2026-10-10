@@ -6,3 +6,12 @@
 .env.keys
 .env.local
 .env.*.local
+
+
+node_modules/
+.expo/
+android/
+ios/
+.env
+*.log
+.DS_Store

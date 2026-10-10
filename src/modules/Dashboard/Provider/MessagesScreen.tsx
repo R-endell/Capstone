@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 // src/modules/Dashboard/Provider/MessagesScreen.tsx
+=======
+// src/modules/Dashboard/Sender/MessagesScreen.tsx
+>>>>>>> origin/feature/working-build
 import React, {
   useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo,
 } from 'react';
@@ -13,11 +17,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 
+<<<<<<< HEAD
 const ORANGE = '#F27024';
 const PAGE_SIZE = 30;
 
 const TAB_BAR_HIDDEN_STYLE = { display: 'none' as const };
 const TAB_BAR_VISIBLE_STYLE: any = undefined;
+=======
+const ORANGE = '#FF751F';
+const PAGE_SIZE = 30;
+>>>>>>> origin/feature/working-build
 
 type Party = {
   user_id: number;
@@ -97,6 +106,7 @@ const mergeMessages = (a: ChatMessage[], b: ChatMessage[]) => {
   );
 };
 
+<<<<<<< HEAD
 const getTabNavigations = (nav: any): any[] => {
   const found: any[] = [];
   let current = nav;
@@ -114,6 +124,8 @@ const getTabNavigations = (nav: any): any[] => {
   return found;
 };
 
+=======
+>>>>>>> origin/feature/working-build
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -122,7 +134,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
+<<<<<<< HEAD
   const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
+=======
+  const [activeTab, setActiveTab] = useState<'inbox' | 'archived'>('inbox');
+
+>>>>>>> origin/feature/working-build
   const [conversations, setConversations] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -143,19 +160,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const loadingOlder = useRef(false);
   const openRoomIdRef = useRef<number | undefined>(openRoomIdParam);
   openRoomIdRef.current = openRoomIdParam;
+<<<<<<< HEAD
 
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
   const tabBarHidden = useRef(false);
+=======
+>>>>>>> origin/feature/working-build
 
-  const listHeaderAnim = useRef(new Animated.Value(0)).current;
-  const listAnim = useRef(new Animated.Value(0)).current;
   const detailHeaderAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
 
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
+<<<<<<< HEAD
   const setTabBarHidden = useCallback((hidden: boolean) => {
     if (tabBarHidden.current === hidden) return;
     tabBarHidden.current = hidden;
@@ -177,6 +196,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   }, [setTabBarHidden]);
 
   useEffect(() => {
+=======
+  // Android hardware back: close the chat first
+  useEffect(() => {
+>>>>>>> origin/feature/working-build
     const backAction = () => {
       if (selectedRoom) {
         closeConversation();
@@ -188,6 +211,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return () => backHandler.remove();
   }, [selectedRoom]);
 
+<<<<<<< HEAD
+=======
+  // Fetch conversations when screen gains focus
+>>>>>>> origin/feature/working-build
   useFocusEffect(
     useCallback(() => {
       if (!openRoomIdRef.current) {
@@ -203,20 +230,31 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           supabase.removeChannel(subscription.current);
           subscription.current = null;
         }
+<<<<<<< HEAD
+=======
+        StatusBar.setBarStyle('dark-content', true);
+>>>>>>> origin/feature/working-build
       };
     }, [])
   );
 
+<<<<<<< HEAD
   useEffect(() => {
+=======
+  // Chat open animation
+  useLayoutEffect(() => {
+    if (!selectedRoom) return;
+>>>>>>> origin/feature/working-build
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
       Animated.timing(value, {
         toValue: 1,
         duration,
         delay,
-        easing: Easing.out(Easing.cubic),
+        easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       });
 
+<<<<<<< HEAD
     if (!selectedRoom) {
       listHeaderAnim.setValue(0);
       listAnim.setValue(0);
@@ -235,6 +273,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       ]).start();
     }
   }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
+=======
+    detailHeaderAnim.setValue(0);
+    detailAnim.setValue(0);
+    inputAnim.setValue(0);
+    Animated.parallel([
+      animate(detailHeaderAnim, 0),
+      animate(detailAnim, 100),
+      animate(inputAnim, 150),
+    ]).start();
+  }, [selectedRoom, detailHeaderAnim, detailAnim, inputAnim]);
+>>>>>>> origin/feature/working-build
 
   const fadeUp = (value: Animated.Value, distance = 15) => ({
     opacity: value,
@@ -279,8 +328,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       if (deliveryIds.length === 0) {
         setConversations([]);
+<<<<<<< HEAD
         setLoading(false);
         setRefreshing(false);
+=======
+>>>>>>> origin/feature/working-build
         return;
       }
 
@@ -288,8 +340,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       if (roomError) throw roomError;
       if (!rooms || rooms.length === 0) {
         setConversations([]);
+<<<<<<< HEAD
         setLoading(false);
         setRefreshing(false);
+=======
+>>>>>>> origin/feature/working-build
         return;
       }
 
@@ -338,6 +393,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             latest_message: latestResult.data?.message || null,
             latest_sent_at: latestResult.data?.sent_at || null,
             unread_count: unreadResult.count || 0,
+<<<<<<< HEAD
+=======
+            is_archived: rState?.is_archived || false,
+>>>>>>> origin/feature/working-build
           };
         })
       );
@@ -367,6 +426,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       setLoading(false);
       setRefreshing(false);
     }
+  };
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchConversations();
   };
 
   const fetchMessages = async (roomIds: number[], olderThan?: string) => {
@@ -526,6 +590,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         allRoomIds.map(id => ({
           room_id: id,
           user_id: currentUserId.current,
+<<<<<<< HEAD
+=======
+          is_archived: false,
+>>>>>>> origin/feature/working-build
           is_deleted: false,
         }))
       );
@@ -539,7 +607,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         sortByLatest(
           prev.map(c =>
             c.all_room_ids.includes(roomId)
+<<<<<<< HEAD
               ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
+=======
+              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
+>>>>>>> origin/feature/working-build
               : c
           )
         )
@@ -552,17 +624,51 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Archive / Delete options                                            */
+  /* ------------------------------------------------------------------ */
   const openChatOptions = (room: ChatRoom) => {
+<<<<<<< HEAD
+=======
+    const isArchived = room.is_archived;
+
+>>>>>>> origin/feature/working-build
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
       [
         { text: 'Cancel', style: 'cancel' },
+<<<<<<< HEAD
+=======
+        {
+          text: isArchived ? 'Unarchive' : 'Archive',
+          onPress: () => toggleArchiveChat(room, !isArchived),
+        },
+>>>>>>> origin/feature/working-build
         { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(room) },
       ]
     );
   };
 
+<<<<<<< HEAD
+=======
+  const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
+    setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
+    try {
+      const payloads = room.all_room_ids.map(id => ({
+        room_id: id,
+        user_id: currentUserId.current,
+        is_archived: archive,
+        is_deleted: false,
+      }));
+      await supabase.from('chat_room_states').upsert(payloads);
+    } catch (error) {
+      console.error('Error toggling archive:', error);
+      fetchConversations();
+    }
+  };
+
+>>>>>>> origin/feature/working-build
   const deleteChat = async (room: ChatRoom) => {
     Alert.alert(
       'Delete Conversation',
@@ -579,6 +685,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 room_id: id,
                 user_id: currentUserId.current,
                 is_deleted: true,
+<<<<<<< HEAD
+=======
+                is_archived: false,
+>>>>>>> origin/feature/working-build
               }));
               await supabase.from('chat_room_states').upsert(payloads);
             } catch (error) {
@@ -658,6 +768,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return (
       <View style={styles.chatRowWrapper}>
         <TouchableOpacity
+<<<<<<< HEAD
           style={[styles.inboxItem, isUnread && styles.inboxItemUnread]}
           onPress={() => openConversation(item)}
           activeOpacity={0.7}
@@ -675,10 +786,37 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               </Text>
               {item.latest_sent_at && (
                 <Text style={[styles.inboxTime, isUnread && styles.inboxTimeUnread]}>
+=======
+          style={styles.chatRow}
+          onPress={() => openConversation(item)}
+          activeOpacity={0.7}
+        >
+          <View style={styles.avatarWrapper}>
+            {item.other.profile_photo ? (
+              <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Text style={styles.avatarText}>
+                  {item.other.first_name?.charAt(0) || '?'}{item.other.last_name?.charAt(0) || ''}
+                </Text>
+              </View>
+            )}
+            {isUnread && <View style={styles.onlineDot} />}
+          </View>
+
+          <View style={styles.chatInfo}>
+            <View style={styles.chatNameRow}>
+              <Text style={styles.chatName} numberOfLines={1}>
+                {item.other.first_name} {item.other.last_name}
+              </Text>
+              {item.latest_sent_at && (
+                <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>
+>>>>>>> origin/feature/working-build
                   {formatChatTime(item.latest_sent_at)}
                 </Text>
               )}
             </View>
+<<<<<<< HEAD
             <View style={styles.inboxMsgRow}>
               <Text style={[styles.inboxLastMsg, isUnread && styles.inboxLastMsgUnread]} numberOfLines={2}>
                 {item.latest_message || 'No messages yet'}
@@ -686,12 +824,25 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               {isUnread && (
                 <View style={styles.unreadBadgeMoveIt}>
                   <Text style={styles.unreadBadgeMoveItText}>{item.unread_count > 99 ? '99+' : item.unread_count}</Text>
+=======
+            <View style={styles.chatMsgRow}>
+              <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
+                {item.latest_message || 'Say hi 👋'}
+              </Text>
+              {isUnread && (
+                <View style={styles.unreadBadge}>
+                  <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
+>>>>>>> origin/feature/working-build
                 </View>
               )}
             </View>
           </View>
         </TouchableOpacity>
 
+<<<<<<< HEAD
+=======
+        {/* Dropdown Options Icon */}
+>>>>>>> origin/feature/working-build
         <TouchableOpacity
           style={styles.optionsButton}
           onPress={() => openChatOptions(item)}
@@ -744,6 +895,47 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
+<<<<<<< HEAD
+=======
+  /* ------------------------------------------------------------------ */
+  /* Filter conversations based on the active tab                        */
+  /* ------------------------------------------------------------------ */
+  const filteredConversations = conversations.filter(c =>
+    activeTab === 'archived' ? c.is_archived : !c.is_archived
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Header with Inbox / Archived tabs                                   */
+  /* ------------------------------------------------------------------ */
+  const renderTabHeader = () => (
+    <View style={styles.listHeaderFlat}>
+      <View style={styles.headerTabRow}>
+        <TouchableOpacity
+          onPress={() => setActiveTab('inbox')}
+          activeOpacity={0.8}
+          style={styles.tabButton}
+        >
+          <Text style={[styles.headerTabTitle, activeTab === 'inbox' && styles.headerTabTitleActive]}>
+            Messages
+          </Text>
+          <View style={[styles.activeTabIndicator, activeTab !== 'inbox' && { opacity: 0 }]} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => setActiveTab('archived')}
+          activeOpacity={0.8}
+          style={styles.tabButton}
+        >
+          <Text style={[styles.headerTabTitle, activeTab === 'archived' && styles.headerTabTitleActive]}>
+            Archived
+          </Text>
+          <View style={[styles.activeTabIndicator, activeTab !== 'archived' && { opacity: 0 }]} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+>>>>>>> origin/feature/working-build
   if (selectedRoom) {
     return (
       <View style={styles.detailContainer}>
@@ -772,7 +964,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
         <KeyboardAvoidingView
           style={styles.flex}
+<<<<<<< HEAD
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+=======
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
+>>>>>>> origin/feature/working-build
         >
           <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: '#F9FAFB' }]}>
             {chatLoading ? (
@@ -839,6 +1036,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
+<<<<<<< HEAD
       <View style={styles.listHeaderFlat}>
         <View style={styles.headerTopRow}>
           <Text style={styles.mainTitle}>Messages</Text>
@@ -890,6 +1088,40 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <Ionicons name="notifications-outline" size={48} color="#D1D5DB" />
           <Text style={styles.emptyTitle}>Notifications</Text>
           <Text style={styles.emptySubtext}>Your notifications and updates will appear here soon.</Text>
+=======
+      {renderTabHeader()}
+
+      {loading ? (
+        <View style={styles.centerLoader}>
+          <ActivityIndicator size="large" color={ORANGE} />
+        </View>
+      ) : filteredConversations.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Ionicons
+            name={activeTab === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
+            size={48}
+            color="#D1D5DB"
+          />
+          <Text style={styles.emptyTitle}>
+            {activeTab === 'inbox' ? 'No messages yet' : 'No archived chats'}
+          </Text>
+          <Text style={styles.emptySubtext}>
+            {activeTab === 'inbox'
+              ? 'When you contact a provider or sender, your conversation will show up here.'
+              : 'Chats you archive will be saved here.'}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ flex: 1 }}>
+          <FlatList
+            data={filteredConversations}
+            keyExtractor={(item) => item.room_id.toString()}
+            renderItem={renderConversationItem}
+            contentContainerStyle={styles.listContentFlat}
+            showsVerticalScrollIndicator={false}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
+          />
+>>>>>>> origin/feature/working-build
         </View>
       )}
     </SafeAreaView>
@@ -900,14 +1132,25 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   flex: { flex: 1 },
 
+<<<<<<< HEAD
   listHeaderFlat: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 20,
     paddingTop: 24,
+=======
+  /* Header Tab Row */
+  listHeaderFlat: {
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 32,
+>>>>>>> origin/feature/working-build
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
   },
+<<<<<<< HEAD
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -948,6 +1191,36 @@ const styles = StyleSheet.create({
   tabTextActive: {
     color: ORANGE,
     fontWeight: '800',
+=======
+  headerTabRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
+  },
+  tabButton: {
+    position: 'relative',
+    paddingBottom: 4,
+  },
+  headerTabTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    letterSpacing: -0.5,
+    height: 32,
+    lineHeight: 32,
+  },
+  headerTabTitleActive: {
+    color: '#111827',
+  },
+  activeTabIndicator: {
+    position: 'absolute',
+    bottom: -6,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: ORANGE,
+    borderRadius: 1.5,
+>>>>>>> origin/feature/working-build
   },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -956,14 +1229,31 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 16, letterSpacing: -0.2 },
   emptySubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
+<<<<<<< HEAD
   listContentFlat: { paddingBottom: 24, paddingTop: 8 },
+=======
+  /* Edge-to-edge list styling */
+  listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+>>>>>>> origin/feature/working-build
 
   chatRowWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
+<<<<<<< HEAD
     borderBottomWidth: 1,
     borderBottomColor: '#F9FAFB',
+=======
+    marginBottom: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
+>>>>>>> origin/feature/working-build
   },
   inboxItem: {
     flex: 1,
@@ -1015,6 +1305,26 @@ const styles = StyleSheet.create({
   unreadBadgeMoveIt: { backgroundColor: ORANGE, borderRadius: 10, paddingHorizontal: 6, height: 20, minWidth: 20, justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
   unreadBadgeMoveItText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
   optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
+<<<<<<< HEAD
+=======
+
+  avatarWrapper: { position: 'relative', marginRight: 14 },
+  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#F3F4F6' },
+  avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2.5, borderColor: '#FFFFFF' },
+
+  chatInfo: { flex: 1, marginRight: 8 },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  chatName: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  chatTimeUnread: { color: ORANGE, fontWeight: '800' },
+  chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  chatLastMsg: { fontSize: 13, color: '#6B7280', flex: 1, fontWeight: '500' },
+  chatLastMsgUnread: { color: '#111827', fontWeight: '700' },
+  unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
+>>>>>>> origin/feature/working-build
 
   detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
   chatHeaderFlat: {
@@ -1024,6 +1334,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 16,
+<<<<<<< HEAD
+=======
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
+>>>>>>> origin/feature/working-build
   },
   backBtnFlat: { padding: 4, marginRight: 8, marginLeft: -8 },
   chatHeaderInfo: { flex: 1 },
@@ -1031,9 +1351,16 @@ const styles = StyleSheet.create({
   chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
   callBtnFlat: { padding: 8, backgroundColor: '#FFFFFF', borderRadius: 20 },
 
+<<<<<<< HEAD
   chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
   dateSeparator: { alignItems: 'center', marginVertical: 16 },
   dateSeparatorText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+=======
+  chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
+  dateSeparatorLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
+  dateSeparatorText: { fontSize: 11, color: '#9CA3AF', fontWeight: '700', letterSpacing: 0.3 },
+>>>>>>> origin/feature/working-build
 
   msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 12 },
   msgRowMe: { justifyContent: 'flex-end' },

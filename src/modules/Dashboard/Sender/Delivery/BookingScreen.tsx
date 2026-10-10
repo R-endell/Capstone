@@ -253,23 +253,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-            const receiverPhone = receiver?.receiver_phone || receiver?.phone_number;
-            const receiverName = receiver?.receiver_name || `${receiver?.first_name || ''} ${receiver?.last_name || ''}`.trim() || 'Receiver';
-
-            let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
-            if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-            else if (e164.startsWith('63')) e164 = '+' + e164;
-            else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
-
-            if (e164) {
-              try {
-                await supabase.functions.invoke('contiguity-otp', {
-                  body: { action: 'send', delivery_id: delivery.delivery_id, to: e164, name: receiverName || 'PNS Delivery' },
-                });
-              } catch (otpErr) {
-                console.error('Contiguity invoke error:', otpErr);
-              }
-            }
+            // NOTE: OTP is no longer sent at booking time. The sender will
+            // generate and forward the delivery OTP from ActivityScreen after
+            // the courier scans the pickup QR / enters the PIN.
 
             setMatchFound(true);
             setBookingState('matched');
@@ -294,23 +280,6 @@ export default function BookingScreen({ route, navigation }: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
       setBookingState('review');
     }
-  };
-
-  const sendReceiverOtp = async (deliveryId: number, rcv: any) => {
-    const receiverPhone = rcv?.receiver_phone || rcv?.phone_number;
-    const receiverName = rcv?.receiver_name || `${rcv?.first_name || ''} ${rcv?.last_name || ''}`.trim() || 'Receiver';
-
-    let e164 = (receiverPhone || '').replace(/\s+/g, '').replace(/-/g, '');
-    if (e164.startsWith('0')) e164 = '+63' + e164.slice(1);
-    else if (e164.startsWith('63')) e164 = '+' + e164;
-    else if (e164 && !e164.startsWith('+')) e164 = '+63' + e164;
-    if (!e164) return;
-
-    try {
-      await supabase.functions.invoke('contiguity-otp', {
-        body: { action: 'send', delivery_id: deliveryId, to: e164, name: receiverName || 'PNS Delivery' },
-      });
-    } catch (err) {}
   };
 
   const loadProviderForDelivery = async (delivery: any) => {
@@ -362,9 +331,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       if (delivery) {
         await loadProviderForDelivery(delivery);
-        const { data: confirmation } = await supabase.from('delivery_confirmations').select('confirmation_id').eq('delivery_id', delivery.delivery_id).maybeSingle();
-        if (!confirmation && rcv) await sendReceiverOtp(delivery.delivery_id, rcv);
-
+        // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
         setMatchFound(true);
         setIsSearching(false);
         setBookingState('matched');
@@ -408,7 +375,7 @@ export default function BookingScreen({ route, navigation }: any) {
         async (payload) => {
           const delivery = payload.new;
           await loadProviderForDelivery(delivery);
-          if (resumeReceiverRef.current) await sendReceiverOtp(delivery.delivery_id, resumeReceiverRef.current);
+          // NOTE: OTP generation happens later, from ActivityScreen, once pickup is verified.
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
@@ -687,9 +654,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
             {receiver && (
               <View style={styles.otpInfoBanner}>
-                <Ionicons name="shield-checkmark-outline" size={14} color="#7C3AED" />
+                <Ionicons name="qr-code-outline" size={14} color="#7C3AED" />
                 <Text style={styles.otpInfoBannerText}>
-                  A confirmation OTP will be sent to the receiver's phone when booking.
+                  When the courier arrives, show your pickup QR code (or read them the 4-digit PIN) to confirm pickup. After that, a delivery OTP will be generated for you to forward to the receiver.
                 </Text>
               </View>
             )}
@@ -899,8 +866,10 @@ export default function BookingScreen({ route, navigation }: any) {
               )}
 
               <View style={styles.otpSentBanner}>
-                <Ionicons name="shield-checkmark" size={16} color="#22C55E" />
-                <Text style={styles.otpSentText}>Confirmation OTP sent to receiver's phone</Text>
+                <Ionicons name="qr-code-outline" size={16} color="#22C55E" />
+                <Text style={styles.otpSentText}>
+                  Show your pickup QR code when the courier arrives
+                </Text>
               </View>
 
               <View style={styles.matchedDivider} />

@@ -88,12 +88,8 @@ const TaskRouteMap = ({
           var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
           var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
 
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
+          if (pickupLat != null && pickupLng != null) L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
+          if (dropoffLat != null && dropoffLng != null) L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
 
           if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
             var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
@@ -235,14 +231,6 @@ const buildTaskInfo = (d: any) => {
   };
 };
 
-const openMaps = (lat?: number | null, lng?: number | null) => {
-  if (lat == null || lng == null) {
-    Alert.alert('No location', 'This stop has no map coordinates.');
-    return;
-  }
-  Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`);
-};
-
 const enrichDeliveries = async (list: any[]) => {
   if (!list || list.length === 0) return list;
   const senderIds = Array.from(new Set(list.map(d => d.delivery_requests?.sender_id).filter(Boolean)));
@@ -299,7 +287,6 @@ export default function TaskScreen() {
   const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
   const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
-  const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -340,6 +327,16 @@ export default function TaskScreen() {
     loop.start();
     return () => loop.stop();
   }, [verifyModalVisible, scanLineAnim]);
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (photoPreview) { setPhotoPreview(null); return true; }
+      if (mapModalVisible) { setMapModalVisible(false); return true; }
+      if (selectedId != null) { setSelectedId(null); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, [photoPreview, mapModalVisible, selectedId]);
 
   const getProviderData = async () => {
     try {
@@ -425,7 +422,10 @@ export default function TaskScreen() {
       setActiveDeliveries(prev => patchDelivery(prev));
       setCompletedDeliveries(prev => patchDelivery(prev));
 
-      Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
+      Alert.alert(
+        '✅ Item Collected',
+        'Pickup verified. The sender will receive a delivery OTP to forward to the receiver.'
+      );
       closeVerifyModal();
 
       if (providerId) await fetchDeliveries(providerId);
@@ -493,90 +493,15 @@ export default function TaskScreen() {
     }
   };
 
-  /* ==================================================================== */
-  /* DELIVERY CONFIRMATION (OTP via Contiguity)                           */
-  /* ==================================================================== */
-  const openDeliveryOTPModal = (delivery: any) => {
-    setDeliveryOTPTarget(delivery);
-    setDeliveryOTPInput('');
-    setDeliveryOTPModalVisible(true);
-  };
+  /* ================================================================ */
+  /* DELIVERY OTP — courier enters the 6-digit code from the receiver */
+  /* ================================================================ */
 
-  const closeDeliveryOTPModal = () => {
-    setDeliveryOTPModalVisible(false);
-    setDeliveryOTPTarget(null);
-    setDeliveryOTPInput('');
-    setDeliveryOTPVerifying(false);
-    setDeliveryOTPResending(false);
-  };
-
-  const handleResendDeliveryOTP = async () => {
-    if (!deliveryOTPTarget) return;
-
-    Alert.alert(
-      'Send New OTP',
-      'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send New OTP',
-          onPress: async () => {
-            try {
-              setDeliveryOTPResending(true);
-              const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-                body: { action: 'regenerate', delivery_id: deliveryOTPTarget.delivery_id },
-              });
-
-              if (error || !data?.success) {
-                Alert.alert('Error', data?.error || error?.message || 'Could not send new OTP.');
-                return;
-              }
-
-              Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
-              setDeliveryOTPInput('');
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to send new OTP.');
-            } finally {
-              setDeliveryOTPResending(false);
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const completeDelivery = async () => {
-    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
-
-    const deliveryId = deliveryOTPTarget.delivery_id;
-    const requestId = deliveryOTPTarget.delivery_requests?.request_id;
-
-    setDeliveryOTPVerifying(true);
+  const finalizeDelivery = async (deliveryId: number) => {
     try {
-      const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
-        'contiguity-otp',
-        {
-          body: {
-            action: 'verify',
-            delivery_id: deliveryId,
-            otp: deliveryOTPInput.trim(),
-          },
-        }
-      );
-
-      if (verifyError) {
-        Alert.alert('Verification Failed', verifyError.message || 'Could not verify OTP.');
-        return;
-      }
-
-      if (!verifyResult?.success) {
-        Alert.alert(
-          'Invalid OTP',
-          verifyResult?.message || 'The code is incorrect or has expired. Please try again.'
-        );
-        return;
-      }
-
+      setDeliveryOTPVerifying(true);
+      const target = deliveryOTPTarget;
+      const requestId = target?.delivery_requests?.request_id;
       const now = new Date().toISOString();
 
       const { error: delError } = await supabase
@@ -626,16 +551,47 @@ export default function TaskScreen() {
         updated_at: now,
       });
 
-      Alert.alert(
-        '✅ Delivery Complete!',
-        'Payment has been released to your wallet.',
-        [{ text: 'OK' }]
-      );
-
+      Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
       closeDeliveryOTPModal();
       await loadData();
     } catch (error: any) {
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
+    } finally {
+      setDeliveryOTPVerifying(false);
+    }
+  };
+
+  const openDeliveryOTPModal = (delivery: any) => {
+    setDeliveryOTPTarget(delivery);
+    setDeliveryOTPInput('');
+    setDeliveryOTPModalVisible(true);
+  };
+
+  const closeDeliveryOTPModal = () => {
+    setDeliveryOTPModalVisible(false);
+    setDeliveryOTPTarget(null);
+    setDeliveryOTPInput('');
+    setDeliveryOTPVerifying(false);
+  };
+
+  const verifyDeliveryOTP = async () => {
+    if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
+    const deliveryId = deliveryOTPTarget.delivery_id;
+
+    setDeliveryOTPVerifying(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-delivery-otp', {
+        body: { action: 'verify', delivery_id: deliveryId, otp: deliveryOTPInput.trim() },
+      });
+
+      if (error || !data?.success) {
+        Alert.alert('Invalid Code', data?.message || error?.message || 'Please check the code and try again.');
+        return;
+      }
+
+      await finalizeDelivery(deliveryId);
+    } catch (e: any) {
+      Alert.alert('Verification Failed', e?.message || 'Could not verify the code.');
     } finally {
       setDeliveryOTPVerifying(false);
     }
@@ -690,16 +646,12 @@ export default function TaskScreen() {
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
+    // Strictly QR/PIN based. Do NOT fall back to delivery_status, otherwise
+    // a courier could see "Item Collected" highlighted before scanning.
     const qr = delivery?.qr_verifications;
-    if (qr) {
-      if (Array.isArray(qr)) {
-        if (qr[0]?.pickup_verified) return true;
-      } else if (qr.pickup_verified) {
-        return true;
-      }
-    }
-    const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Completed';
+    if (!qr) return false;
+    if (Array.isArray(qr)) return qr[0]?.pickup_verified === true;
+    return qr.pickup_verified === true;
   };
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' =>
@@ -806,20 +758,15 @@ export default function TaskScreen() {
         </View>
 
         {stage !== 'done' && (
-          <TouchableOpacity
-            style={styles.nextStopRow}
-            onPress={() => openMaps(target.lat, target.lng)}
-            activeOpacity={0.85}
-          >
+          <View style={styles.nextStopRow}>
             <View style={styles.nextStopIcon}>
-              <Ionicons name="navigate" size={14} color={ORANGE} />
+              <Ionicons name="location" size={14} color={ORANGE} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.nextStopEyebrow}>NEXT STOP · {stage === 'pickup' ? 'PICKUP' : 'DROP-OFF'}</Text>
               <Text style={styles.nextStopMain} numberOfLines={1}>{target.main}</Text>
             </View>
-            <Text style={styles.nextStopLink}>Navigate</Text>
-          </TouchableOpacity>
+          </View>
         )}
 
         <View style={styles.cardChipRow}>
@@ -956,8 +903,6 @@ export default function TaskScreen() {
     const stage = stageOf(d);
     const meta = statusMeta(stage);
     const code = trackingCode(info.request?.request_id ?? d.delivery_id);
-    const stepIndex = stage === 'pickup' ? 0 : stage === 'transit' ? 1 : 2;
-    const target = stage === 'pickup' ? info.pickup : info.dropoff;
     const escrowStatus = String(d.escrow?.escrow_status || '');
     const released = stage === 'done' || /complet|releas/i.test(escrowStatus);
     const paymentLabel = released ? 'Released to your wallet' : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
@@ -974,58 +919,7 @@ export default function TaskScreen() {
 
         <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
           <Animated.View style={{ opacity: detailAnim }}>
-            {/* 1. Tracking ID + status + progress */}
-            <View style={styles.sdCard}>
-              <View style={styles.sdTrackRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.eyebrow}>TRACKING ID</Text>
-                  <Text style={styles.sdTrackId} numberOfLines={1}>#{code}</Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.sdCopyBtn, copied && styles.sdCopyBtnDone]}
-                  onPress={() => copyTracking(code)}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={14} color={copied ? '#FFFFFF' : ORANGE} />
-                  <Text style={[styles.sdCopyBtnText, copied && { color: '#FFFFFF' }]}>{copied ? 'Copied' : 'Copy'}</Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.sdChipRow}>
-                <View style={[styles.sdStatusChip, { backgroundColor: meta.bg }]}>
-                  <Ionicons name={meta.icon as any} size={12} color={meta.fg} />
-                  <Text style={[styles.sdStatusChipText, { color: meta.fg }]}>{meta.label}</Text>
-                </View>
-                <View style={styles.infoChip}>
-                  <Ionicons name="cube-outline" size={12} color="#6B7280" />
-                  <Text style={styles.infoChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
-                </View>
-                <View style={styles.infoChip}>
-                  <Ionicons name={/door/i.test(info.request?.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#6B7280" />
-                  <Text style={styles.infoChipText}>{serviceLabel(info.request?.pickup_type)}</Text>
-                </View>
-              </View>
-
-              <View style={styles.stepperContainer}>
-                {['Accepted', 'Picked up', 'Delivered'].map((label, i) => {
-                  const passed = i === 0 || stepIndex >= i;
-                  const current = stepIndex === i;
-                  return (
-                    <View key={label} style={styles.stepItem}>
-                      <View style={styles.stepRowIndicator}>
-                        <View style={[styles.stepDot, passed && styles.stepDotActive, current && styles.stepDotCurrent]}>
-                          {passed ? <Ionicons name="checkmark" size={10} color="#FFF" /> : <View style={styles.stepInnerDot} />}
-                        </View>
-                        {i < 2 && <View style={[styles.stepLine, stepIndex > i && styles.stepLineActive]} />}
-                      </View>
-                      <Text style={[styles.stepLabel, current && styles.stepLabelActive]} numberOfLines={1}>{label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* 2. Next step */}
+            {/* 1. Next step (always first so the provider knows what to do) */}
             {stage !== 'done' ? (
               <View style={styles.nextCard}>
                 <View style={styles.nextTop}>
@@ -1033,29 +927,56 @@ export default function TaskScreen() {
                     <Ionicons name={stage === 'pickup' ? 'qr-code' : 'shield-checkmark'} size={22} color={ORANGE} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.nextEyebrow}>NEXT STEP</Text>
+                    <Text style={styles.nextEyebrow}>NEXT STEP · {stage === 'pickup' ? '1' : '2'} OF 2</Text>
                     <Text style={styles.nextTitle}>{stage === 'pickup' ? 'Pick up the package' : 'Deliver to the receiver'}</Text>
                   </View>
                 </View>
+
+                <View style={styles.nextWhere}>
+                  <View style={styles.nextWhereRow}>
+                    <Ionicons name="location" size={15} color="#FFFFFF" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.nextWhereLabel}>GO TO</Text>
+                      <Text style={styles.nextWhereValue} numberOfLines={2}>
+                        {stage === 'pickup' ? info.pickup.main : info.dropoff.main}
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.nextWhereDivider} />
+                  <View style={styles.nextWhereRow}>
+                    <Ionicons name="person" size={15} color="#FFFFFF" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.nextWhereLabel}>{stage === 'pickup' ? 'MEET THE SENDER' : 'HAND TO THE RECEIVER'}</Text>
+                      <Text style={styles.nextWhereValue} numberOfLines={1}>
+                        {(stage === 'pickup' ? info.senderName : info.receiverName) || 'Not available'}
+                      </Text>
+                    </View>
+                    {!!(stage === 'pickup' ? info.senderPhone : info.receiverPhone) && (
+                      <TouchableOpacity
+                        style={styles.nextCallBtn}
+                        onPress={() => Linking.openURL(`tel:${stage === 'pickup' ? info.senderPhone : info.receiverPhone}`)}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="call" size={15} color={ORANGE} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+
                 <Text style={styles.nextDesc}>
                   {stage === 'pickup'
-                    ? `Head to ${info.pickup.main}. Scan the sender's QR code, or ask for their 4-digit PIN, to confirm pickup.`
-                    : `Head to ${info.dropoff.main}. Ask the receiver for the 6-digit OTP to confirm delivery and release your payment.`}
+                    ? "When you arrive, scan the sender's QR code. If the code won't scan, ask them for their 4-digit PIN."
+                    : 'When you arrive, ask the receiver for the 6-digit delivery OTP. The sender shares it with them after pickup. Entering it completes the delivery and releases your payment.'}
                 </Text>
-                <View style={styles.nextBtnRow}>
-                  <TouchableOpacity style={styles.nextGhostBtn} onPress={() => openMaps(target.lat, target.lng)} activeOpacity={0.85}>
-                    <Ionicons name="navigate-outline" size={17} color="#FFFFFF" />
-                    <Text style={styles.nextGhostText}>Navigate</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.nextPrimaryBtn}
-                    onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
-                    activeOpacity={0.9}
-                  >
-                    <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color={ORANGE} />
-                    <Text style={styles.nextPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete Delivery'}</Text>
-                  </TouchableOpacity>
-                </View>
+
+                <TouchableOpacity
+                  style={styles.nextPrimaryBtn}
+                  onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
+                  activeOpacity={0.9}
+                >
+                  <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color={ORANGE} />
+                  <Text style={styles.nextPrimaryText}>{stage === 'pickup' ? 'Scan QR / Enter PIN' : 'Enter Delivery OTP'}</Text>
+                </TouchableOpacity>
               </View>
             ) : (
               <View style={styles.doneCard}>
@@ -1069,6 +990,31 @@ export default function TaskScreen() {
                 </View>
               </View>
             )}
+
+            {/* 2. Tracking ID: plain text with copy */}
+            <View style={styles.trackBlock}>
+              <Text style={styles.eyebrow}>TRACKING ID</Text>
+              <View style={styles.trackRow}>
+                <Text style={styles.trackId} numberOfLines={1}>#{code}</Text>
+                <TouchableOpacity style={styles.trackCopy} onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={15} color={ORANGE} />
+                  <Text style={styles.trackCopyText}>{copied ? 'Copied' : 'Copy'}</Text>
+                </TouchableOpacity>
+              </View>
+              <View style={styles.trackMetaRow}>
+                <View style={[styles.trackDot, { backgroundColor: meta.fg }]} />
+                <Text style={[styles.trackMetaStrong, { color: meta.fg }]}>{meta.label}</Text>
+                <Text style={styles.trackMetaSep}>·</Text>
+                <Text style={styles.trackMeta}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'} to {stage === 'pickup' ? 'collect' : stage === 'transit' ? 'deliver' : 'delivered'}</Text>
+                <Text style={styles.trackMetaSep}>·</Text>
+                <Text style={styles.trackMeta}>{serviceLabel(info.request?.pickup_type)}</Text>
+              </View>
+              <Text style={styles.trackHint}>
+                {/door/i.test(info.request?.pickup_type || '')
+                  ? 'Door-to-door: collect and hand over at the door.'
+                  : 'Curb-side: collect and hand over at the curb or entrance.'}
+              </Text>
+            </View>
 
             {/* 3. Map + pickup / drop-off */}
             <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
@@ -1092,30 +1038,24 @@ export default function TaskScreen() {
               <View style={styles.sdRoutePad}>
                 <View style={styles.sdRouteRow}>
                   <View style={styles.sdRouteRail}>
-                    <View style={styles.sdPinPickup}><View style={styles.sdPinPickupInner} /></View>
+                    <View style={styles.sdPinPickup}><Text style={styles.sdPinText}>P</Text></View>
                     <View style={styles.sdRailLine} />
                   </View>
                   <View style={styles.sdRouteText}>
-                    <Text style={styles.eyebrow}>PICKUP</Text>
+                    <Text style={[styles.eyebrow, { color: ORANGE }]}>PICKUP</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
                     {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
                   </View>
-                  <TouchableOpacity style={styles.navMini} onPress={() => openMaps(info.pickup.lat, info.pickup.lng)} activeOpacity={0.85}>
-                    <Ionicons name="navigate" size={16} color={ORANGE} />
-                  </TouchableOpacity>
                 </View>
                 <View style={styles.sdRouteRow}>
                   <View style={styles.sdRouteRail}>
-                    <View style={styles.sdPinDropoff}><Ionicons name="location" size={11} color="#FFFFFF" /></View>
+                    <View style={styles.sdPinDropoff}><Text style={styles.sdPinText}>D</Text></View>
                   </View>
                   <View style={[styles.sdRouteText, { paddingBottom: 0 }]}>
-                    <Text style={styles.eyebrow}>DROP-OFF</Text>
+                    <Text style={[styles.eyebrow, { color: '#111827' }]}>DROP-OFF</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
                     {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
                   </View>
-                  <TouchableOpacity style={styles.navMini} onPress={() => openMaps(info.dropoff.lat, info.dropoff.lng)} activeOpacity={0.85}>
-                    <Ionicons name="navigate" size={16} color={ORANGE} />
-                  </TouchableOpacity>
                 </View>
               </View>
             </View>
@@ -1221,6 +1161,30 @@ export default function TaskScreen() {
               })}
             </View>
 
+            {/* 7. Earnings */}
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Earnings</Text>
+              </View>
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payment type</Text>
+                <View style={styles.payValueRow}>
+                  <Ionicons name="shield-checkmark-outline" size={15} color="#4B5563" />
+                  <Text style={styles.payValue}>Escrow payment</Text>
+                </View>
+              </View>
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payment status</Text>
+                <View style={[styles.payChip, released && styles.payChipDone]}>
+                  <Text style={[styles.payChipText, released && styles.payChipTextDone]}>{paymentLabel}</Text>
+                </View>
+              </View>
+              <View style={styles.sdTotalBox}>
+                <Text style={styles.sdTotalLabel}>You earn</Text>
+                <Text style={styles.sdTotalValue}>{money(info.earnings)}</Text>
+              </View>
+            </View>
             {/* 6. Timeline */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
@@ -1254,30 +1218,6 @@ export default function TaskScreen() {
               </View>
             </View>
 
-            {/* 7. Earnings */}
-            <View style={styles.sdCard}>
-              <View style={styles.sdCardHeader}>
-                <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
-                <Text style={styles.sdCardTitle}>Earnings</Text>
-              </View>
-              <View style={styles.payRow}>
-                <Text style={styles.payLabel}>Payment type</Text>
-                <View style={styles.payValueRow}>
-                  <Ionicons name="shield-checkmark-outline" size={15} color="#4B5563" />
-                  <Text style={styles.payValue}>Escrow payment</Text>
-                </View>
-              </View>
-              <View style={styles.payRow}>
-                <Text style={styles.payLabel}>Payment status</Text>
-                <View style={[styles.payChip, released && styles.payChipDone]}>
-                  <Text style={[styles.payChipText, released && styles.payChipTextDone]}>{paymentLabel}</Text>
-                </View>
-              </View>
-              <View style={styles.sdTotalBox}>
-                <Text style={styles.sdTotalLabel}>You earn</Text>
-                <Text style={styles.sdTotalValue}>{money(info.earnings)}</Text>
-              </View>
-            </View>
           </Animated.View>
         </ScrollView>
       </View>
@@ -1327,18 +1267,15 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
           <View style={styles.sheetHandle} />
-
           <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
           <Text style={styles.sheetSubheading}>
             Point your camera at the Sender's screen to automatically verify pickup.
           </Text>
-
           <View style={styles.orRow}>
             <View style={styles.orLine} />
             <Text style={styles.orText}>OR ENTER PIN</Text>
             <View style={styles.orLine} />
           </View>
-
           <View style={styles.pinRow}>
             <TextInput
               style={styles.pinInput}
@@ -1392,23 +1329,21 @@ export default function TaskScreen() {
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
-            <TouchableOpacity style={styles.mapSheetRow} onPress={() => openMaps(info.pickup.lat, info.pickup.lng)} activeOpacity={0.85}>
-              <View style={styles.sdPinPickup}><View style={styles.sdPinPickupInner} /></View>
+            <View style={styles.mapSheetRow}>
+              <View style={styles.sdPinPickup}><Text style={styles.sdPinText}>P</Text></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>PICKUP</Text>
+                <Text style={[styles.eyebrow, { color: ORANGE }]}>PICKUP</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.pickup.main}</Text>
               </View>
-              <View style={styles.navMini}><Ionicons name="navigate" size={16} color={ORANGE} /></View>
-            </TouchableOpacity>
+            </View>
             <View style={styles.contactDivider} />
-            <TouchableOpacity style={styles.mapSheetRow} onPress={() => openMaps(info.dropoff.lat, info.dropoff.lng)} activeOpacity={0.85}>
-              <View style={styles.sdPinDropoff}><Ionicons name="location" size={11} color="#FFFFFF" /></View>
+            <View style={styles.mapSheetRow}>
+              <View style={styles.sdPinDropoff}><Text style={styles.sdPinText}>D</Text></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>DROP-OFF</Text>
+                <Text style={[styles.eyebrow, { color: '#111827' }]}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
-              <View style={styles.navMini}><Ionicons name="navigate" size={16} color={ORANGE} /></View>
-            </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1446,7 +1381,8 @@ export default function TaskScreen() {
 
           <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
           <Text style={styles.otpModalSubtitle}>
-            Ask the receiver for the 6-digit OTP sent to their phone. Verifying will release payment to your wallet.
+            Ask the receiver for the 6-digit code the sender sent them. Enter it below to
+            release payment to your wallet.
           </Text>
 
           <View style={styles.otpInputContainer}>
@@ -1458,6 +1394,7 @@ export default function TaskScreen() {
               placeholder="000000"
               placeholderTextColor="#9CA3AF"
               maxLength={6}
+              autoFocus
             />
           </View>
 
@@ -1477,7 +1414,7 @@ export default function TaskScreen() {
               (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
             ]}
             disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
-            onPress={completeDelivery}
+            onPress={verifyDeliveryOTP}
             activeOpacity={0.9}
           >
             {deliveryOTPVerifying ? (
@@ -1486,22 +1423,6 @@ export default function TaskScreen() {
               <>
                 <Ionicons name="checkmark-circle" size={18} color="#FFF" />
                 <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.otpResendButton}
-            onPress={handleResendDeliveryOTP}
-            disabled={deliveryOTPResending}
-            activeOpacity={0.85}
-          >
-            {deliveryOTPResending ? (
-              <ActivityIndicator size="small" color="#6B7280" />
-            ) : (
-              <>
-                <Ionicons name="refresh" size={14} color="#6B7280" />
-                <Text style={styles.otpResendText}>Send New OTP</Text>
               </>
             )}
           </TouchableOpacity>
@@ -1597,7 +1518,6 @@ const styles = StyleSheet.create({
   nextStopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
   nextStopEyebrow: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
   nextStopMain: { fontSize: 13, fontWeight: '800', color: '#111827', marginTop: 1 },
-  nextStopLink: { fontSize: 12, fontWeight: '800', color: ORANGE },
   cardChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   infoChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F9FAFB',
@@ -1675,7 +1595,24 @@ const styles = StyleSheet.create({
   nextIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
   nextEyebrow: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.3, marginTop: 2 },
-  nextDesc: { fontSize: 13, lineHeight: 19, color: '#FFF1E6', marginTop: 12, fontWeight: '500' },
+  nextDesc: { fontSize: 13, lineHeight: 19, color: '#FFF1E6', marginTop: 14, fontWeight: '500' },
+  nextWhere: { marginTop: 14, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 14, padding: 12 },
+  nextWhereRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  nextWhereDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.25)', marginVertical: 10 },
+  nextWhereLabel: { fontSize: 9, fontWeight: '800', color: '#FFE4D2', letterSpacing: 0.8 },
+  nextWhereValue: { fontSize: 14, fontWeight: '800', color: '#FFFFFF', marginTop: 2 },
+  nextCallBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  trackBlock: { paddingHorizontal: 4, marginBottom: 18 },
+  trackRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 4 },
+  trackId: { flexShrink: 1, fontSize: 24, fontWeight: '900', color: '#111827', letterSpacing: -0.5 },
+  trackCopy: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  trackCopyText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  trackMetaRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 8 },
+  trackDot: { width: 8, height: 8, borderRadius: 4 },
+  trackMetaStrong: { fontSize: 13, fontWeight: '800' },
+  trackMeta: { fontSize: 13, fontWeight: '600', color: '#4B5563' },
+  trackMetaSep: { fontSize: 13, color: '#D1D5DB', fontWeight: '800' },
+  trackHint: { fontSize: 12, color: '#6B7280', marginTop: 6, lineHeight: 17 },
   nextBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
   nextGhostBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -1683,7 +1620,7 @@ const styles = StyleSheet.create({
   },
   nextGhostText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   nextPrimaryBtn: {
-    flex: 1.5, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 14, borderRadius: 14, backgroundColor: '#FFFFFF',
   },
   nextPrimaryText: { color: ORANGE, fontSize: 14, fontWeight: '900' },
@@ -1704,10 +1641,10 @@ const styles = StyleSheet.create({
   sdRoutePad: { padding: 18 },
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
-  sdPinPickup: { width: 20, height: 20, borderRadius: 10, borderWidth: 4, borderColor: ORANGE, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
-  sdPinPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
-  sdPinDropoff: { width: 20, height: 20, borderRadius: 10, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: '#FFD9BF', marginVertical: 3, borderRadius: 1 },
+  sdPinPickup: { width: 22, height: 22, borderRadius: 11, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.25, shadowRadius: 3, elevation: 3 },
+  sdPinDropoff: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#111827', borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.25, shadowRadius: 3, elevation: 3 },
+  sdPinText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
+  sdRailLine: { width: 3, flex: 1, minHeight: 28, backgroundColor: ORANGE, opacity: 0.8, marginVertical: 3, borderRadius: 2 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 3 },
   sdRouteSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 16 },
@@ -1870,15 +1807,10 @@ const styles = StyleSheet.create({
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#22C55E', borderRadius: 16,
-    paddingVertical: 16, gap: 8, marginBottom: 12,
+    paddingVertical: 16, gap: 8,
     shadowColor: '#22C55E', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   otpVerifyButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  otpResendButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, paddingVertical: 12,
-  },
-  otpResendText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });
