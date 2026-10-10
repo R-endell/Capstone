@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "Capstone",
-    "slug": "Capstone",
+    "name": "Pack-N-Ship",
+    "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/applogo.jpeg",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
