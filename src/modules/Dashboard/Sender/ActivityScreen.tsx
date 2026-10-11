@@ -412,11 +412,12 @@ export default function ActivityScreen() {
   const [showDeliveryOTP, setShowDeliveryOTP] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'completed' | 'pending' | 'active'>('all');
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingTags, setRatingTags] = useState<string[]>([]);
@@ -448,13 +449,14 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     const backAction = () => {
+      if (photoPreview) { setPhotoPreview(null); return true; }
       if (showFullMap) { setShowFullMap(false); return true; }
       if (selectedDelivery) { setSelectedDelivery(null); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedDelivery, showFullMap]);
+  }, [selectedDelivery, showFullMap, photoPreview]);
 
   const setTabBarHidden = useCallback((hidden: boolean) => {
     if (tabBarHidden.current === hidden) return;
@@ -871,7 +873,6 @@ export default function ActivityScreen() {
       setSelectedDelivery(null);
       setShowFullMap(false);
       setActiveTab('all');
-      setSearchQuery('');
       fetchData();
 
       return () => {
@@ -935,15 +936,7 @@ export default function ActivityScreen() {
     if (activeTab === 'pending' && item.status !== 'Waiting for Provider') return false;
     if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched' && item.status !== 'In Transit') return false;
     if (activeTab === 'completed' && item.status !== 'Completed') return false;
-    if (!searchQuery.trim()) return true;
-    const query = searchQuery.toLowerCase();
-    return (item.pickup_main + " " + item.pickup_sub).toLowerCase().includes(query) ||
-      (item.dropoff_main + " " + item.dropoff_sub).toLowerCase().includes(query) ||
-      String(item.request_id).toLowerCase().includes(query) ||
-      String(item.provider_name).toLowerCase().includes(query) ||
-      String(item.cargo_name || '').toLowerCase().includes(query) ||
-      String(item.receiver?.receiver_name || '').toLowerCase().includes(query) ||
-      String(item.receiver?.receiver_phone || '').toLowerCase().includes(query);
+    return true;
   });
 
   const getStatusColor = (status: string) => {
@@ -1023,25 +1016,6 @@ export default function ActivityScreen() {
       <View style={styles.headerSection}>
         <Text style={styles.pageTitle}>Activity & Shipments</Text>
 
-        <View style={styles.searchRow}>
-          <View style={styles.searchBar}>
-            <Ionicons name="search-outline" size={20} color="#9CA3AF" />
-            <TextInput
-              placeholder="Search item, address, receiver, ID..."
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              clearButtonMode="while-editing"
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Ionicons name="close-circle" size={18} color="#9CA3AF" />
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
         {renderTabBar()}
       </View>
 
@@ -1073,7 +1047,7 @@ export default function ActivityScreen() {
               <Text style={styles.noResultsSubtext}>
                 {deliveries.length === 0
                   ? 'Your scheduled shipments will appear here'
-                  : 'Try adjusting your search or tab filter'}
+                  : 'No deliveries in this tab yet'}
               </Text>
             </View>
           ) : (
@@ -1130,6 +1104,31 @@ export default function ActivityScreen() {
                       <Text style={styles.routeAddressText} numberOfLines={1}>{item.dropoff_main}</Text>
                     </View>
                   </View>
+
+                  {packagePhotosOf(item).length > 0 && (
+                    <View style={styles.cardPhotoRow}>
+                      {packagePhotosOf(item).slice(0, 3).map((ph, i) => (
+                        failedPhotos[ph.url] ? (
+                          <View key={`${ph.url}-${i}`} style={[styles.cardPhoto, styles.pkgThumbFailed]}>
+                            <Ionicons name="image-outline" size={16} color="#9CA3AF" />
+                          </View>
+                        ) : (
+                          <Image
+                            key={`${ph.url}-${i}`}
+                            source={{ uri: ph.url }}
+                            style={styles.cardPhoto}
+                            onError={() => setFailedPhotos(f => ({ ...f, [ph.url]: true }))}
+                          />
+                        )
+                      ))}
+                      {packagePhotosOf(item).length > 3 && (
+                        <View style={[styles.cardPhoto, styles.cardPhotoMore]}>
+                          <Text style={styles.cardPhotoMoreText}>+{packagePhotosOf(item).length - 3}</Text>
+                        </View>
+                      )}
+                      <Text style={styles.cardPhotoLabel}>Package photos</Text>
+                    </View>
+                  )}
 
                   <View style={styles.cardContextRow}>
                     <View style={styles.contextDateBox}>
@@ -1213,6 +1212,80 @@ export default function ActivityScreen() {
       </View>
     );
   };
+
+  /* ---- photos of the package the sender requested ---- */
+  const packagePhotosOf = (item: any): { url: string; label: string }[] => {
+    const out: { url: string; label: string }[] = [];
+    const seen = new Set<string>();
+    (item?.cargo_items || []).forEach((ci: CargoItem, i: number) => {
+      (ci.photos || []).forEach(url => {
+        if (url && !seen.has(url)) { seen.add(url); out.push({ url, label: ci.name || `Item ${i + 1}` }); }
+      });
+    });
+    return out;
+  };
+
+  const renderPackagePhotosCard = (item: any) => {
+    const photos = packagePhotosOf(item);
+    return (
+      <View style={styles.sdCard}>
+        <View style={styles.sdCardHeader}>
+          <View style={styles.sdCardHeaderIcon}><Ionicons name="images-outline" size={14} color={ORANGE} /></View>
+          <Text style={styles.sdCardTitle}>Package you requested</Text>
+          {photos.length > 0 && <Text style={styles.pkgCount}>{photos.length} {photos.length === 1 ? 'photo' : 'photos'}</Text>}
+        </View>
+
+        {photos.length === 0 ? (
+          <View style={styles.pkgEmpty}>
+            <Ionicons name="image-outline" size={18} color="#9CA3AF" />
+            <Text style={styles.pkgEmptyText}>No package photo was added to this request</Text>
+          </View>
+        ) : (
+          <>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pkgRow}>
+              {photos.map((ph, i) => {
+                const ok = !failedPhotos[ph.url];
+                return (
+                  <TouchableOpacity
+                    key={`${ph.url}-${i}`}
+                    activeOpacity={0.9}
+                    onPress={() => ok && setPhotoPreview(ph.url)}
+                    style={styles.pkgThumbWrap}
+                  >
+                    {ok ? (
+                      <Image
+                        source={{ uri: ph.url }}
+                        style={styles.pkgThumb}
+                        resizeMode="cover"
+                        onError={() => setFailedPhotos(f => ({ ...f, [ph.url]: true }))}
+                      />
+                    ) : (
+                      <View style={[styles.pkgThumb, styles.pkgThumbFailed]}>
+                        <Ionicons name="image-outline" size={22} color="#9CA3AF" />
+                      </View>
+                    )}
+                    <Text style={styles.pkgThumbLabel} numberOfLines={1}>{ph.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <Text style={styles.pkgHint}>Review what you asked to be delivered. Tap a photo to enlarge.</Text>
+          </>
+        )}
+      </View>
+    );
+  };
+
+  const renderPhotoPreviewModal = () => (
+    <Modal visible={!!photoPreview} transparent animationType="fade" onRequestClose={() => setPhotoPreview(null)}>
+      <View style={styles.previewOverlay}>
+        {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
+        <TouchableOpacity style={styles.previewClose} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
+          <Ionicons name="close" size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </Modal>
+  );
 
   const renderDetailView = () => {
     const d = selectedDelivery;
@@ -1343,6 +1416,8 @@ export default function ActivityScreen() {
               })}
             </View>
           </View>
+
+          {renderPackagePhotosCard(d)}
 
           <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
             <TouchableOpacity style={styles.sdMap} activeOpacity={0.9} onPress={() => setShowFullMap(true)}>
@@ -2025,6 +2100,7 @@ export default function ActivityScreen() {
       {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
+      {renderPhotoPreviewModal()}
     </SafeAreaView>
   );
 }
@@ -2047,27 +2123,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#111827',
     letterSpacing: -0.5,
-    marginBottom: 16,
+    marginBottom: 12,
   },
 
-  searchRow: { marginBottom: 4 },
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  searchInput: { flex: 1, fontSize: 15, color: '#111827', padding: 0 },
+  tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingBottom: 16 },
+  tlTitle: { fontSize: 14, fontWeight: '700', color: '#111827' },
+  tlSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 17 },
 
   tabBarScroll: { gap: 8, paddingTop: 16, paddingBottom: 4 },
   tabItem: {
@@ -2113,6 +2174,29 @@ const styles = StyleSheet.create({
   routeConnectorLine: { width: 2, height: 10, backgroundColor: '#D1D5DB', marginLeft: 3, marginVertical: 3 },
   routeAddressText: { fontSize: 14, fontWeight: '600', color: '#111827', flex: 1 },
 
+  pkgCount: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
+  pkgRow: { gap: 12, paddingRight: 4 },
+  pkgThumbWrap: { width: 150 },
+  pkgThumb: { width: 150, height: 150, borderRadius: 14, backgroundColor: '#F3F4F6' },
+  pkgThumbFailed: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E5E7EB' },
+  pkgThumbLabel: { marginTop: 6, fontSize: 12, fontWeight: '600', color: '#374151' },
+  pkgHint: { marginTop: 12, fontSize: 12, color: '#6B7280', lineHeight: 17 },
+  pkgEmpty: {
+    height: 64, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
+    alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
+  },
+  pkgEmptyText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  cardPhotoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  cardPhoto: { width: 48, height: 48, borderRadius: 10, backgroundColor: '#F3F4F6' },
+  cardPhotoMore: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF4EC' },
+  cardPhotoMoreText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  cardPhotoLabel: { marginLeft: 4, fontSize: 11, fontWeight: '700', color: '#9CA3AF' },
+  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
+  previewImg: { width: '100%', height: '80%' },
+  previewClose: {
+    position: 'absolute', top: 48, right: 16, width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
+  },
   cardContextRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
   contextDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   contextText: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
