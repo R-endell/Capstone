@@ -11,7 +11,7 @@ import {
   StatusBar,
   Animated,
   Easing,
-  ActivityIndicator,
+  BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -41,16 +41,10 @@ export default function AccountScreen() {
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
-  const [showHistory, setShowHistory] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<'All' | 'Pending' | 'In Transit' | 'Completed' | 'Cancelled'>('All');
-
   // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const avatarPulse = useRef(new Animated.Value(0)).current;
-  const historyAnim = useRef(new Animated.Value(0)).current;
 
   /* ------------------------------------------------------------------ */
   /* Entrance animation                                                  */
@@ -91,140 +85,30 @@ export default function AccountScreen() {
     return () => pulse.stop();
   }, [headerAnim, contentAnim, avatarPulse]);
 
-  /* ------------------------------------------------------------------ */
-  /* History entrance                                                    */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    if (showHistory) {
-      historyAnim.setValue(0);
-      Animated.timing(historyAnim, {
-        toValue: 1,
-        duration: 500,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-    }
-  }, [showHistory, historyAnim]);
-
-  /* ------------------------------------------------------------------ */
-  /* Fetch past delivery_requests for this sender                        */
-  /* ------------------------------------------------------------------ */
-  const fetchHistory = useCallback(async (senderId: number) => {
-    try {
-      setHistoryLoading(true);
-
-      const { data, error } = await supabase
-        .from('delivery_requests')
-        .select(`
-          request_id,
-          pickup_type,
-          delivery_status,
-          scheduled_time,
-          created_at,
-          estimated_cost,
-          pickup_location:locations!delivery_requests_pickup_location_id_fkey (
-            street_address, barangay, city, province
-          ),
-          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (
-            street_address, barangay, city, province
-          ),
-          deliveries (
-            delivery_id,
-            completed_at,
-            provider:users!deliveries_provider_id_fkey (
-              first_name, last_name
-            )
-          )
-        `)
-        .eq('sender_id', senderId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-
-      const mapped = (data || []).map((r: any) => {
-        const delivery = r.deliveries?.[0];
-        const provider = delivery?.provider;
-
-        const dateObj = r.scheduled_time
-          ? new Date(r.scheduled_time)
-          : new Date(r.created_at);
-
-        const pickupAddr = r.pickup_location?.street_address || 'Pickup location';
-        const dropoffAddr = r.dropoff_location?.street_address || 'Dropoff location';
-
-        const rawStatus = (r.delivery_status || 'Pending').trim();
-        const isCancelled = /cancel/i.test(rawStatus);
-        const isCompleted = /complete|delivered/i.test(rawStatus) || !!delivery?.completed_at;
-        const isTransit = /transit|accepted|picked/i.test(rawStatus);
-
-        let statusLabel = rawStatus;
-        let statusColor = '#6B7280';
-        let statusBg = '#F3F4F6';
-        let statusIcon: any = 'time-outline';
-
-        if (isCompleted) {
-          statusLabel = 'Completed';
-          statusColor = '#166534';
-          statusBg = '#DCFCE7';
-          statusIcon = 'checkmark-circle';
-        } else if (isCancelled) {
-          statusLabel = 'Cancelled';
-          statusColor = '#991B1B';
-          statusBg = '#FEE2E2';
-          statusIcon = 'close-circle';
-        } else if (isTransit) {
-          statusLabel = 'In Transit';
-          statusColor = '#0369A1';
-          statusBg = '#E0F2FE';
-          statusIcon = 'car-sport';
-        } else {
-          statusLabel = 'Pending';
-          statusColor = '#92400E';
-          statusBg = '#FEF3C7';
-          statusIcon = 'time-outline';
+  // Back button: return to the first tab (exit only from the first tab)
+  useFocusEffect(
+    useCallback(() => {
+      const onBack = () => {
+        let nav: any = navigation;
+        while (nav) {
+          const st = nav.getState?.();
+          if (st?.type === 'tab') {
+            const current = st.routes?.[st.index]?.name;
+            const first = st.routeNames?.[0];
+            if (first && first !== current) {
+              nav.navigate(first);
+              return true;
+            }
+            return false;
+          }
+          nav = nav.getParent?.();
         }
-
-        return {
-          id: String(r.request_id),
-          type: r.pickup_type || 'Curb-side Drop-off',
-          date: dateObj.toLocaleDateString('en-US', {
-            month: 'long', day: 'numeric', year: 'numeric',
-          }),
-          time: dateObj.toLocaleTimeString('en-US', {
-            hour: 'numeric', minute: '2-digit',
-          }),
-          pickup: pickupAddr,
-          pickupSub: [
-            r.pickup_location?.barangay,
-            r.pickup_location?.city,
-            r.pickup_location?.province,
-          ].filter(Boolean).join(', '),
-          dropoff: dropoffAddr,
-          dropoffSub: [
-            r.dropoff_location?.barangay,
-            r.dropoff_location?.city,
-            r.dropoff_location?.province,
-          ].filter(Boolean).join(', '),
-          provider: provider
-            ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider'
-            : 'Unassigned',
-          tracking: `PNS-${String(r.request_id).padStart(4, '0')}`,
-          price: Number(r.estimated_cost || 0).toFixed(2),
-          statusLabel,
-          statusColor,
-          statusBg,
-          statusIcon,
-        };
-      });
-
-      setHistory(mapped);
-    } catch (err) {
-      console.error('Error fetching history:', err);
-      setHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, []);
+        return false;
+      };
+      const sub = BackHandler.addEventListener('hardwareBackPress', onBack);
+      return () => sub.remove();
+    }, [navigation])
+  );
 
   /* ------------------------------------------------------------------ */
   /* Fetch user data + provider verification state                       */
@@ -267,8 +151,6 @@ export default function AccountScreen() {
             setAvatarUrl(userData.profile_photo);
             setImageError(false);
           }
-
-          fetchHistory(userData.user_id);
 
           const { data: userRoles, error: rolesError } = await supabase
             .from('user_roles')
@@ -324,7 +206,7 @@ export default function AccountScreen() {
       return () => {
         StatusBar.setBarStyle('dark-content', true);
       };
-    }, [fetchHistory])
+    }, [])
   );
 
   /* ------------------------------------------------------------------ */
@@ -355,6 +237,10 @@ export default function AccountScreen() {
 
   const handleSettingsPress = () => {
     navigation.navigate('Settings');
+  };
+
+  const handleDisputePress = () => {
+    navigation.navigate('DisputeCenter' as any);
   };
 
   const handlePaymentMethodsPress = () => {
@@ -430,150 +316,6 @@ export default function AccountScreen() {
       default:         return 'Earn by delivering packages';
     }
   })();
-
-  /* ------------------------------------------------------------------ */
-  /* History Sub-Screen                                                  */
-  /* ------------------------------------------------------------------ */
-  if (showHistory) {
-    const filteredHistory = history.filter((item) => {
-      if (historyFilter === 'All') return true;
-      return item.statusLabel === historyFilter;
-    });
-
-    return (
-      <View style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-
-        <View style={[styles.historyHeader, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-          <TouchableOpacity
-            onPress={() => setShowHistory(false)}
-            style={styles.backBtn}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="arrow-back" size={22} color="#111827" />
-          </TouchableOpacity>
-          <Text style={styles.historyHeaderTitle}>Delivery History</Text>
-          <View style={{ width: 40 }} />
-        </View>
-
-        <ScrollView
-          style={styles.historyContent}
-          contentContainerStyle={styles.historyScroll}
-          showsVerticalScrollIndicator={false}
-        >
-          <Animated.View style={{ opacity: historyAnim }}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.filterRow}
-              style={{ marginBottom: 20 }}
-            >
-              {(['All', 'Pending', 'In Transit', 'Completed', 'Cancelled'] as const).map((f) => {
-                const active = historyFilter === f;
-                return (
-                  <TouchableOpacity
-                    key={f}
-                    style={[styles.filterChip, active && styles.filterChipActive]}
-                    onPress={() => setHistoryFilter(f)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
-                      {f}
-                    </Text>
-                    {f !== 'All' && (
-                      <View style={[styles.filterCount, active && styles.filterCountActive]}>
-                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>
-                          {history.filter((h) => h.statusLabel === f).length}
-                        </Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            {historyLoading ? (
-              <View style={styles.historyStateContainer}>
-                <ActivityIndicator color={ORANGE} size="large" />
-                <Text style={styles.historyStateText}>Loading history...</Text>
-              </View>
-            ) : filteredHistory.length === 0 ? (
-              <View style={styles.historyStateContainer}>
-                <View style={styles.emptyIconBox}>
-                  <Ionicons name="receipt-outline" size={38} color={ORANGE} />
-                </View>
-                <Text style={styles.historyEmptyTitle}>No deliveries found</Text>
-                <Text style={styles.historyEmptySubtext}>
-                  {historyFilter === 'All'
-                    ? 'Your past deliveries and receipts will show up here.'
-                    : `No ${historyFilter.toLowerCase()} deliveries found.`}
-                </Text>
-              </View>
-            ) : (
-              filteredHistory.map((item) => (
-                <View key={item.id} style={styles.historyCard}>
-                  <View style={styles.hCardAccent} />
-
-                  <View style={styles.hCardTopRow}>
-                    <Text style={styles.hCardType}>{item.type}</Text>
-                    <View style={[styles.hStatusPill, { backgroundColor: item.statusBg }]}>
-                      <Ionicons name={item.statusIcon} size={11} color={item.statusColor} />
-                      <Text style={[styles.hStatusText, { color: item.statusColor }]}>
-                        {item.statusLabel.toUpperCase()}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <Text style={styles.hCardDate}>{item.date}   {item.time}</Text>
-
-                  <View style={styles.hCardBody}>
-                    <View style={styles.hCardTimeline}>
-                      <View style={styles.hTimelinePoint}>
-                        <View style={styles.blueDot}>
-                          <View style={styles.blueDotInner} />
-                        </View>
-                        <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.pickup}</Text>
-                          <Text style={styles.hAddressSub} numberOfLines={2}>
-                            {item.pickupSub}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.hTimelineLine} />
-                      <View style={styles.hTimelinePoint}>
-                        <Ionicons
-                          name="location"
-                          size={16}
-                          color="#EF4444"
-                          style={{ marginLeft: -1, marginRight: 6 }}
-                        />
-                        <View style={styles.hAddressWrapper}>
-                          <Text style={styles.hAddressMain} numberOfLines={1}>{item.dropoff}</Text>
-                          <Text style={styles.hAddressSub} numberOfLines={2}>
-                            {item.dropoffSub}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-
-                  <View style={styles.hCardDivider} />
-
-                  <View style={styles.hCardFooter}>
-                    <View style={styles.hTrackingWrapper}>
-                      <Ionicons name="barcode-outline" size={13} color="#6B7280" />
-                      <Text style={styles.hTracking}>{item.tracking}</Text>
-                    </View>
-                    <Text style={styles.hPrice}>₱{item.price}</Text>
-                  </View>
-                </View>
-              ))
-            )}
-          </Animated.View>
-        </ScrollView>
-      </View>
-    );
-  }
 
   /* ------------------------------------------------------------------ */
   /* Main Screen (Fixed Top Profile/Header + Scrollable Menu Content)    */
@@ -747,17 +489,17 @@ export default function AccountScreen() {
 
             <TouchableOpacity
               style={styles.menuItem}
-              onPress={() => setShowHistory(true)}
+              onPress={handleDisputePress}
               activeOpacity={0.7}
             >
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: '#F0FDF4' }]}>
-                  <Ionicons name="time-outline" size={19} color="#10B981" />
+                <View style={[styles.menuIconWrapper, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
                 </View>
                 <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Delivery History</Text>
+                  <Text style={styles.menuText}>Dispute Center</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>
-                    Past deliveries & receipts
+                    Report a problem with a delivery
                   </Text>
                 </View>
               </View>
@@ -1065,220 +807,4 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     letterSpacing: 0.5,
   },
-
-  historyHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
-  },
-  backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#F3F4F6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  historyHeaderTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
-  },
-  historyContent: {
-    flex: 1,
-    backgroundColor: '#F9FAFB',
-  },
-  historyScroll: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 40,
-  },
-
-  historyStateContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-    paddingHorizontal: 20,
-  },
-  emptyIconBox: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  historyStateText: {
-    marginTop: 12,
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '500',
-  },
-  historyEmptyTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  historyEmptySubtext: {
-    fontSize: 13,
-    color: '#6B7280',
-    textAlign: 'center',
-    lineHeight: 18,
-  },
-
-  historyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    paddingLeft: 20,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  hCardAccent: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    backgroundColor: ORANGE,
-  },
-  hCardTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  hCardType: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '600',
-    flex: 1,
-    marginRight: 8,
-  },
-  hStatusPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    gap: 4,
-  },
-  hStatusText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  hCardDate: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 12,
-  },
-  hCardBody: { flexDirection: 'row', justifyContent: 'space-between' },
-  hCardTimeline: { flex: 1 },
-  hTimelinePoint: { flexDirection: 'row', alignItems: 'flex-start' },
-  blueDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 3,
-    borderColor: '#2563EB',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
-    marginTop: 2,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingRight: 20,
-  },
-  filterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    gap: 6,
-  },
-  filterChipActive: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  filterChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#4B5563',
-  },
-  filterChipTextActive: {
-    color: '#FFFFFF',
-  },
-  filterCount: {
-    backgroundColor: '#F3F4F6',
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 6,
-  },
-  filterCountActive: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-  },
-  filterCountText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#6B7280',
-  },
-  filterCountTextActive: {
-    color: '#FFFFFF',
-  },
-  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#2563EB' },
-  hTimelineLine: { width: 1, height: 18, backgroundColor: '#E5E7EB', marginLeft: 6, marginVertical: 2 },
-  hAddressWrapper: { flex: 1 },
-  hAddressMain: { fontSize: 13, fontWeight: '700', color: '#111827', marginBottom: 2 },
-  hAddressSub: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
-  hCardDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
-  hCardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  hTrackingWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#F9FAFB',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  hTracking: { fontSize: 11, color: '#6B7280', fontWeight: '600', letterSpacing: 0.3 },
-  hPrice: { fontSize: 15, fontWeight: '800', color: '#111827' },
 });

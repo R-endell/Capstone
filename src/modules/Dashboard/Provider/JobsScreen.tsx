@@ -58,6 +58,7 @@ interface JobItem {
   size: string | null;
   fragile: boolean;
   photo: string | null;
+  localOnly?: boolean; // a photo was taken but it was never uploaded (file only on the sender's phone)
   boxes: string | null;
 }
 interface JobPlace {
@@ -117,6 +118,8 @@ const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
 const requestCode = (id: number) => `PNS-${String(id).padStart(4, '0')}`;
 const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
 
+const isLocalPhoto = (v: any) => typeof v === 'string' && /^(file|content):/i.test(v);
+
 const toPhotoUrl = (v: any): string | null => {
   if (!v || typeof v !== 'string') return null;
   if (/^https?:\/\//i.test(v)) return v;
@@ -172,16 +175,19 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
       size: it?.size ?? null,
       fragile: !!it?.fragile,
       photo: toPhotoUrl(it?.photo),
+      localOnly: isLocalPhoto(it?.photo),
       boxes: null,
     }));
     const fallbackPhoto = toPhotoUrl(cargo?.cargo_pic);
     if (fallbackPhoto && !items.some(i => i.photo)) items[0].photo = fallbackPhoto;
+    if (isLocalPhoto(cargo?.cargo_pic) && !items.some(i => i.photo)) items[0].localOnly = true;
   } else {
     items = [{
       description: cargo?.description || 'Package',
       size: null,
       fragile: !!cargo?.is_fragile,
       photo: toPhotoUrl(cargo?.cargo_pic),
+      localOnly: isLocalPhoto(cargo?.cargo_pic),
       boxes: boxes || null,
     }];
   }
@@ -1202,7 +1208,7 @@ export default function JobsScreen() {
                     <View style={styles.itemNoPhoto}>
                       <Ionicons name="image-outline" size={18} color="#9CA3AF" />
                       <Text style={styles.itemNoPhotoText}>
-                        {it.photo ? "Photo couldn't be loaded" : 'No photo provided'}
+                        {it.photo ? "Photo couldn't be loaded" : it.localOnly ? "The sender's photo wasn't uploaded" : 'No photo provided'}
                       </Text>
                     </View>
                   )}
@@ -1381,6 +1387,49 @@ export default function JobsScreen() {
           </View>
         </View>
 
+        {/* Package photos — so the provider can judge the package before accepting */}
+        {(() => {
+          const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
+          const localOnly = o.items.some(i => i.localOnly && !i.photo);
+          if (photos.length > 0) {
+            return (
+              <View style={styles.offerPhotoBlock}>
+                <View style={styles.offerPhotoHeader}>
+                  <Text style={styles.eyebrow}>PACKAGE PHOTOS</Text>
+                  <Text style={styles.offerPhotoHint}>Tap to enlarge</Text>
+                </View>
+                <View style={styles.offerPhotoRow}>
+                  {photos.slice(0, 4).map((uri, idx) => (
+                    <TouchableOpacity
+                      key={`${uri}-${idx}`}
+                      style={styles.offerThumbWrap}
+                      onPress={() => setPreviewPhoto(uri)}
+                      activeOpacity={0.85}
+                    >
+                      <Image source={{ uri }} style={styles.offerThumb} resizeMode="cover" onError={() => markFailed(uri)} />
+                      {idx === 3 && photos.length > 4 && (
+                        <View style={styles.offerThumbMore}>
+                          <Text style={styles.offerThumbMoreText}>+{photos.length - 4}</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            );
+          }
+          return (
+            <View style={styles.offerNoPhoto}>
+              <Ionicons name="image-outline" size={18} color="#B45309" />
+              <Text style={styles.offerNoPhotoText}>
+                {localOnly
+                  ? "The sender's package photo wasn't uploaded, so it can't be shown. Check the package details before accepting."
+                  : "The sender didn't add a photo of this package. Check the package details before accepting."}
+              </Text>
+            </View>
+          );
+        })()}
+
         <View style={styles.offerRoute}>
           <View style={styles.reqRouteRow}>
             <View style={styles.pinPickup}><View style={styles.pinPickupInner} /></View>
@@ -1405,7 +1454,18 @@ export default function JobsScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.offerAcceptBtn, accepting && { opacity: 0.7 }]}
-            onPress={() => doAccept(o)}
+            onPress={() => {
+              if (o.items.some(i => i.photo)) { doAccept(o); return; }
+              Alert.alert(
+                'No package photo',
+                "You can't see what this package looks like. Review the details first, or accept anyway.",
+                [
+                  { text: 'Review details', onPress: () => { selectedIdRef.current = o.request_id; setSelectedRequest(o); } },
+                  { text: 'Accept anyway', onPress: () => doAccept(o) },
+                  { text: 'Cancel', style: 'cancel' },
+                ],
+              );
+            }}
             disabled={accepting}
             activeOpacity={0.9}
           >
@@ -1534,7 +1594,7 @@ export default function JobsScreen() {
           order={mapOrder}
           demand={showDemand}
           recenterTick={recenterTick}
-          padBottom={currentOffer ? 400 : 200}
+          padBottom={currentOffer ? 480 : 200}
         />
 
         {/* Right: map tools, positioned directly under safe area inset */}
@@ -1928,6 +1988,19 @@ const styles = StyleSheet.create({
   offerStatValue: { fontSize: 15, fontWeight: '900', color: '#111827' },
   offerStatLabel: { fontSize: 10, fontWeight: '700', color: '#6B7280', marginTop: 2 },
   offerStatDivider: { width: 1, height: 28, backgroundColor: '#E5E7EB' },
+  offerPhotoBlock: { marginTop: 14 },
+  offerPhotoHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  offerPhotoHint: { fontSize: 10, fontWeight: '700', color: '#9CA3AF' },
+  offerPhotoRow: { flexDirection: 'row', gap: 8 },
+  offerThumbWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
+  offerThumb: { width: '100%', height: '100%' },
+  offerThumbMore: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(17,24,39,0.6)', alignItems: 'center', justifyContent: 'center' },
+  offerThumbMoreText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  offerNoPhoto: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
+    backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 12, padding: 12,
+  },
+  offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#92400E', fontWeight: '600' },
   offerRoute: { marginTop: 14 },
   offerRouteText: { flex: 1, fontSize: 14, fontWeight: '700', color: '#111827' },
   offerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },

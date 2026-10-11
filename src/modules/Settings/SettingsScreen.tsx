@@ -9,7 +9,7 @@ import {
   StatusBar,
   Image,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -17,26 +17,11 @@ export default function SettingsScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
 
-  const handleSecurityPress = () => {
-    console.log('Security and Verification pressed');
-  };
-
   const handleTwoFactorPress = () => {
-    // Navigates to the new Two-Factor Authentication screen
     navigation.navigate('TwoFactorAuth');
   };
 
-  const handleIdentityPress = () => {
-    // Navigates to the Identity Verification screen
-    navigation.navigate('IdentityVerification');
-  };
-
-  const handleDisputePress = () => {
-    navigation.navigate('DisputeCenter');
-  };
-
   const handleLegalPress = () => {
-    // Navigates to the Legal Policies screen
     navigation.navigate('LegalPolicies');
   };
 
@@ -68,26 +53,16 @@ export default function SettingsScreen() {
         style={styles.mainContent} 
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-        {/* Security and Verification Section */}
-        <Text style={styles.sectionTitle}>Security and Verification</Text>
-        
-        <TouchableOpacity style={styles.menuItem} onPress={handleTwoFactorPress}>
+        {/* Security Section */}
+        <Text style={styles.sectionTitle}>Security</Text>
+
+        <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0 }]} onPress={handleTwoFactorPress}>
           <Text style={styles.menuText}>Two-Factor Authentication</Text>
           <Ionicons name="chevron-forward" size={20} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.menuItem} onPress={handleIdentityPress}>
-          <Text style={styles.menuText}>Identity Verification</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
-
-        {/* Support & Legal Section */}
-        <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Support & Legal</Text>
-        
-        <TouchableOpacity style={styles.menuItem} onPress={handleDisputePress}>
-          <Text style={styles.menuText}>Dispute Center</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
+        {/* Legal Section */}
+        <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Legal</Text>
 
         <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0 }]} onPress={handleLegalPress}>
           <Text style={styles.menuText}>Legal Policies</Text>

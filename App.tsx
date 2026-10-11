@@ -44,6 +44,10 @@ import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
 
+// Dispute Center (report an issue / provider response)
+import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
+import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailScreen';
+
 // Provider Screens
 import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
 import JobsScreen from './src/modules/Dashboard/Provider/JobsScreen';
@@ -82,7 +86,9 @@ export type RootStackParamList = {
   Account: undefined;
   EditProfile: undefined;
   Settings: undefined;
-  DisputeCenter: undefined;
+  DisputeCenter: { mode?: 'provider' } | undefined;
+  ReportIssue: { requestId?: number } | undefined;
+  DisputeDetail: { disputeId: number };
   LegalPolicies: undefined;
   RegisterProvider: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
@@ -399,6 +405,8 @@ export default function App() {
             name="DisputeCenter"
             component={DisputeCenterScreen}
           />
+          <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
           <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
           <Stack.Screen
             name="RegisterProvider"
