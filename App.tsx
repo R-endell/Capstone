@@ -74,6 +74,10 @@ import { startBackgroundMatcher } from './src/services/matchingService';
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
 
+import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen';
+
+import { UserProvider } from './src/utils/userContext';
+
 export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
@@ -104,6 +108,7 @@ export type RootStackParamList = {
   ReceiverPicker: { selectedReceiverId?: number | null };
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
+  DeliveryPayment: { requestId: number; amount: number };
 };
 
 export type MainTabParamList = { 
@@ -376,7 +381,8 @@ export default function App() {
 
   return (
     <ScheduleProvider>
-      <NavigationContainer>
+      <UserProvider>
+        <NavigationContainer>
         <Stack.Navigator
           initialRouteName="Loading"
           screenOptions={{ headerShown: false }}
@@ -428,6 +434,9 @@ export default function App() {
             component={LocationSelectScreen}
           />
           <Stack.Screen name="Booking" component={BookingScreen} />
+          <Stack.Screen name="DeliveryPayment" component={DeliveryPaymentScreen}
+            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+/>
           <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
           <Stack.Screen
             name="ManageVehicle"
@@ -445,7 +454,8 @@ export default function App() {
           <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
           <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         </Stack.Navigator>
-      </NavigationContainer>
+          </NavigationContainer>
+      </UserProvider>
     </ScheduleProvider>
   );
 }

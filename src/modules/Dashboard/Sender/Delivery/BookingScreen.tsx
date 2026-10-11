@@ -6,10 +6,11 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
+import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown } from '../../../../services/routeService';
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
@@ -117,6 +118,59 @@ export default function BookingScreen({ route, navigation }: any) {
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
+
+  const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
+
+  const [refiningDistance, setRefiningDistance] = useState(false);
+
+  useEffect(() => {
+    if (!state.pickupLocation || !state.dropoffLocation) return;
+
+    const scheduled = mode === 'schedule' || !!state.scheduledDate;
+
+    // Step 1: INSTANT estimate — button unblocks immediately
+    const quickKm = quickEstimateKm(state.pickupLocation, state.dropoffLocation);
+    const quickResult = computePricing({
+      distanceKm: quickKm,
+      items: state.items,
+      scheduled,
+      refined: false,
+    });
+    setPricing(quickResult);
+    dispatch({ type: 'SET_ESTIMATED_COST', payload: quickResult.total });
+
+    // Step 2: Refine in background with real OSRM distance
+    let cancelled = false;
+    setRefiningDistance(true);
+
+    (async () => {
+      try {
+        const realKm = await getRoadDistanceKm(state.pickupLocation!, state.dropoffLocation!);
+        if (cancelled) return;
+
+        // Only update if it actually changed (avoid needless re-renders)
+        if (Math.abs(realKm - quickKm) < 0.05) {
+          setRefiningDistance(false);
+          return;
+        }
+
+        const refinedResult = computePricing({
+          distanceKm: realKm,
+          items: state.items,
+          scheduled,
+          refined: true,
+        });
+        setPricing(refinedResult);
+        dispatch({ type: 'SET_ESTIMATED_COST', payload: refinedResult.total });
+      } catch (e) {
+        console.warn('Fare refinement failed', e);
+      } finally {
+        if (!cancelled) setRefiningDistance(false);
+      }
+    })();
+
+  return () => { cancelled = true; };
+}, [state.pickupLocation, state.dropoffLocation, state.items, mode, state.scheduledDate]);
 
   useEffect(() => {
     if (state.receiver) setReceiver(state.receiver);
@@ -258,30 +312,39 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  const startMatching = async () => {
+  /**
+   * Start looking for a provider.
+   * Pass `existingRequestId` when the delivery_request row already exists
+   * (e.g. after returning from the payment screen) so we don't create a duplicate.
+   */
+  const startMatching = async (existingRequestId?: number) => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Required', 'Please select a receiver before booking.');
         return;
       }
 
-      let savedRequest;
-      if (state.isEdit && state.editIds) {
+      let requestId: number;
+
+      if (existingRequestId) {
+        requestId = existingRequestId;
+      } else if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
-        savedRequest = { request_id: state.editIds.requestId };
+        requestId = state.editIds.requestId;
       } else {
-        savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        const savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        if (!savedRequest) throw new Error('Failed to save request');
+        requestId = savedRequest.request_id;
       }
 
-      if (!savedRequest) throw new Error('Failed to save request');
-      setSavedRequestId(savedRequest.request_id);
-      searchStartTimes.set(savedRequest.request_id, searchStartRef.current ?? Date.now());
+      setSavedRequestId(requestId);
+      searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
 
       const matchChannel = supabase
-        .channel(`match-listener-${savedRequest.request_id}`)
+        .channel(`match-listener-${requestId}`)
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${savedRequest.request_id}` },
+          { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
           async (payload) => {
             const delivery = payload.new;
 
@@ -298,7 +361,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-            // NEW: load ratings
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
             setMatchFound(true);
@@ -339,7 +401,6 @@ export default function BookingScreen({ route, navigation }: any) {
       .single();
     if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-    // NEW: load ratings
     if (delivery.provider_id) loadProviderRating(delivery.provider_id);
   };
 
@@ -432,12 +493,27 @@ export default function BookingScreen({ route, navigation }: any) {
     matchChannelRef.current = channel;
   }, [bookingState, resumeSubId]);
 
-  const handleBook = () => {
+  /* ---------------------------------------------------------------- */
+  /* Resume matching after payment just succeeded                     */
+  /* ---------------------------------------------------------------- */
+  useEffect(() => {
+    const justPaid = route.params?.paymentJustCompleted;
+    const reqId = route.params?.requestId;
+    if (justPaid && reqId) {
+      setSavedRequestId(reqId);
+      searchStartRef.current = Date.now();
+      setBookingState('finding');
+      startMatching(reqId);
+      navigation.setParams({ paymentJustCompleted: undefined, requestId: undefined });
+    }
+  }, [route.params?.paymentJustCompleted, route.params?.requestId]);
+
+  /* ---------------------------------------------------------------- */
+  /* Proceed to Payment — saves request then navigates to Payment      */
+  /* ---------------------------------------------------------------- */
+  const handleProceedToPayment = async () => {
     if (!receiver?.receiver_id && !receiver?.receiver_phone) {
-      Alert.alert('Receiver Required', 'Please select who will receive this package before booking.', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Select Receiver', onPress: handleSelectReceiver },
-      ]);
+      Alert.alert('Receiver Required', 'Please select who will receive this package.');
       return;
     }
 
@@ -447,26 +523,75 @@ export default function BookingScreen({ route, navigation }: any) {
       if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
         const diffMinutes = Math.abs(scheduledMs - nowMs) / 60000;
         if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
-          Alert.alert('Schedule Too Far', `Send Now requests must be scheduled within ${SEND_NOW_WINDOW_MINUTES} minutes.\n\nYour request is ${Math.round(diffMinutes)} minutes away.`, [
-            { text: 'Edit Schedule', onPress: () => navigation.goBack() },
-            { text: 'Cancel', style: 'cancel' },
-          ]);
+          Alert.alert(
+            'Schedule Too Far',
+            `Send Now requests must be within ${SEND_NOW_WINDOW_MINUTES} minutes.`,
+          );
           return;
         }
       }
     }
 
-    searchStartRef.current = Date.now();
-    setBookingState('finding');
-    startMatching();
+    if (!pricing) {
+      Alert.alert('Please wait', 'Calculating your fare…');
+      return;
+    }
+
+    try {
+      const saved = await saveScheduleToDB(state, mode || 'sendNow');
+      if (!saved) throw new Error('Failed to save request');
+      setSavedRequestId(saved.request_id);
+
+      navigation.navigate('DeliveryPayment', {
+        requestId: saved.request_id,
+        amount: pricing.total,
+      });
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Could not start payment');
+    }
   };
 
+  /* ---------------------------------------------------------------- */
+  /* Cancel — refund if paid, delete if not                           */
+  /* ---------------------------------------------------------------- */
   const handleCancelBooking = async () => {
     if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 
     if (savedRequestId) {
-      await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
+      const { data: reqRow } = await supabase
+        .from('delivery_requests')
+        .select('payment_status, escrow_status, estimated_cost, payment_provider')
+        .eq('request_id', savedRequestId)
+        .maybeSingle();
+
+      const wasHeld =
+        reqRow?.payment_status === 'held' ||
+        reqRow?.escrow_status === 'held';
+
+      if (wasHeld) {
+        // Paid → mark for refund, keep the row for audit
+        await supabase
+          .from('delivery_requests')
+          .update({
+            delivery_status: 'Cancelled',
+            payment_status: 'refunded',
+            escrow_status: 'refunded',
+            escrow_refunded_at: new Date().toISOString(),
+          })
+          .eq('request_id', savedRequestId);
+
+        await supabase.from('escrow_transactions').insert({
+          request_id: savedRequestId,
+          event: 'refund_initiated',
+          amount: Number(reqRow?.estimated_cost) || 0,
+          provider: reqRow?.payment_provider ?? null,
+          notes: 'Sender cancelled after payment',
+        });
+      } else {
+        // Unpaid → safe to delete
+        await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
+      }
     }
     setResumeSubId(null);
 
@@ -707,20 +832,73 @@ export default function BookingScreen({ route, navigation }: any) {
             )}
 
             <View style={styles.divider} />
+
+            {/* Fare breakdown — only shows when pricing is ready */}
+            {pricing ? (
+              <View style={styles.fareBreakdown}>
+                <View style={styles.fareRow}>
+                  <Text style={styles.fareLabel}>Base fee</Text>
+                  <Text style={styles.fareValue}>₱{pricing.base.toFixed(2)}</Text>
+                </View>
+                <View style={styles.fareRow}>
+                  <Text style={styles.fareLabel}>
+                    Distance · {pricing.distanceKm.toFixed(1)} km
+                  </Text>
+                  <Text style={styles.fareValue}>₱{pricing.distance.toFixed(2)}</Text>
+                </View>
+                {pricing.size > 0 && (
+                  <View style={styles.fareRow}>
+                    <Text style={styles.fareLabel}>Package size</Text>
+                    <Text style={styles.fareValue}>₱{pricing.size.toFixed(2)}</Text>
+                  </View>
+                )}
+                {pricing.fragile > 0 && (
+                  <View style={styles.fareRow}>
+                    <Text style={styles.fareLabel}>Fragile handling</Text>
+                    <Text style={styles.fareValue}>₱{pricing.fragile.toFixed(2)}</Text>
+                  </View>
+                )}
+                {pricing.schedule > 0 && (
+                  <View style={styles.fareRow}>
+                    <Text style={styles.fareLabel}>Scheduled delivery</Text>
+                    <Text style={styles.fareValue}>₱{pricing.schedule.toFixed(2)}</Text>
+                  </View>
+                )}
+                {pricing.emergency > 0 && (
+                  <View style={styles.fareRow}>
+                    <Text style={styles.fareLabel}>Emergency priority</Text>
+                    <Text style={styles.fareValue}>₱{pricing.emergency.toFixed(2)}</Text>
+                  </View>
+                )}
+                <View style={styles.fareDivider} />
+              </View>
+            ) : null}
+
             <View style={styles.costRow}>
               <View>
                 <Text style={styles.costLabel}>Estimated total</Text>
-                <Text style={styles.costSub}>Includes delivery & handling</Text>
+                <Text style={styles.costSub}>Held in escrow until delivery is confirmed</Text>
               </View>
-              <Text style={styles.costValue}>₱{displayCost?.toFixed(2) || '0.00'}</Text>
+              <Text style={styles.costValue}>
+                ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+              </Text>
             </View>
 
-            <TouchableOpacity style={[styles.primaryButton, !receiver && styles.primaryButtonDisabled]} onPress={handleBook} activeOpacity={0.9}>
-              <Ionicons name={mode === 'sendNow' ? 'flash' : 'calendar'} size={16} color="#FFFFFF" />
-              <Text style={styles.primaryButtonText}>{mode === 'sendNow' ? 'Book Now' : 'Schedule Delivery'}</Text>
+            <TouchableOpacity
+              style={[styles.primaryButton, (!receiver || !pricing) && styles.primaryButtonDisabled]}
+              onPress={handleProceedToPayment}
+              disabled={!receiver || !pricing}
+              activeOpacity={0.9}
+            >
+              <Ionicons name="card-outline" size={16} color="#FFFFFF" />
+              <Text style={styles.primaryButtonText}>
+                {pricing
+                  ? `Proceed to Payment · ₱${pricing.total.toFixed(2)}${refiningDistance ? ' ⏳' : ''}`
+                  : 'Calculating fare…'}
+              </Text>
             </TouchableOpacity>
 
-            {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable booking</Text>}
+            {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable payment</Text>}
           </Animated.View>
         )}
 
@@ -823,7 +1001,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
                 <View style={[styles.searchCostOnlyBox, !receiver && { flex: 1 }]}>
                   <Text style={styles.searchCostLabel}>TOTAL FARE</Text>
-                  <Text style={styles.searchCostValue}>₱{displayCost?.toFixed(2) || '0.00'}</Text>
+                  <Text style={styles.searchCostValue}>
+                    ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+                  </Text>
                 </View>
               </View>
 
@@ -890,7 +1070,6 @@ export default function BookingScreen({ route, navigation }: any) {
                 </View>
               </View>
 
-              {/* NEW: Provider ratings summary + recent reviews */}
               {providerRating && (
                 <>
                   <View style={styles.matchedDivider} />
@@ -965,8 +1144,13 @@ export default function BookingScreen({ route, navigation }: any) {
 
               <View style={styles.matchedDivider} />
               <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>Total</Text>
-                <Text style={styles.totalValue}>₱{displayCost?.toFixed(2)}</Text>
+                <View>
+                  <Text style={styles.totalLabel}>Total paid</Text>
+                  <Text style={styles.totalPaidBadge}>Held in escrow</Text>
+                </View>
+                <Text style={styles.totalValue}>
+                  ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+                </Text>
               </View>
             </View>
 
@@ -986,7 +1170,7 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find an available provider on this route right now. Please try again or modify your request.
+              We couldn't find an available provider on this route right now. Your payment will be refunded if you cancel.
             </Text>
 
             <View style={styles.noMatchActions}>
@@ -996,7 +1180,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </TouchableOpacity>
               <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleCancelBooking} activeOpacity={0.9}>
                 <Ionicons name="create-outline" size={15} color="#6B7280" />
-                <Text style={styles.modifyBtnText}>Modify</Text>
+                <Text style={styles.modifyBtnText}>Cancel & Refund</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -1056,6 +1240,15 @@ const styles = StyleSheet.create({
 
   divider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 12 },
 
+  fareBreakdown: { marginBottom: 8 },
+  fareRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 5,
+  },
+  fareLabel: { fontSize: 12, color: '#6B7280', fontWeight: '500' },
+  fareValue: { fontSize: 12, color: '#374151', fontWeight: '700' },
+  fareDivider: { height: 1, backgroundColor: '#F3F4F6', marginTop: 6 },
+
   receiverCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F9FAFB',
     borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 16, padding: 14,
@@ -1086,7 +1279,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
   },
-  primaryButtonDisabled: { backgroundColor: '#F3F4F6', shadowOpacity: 0, elevation: 0 },
+  primaryButtonDisabled: { backgroundColor: '#9CA3AF', shadowOpacity: 0, elevation: 0 },
   primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
   primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 8, fontWeight: '500' },
 
@@ -1196,8 +1389,8 @@ const styles = StyleSheet.create({
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  totalPaidBadge: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
 
-  /* NEW: provider rating styles in matched card */
   ratingSummaryRow: {
     flexDirection: 'row',
     alignItems: 'center',

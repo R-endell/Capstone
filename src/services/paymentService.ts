@@ -2,6 +2,52 @@ import { supabase } from '../utils/supabase';
 import { PaymentMethod, PaymentProvider, CreateSessionResponse } from '../types/payment';
 import { FunctionsHttpError } from '@supabase/supabase-js';
 
+export interface ChargeDeliveryResponse {
+  status: 'processing' | 'held';
+  payment_url?: string;
+  message?: string;
+}
+
+export async function chargeDelivery(
+  requestId: number,
+  provider: PaymentProvider,
+): Promise<ChargeDeliveryResponse> {
+  const { data, error } = await supabase.functions.invoke<ChargeDeliveryResponse>(
+    'xendit-charge-delivery',
+    { body: { requestId, provider } },
+  );
+
+  if (error) {
+    if (error instanceof FunctionsHttpError) {
+      try {
+        const body = await error.context.json();
+        console.error('charge-delivery error:', body);
+        throw new Error(body?.error || JSON.stringify(body));
+      } catch (e: any) {
+        throw new Error(e?.message || 'Payment failed');
+      }
+    }
+    throw error;
+  }
+
+  if (!data) throw new Error('No response from charge-delivery');
+  return data;
+}
+
+export async function getDeliveryPaymentStatus(requestId: number): Promise<{
+  payment_status: string;
+  escrow_status: string;
+}> {
+  const { data, error } = await supabase
+    .from('delivery_requests')
+    .select('payment_status, escrow_status')
+    .eq('request_id', requestId)
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 export async function fetchPaymentMethods(userId: number): Promise<PaymentMethod[]> {
   const { data, error } = await supabase
     .from('user_payment_methods')

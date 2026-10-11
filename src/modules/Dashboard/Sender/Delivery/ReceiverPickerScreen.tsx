@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen.tsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput,
   ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Modal, ScrollView,
@@ -34,15 +34,29 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
   const selectedId = route.params?.selectedReceiverId || null;
 
-  const fetchUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data } = await supabase
+  /**
+   * Restore session, validate with getUser(), then resolve the public.users row.
+   * Uses getSession() first (fast, from storage) then getUser() (verifies JWT),
+   * which fixes the cold-start race that made the spinner hang.
+   */
+  const fetchUser = async (): Promise<number | null> => {
+    const { data: sessionData } = await supabase.auth.getSession();
+    if (!sessionData?.session) return null;
+
+    const { data: { user }, error: authErr } = await supabase.auth.getUser();
+    if (authErr || !user) return null;
+
+    const { data, error } = await supabase
       .from('users')
       .select('user_id')
       .eq('auth_id', user.id)
       .maybeSingle();
-    return data?.user_id || null;
+
+    if (error) {
+      console.warn('fetchUser error:', error.message);
+      return null;
+    }
+    return data?.user_id ?? null;
   };
 
   const fetchReceivers = async (uid: number) => {
@@ -50,16 +64,25 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setLoading(true);
       const { data, error } = await supabase
         .from('receivers')
-        .select('*')
+        .select('receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite')
         .eq('sender_id', uid)
         .order('is_favorite', { ascending: false })
-        .order('receiver_name', { ascending: true });
-      if (error) throw error;
+        .order('receiver_name', { ascending: true })
+        .limit(200);
+
+      if (error) {
+        console.warn('Fetch receivers error:', error.message, error.details, error.hint);
+        Alert.alert('Error', `Failed to load receivers: ${error.message}`);
+        setReceivers([]);
+        return;
+      }
       setReceivers(data || []);
     } catch (e: any) {
-      console.error('Fetch receivers error:', e);
+      console.error('Fetch receivers exception:', e);
       Alert.alert('Error', 'Failed to load receivers.');
+      setReceivers([]);
     } finally {
+      // Guaranteed to fire on every path — success, error, or early return
       setLoading(false);
     }
   };
@@ -68,8 +91,11 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     (async () => {
       const uid = await fetchUser();
       setUserId(uid);
-      if (uid) await fetchReceivers(uid);
-      else setLoading(false);
+      if (uid) {
+        await fetchReceivers(uid);
+      } else {
+        setLoading(false);
+      }
     })();
   }, []);
 
@@ -105,7 +131,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     );
   };
 
-  /* -------- Save button gating (Option C) -------- */
+  /* -------- Save button gating -------- */
   const canAdd =
     !!userId &&
     !saving &&
@@ -154,16 +180,16 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     }
   };
 
-  const filtered = receivers.filter(r => {
-    if (!search.trim()) return true;
+  const filtered = useMemo(() => {
+    if (!search.trim()) return receivers;
     const q = search.toLowerCase();
-    return (
+    return receivers.filter(r =>
       (r.receiver_name || '').toLowerCase().includes(q) ||
       (r.receiver_phone || '').toLowerCase().includes(q)
     );
-  });
+  }, [receivers, search]);
 
-  const renderItem = ({ item }: any) => {
+  const renderItem = useCallback(({ item }: any) => {
     const isSelected = item.receiver_id === selectedId;
     return (
       <View style={[styles.itemCard, isSelected && styles.itemCardSelected]}>
@@ -203,7 +229,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
         </View>
       </View>
     );
-  };
+  }, [selectedId]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>

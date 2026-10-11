@@ -305,8 +305,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       });
     } else {
       dispatch({ type: 'SET_DROPOFF_LOCATION', payload: locationInfo });
-      const cost = Math.floor(Math.random() * 30) + 20;
-      dispatch({ type: 'SET_ESTIMATED_COST', payload: cost });
       navigation.navigate('Booking', { mode });
     }
   };

@@ -38,6 +38,7 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+  "expo-splash-screen",
   "expo-web-browser",
   "expo-sqlite",
   "expo-status-bar",
