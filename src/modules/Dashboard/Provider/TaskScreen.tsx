@@ -311,6 +311,15 @@ export default function TaskScreen() {
   const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
 
+  /* NEW: sender rating state for completed tasks */
+  const [taskRating, setTaskRating] = useState<{
+    rating: number;
+    tags: string[];
+    comment: string | null;
+    created_at: string | null;
+  } | null>(null);
+  const [taskRatingLoaded, setTaskRatingLoaded] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const matchingPulse = useRef(new Animated.Value(0)).current;
@@ -388,6 +397,54 @@ export default function TaskScreen() {
       setCompletedDeliveries(hydrated.filter((d: any) => d.completed_at));
     } catch (error) { console.error('Error fetching deliveries:', error); }
   };
+
+  /* NEW: fetch the sender's rating for a completed delivery */
+  const loadTaskRating = async (deliveryId: number | null | undefined) => {
+    setTaskRatingLoaded(false);
+    setTaskRating(null);
+    if (!deliveryId) { setTaskRatingLoaded(true); return; }
+    try {
+      const { data, error } = await supabase
+        .from('ratings_reviews')
+        .select('rating, review_text, tags, created_at')
+        .eq('delivery_id', deliveryId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data) {
+        setTaskRating({
+          rating: Number(data.rating) || 0,
+          tags: Array.isArray((data as any).tags) ? (data as any).tags : [],
+          comment: (data as any).review_text ?? null,
+          created_at: (data as any).created_at ?? null,
+        });
+      }
+    } catch (e: any) {
+      console.warn('[TaskScreen] loadTaskRating failed', e?.message || e);
+    } finally {
+      setTaskRatingLoaded(true);
+    }
+  };
+
+  /* NEW: reload rating whenever the selected task changes */
+  useEffect(() => {
+    if (selectedId == null) {
+      setTaskRating(null);
+      setTaskRatingLoaded(false);
+      return;
+    }
+    const task = [...activeDeliveries, ...completedDeliveries].find(d => d.delivery_id === selectedId);
+    const isDone = !!task?.completed_at;
+    if (isDone) {
+      loadTaskRating(selectedId);
+    } else {
+      setTaskRating(null);
+      setTaskRatingLoaded(false);
+    }
+  }, [selectedId, activeDeliveries, completedDeliveries]);
 
   const runMatching = async (showAlert: boolean = false) => {
     if (isMatching || !providerId) return;
@@ -588,6 +645,10 @@ export default function TaskScreen() {
 
   /* ================================================================ */
   /* DELIVERY OTP — courier enters the 6-digit code from the receiver */
+  /*                                                                  */
+  /* Only `completed_at` is set here. The Postgres trigger           */
+  /* `release_escrow_on_completion` handles escrow release, txn      */
+  /* insert, and wallet credit. Do NOT duplicate that here.          */
   /* ================================================================ */
 
   const finalizeDelivery = async (deliveryId: number) => {
@@ -615,28 +676,6 @@ export default function TaskScreen() {
         .from('qr_verifications')
         .update({ dropoff_verified: true })
         .eq('delivery_id', deliveryId);
-
-      const { data: escrowData } = await supabase
-        .from('escrow_payments')
-        .update({ escrow_status: 'Completed' })
-        .eq('delivery_id', deliveryId)
-        .select('*')
-        .single();
-
-      if (escrowData && escrowData.provider_id) {
-        const { data: wallet } = await supabase
-          .from('provider_wallet')
-          .select('*')
-          .eq('provider_id', escrowData.provider_id)
-          .single();
-
-        if (wallet) {
-          await supabase
-            .from('provider_wallet')
-            .update({ balance: Number(wallet.balance) + Number(escrowData.amount) })
-            .eq('wallet_id', wallet.wallet_id);
-        }
-      }
 
       await supabase.from('delivery_status_history').insert({
         delivery_id: deliveryId,
@@ -734,6 +773,26 @@ export default function TaskScreen() {
     };
   }, [providerId]);
 
+  /* NEW: realtime listener for ratings — refresh the open task when a rating lands */
+  useEffect(() => {
+    if (!providerId) return;
+    const channel = supabase
+      .channel(`task-ratings-${providerId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ratings_reviews' },
+        () => {
+          if (selectedId != null) {
+            const task = [...activeDeliveries, ...completedDeliveries].find(d => d.delivery_id === selectedId);
+            if (task?.completed_at) loadTaskRating(selectedId);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [providerId, selectedId, activeDeliveries, completedDeliveries]);
+
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
@@ -745,8 +804,6 @@ export default function TaskScreen() {
   const scanLineY = scanLineAnim.interpolate({ inputRange: [0, 1], outputRange: [0, frameSize - 4] });
 
   const isPickupVerified = (delivery: any) => {
-    // Strictly QR/PIN based. Do NOT fall back to delivery_status, otherwise
-    // a courier could see "Item Collected" highlighted before scanning.
     const qr = delivery?.qr_verifications;
     if (!qr) return false;
     if (Array.isArray(qr)) return qr[0]?.pickup_verified === true;
@@ -1392,6 +1449,73 @@ export default function TaskScreen() {
               </View>
             </View>
 
+            {/* NEW: Sender's rating — only for completed tasks */}
+            {stage === 'done' && (
+              <View style={styles.sdCard}>
+                <View style={styles.sdCardHeader}>
+                  <View style={[styles.sdCardHeaderIcon, { backgroundColor: '#FEF3C7' }]}>
+                    <Ionicons name="star" size={15} color="#F59E0B" />
+                  </View>
+                  <Text style={styles.sdCardTitle}>Your rating from the sender</Text>
+                </View>
+
+                {!taskRatingLoaded ? (
+                  <View style={{ alignItems: 'center', paddingVertical: 16 }}>
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  </View>
+                ) : taskRating ? (
+                  <>
+                    <View style={styles.taskRatingStarsRow}>
+                      {[1, 2, 3, 4, 5].map(n => (
+                        <Ionicons
+                          key={n}
+                          name={n <= taskRating.rating ? 'star' : 'star-outline'}
+                          size={32}
+                          color={n <= taskRating.rating ? '#F59E0B' : '#E5E7EB'}
+                        />
+                      ))}
+                    </View>
+
+                    <Text style={styles.taskRatingLabel}>
+                      {['Poor', 'Fair', 'Good', 'Very good', 'Excellent'][taskRating.rating - 1] || ''}
+                    </Text>
+
+                    {taskRating.tags.length > 0 && (
+                      <View style={styles.taskRatingTagsWrap}>
+                        {taskRating.tags.map(tag => (
+                          <View key={tag} style={styles.taskRatingTag}>
+                            <Ionicons name="checkmark-circle" size={12} color="#166534" />
+                            <Text style={styles.taskRatingTagText}>{tag}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+
+                    {!!taskRating.comment && (
+                      <View style={styles.taskRatingCommentBox}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={14} color="#6B7280" />
+                        <Text style={styles.taskRatingCommentText}>"{taskRating.comment}"</Text>
+                      </View>
+                    )}
+
+                    {!!taskRating.created_at && (
+                      <Text style={styles.taskRatingMeta}>
+                        Rated {formatDateTime(taskRating.created_at)}
+                      </Text>
+                    )}
+                  </>
+                ) : (
+                  <View style={styles.taskRatingEmpty}>
+                    <Ionicons name="hourglass-outline" size={20} color="#9CA3AF" />
+                    <Text style={styles.taskRatingEmptyTitle}>Waiting for the sender's rating</Text>
+                    <Text style={styles.taskRatingEmptySub}>
+                      They can rate this delivery from their Activity screen.
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
+
             {/* 7. Earnings */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
@@ -1884,6 +2008,88 @@ const styles = StyleSheet.create({
   tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 8 },
   tlTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
   tlSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+
+  /* NEW: sender rating on completed tasks */
+  taskRatingStarsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  taskRatingLabel: {
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#F59E0B',
+    marginBottom: 12,
+  },
+  taskRatingTagsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 12,
+  },
+  taskRatingTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DCFCE7',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  taskRatingTagText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  taskRatingCommentBox: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#F1F1F1',
+    marginBottom: 10,
+  },
+  taskRatingCommentText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#374151',
+    fontStyle: 'italic',
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  taskRatingMeta: {
+    fontSize: 10,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  taskRatingEmpty: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    gap: 6,
+  },
+  taskRatingEmptyTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#6B7280',
+    marginTop: 4,
+  },
+  taskRatingEmptySub: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    fontWeight: '500',
+    paddingHorizontal: 12,
+    lineHeight: 16,
+  },
 
   payRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
   payLabel: { fontSize: 13, color: '#6B7280', fontWeight: '600' },

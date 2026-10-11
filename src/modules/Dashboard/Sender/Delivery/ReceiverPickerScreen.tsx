@@ -37,7 +37,11 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   const fetchUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-    const { data } = await supabase.from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
+    const { data } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('auth_id', user.id)
+      .maybeSingle();
     return data?.user_id || null;
   };
 
@@ -88,26 +92,37 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                 .from('receivers')
                 .delete()
                 .eq('receiver_id', receiverId);
-              
+
               if (error) throw error;
               setReceivers(prev => prev.filter(r => r.receiver_id !== receiverId));
             } catch (e: any) {
               console.error('Delete receiver error:', e);
               Alert.alert('Error', 'Failed to delete receiver.');
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
+
+  /* -------- Save button gating (Option C) -------- */
+  const canAdd =
+    !!userId &&
+    !saving &&
+    newName.trim().length > 0 &&
+    newPhone.trim().length > 0;
 
   const handleAddNew = async () => {
     if (!newName.trim()) return Alert.alert('Required', 'Please enter the receiver name.');
     if (!newPhone.trim()) return Alert.alert('Required', 'Please enter the receiver phone.');
 
+    if (!userId) {
+      Alert.alert('Please wait', 'Still loading your account. Try again in a moment.');
+      return;
+    }
+
     try {
       setSaving(true);
-      if (!userId) throw new Error('No user');
 
       const e164Phone = toE164(newPhone.trim());
 
@@ -130,7 +145,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setNewPhone('');
       setNewEmail('');
       if (userId) fetchReceivers(userId);
-
       if (data) handlePick(data);
     } catch (e: any) {
       console.error('Add receiver error:', e);
@@ -158,7 +172,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           onPress={() => handlePick(item)}
           activeOpacity={0.8}
         >
-          {/* Avatar always keeps the orange background and white text for high visibility */}
           <View style={styles.itemAvatar}>
             <Text style={styles.itemAvatarText}>
               {(item.receiver_name || '?').trim().charAt(0).toUpperCase()}
@@ -318,13 +331,18 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
               </View>
 
               <TouchableOpacity
-                style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
+                style={[styles.saveBtn, !canAdd && styles.saveBtnDisabled]}
                 onPress={handleAddNew}
-                disabled={saving}
+                disabled={!canAdd}
                 activeOpacity={0.9}
               >
                 {saving ? (
                   <ActivityIndicator size="small" color="#FFF" />
+                ) : !userId ? (
+                  <>
+                    <ActivityIndicator size="small" color="#FFF" />
+                    <Text style={styles.saveBtnText}>Loading account…</Text>
+                  </>
                 ) : (
                   <>
                     <Ionicons name="checkmark" size={16} color="#FFF" />
@@ -332,6 +350,14 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                   </>
                 )}
               </TouchableOpacity>
+
+              {!canAdd && !saving && (
+                <Text style={styles.saveBtnHint}>
+                  {!userId
+                    ? 'Preparing your account…'
+                    : 'Enter a name and phone number to continue.'}
+                </Text>
+              )}
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
@@ -482,4 +508,11 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
   saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
+  saveBtnHint: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    marginTop: 8,
+    fontWeight: '500',
+  },
 });
