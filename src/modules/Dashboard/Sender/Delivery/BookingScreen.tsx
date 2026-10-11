@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
@@ -122,15 +122,16 @@ export default function BookingScreen({ route, navigation }: any) {
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
-
   const [refiningDistance, setRefiningDistance] = useState(false);
 
+  // ------------------------------------------------------------------
+  // Fare estimation: instant quick estimate, then refine with OSRM
+  // ------------------------------------------------------------------
   useEffect(() => {
     if (!state.pickupLocation || !state.dropoffLocation) return;
 
     const scheduled = mode === 'schedule' || !!state.scheduledDate;
 
-    // Step 1: INSTANT estimate — button unblocks immediately
     const quickKm = quickEstimateKm(state.pickupLocation, state.dropoffLocation);
     const quickResult = computePricing({
       distanceKm: quickKm,
@@ -141,7 +142,6 @@ export default function BookingScreen({ route, navigation }: any) {
     setPricing(quickResult);
     dispatch({ type: 'SET_ESTIMATED_COST', payload: quickResult.total });
 
-    // Step 2: Refine in background with real OSRM distance
     let cancelled = false;
     setRefiningDistance(true);
 
@@ -150,7 +150,6 @@ export default function BookingScreen({ route, navigation }: any) {
         const realKm = await getRoadDistanceKm(state.pickupLocation!, state.dropoffLocation!);
         if (cancelled) return;
 
-        // Only update if it actually changed (avoid needless re-renders)
         if (Math.abs(realKm - quickKm) < 0.05) {
           setRefiningDistance(false);
           return;
@@ -171,8 +170,8 @@ export default function BookingScreen({ route, navigation }: any) {
       }
     })();
 
-  return () => { cancelled = true; };
-}, [state.pickupLocation, state.dropoffLocation, state.items, mode, state.scheduledDate]);
+    return () => { cancelled = true; };
+  }, [state.pickupLocation, state.dropoffLocation, state.items, mode, state.scheduledDate]);
 
   useEffect(() => {
     if (state.receiver) setReceiver(state.receiver);
@@ -328,24 +327,44 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  const startMatching = async () => {
+  /**
+   * Start matching.
+   * - Pass `reuseRequestId` to retry against the same request instead of
+   *   creating a duplicate one (used by the "Try Again" button and after payment).
+   */
+  const startMatching = async (opts?: { reuseRequestId?: number | null }) => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Required', 'Please select a receiver before booking.');
         return;
       }
 
-      let savedRequest;
-      if (state.isEdit && state.editIds) {
+      let requestId: number;
+
+      if (opts?.reuseRequestId) {
+        requestId = opts.reuseRequestId;
+      } else if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
         requestId = state.editIds.requestId;
       } else {
-        savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        const savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        if (!savedRequest) throw new Error('Failed to save request');
+        requestId = savedRequest.request_id;
       }
 
-      if (!savedRequest) throw new Error('Failed to save request');
-      setSavedRequestId(savedRequest.request_id);
-      searchStartTimes.set(savedRequest.request_id, searchStartRef.current ?? Date.now());
+      setSavedRequestId(requestId);
+      searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
+
+      // Remove any previous channel before creating a new one
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      // Remove any previous timer
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
 
       const matchChannel = supabase
         .channel(`match-listener-${requestId}`)
@@ -367,8 +386,6 @@ export default function BookingScreen({ route, navigation }: any) {
               .single();
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
-
-            // NEW: load ratings
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
             setMatchFound(true);
@@ -387,8 +404,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       matchChannelRef.current = matchChannel;
 
-      // FIX: use a functional guard so we don't rely on the captured
-      // bookingState value from the render when startMatching was defined.
+      // Functional guard so we don't depend on the captured bookingState
       searchTimeoutRef.current = setTimeout(() => {
         setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
         setIsSearching(false);
@@ -524,7 +540,7 @@ export default function BookingScreen({ route, navigation }: any) {
       setSavedRequestId(reqId);
       searchStartRef.current = Date.now();
       setBookingState('finding');
-      startMatching(reqId);
+      startMatching({ reuseRequestId: reqId });
       navigation.setParams({ paymentJustCompleted: undefined, requestId: undefined });
     }
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
@@ -553,9 +569,26 @@ export default function BookingScreen({ route, navigation }: any) {
       }
     }
 
-    searchStartRef.current = Date.now();
-    setBookingState('finding');
-    startMatching();
+    try {
+      // Save the request first so DeliveryPayment has a requestId
+      let requestId: number;
+
+      if (state.isEdit && state.editIds) {
+        await updateScheduleInDB(state, state.editIds);
+        requestId = state.editIds.requestId;
+      } else {
+        const savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        if (!savedRequest) throw new Error('Failed to save request');
+        requestId = savedRequest.request_id;
+      }
+
+      setSavedRequestId(requestId);
+      const amount = pricing?.total ?? state.estimatedCost ?? 0;
+
+      navigation.navigate('DeliveryPayment', { requestId, amount });
+    } catch (error: any) {
+      Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
+    }
   };
 
   const handleCancelBooking = async () => {
@@ -1206,13 +1239,22 @@ export default function BookingScreen({ route, navigation }: any) {
             </Text>
 
             <View style={styles.noMatchActions}>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={handleTryAgain} activeOpacity={0.9}>
+              <TouchableOpacity
+                style={[styles.noMatchBtn, styles.retryBtn]}
+                onPress={handleTryAgain}
+                activeOpacity={0.9}
+              >
                 <Ionicons name="refresh" size={15} color="#FFFFFF" />
                 <Text style={styles.retryBtnText}>Try Again</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleCancelBooking} activeOpacity={0.9}>
-                <Ionicons name="create-outline" size={15} color="#6B7280" />
-                <Text style={styles.modifyBtnText}>Modify</Text>
+
+              <TouchableOpacity
+                style={[styles.noMatchBtn, styles.modifyBtn]}
+                onPress={handleGoHome}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="home-outline" size={15} color="#6B7280" />
+                <Text style={styles.modifyBtnText}>Go Home</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -1408,6 +1450,16 @@ const styles = StyleSheet.create({
     position: 'absolute', bottom: 0, right: 4, width: 20, height: 20, borderRadius: 10, backgroundColor: '#22C55E',
     justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFFFFF',
   },
+  noMatchModifyLink: {
+  marginTop: 14,
+  alignItems: 'center',
+  },
+  noMatchModifyLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#9CA3AF',
+    textDecorationLine: 'underline',
+  },
   matchedRightCol: { flex: 1 },
   matchedName: { fontSize: 15, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
@@ -1423,29 +1475,11 @@ const styles = StyleSheet.create({
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   totalPaidBadge: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
 
-  /* NEW: provider rating styles in matched card */
-  ratingSummaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
-  },
-  ratingStarsInline: {
-    flexDirection: 'row',
-    gap: 2,
-  },
-  ratingAvgText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#374151',
-  },
-  recentReviewsWrap: {
-    marginTop: 10,
-    gap: 8,
-  },
-  recentReviewItem: {
-    backgroundColor: '#FFFBEB', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A',
-  },
+  ratingSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  ratingStarsInline: { flexDirection: 'row', gap: 2 },
+  ratingAvgText: { fontSize: 12, fontWeight: '800', color: '#374151' },
+  recentReviewsWrap: { marginTop: 10, gap: 8 },
+  recentReviewItem: { backgroundColor: '#FFFBEB', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A' },
   recentReviewHead: { flexDirection: 'row', gap: 2, marginBottom: 4 },
   recentReviewComment: { fontSize: 12, color: '#78350F', fontWeight: '600', lineHeight: 16 },
 

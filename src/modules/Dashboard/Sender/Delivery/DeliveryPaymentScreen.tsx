@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
-  Alert, StatusBar, ScrollView,
+  Alert, StatusBar, ScrollView, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,10 @@ import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '../../../../utils/supabase';
 import { fetchPaymentMethods, chargeDelivery, getDeliveryPaymentStatus } from '../../../../services/paymentService';
 import type { PaymentMethod, PaymentProvider } from '../../../../types/payment';
+
+// ── Payment provider logos ──────────────────────────────────────────
+const GCASH_LOGO = require('../../../../../assets/gcash.png');
+const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
 
 const ORANGE = '#F27024';
 
@@ -67,7 +71,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
       if (!res.payment_url) throw new Error('No payment URL returned');
 
-      const browser = await WebBrowser.openBrowserAsync(res.payment_url, {
+      await WebBrowser.openBrowserAsync(res.payment_url, {
         dismissButtonStyle: 'close',
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
       });
@@ -152,9 +156,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           methods.map((m) => {
             const isSelected = selected === m.provider;
             const label = m.provider === 'gcash' ? 'GCash' : 'Maya';
-            const icon = m.provider === 'gcash' ? 'phone-portrait' : 'wallet';
-            const color = m.provider === 'gcash' ? '#0284C7' : '#059669';
-            const bg = m.provider === 'gcash' ? '#E0F2FE' : '#ECFDF5';
+            const logo = m.provider === 'gcash' ? GCASH_LOGO : MAYA_LOGO;
 
             return (
               <TouchableOpacity
@@ -164,8 +166,8 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
                 activeOpacity={0.85}
                 disabled={paying}
               >
-                <View style={[styles.methodIcon, { backgroundColor: bg }]}>
-                  <Ionicons name={icon as any} size={22} color={color} />
+                <View style={styles.methodIcon}>
+                  <Image source={logo} style={styles.methodLogo} resizeMode="contain" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.methodName}>{label}</Text>
@@ -238,7 +240,12 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: '#E5E7EB',
   },
   methodRowSelected: { borderColor: ORANGE, backgroundColor: '#FFF7ED' },
-  methodIcon: { width: 44, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  methodIcon: {
+    width: 44, height: 44, borderRadius: 12,
+    backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
+    marginRight: 12, borderWidth: 1, borderColor: '#E5E7EB', overflow: 'hidden',
+  },
+  methodLogo: { width: 32, height: 32 },
   methodName: { fontSize: 15, fontWeight: '700', color: '#111827' },
   methodDefault: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
   emptyBox: { alignItems: 'center', paddingVertical: 40 },

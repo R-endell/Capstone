@@ -15,6 +15,10 @@ import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
+// ── Payment provider logos ──────────────────────────────────────────
+const GCASH_LOGO = require('../../../../assets/gcash.png');
+const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+
 const ORANGE = '#FF751F';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
@@ -266,7 +270,7 @@ const enrichDeliveries = async (list: any[]) => {
   } catch { }
   try {
     if (deliveryIds.length) {
-      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status').in('delivery_id', deliveryIds);
+      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status, payment_method').in('delivery_id', deliveryIds);
       (data || []).forEach((e: any) => { escrows[e.delivery_id] = e; });
     }
   } catch { }
@@ -275,6 +279,30 @@ const enrichDeliveries = async (list: any[]) => {
     sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
     escrow: d.escrow || escrows[d.delivery_id] || null,
   }));
+};
+
+/* ==================================================================== */
+/* Payment method badge                                                 */
+/* ==================================================================== */
+const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
+  if (!provider) return null;
+  const p = String(provider).toLowerCase();
+  const isGcash = p.includes('gcash');
+  const isMaya  = p.includes('maya');
+  if (!isGcash && !isMaya) return null;
+
+  const logo = isGcash ? GCASH_LOGO : MAYA_LOGO;
+  const label = isGcash ? 'GCash' : 'Maya';
+  const tint = isGcash ? '#0284C7' : '#059669';
+
+  return (
+    <View style={[styles.payBadge, { borderColor: `${tint}22` }]}>
+      <View style={[styles.payBadgeLogoWrap, { width: size + 8, height: size + 8 }]}>
+        <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
+      </View>
+      <Text style={[styles.payBadgeText, { color: tint }]}>{label}</Text>
+    </View>
+  );
 };
 
 export default function TaskScreen() {
@@ -521,63 +549,52 @@ export default function TaskScreen() {
 
   /**
    * Local fallback: check the code against delivery_confirmations.system_otp.
-   * Returns:
-   *   { handled: true,  success: true  } → local check passed
-   *   { handled: true,  success: false } → local check failed, message already shown
-   *   { handled: false, success: false } → no row / not applicable
    */
   const tryLocalSystemOtpFallback = async (
-      deliveryId: number,
-      otp: string,
-    ): Promise<{ handled: boolean; success: boolean }> => {
-      try {
-        const { data: row, error } = await supabase
-          .from('delivery_confirmations')
-          .select('*')
-          .eq('delivery_id', deliveryId)
-          .maybeSingle();
+    deliveryId: number,
+    otp: string,
+  ): Promise<{ handled: boolean; success: boolean }> => {
+    try {
+      const { data: row, error } = await supabase
+        .from('delivery_confirmations')
+        .select('*')
+        .eq('delivery_id', deliveryId)
+        .maybeSingle();
 
-        console.log('[OTP fallback] row:', row, 'error:', error);
+      console.log('[OTP fallback] row:', row, 'error:', error);
 
-        if (error || !row) return { handled: false, success: false };
+      if (error || !row) return { handled: false, success: false };
 
-        // If Contiguity is in use, do NOT bypass the function.
-        if (row.contiguity_otp_id) {
-          console.log('[OTP fallback] row uses contiguity_otp_id, skipping fallback');
-          return { handled: false, success: false };
-        }
-
-        // Attempts cap
-        if (Number(row.attempts) >= 5) {
-          Alert.alert('Too Many Attempts', 'Please request a new OTP.');
-          return { handled: true, success: false };
-        }
-
-        // Wrong code?
-        if (String(row.system_otp || '').trim() !== String(otp).trim()) {
-          await supabase
-            .from('delivery_confirmations')
-            .update({ attempts: Number(row.attempts || 0) + 1 })
-            .eq('delivery_id', deliveryId);
-          Alert.alert(
-            'Invalid OTP',
-            `The code you entered is incorrect.\n\nExpected: ${row.system_otp}\nEntered: ${otp}`,
-          );
-          return { handled: true, success: false };
-        }
-
-        // Success — mark row as verified
-        await supabase
-          .from('delivery_confirmations')
-          .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
-          .eq('delivery_id', deliveryId);
-        console.log('[OTP fallback] SUCCESS for delivery', deliveryId);
-        return { handled: true, success: true };
-      } catch (e) {
-        console.warn('[OTP fallback] exception:', e);
+      if (row.contiguity_otp_id) {
+        console.log('[OTP fallback] row uses contiguity_otp_id, skipping fallback');
         return { handled: false, success: false };
       }
-    };
+
+      if (Number(row.attempts) >= 5) {
+        Alert.alert('Too Many Attempts', 'Please request a new OTP.');
+        return { handled: true, success: false };
+      }
+
+      if (String(row.system_otp || '').trim() !== String(otp).trim()) {
+        await supabase
+          .from('delivery_confirmations')
+          .update({ attempts: Number(row.attempts || 0) + 1 })
+          .eq('delivery_id', deliveryId);
+        Alert.alert('Invalid OTP', 'The code you entered is incorrect.');
+        return { handled: true, success: false };
+      }
+
+      await supabase
+        .from('delivery_confirmations')
+        .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
+        .eq('delivery_id', deliveryId);
+      console.log('[OTP fallback] SUCCESS for delivery', deliveryId);
+      return { handled: true, success: true };
+    } catch (e) {
+      console.warn('[OTP fallback] exception:', e);
+      return { handled: false, success: false };
+    }
+  };
 
   const handleResendDeliveryOTP = async () => {
     if (!deliveryOTPTarget) return;
@@ -631,7 +648,6 @@ export default function TaskScreen() {
     try {
       let verified = false;
 
-      // 1) Try the edge function first
       const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
         'contiguity-otp',
         { body: { action: 'verify', delivery_id: deliveryId, otp } },
@@ -640,24 +656,18 @@ export default function TaskScreen() {
       console.log('[contiguity-otp verify] data:', verifyResult, 'error:', verifyError);
 
       if (!verifyError && verifyResult?.success) {
-        // Edge function liked the code
         verified = true;
       } else if (!verifyError && !verifyResult?.success) {
-        // Edge function responded 2xx but said "invalid"
-        // Fall through to local fallback in case Contiguity isn't wired up
         console.log('[contiguity-otp] says not success:', verifyResult?.message);
       }
 
-      // 2) If not verified yet, always try the local fallback
       if (!verified) {
         const local = await tryLocalSystemOtpFallback(deliveryId, otp);
         if (local.success) {
           verified = true;
         } else if (local.handled) {
-          // Fallback already showed the reason (wrong / expired / etc.)
           return;
         } else {
-          // No local row either — show the edge function's real error
           const detail = await extractFunctionError(
             verifyError,
             verifyResult?.message || 'Could not verify OTP.',
@@ -672,7 +682,6 @@ export default function TaskScreen() {
         return;
       }
 
-      // 3) Mark delivery complete
       const now = new Date().toISOString();
 
       const { error: delError } = await supabase
@@ -1350,6 +1359,13 @@ export default function TaskScreen() {
                   <Text style={styles.payValue}>Escrow payment</Text>
                 </View>
               </View>
+
+              {/* Payment method row — shows GCash/Maya logo when available */}
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payout method</Text>
+                <PaymentMethodBadge provider={d.escrow?.payment_method} />
+              </View>
+
               <View style={styles.payRow}>
                 <Text style={styles.payLabel}>Payment status</Text>
                 <View style={[styles.payChip, released && styles.payChipDone]}>
@@ -1552,6 +1568,14 @@ export default function TaskScreen() {
             </Text>
           </View>
 
+          {/* Payout method — shows GCash/Maya logo when the escrow has one */}
+          {!!deliveryOTPTarget?.escrow?.payment_method && (
+            <View style={styles.otpPayoutRow}>
+              <Text style={styles.otpPayoutLabel}>Sender paid via</Text>
+              <PaymentMethodBadge provider={deliveryOTPTarget.escrow.payment_method} size={18} />
+            </View>
+          )}
+
           <TouchableOpacity
             style={[
               styles.otpVerifyButton,
@@ -1617,6 +1641,20 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F9FAFB' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+
+  /* Payment method badge */
+  payBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 8, paddingVertical: 4,
+    borderRadius: 10, borderWidth: 1,
+  },
+  payBadgeLogoWrap: {
+    justifyContent: 'center', alignItems: 'center',
+    borderRadius: 6, overflow: 'hidden',
+    backgroundColor: '#FFFFFF',
+  },
+  payBadgeText: { fontSize: 12, fontWeight: '800' },
 
   headerSection: {
     paddingHorizontal: 20,
@@ -1959,6 +1997,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10, borderRadius: 10, marginBottom: 20,
   },
   otpInfoText: { flex: 1, fontSize: 11, color: '#6B7280', fontWeight: '500' },
+  otpPayoutRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: '#F9FAFB', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB',
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
+  },
+  otpPayoutLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#22C55E', borderRadius: 16,
