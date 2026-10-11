@@ -34,29 +34,15 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
   const selectedId = route.params?.selectedReceiverId || null;
 
-  /**
-   * Restore session, validate with getUser(), then resolve the public.users row.
-   * Uses getSession() first (fast, from storage) then getUser() (verifies JWT),
-   * which fixes the cold-start race that made the spinner hang.
-   */
-  const fetchUser = async (): Promise<number | null> => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    if (!sessionData?.session) return null;
-
-    const { data: { user }, error: authErr } = await supabase.auth.getUser();
-    if (authErr || !user) return null;
-
-    const { data, error } = await supabase
+  const fetchUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+    const { data } = await supabase
       .from('users')
       .select('user_id')
       .eq('auth_id', user.id)
       .maybeSingle();
-
-    if (error) {
-      console.warn('fetchUser error:', error.message);
-      return null;
-    }
-    return data?.user_id ?? null;
+    return data?.user_id || null;
   };
 
   const fetchReceivers = async (uid: number) => {
@@ -64,25 +50,16 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       setLoading(true);
       const { data, error } = await supabase
         .from('receivers')
-        .select('receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite')
+        .select('*')
         .eq('sender_id', uid)
         .order('is_favorite', { ascending: false })
-        .order('receiver_name', { ascending: true })
-        .limit(200);
-
-      if (error) {
-        console.warn('Fetch receivers error:', error.message, error.details, error.hint);
-        Alert.alert('Error', `Failed to load receivers: ${error.message}`);
-        setReceivers([]);
-        return;
-      }
+        .order('receiver_name', { ascending: true });
+      if (error) throw error;
       setReceivers(data || []);
     } catch (e: any) {
-      console.error('Fetch receivers exception:', e);
+      console.error('Fetch receivers error:', e);
       Alert.alert('Error', 'Failed to load receivers.');
-      setReceivers([]);
     } finally {
-      // Guaranteed to fire on every path — success, error, or early return
       setLoading(false);
     }
   };

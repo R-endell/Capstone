@@ -14,7 +14,7 @@ import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 
-const ORANGE = '#F27024';
+const ORANGE = '#FF751F';
 const PAGE_SIZE = 30;
 
 // Hide the bottom tab bar while a chat is open so it never covers the typing area
@@ -54,6 +54,7 @@ type ChatRoom = {
   latest_message: string | null;
   latest_sent_at: string | null;
   unread_count: number;
+  is_archived: boolean;
 };
 
 type ChatMessage = {
@@ -124,7 +125,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
+  // 'messages' shows inbox/archived; 'notification' shows the notifications list
   const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
+  // Sub-tab used only while activeTab === 'messages'
+  const [messagesView, setMessagesView] = useState<'inbox' | 'archived'>('inbox');
 
   const [conversations, setConversations] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -171,8 +175,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   // Tab bar is hidden only while a chat is open on this (focused) screen
   useLayoutEffect(() => {
-    setTabBarHidden(isFocused && !!selectedRoom);
-  }, [isFocused, selectedRoom, setTabBarHidden]);
+  setTabBarHidden(false);
+}, [isFocused, selectedRoom, setTabBarHidden]);
 
   useEffect(() => {
     return () => setTabBarHidden(false);
@@ -214,7 +218,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }, [])
   );
 
-  // Chat open animation
+  // List / chat entrance animations
   useLayoutEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
       Animated.timing(value, {
@@ -264,7 +268,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const { data: roomStates } = await supabase
         .from('chat_room_states')
-        .select('room_id, is_deleted')
+        .select('room_id, is_archived, is_deleted')
         .eq('user_id', userId);
 
       const stateMap = new Map();
@@ -342,6 +346,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             latest_message: latestResult.data?.message || null,
             latest_sent_at: latestResult.data?.sent_at || null,
             unread_count: unreadResult.count || 0,
+            is_archived: rState?.is_archived || false,
           };
         })
       );
@@ -535,6 +540,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         allRoomIds.map(id => ({
           room_id: id,
           user_id: currentUserId.current,
+          is_archived: false,
           is_deleted: false,
         }))
       );
@@ -548,7 +554,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         sortByLatest(
           prev.map(c =>
             c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
+              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
               : c
           )
         )
@@ -562,17 +568,39 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   /* ------------------------------------------------------------------ */
-  /* Chat options (delete only)                                          */
+  /* Archive / Delete options                                            */
   /* ------------------------------------------------------------------ */
   const openChatOptions = (room: ChatRoom) => {
+    const isArchived = room.is_archived;
+
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
       [
         { text: 'Cancel', style: 'cancel' },
+        {
+          text: isArchived ? 'Unarchive' : 'Archive',
+          onPress: () => toggleArchiveChat(room, !isArchived),
+        },
         { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(room) },
       ]
     );
+  };
+
+  const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
+    setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
+    try {
+      const payloads = room.all_room_ids.map(id => ({
+        room_id: id,
+        user_id: currentUserId.current,
+        is_archived: archive,
+        is_deleted: false,
+      }));
+      await supabase.from('chat_room_states').upsert(payloads);
+    } catch (error) {
+      console.error('Error toggling archive:', error);
+      fetchConversations();
+    }
   };
 
   const deleteChat = async (room: ChatRoom) => {
@@ -591,6 +619,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 room_id: id,
                 user_id: currentUserId.current,
                 is_deleted: true,
+                is_archived: false,
               }));
               await supabase.from('chat_room_states').upsert(payloads);
             } catch (error) {
@@ -767,7 +796,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   /* ------------------------------------------------------------------ */
-  /* Header with Messages / Notification tabs                            */
+  /* Filter conversations based on the messages sub-tab                  */
+  /* ------------------------------------------------------------------ */
+  const filteredConversations = conversations.filter(c =>
+    messagesView === 'archived' ? c.is_archived : !c.is_archived
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Header — title + Messages / Archived pills + Notification pill      */
   /* ------------------------------------------------------------------ */
   const renderTabHeader = () => (
     <View style={styles.listHeaderFlat}>
@@ -777,18 +813,33 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       <View style={styles.tabContainer}>
         <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'messages' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('messages')}
+          style={[styles.tabButton, activeTab === 'messages' && messagesView === 'inbox' && styles.tabButtonActive]}
+          onPress={() => { setActiveTab('messages'); setMessagesView('inbox'); }}
           activeOpacity={0.8}
         >
-          <Text style={[styles.tabText, activeTab === 'messages' && styles.tabTextActive]}>Messages</Text>
+          <Text style={[styles.tabText, activeTab === 'messages' && messagesView === 'inbox' && styles.tabTextActive]}>
+            Messages
+          </Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'messages' && messagesView === 'archived' && styles.tabButtonActive]}
+          onPress={() => { setActiveTab('messages'); setMessagesView('archived'); }}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === 'messages' && messagesView === 'archived' && styles.tabTextActive]}>
+            Archived
+          </Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.tabButton, activeTab === 'notification' && styles.tabButtonActive]}
           onPress={() => setActiveTab('notification')}
           activeOpacity={0.8}
         >
-          <Text style={[styles.tabText, activeTab === 'notification' && styles.tabTextActive]}>Notification</Text>
+          <Text style={[styles.tabText, activeTab === 'notification' && styles.tabTextActive]}>
+            Notification
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -822,7 +873,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
         >
           <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: '#F9FAFB' }]}>
@@ -900,18 +951,26 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <View style={{ flex: 1 }}>
           <NotificationsList />
         </View>
-      ) : conversations.length === 0 ? (
+      ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
-          <Text style={styles.emptyTitle}>No messages yet</Text>
+          <Ionicons
+            name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
+            size={48}
+            color="#D1D5DB"
+          />
+          <Text style={styles.emptyTitle}>
+            {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
+          </Text>
           <Text style={styles.emptySubtext}>
-            When you contact a provider or sender, your conversation will show up here.
+            {messagesView === 'inbox'
+              ? 'When you contact a provider or sender, your conversation will show up here.'
+              : 'Chats you archive will be saved here.'}
           </Text>
         </View>
       ) : (
         <View style={{ flex: 1 }}>
           <FlatList
-            data={conversations}
+            data={filteredConversations}
             keyExtractor={(item) => item.room_id.toString()}
             renderItem={renderConversationItem}
             contentContainerStyle={styles.listContentFlat}
@@ -928,7 +987,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   flex: { flex: 1 },
 
-  /* Header Tab Row */
+  /* Header Tab Row (provider-style) */
   listHeaderFlat: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 20,
@@ -960,14 +1019,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     alignItems: 'center',
     borderRadius: 12,
-  },
-  headerTabTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    letterSpacing: -0.5,
-    height: 32,
-    lineHeight: 32,
   },
   tabText: {
     color: '#6B7280',

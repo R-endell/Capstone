@@ -44,7 +44,7 @@ import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
 
-// Dispute Center (report an issue / provider response)
+// Dispute Center
 import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
 import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailScreen';
 
@@ -68,8 +68,12 @@ import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
 import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen';
 
-// Import matching service
-import { startBackgroundMatcher } from './src/services/matchingService';
+// Canonical background matcher
+import {
+  startBackgroundMatcher,
+  stopBackgroundMatcher,
+} from './src/services/backgroundMatcher';
+import { setActiveRouteId } from './src/services/activeRouteStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
@@ -111,12 +115,12 @@ export type RootStackParamList = {
   DeliveryPayment: { requestId: number; amount: number };
 };
 
-export type MainTabParamList = { 
-  Home: undefined; 
-  Activity: undefined; 
-  Explore: undefined; 
-  Messages: undefined; 
-  Account: undefined; 
+export type MainTabParamList = {
+  Home: undefined;
+  Activity: undefined;
+  Explore: undefined;
+  Messages: undefined;
+  Account: undefined;
 };
 
 export type ProviderTabParamList = {
@@ -267,9 +271,9 @@ function MainTabs() {
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Activity" component={ActivityScreen} />
       <Tab.Screen name="Explore" component={ExploreScreen} />
-      <Tab.Screen 
-        name="Messages" 
-        component={MessagesScreen} 
+      <Tab.Screen
+        name="Messages"
+        component={MessagesScreen}
         options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
       />
       <Tab.Screen name="Account" component={AccountScreen} />
@@ -337,45 +341,88 @@ function ProviderTabs() {
 // ---------- App ----------
 export default function App() {
   const appStateRef = useRef(AppState.currentState);
-  const matcherCleanupRef = useRef<(() => void) | null>(null);
+  const matcherStartedRef = useRef(false);
 
   useEffect(() => {
-    try {
-      matcherCleanupRef.current = startBackgroundMatcher();
-    } catch (error) {
-      console.error('❌ Failed to start background matcher:', error);
-    }
+    let cancelled = false;
 
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active'
-      ) {
-        if (matcherCleanupRef.current) {
-          try {
-            matcherCleanupRef.current();
-          } catch (error) {}
-          matcherCleanupRef.current = null;
+    const bootMatcher = async () => {
+      if (cancelled) return;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
         }
-
-        try {
-          matcherCleanupRef.current = startBackgroundMatcher();
-        } catch (error) {}
+        return;
       }
 
-      appStateRef.current = nextAppState;
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!userRow?.user_id) return;
+
+      const { data: routeRow } = await supabase
+        .from('provider_routes')
+        .select('route_id')
+        .eq('provider_id', userRow.user_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!routeRow?.route_id) return;
+
+      await setActiveRouteId(routeRow.route_id);
+
+      if (!matcherStartedRef.current) {
+        try {
+          startBackgroundMatcher();
+          matcherStartedRef.current = true;
+          console.log('✅ Background matcher started for route', routeRow.route_id);
+        } catch (error) {
+          console.error('❌ Failed to start background matcher:', error);
+        }
+      }
+    };
+
+    bootMatcher();
+
+    const { data: authSub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (cancelled) return;
+
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      await bootMatcher();
+    });
+
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        next === 'active'
+      ) {
+        bootMatcher();
+      }
+      appStateRef.current = next;
     });
 
     return () => {
-      if (matcherCleanupRef.current) {
-        try {
-          matcherCleanupRef.current();
-        } catch (error) {}
-
-        matcherCleanupRef.current = null;
+      cancelled = true;
+      authSub.subscription.unsubscribe();
+      appStateSub.remove();
+      if (matcherStartedRef.current) {
+        stopBackgroundMatcher();
+        matcherStartedRef.current = false;
       }
-
-      subscription.remove();
     };
   }, []);
 
@@ -390,7 +437,6 @@ export default function App() {
           <Stack.Screen name="Loading" component={LoadingScreen} />
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Register" component={RegisterScreen} />
-          {/* Permission prompt route */}
           <Stack.Screen
             name="PermissionsPrompt"
             component={PermissionsPromptScreen}

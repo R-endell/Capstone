@@ -16,7 +16,9 @@ const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
-const SEARCH_DURATION_MS = 60000;
+
+// Search for a match for 30 seconds, then show the "no_match" state.
+const SEARCH_DURATION_MS = 30000;
 
 const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
@@ -186,6 +188,20 @@ export default function BookingScreen({ route, navigation }: any) {
     }).start();
   }, [bookingState, sheetAnim]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (bookingState === 'finding') {
       setIsSearching(true);
@@ -312,33 +328,24 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  /**
-   * Start looking for a provider.
-   * Pass `existingRequestId` when the delivery_request row already exists
-   * (e.g. after returning from the payment screen) so we don't create a duplicate.
-   */
-  const startMatching = async (existingRequestId?: number) => {
+  const startMatching = async () => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Required', 'Please select a receiver before booking.');
         return;
       }
 
-      let requestId: number;
-
-      if (existingRequestId) {
-        requestId = existingRequestId;
-      } else if (state.isEdit && state.editIds) {
+      let savedRequest;
+      if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
         requestId = state.editIds.requestId;
       } else {
-        const savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
-        if (!savedRequest) throw new Error('Failed to save request');
-        requestId = savedRequest.request_id;
+        savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
       }
 
-      setSavedRequestId(requestId);
-      searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
+      if (!savedRequest) throw new Error('Failed to save request');
+      setSavedRequestId(savedRequest.request_id);
+      searchStartTimes.set(savedRequest.request_id, searchStartRef.current ?? Date.now());
 
       const matchChannel = supabase
         .channel(`match-listener-${requestId}`)
@@ -361,26 +368,35 @@ export default function BookingScreen({ route, navigation }: any) {
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
+            // NEW: load ratings
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
             setMatchFound(true);
             setBookingState('matched');
             setIsSearching(false);
 
-            if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+            if (searchTimeoutRef.current) {
+              clearTimeout(searchTimeoutRef.current);
+              searchTimeoutRef.current = null;
+            }
             supabase.removeChannel(matchChannel);
+            matchChannelRef.current = null;
           }
         )
         .subscribe();
 
       matchChannelRef.current = matchChannel;
 
+      // FIX: use a functional guard so we don't rely on the captured
+      // bookingState value from the render when startMatching was defined.
       searchTimeoutRef.current = setTimeout(() => {
-        if (bookingState === 'finding') {
-          setBookingState('no_match');
-          setIsSearching(false);
-          supabase.removeChannel(matchChannel);
+        setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
+        setIsSearching(false);
+        if (matchChannelRef.current) {
+          supabase.removeChannel(matchChannelRef.current);
+          matchChannelRef.current = null;
         }
+        searchTimeoutRef.current = null;
       }, SEARCH_DURATION_MS);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
@@ -491,6 +507,11 @@ export default function BookingScreen({ route, navigation }: any) {
       .subscribe();
 
     matchChannelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+      if (matchChannelRef.current === channel) matchChannelRef.current = null;
+    };
   }, [bookingState, resumeSubId]);
 
   /* ---------------------------------------------------------------- */
@@ -532,31 +553,20 @@ export default function BookingScreen({ route, navigation }: any) {
       }
     }
 
-    if (!pricing) {
-      Alert.alert('Please wait', 'Calculating your fare…');
-      return;
-    }
-
-    try {
-      const saved = await saveScheduleToDB(state, mode || 'sendNow');
-      if (!saved) throw new Error('Failed to save request');
-      setSavedRequestId(saved.request_id);
-
-      navigation.navigate('DeliveryPayment', {
-        requestId: saved.request_id,
-        amount: pricing.total,
-      });
-    } catch (e: any) {
-      Alert.alert('Error', e.message || 'Could not start payment');
-    }
+    searchStartRef.current = Date.now();
+    setBookingState('finding');
+    startMatching();
   };
 
-  /* ---------------------------------------------------------------- */
-  /* Cancel — refund if paid, delete if not                           */
-  /* ---------------------------------------------------------------- */
   const handleCancelBooking = async () => {
-    if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
 
     if (savedRequestId) {
       const { data: reqRow } = await supabase
@@ -601,6 +611,28 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
     setBookingState('review');
+  };
+
+  // Leave the screen WITHOUT cancelling the request.
+  const handleGoHome = () => {
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    setIsSearching(false);
+    dispatch({ type: 'RESET' });
+    navigation.navigate('MainTabs');
+  };
+
+  // Retry against the same request (no duplicate insert).
+  const handleTryAgain = () => {
+    searchStartRef.current = Date.now();
+    setBookingState('finding');
+    startMatching({ reuseRequestId: savedRequestId });
   };
 
   const handleConfirmAction = () => {
@@ -1170,17 +1202,17 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find an available provider on this route right now. Your payment will be refunded if you cancel.
+              We couldn't find an available provider on this route right now. Please try again or modify your request.
             </Text>
 
             <View style={styles.noMatchActions}>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={() => startMatching()} activeOpacity={0.9}>
+              <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={handleTryAgain} activeOpacity={0.9}>
                 <Ionicons name="refresh" size={15} color="#FFFFFF" />
                 <Text style={styles.retryBtnText}>Try Again</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleCancelBooking} activeOpacity={0.9}>
                 <Ionicons name="create-outline" size={15} color="#6B7280" />
-                <Text style={styles.modifyBtnText}>Cancel & Refund</Text>
+                <Text style={styles.modifyBtnText}>Modify</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -1391,6 +1423,7 @@ const styles = StyleSheet.create({
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
   totalPaidBadge: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
 
+  /* NEW: provider rating styles in matched card */
   ratingSummaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1411,23 +1444,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   recentReviewItem: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
+    backgroundColor: '#FFFBEB', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A',
   },
-  recentReviewHead: {
-    flexDirection: 'row',
-    gap: 2,
-    marginBottom: 4,
-  },
-  recentReviewComment: {
-    fontSize: 12,
-    color: '#78350F',
-    fontWeight: '600',
-    lineHeight: 16,
-  },
+  recentReviewHead: { flexDirection: 'row', gap: 2, marginBottom: 4 },
+  recentReviewComment: { fontSize: 12, color: '#78350F', fontWeight: '600', lineHeight: 16 },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111827', borderRadius: 16,
