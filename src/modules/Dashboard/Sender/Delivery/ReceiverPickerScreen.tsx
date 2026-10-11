@@ -34,35 +34,86 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
   const selectedId = route.params?.selectedReceiverId || null;
 
-  const fetchUser = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return null;
-    const { data } = await supabase
-      .from('users')
-      .select('user_id')
-      .eq('auth_id', user.id)
-      .maybeSingle();
-    return data?.user_id || null;
-  };
+  const fetchUser = async (): Promise<number | null> => {
+  // Make sure the session is restored before asking for the user
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData?.session) return null;
 
-  const fetchReceivers = async (uid: number) => {
+  const { data: { user }, error: authErr } = await supabase.auth.getUser();
+  if (authErr || !user) return null;
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('user_id')
+    .eq('auth_id', user.id)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('fetchUser error:', error.message);
+    return null;
+  }
+  return data?.user_id ?? null;
+};
+
+const fetchReceivers = async (uid: number) => {
+  try {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('receivers')
+      .select('*')
+      .eq('sender_id', uid)
+      .order('is_favorite', { ascending: false })
+      .order('receiver_name', { ascending: true });
+
+    if (error) {
+      console.warn('Fetch receivers error:', error.message, error.details, error.hint);
+      Alert.alert('Error', `Failed to load receivers: ${error.message}`);
+      setReceivers([]);
+      return;
+    }
+    setReceivers(data || []);
+  } catch (e: any) {
+    console.error('Fetch receivers exception:', e);
+    Alert.alert('Error', 'Failed to load receivers.');
+    setReceivers([]);
+  } finally {
+    // This is what actually stops the spinner
+    setLoading(false);
+  }
+};
+
+useEffect(() => {
+  let cancelled = false;
+
+  const boot = async () => {
     try {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from('receivers')
-        .select('*')
-        .eq('sender_id', uid)
-        .order('is_favorite', { ascending: false })
-        .order('receiver_name', { ascending: true });
-      if (error) throw error;
-      setReceivers(data || []);
-    } catch (e: any) {
-      console.error('Fetch receivers error:', e);
-      Alert.alert('Error', 'Failed to load receivers.');
-    } finally {
-      setLoading(false);
+      // 30s safety timeout so the spinner can never spin forever
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 30000));
+
+      const uid = await Promise.race([fetchUser(), timeout]);
+      if (cancelled) return;
+
+      setUserId(uid);
+      if (uid) {
+        await fetchReceivers(uid);
+      } else {
+        setLoading(false);
+        Alert.alert(
+          'Not signed in',
+          'We could not load your account. Please sign out and sign in again.'
+        );
+      }
+    } catch (e) {
+      console.error('boot error:', e);
+      if (!cancelled) setLoading(false);
     }
   };
+
+  boot();
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
   useEffect(() => {
     (async () => {

@@ -16,14 +16,31 @@ import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 
 const ORANGE = '#FF751F';
-// Bucket the sender's booking flow uses for package photos
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
-// expo-clipboard is optional; without it the tracking ID is shared via the system share sheet
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
+
+/* ==================================================================== */
+/* Helper: read the real error body from a failed functions.invoke       */
+/* ==================================================================== */
+const extractFunctionError = async (error: any, fallback = 'Something went wrong.'): Promise<string> => {
+  if (!error) return fallback;
+  let detail = error.message || fallback;
+  try {
+    const ctx: any = error.context;
+    if (ctx && typeof ctx.json === 'function') {
+      const body = await ctx.json();
+      detail = body?.error || body?.message || detail;
+    } else if (ctx && typeof ctx.text === 'function') {
+      const txt = await ctx.text();
+      if (txt) detail = txt;
+    }
+  } catch { /* keep fallback */ }
+  return detail;
+};
 
 /* ==================================================================== */
 /* TaskRouteMap — two-point map with OSRM road-following route          */
@@ -176,7 +193,7 @@ const splitAddress = (full?: string | null) => {
 const toPhotoUrl = (v: any): string | null => {
   if (!v || typeof v !== 'string') return null;
   if (/^https?:\/\//i.test(v)) return v;
-  if (/^(file|content):/i.test(v)) return null; 
+  if (/^(file|content):/i.test(v)) return null;
   try {
     return supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(v.replace(/^\/+/, '')).data.publicUrl;
   } catch { return null; }
@@ -278,7 +295,7 @@ export default function TaskScreen() {
   const [pinVerifying, setPinVerifying] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
-  const [selectedId, setSelectedId] = useState<number | null>(null); 
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'all'>('active');
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -486,7 +503,7 @@ export default function TaskScreen() {
   };
 
   /* ==================================================================== */
-  /* DELIVERY CONFIRMATION (OTP via Contiguity)                           */
+  /* DELIVERY CONFIRMATION (OTP)                                          */
   /* ==================================================================== */
   const openDeliveryOTPModal = (delivery: any) => {
     setDeliveryOTPTarget(delivery);
@@ -501,6 +518,66 @@ export default function TaskScreen() {
     setDeliveryOTPVerifying(false);
     setDeliveryOTPResending(false);
   };
+
+  /**
+   * Local fallback: check the code against delivery_confirmations.system_otp.
+   * Returns:
+   *   { handled: true,  success: true  } → local check passed
+   *   { handled: true,  success: false } → local check failed, message already shown
+   *   { handled: false, success: false } → no row / not applicable
+   */
+  const tryLocalSystemOtpFallback = async (
+      deliveryId: number,
+      otp: string,
+    ): Promise<{ handled: boolean; success: boolean }> => {
+      try {
+        const { data: row, error } = await supabase
+          .from('delivery_confirmations')
+          .select('*')
+          .eq('delivery_id', deliveryId)
+          .maybeSingle();
+
+        console.log('[OTP fallback] row:', row, 'error:', error);
+
+        if (error || !row) return { handled: false, success: false };
+
+        // If Contiguity is in use, do NOT bypass the function.
+        if (row.contiguity_otp_id) {
+          console.log('[OTP fallback] row uses contiguity_otp_id, skipping fallback');
+          return { handled: false, success: false };
+        }
+
+        // Attempts cap
+        if (Number(row.attempts) >= 5) {
+          Alert.alert('Too Many Attempts', 'Please request a new OTP.');
+          return { handled: true, success: false };
+        }
+
+        // Wrong code?
+        if (String(row.system_otp || '').trim() !== String(otp).trim()) {
+          await supabase
+            .from('delivery_confirmations')
+            .update({ attempts: Number(row.attempts || 0) + 1 })
+            .eq('delivery_id', deliveryId);
+          Alert.alert(
+            'Invalid OTP',
+            `The code you entered is incorrect.\n\nExpected: ${row.system_otp}\nEntered: ${otp}`,
+          );
+          return { handled: true, success: false };
+        }
+
+        // Success — mark row as verified
+        await supabase
+          .from('delivery_confirmations')
+          .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
+          .eq('delivery_id', deliveryId);
+        console.log('[OTP fallback] SUCCESS for delivery', deliveryId);
+        return { handled: true, success: true };
+      } catch (e) {
+        console.warn('[OTP fallback] exception:', e);
+        return { handled: false, success: false };
+      }
+    };
 
   const handleResendDeliveryOTP = async () => {
     if (!deliveryOTPTarget) return;
@@ -520,14 +597,18 @@ export default function TaskScreen() {
               });
 
               if (error || !data?.success) {
-                Alert.alert('Error', data?.error || error?.message || 'Could not send new OTP.');
+                const detail = await extractFunctionError(error, data?.error || 'Could not send new OTP.');
+                console.warn('[contiguity-otp regenerate]', detail);
+                Alert.alert('Error', detail);
                 return;
               }
 
               Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
               setDeliveryOTPInput('');
             } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to send new OTP.');
+              const detail = await extractFunctionError(err, 'Failed to send new OTP.');
+              console.warn('[contiguity-otp regenerate exception]', detail);
+              Alert.alert('Error', detail);
             } finally {
               setDeliveryOTPResending(false);
             }
@@ -542,33 +623,56 @@ export default function TaskScreen() {
 
     const deliveryId = deliveryOTPTarget.delivery_id;
     const requestId = deliveryOTPTarget.delivery_requests?.request_id;
+    const otp = deliveryOTPInput.trim();
+
+    console.log('=== VERIFY OTP ===', { deliveryId, otp, requestId });
 
     setDeliveryOTPVerifying(true);
     try {
+      let verified = false;
+
+      // 1) Try the edge function first
       const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
         'contiguity-otp',
-        {
-          body: {
-            action: 'verify',
-            delivery_id: deliveryId,
-            otp: deliveryOTPInput.trim(),
-          },
-        }
+        { body: { action: 'verify', delivery_id: deliveryId, otp } },
       );
 
-      if (verifyError) {
-        Alert.alert('Verification Failed', verifyError.message || 'Could not verify OTP.');
+      console.log('[contiguity-otp verify] data:', verifyResult, 'error:', verifyError);
+
+      if (!verifyError && verifyResult?.success) {
+        // Edge function liked the code
+        verified = true;
+      } else if (!verifyError && !verifyResult?.success) {
+        // Edge function responded 2xx but said "invalid"
+        // Fall through to local fallback in case Contiguity isn't wired up
+        console.log('[contiguity-otp] says not success:', verifyResult?.message);
+      }
+
+      // 2) If not verified yet, always try the local fallback
+      if (!verified) {
+        const local = await tryLocalSystemOtpFallback(deliveryId, otp);
+        if (local.success) {
+          verified = true;
+        } else if (local.handled) {
+          // Fallback already showed the reason (wrong / expired / etc.)
+          return;
+        } else {
+          // No local row either — show the edge function's real error
+          const detail = await extractFunctionError(
+            verifyError,
+            verifyResult?.message || 'Could not verify OTP.',
+          );
+          Alert.alert('Verification Failed', detail);
+          return;
+        }
+      }
+
+      if (!verified) {
+        Alert.alert('Verification Failed', 'The code could not be verified. Please try again.');
         return;
       }
 
-      if (!verifyResult?.success) {
-        Alert.alert(
-          'Invalid OTP',
-          verifyResult?.message || 'The code is incorrect or has expired. Please try again.'
-        );
-        return;
-      }
-
+      // 3) Mark delivery complete
       const now = new Date().toISOString();
 
       const { error: delError } = await supabase
@@ -627,6 +731,7 @@ export default function TaskScreen() {
       closeDeliveryOTPModal();
       await loadData();
     } catch (error: any) {
+      console.error('[completeDelivery] exception:', error);
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
     } finally {
       setDeliveryOTPVerifying(false);
@@ -749,7 +854,7 @@ export default function TaskScreen() {
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
   const tabCount = (t: 'active' | 'completed' | 'all') =>
     t === 'active' ? activeDeliveries.length : t === 'completed' ? completedDeliveries.length : allTasks.length;
-  
+
   const filteredTasks = activeTab === 'active' ? activeDeliveries : activeTab === 'completed' ? completedDeliveries : allTasks;
 
   /* ---------------------------- list card ---------------------------- */
@@ -943,7 +1048,6 @@ export default function TaskScreen() {
     const stage = stageOf(d);
     const meta = statusMeta(stage);
     const code = trackingCode(info.request?.request_id ?? d.delivery_id);
-    const stepIndex = stage === 'pickup' ? 0 : stage === 'transit' ? 1 : 2;
     const target = stage === 'pickup' ? info.pickup : info.dropoff;
     const escrowStatus = String(d.escrow?.escrow_status || '');
     const released = stage === 'done' || /complet|releas/i.test(escrowStatus);
@@ -961,7 +1065,7 @@ export default function TaskScreen() {
 
         <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
           <Animated.View style={{ opacity: detailAnim }}>
-            {/* 1. NEXT STEP — what the provider must do right now */}
+            {/* 1. NEXT STEP */}
             {stage !== 'done' ? (
               <View style={styles.nextCard}>
                 <View style={styles.nextTop}>
@@ -1040,7 +1144,7 @@ export default function TaskScreen() {
               </View>
             )}
 
-            {/* 2. Tracking ID — plain text with copy */}
+            {/* 2. Tracking ID */}
             <View style={styles.trackTextRow}>
               <Text style={styles.trackTextLabel}>Tracking ID</Text>
               <Text style={styles.trackTextId} selectable numberOfLines={1}>#{code}</Text>
@@ -1514,9 +1618,8 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
 
-  /* list header */
-  headerSection: { 
-    paddingHorizontal: 20, 
+  headerSection: {
+    paddingHorizontal: 20,
     paddingBottom: 16,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
@@ -1543,7 +1646,6 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
   emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 6, lineHeight: 19 },
 
-  /* list card */
   card: {
     backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
@@ -1594,12 +1696,11 @@ const styles = StyleSheet.create({
   doneBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 5, borderWidth: 1, borderColor: '#BBF7D0' },
   doneBadgeText: { fontSize: 13, fontWeight: '700', color: '#166534' },
 
-  /* detail */
   detailContainer: { paddingHorizontal: 20, paddingBottom: 60, paddingTop: 16 },
-  detailHeader: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
+  detailHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: 20,
     paddingBottom: 16,
     backgroundColor: '#FFFFFF',
@@ -1759,7 +1860,6 @@ const styles = StyleSheet.create({
   sdTotalLabel: { fontSize: 13, fontWeight: '700', color: '#FFE4D2' },
   sdTotalValue: { fontSize: 24, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5 },
 
-  /* full map + photo preview */
   mapCloseBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center',

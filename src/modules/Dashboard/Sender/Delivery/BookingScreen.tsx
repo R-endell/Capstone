@@ -15,7 +15,9 @@ const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
-const SEARCH_DURATION_MS = 60000;
+
+// Search for a match for 30 seconds, then show the "no_match" state.
+const SEARCH_DURATION_MS = 30000;
 
 const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
@@ -131,6 +133,20 @@ export default function BookingScreen({ route, navigation }: any) {
       useNativeDriver: true,
     }).start();
   }, [bookingState, sheetAnim]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -258,30 +274,51 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  const startMatching = async () => {
+  /**
+   * Start matching.
+   * - Pass `reuseRequestId` to retry against the same request instead of
+   *   creating a duplicate one (used by the "Try Again" button).
+   */
+  const startMatching = async (opts?: { reuseRequestId?: number | null }) => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Required', 'Please select a receiver before booking.');
         return;
       }
 
-      let savedRequest;
-      if (state.isEdit && state.editIds) {
+      let requestId: number;
+
+      if (opts?.reuseRequestId) {
+        requestId = opts.reuseRequestId;
+      } else if (state.isEdit && state.editIds) {
         await updateScheduleInDB(state, state.editIds);
-        savedRequest = { request_id: state.editIds.requestId };
+        requestId = state.editIds.requestId;
       } else {
-        savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        const savedRequest = await saveScheduleToDB(state, mode || 'sendNow');
+        if (!savedRequest) throw new Error('Failed to save request');
+        requestId = savedRequest.request_id;
       }
 
-      if (!savedRequest) throw new Error('Failed to save request');
-      setSavedRequestId(savedRequest.request_id);
-      searchStartTimes.set(savedRequest.request_id, searchStartRef.current ?? Date.now());
+      setSavedRequestId(requestId);
+      searchStartTimes.set(requestId, Date.now());
+      searchStartRef.current = Date.now();
+
+      // Remove any previous channel
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      // Remove any previous timer
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
 
       const matchChannel = supabase
-        .channel(`match-listener-${savedRequest.request_id}`)
+        .channel(`match-listener-${requestId}`)
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${savedRequest.request_id}` },
+          { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
           async (payload) => {
             const delivery = payload.new;
 
@@ -297,28 +334,34 @@ export default function BookingScreen({ route, navigation }: any) {
               .single();
 
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
-
-            // NEW: load ratings
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
             setMatchFound(true);
             setBookingState('matched');
             setIsSearching(false);
 
-            if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+            if (searchTimeoutRef.current) {
+              clearTimeout(searchTimeoutRef.current);
+              searchTimeoutRef.current = null;
+            }
             supabase.removeChannel(matchChannel);
+            matchChannelRef.current = null;
           }
         )
         .subscribe();
 
       matchChannelRef.current = matchChannel;
 
+      // FIX: use a functional guard so we don't rely on the captured
+      // bookingState value from the render when startMatching was defined.
       searchTimeoutRef.current = setTimeout(() => {
-        if (bookingState === 'finding') {
-          setBookingState('no_match');
-          setIsSearching(false);
-          supabase.removeChannel(matchChannel);
+        setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
+        setIsSearching(false);
+        if (matchChannelRef.current) {
+          supabase.removeChannel(matchChannelRef.current);
+          matchChannelRef.current = null;
         }
+        searchTimeoutRef.current = null;
       }, SEARCH_DURATION_MS);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
@@ -339,7 +382,6 @@ export default function BookingScreen({ route, navigation }: any) {
       .single();
     if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
-    // NEW: load ratings
     if (delivery.provider_id) loadProviderRating(delivery.provider_id);
   };
 
@@ -430,6 +472,11 @@ export default function BookingScreen({ route, navigation }: any) {
       .subscribe();
 
     matchChannelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+      if (matchChannelRef.current === channel) matchChannelRef.current = null;
+    };
   }, [bookingState, resumeSubId]);
 
   const handleBook = () => {
@@ -461,9 +508,20 @@ export default function BookingScreen({ route, navigation }: any) {
     startMatching();
   };
 
+  /* ---------------------------------------------------------------- */
+  /* Cancel vs. Go Home                                              */
+  /* ---------------------------------------------------------------- */
+
+  // Explicit cancel — deletes the request from the DB.
   const handleCancelBooking = async () => {
-    if (matchChannelRef.current) supabase.removeChannel(matchChannelRef.current);
-    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
 
     if (savedRequestId) {
       await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
@@ -476,6 +534,28 @@ export default function BookingScreen({ route, navigation }: any) {
       return;
     }
     setBookingState('review');
+  };
+
+  // Leave the screen WITHOUT cancelling the request.
+  const handleGoHome = () => {
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    setIsSearching(false);
+    dispatch({ type: 'RESET' });
+    navigation.navigate('MainTabs');
+  };
+
+  // Retry against the same request (no duplicate insert).
+  const handleTryAgain = () => {
+    searchStartRef.current = Date.now();
+    setBookingState('finding');
+    startMatching({ reuseRequestId: savedRequestId });
   };
 
   const handleConfirmAction = () => {
@@ -890,7 +970,6 @@ export default function BookingScreen({ route, navigation }: any) {
                 </View>
               </View>
 
-              {/* NEW: Provider ratings summary + recent reviews */}
               {providerRating && (
                 <>
                   <View style={styles.matchedDivider} />
@@ -986,17 +1065,17 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find an available provider on this route right now. Please try again or modify your request.
+              We couldn't find an available provider on this route right now. Your booking is still saved — you can retry or come back later.
             </Text>
 
             <View style={styles.noMatchActions}>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={() => startMatching()} activeOpacity={0.9}>
+              <TouchableOpacity style={[styles.noMatchBtn, styles.retryBtn]} onPress={handleTryAgain} activeOpacity={0.9}>
                 <Ionicons name="refresh" size={15} color="#FFFFFF" />
                 <Text style={styles.retryBtnText}>Try Again</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleCancelBooking} activeOpacity={0.9}>
-                <Ionicons name="create-outline" size={15} color="#6B7280" />
-                <Text style={styles.modifyBtnText}>Modify</Text>
+              <TouchableOpacity style={[styles.noMatchBtn, styles.modifyBtn]} onPress={handleGoHome} activeOpacity={0.9}>
+                <Ionicons name="home-outline" size={15} color="#6B7280" />
+                <Text style={styles.modifyBtnText}>Go Home</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -1197,44 +1276,15 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
   totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
 
-  /* NEW: provider rating styles in matched card */
-  ratingSummaryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
-  },
-  ratingStarsInline: {
-    flexDirection: 'row',
-    gap: 2,
-  },
-  ratingAvgText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#374151',
-  },
-  recentReviewsWrap: {
-    marginTop: 10,
-    gap: 8,
-  },
+  ratingSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  ratingStarsInline: { flexDirection: 'row', gap: 2 },
+  ratingAvgText: { fontSize: 12, fontWeight: '800', color: '#374151' },
+  recentReviewsWrap: { marginTop: 10, gap: 8 },
   recentReviewItem: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
+    backgroundColor: '#FFFBEB', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A',
   },
-  recentReviewHead: {
-    flexDirection: 'row',
-    gap: 2,
-    marginBottom: 4,
-  },
-  recentReviewComment: {
-    fontSize: 12,
-    color: '#78350F',
-    fontWeight: '600',
-    lineHeight: 16,
-  },
+  recentReviewHead: { flexDirection: 'row', gap: 2, marginBottom: 4 },
+  recentReviewComment: { fontSize: 12, color: '#78350F', fontWeight: '600', lineHeight: 16 },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111827', borderRadius: 16,
