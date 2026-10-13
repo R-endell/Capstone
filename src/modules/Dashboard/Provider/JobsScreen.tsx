@@ -14,6 +14,7 @@ import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
 import { findMatches } from '../../../services/matchingService';
+import NotificationsList from '../Disputes/NotificationsList';
 
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
@@ -523,6 +524,9 @@ export default function JobsScreen() {
     `provider-notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
 
+  // Full NotificationsList modal (support thread chat lives here)
+  const [fullListOpen, setFullListOpen] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
@@ -641,8 +645,10 @@ export default function JobsScreen() {
 
     const type = (n.type || '').toLowerCase();
 
-    if (type.startsWith('message') || type.startsWith('chat') || type.startsWith('support')) {
-      goToProviderMessages();
+    // Support / chat / message → open the full NotificationsList modal
+    // so the provider can see the thread and reply.
+    if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
+      setFullListOpen(true);
       return;
     }
 
@@ -1871,7 +1877,7 @@ export default function JobsScreen() {
             style={styles.notifFooter}
             onPress={() => {
               setNotifModalOpen(false);
-              navigation.navigate('NotificationsList');
+              setFullListOpen(true);
             }}
             activeOpacity={0.85}
           >
@@ -1880,6 +1886,56 @@ export default function JobsScreen() {
           </TouchableOpacity>
         </Pressable>
       </Pressable>
+    </Modal>
+  );
+
+  /* -------------------- Full notifications modal -------------------- */
+  const renderFullListModal = () => (
+    <Modal
+      visible={fullListOpen}
+      animationType="slide"
+      onRequestClose={() => setFullListOpen(false)}
+    >
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 16,
+            paddingTop: insets.top + 8,
+            paddingBottom: 12,
+            backgroundColor: '#FFFFFF',
+            borderBottomWidth: 1,
+            borderBottomColor: '#F3F4F6',
+          }}
+        >
+          <TouchableOpacity
+            onPress={() => setFullListOpen(false)}
+            style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}
+            activeOpacity={0.7}
+            hitSlop={10}
+          >
+            <Ionicons name="chevron-back" size={24} color="#111827" />
+          </TouchableOpacity>
+          <Text
+            style={{
+              flex: 1,
+              textAlign: 'center',
+              fontSize: 18,
+              fontWeight: '800',
+              color: '#111827',
+              letterSpacing: -0.3,
+            }}
+          >
+            Notifications
+          </Text>
+          <View style={{ width: 32 }} />
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <NotificationsList embedded />
+        </View>
+      </View>
     </Modal>
   );
 
@@ -1900,6 +1956,9 @@ export default function JobsScreen() {
 
       {/* Notification preview modal */}
       {renderNotifModal()}
+
+      {/* Full notifications modal (support thread) */}
+      {renderFullListModal()}
 
       {/* Route Picker Modal */}
       <Modal

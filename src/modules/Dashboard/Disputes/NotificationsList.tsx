@@ -4,7 +4,8 @@ import React, {
 } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl,
-  ActivityIndicator, Alert, Modal, ScrollView,
+  ActivityIndicator, Alert, Modal, ScrollView, TextInput, KeyboardAvoidingView,
+  Platform, Keyboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -31,6 +32,7 @@ type SupportMessage = {
   type: string;
   created_at: string;
   is_read: boolean;
+  _temp_id?: number;
 };
 
 const ago = (iso: string) => {
@@ -53,12 +55,12 @@ const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
   if (t.startsWith('delivery')) return 'cube-outline';
   if (t === 'match') return 'flash-outline';
   if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
-  if (t === 'payment') return 'card-outline';
+  if (t === 'chat') return 'chatbubbles-outline';
+  if (t === 'payment' || t === 'escrow') return 'card-outline';
   return 'notifications-outline';
 };
 
 type Props = {
-  /** When true, hides the internal top bar (used inside MessagesScreen). */
   embedded?: boolean;
 };
 
@@ -75,9 +77,10 @@ export default function NotificationsList({ embedded = false }: Props) {
   const [thread, setThread] = useState<SupportMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadErr, setThreadErr] = useState<string | null>(null);
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
 
-  // Keep a ref to the open ticket so realtime handlers don't re-subscribe
   const openTicketRef = useRef<Notif | null>(null);
   useEffect(() => { openTicketRef.current = openTicket; }, [openTicket]);
 
@@ -97,7 +100,44 @@ export default function NotificationsList({ embedded = false }: Props) {
         .limit(50);
 
       if (error) throw error;
-      setItems((data || []) as Notif[]);
+
+      const raw = (data || []) as Notif[];
+      const seen = new Map<string, Notif>();
+      const result: Notif[] = [];
+
+      for (const n of raw) {
+        const t = (n.type || '').toLowerCase();
+        let key: string;
+
+        if (t === 'support' || t === 'support_outbound') {
+          key = `support-root-${n.notif_id}`;
+        } else if (t === 'support_reply' || t === 'support_user_reply') {
+          key = `support-root-${n.ref_id ?? n.notif_id}`;
+        } else if (t === 'chat') {
+          key = `chat-room-${n.ref_id ?? n.notif_id}`;
+        } else {
+          key = `other-${n.notif_id}`;
+        }
+
+        if (seen.has(key)) {
+          const existing = seen.get(key)!;
+          const nTime = new Date(n.created_at).getTime();
+          const eTime = new Date(existing.created_at).getTime();
+          if (nTime > eTime) {
+            const merged = { ...n, is_read: existing.is_read && n.is_read };
+            seen.set(key, merged);
+            const idx = result.findIndex(r => r === existing);
+            if (idx !== -1) result[idx] = merged;
+          } else if (!existing.is_read || !n.is_read) {
+            existing.is_read = false;
+          }
+        } else {
+          seen.set(key, n);
+          result.push(n);
+        }
+      }
+
+      setItems(result);
     } catch (e) {
       console.error('Notifications load error:', e);
     } finally {
@@ -123,13 +163,16 @@ export default function NotificationsList({ embedded = false }: Props) {
 
       if (error) throw error;
 
-      // Only show messages sent by admin/system to the user.
-      const onlyInbound = ((data || []) as SupportMessage[]).filter(m => {
+      const conversation = ((data || []) as SupportMessage[]).filter(m => {
         const t = (m.type || '').toLowerCase();
-        return t !== 'support_user_reply';
+        return t === 'support' || t === 'support_reply' || t === 'support_user_reply';
       });
 
-      setThread(onlyInbound);
+      // Preserve any optimistic temp messages that haven't been confirmed yet
+      setThread(prev => {
+        const temps = prev.filter(m => m._temp_id !== undefined);
+        return [...conversation, ...temps];
+      });
     } catch (e: any) {
       console.warn('thread load failed', e);
       setThreadErr(e?.message || 'Could not load this conversation.');
@@ -139,7 +182,7 @@ export default function NotificationsList({ embedded = false }: Props) {
   }, []);
 
   // ----------------------------------------------------------
-  // Realtime subscription (list + open thread)
+  // Realtime subscription
   // ----------------------------------------------------------
   const channelIdRef = useRef(
     `notif-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -176,7 +219,7 @@ export default function NotificationsList({ embedded = false }: Props) {
   // Support thread open/close
   // ----------------------------------------------------------
   const openSupportThread = async (n: Notif) => {
-    const ticketId = n.type === 'support_reply'
+    const ticketId = n.type === 'support_reply' || n.type === 'support_user_reply'
       ? (n.ref_id ?? n.notif_id)
       : n.notif_id;
 
@@ -188,6 +231,7 @@ export default function NotificationsList({ embedded = false }: Props) {
 
     const root: Notif = (rootRow as Notif) || n;
     setOpenTicket(root);
+    setReply('');
     loadThread(ticketId);
 
     if (!n.is_read) {
@@ -202,9 +246,66 @@ export default function NotificationsList({ embedded = false }: Props) {
   };
 
   const closeSupportThread = () => {
+    Keyboard.dismiss();
     setOpenTicket(null);
     setThread([]);
     setThreadErr(null);
+    setReply('');
+  };
+
+  // ----------------------------------------------------------
+  // Send user reply
+  // ----------------------------------------------------------
+  const sendSupportReply = async () => {
+    const trimmed = reply.trim();
+    if (!trimmed || !openTicket || !myId.current) return;
+
+    const ticketId = openTicket.notif_id;
+    const tempId = Date.now();
+
+    // Optimistic insert
+    const tempMsg: SupportMessage = {
+      notif_id: tempId,
+      body: trimmed,
+      type: 'support_user_reply',
+      created_at: new Date().toISOString(),
+      is_read: false,
+      _temp_id: tempId,
+    };
+    setThread(prev => [...prev, tempMsg]);
+    setReply('');
+    setSending(true);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
+
+    try {
+      const { data, error } = await supabase
+        .from('notification_log')
+        .insert({
+          user_id: myId.current,
+          title: 'Support request',
+          body: trimmed,
+          type: 'support_user_reply',
+          ref_id: ticketId,
+          is_read: false,
+        })
+        .select('notif_id, body, type, created_at, is_read')
+        .single();
+
+      if (error) throw error;
+
+      // Replace temp with real
+      setThread(prev =>
+        prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m))
+      );
+    } catch (e: any) {
+      console.warn('send reply failed', e);
+      // Remove temp on failure and restore input
+      setThread(prev => prev.filter(m => m._temp_id !== tempId));
+      setReply(trimmed);
+      Alert.alert('Could not send', e?.message || 'Please try again.');
+    } finally {
+      setSending(false);
+    }
   };
 
   // ----------------------------------------------------------
@@ -213,6 +314,11 @@ export default function NotificationsList({ embedded = false }: Props) {
   const routeGeneric = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
     const refId = n.ref_id;
+
+    if (type === 'chat') {
+      navigation.navigate('MainTabs', { screen: 'Messages' });
+      return;
+    }
 
     if (type.startsWith('dispute')) {
       if (refId == null) {
@@ -281,7 +387,9 @@ export default function NotificationsList({ embedded = false }: Props) {
   // List row
   // ----------------------------------------------------------
   const renderItem = ({ item }: { item: Notif }) => {
-    const isSupport = (item.type || '').toLowerCase().startsWith('support');
+    const t = (item.type || '').toLowerCase();
+    const isSupport = t.startsWith('support');
+    const isChat = t === 'chat';
 
     return (
       <TouchableOpacity
@@ -295,13 +403,13 @@ export default function NotificationsList({ embedded = false }: Props) {
         <View style={{ flex: 1 }}>
           <View style={styles.row}>
             <Text style={styles.title} numberOfLines={1}>
-              {isSupport ? SENDER_NAME : item.title}
+              {isSupport || isChat ? SENDER_NAME : item.title}
             </Text>
             {!item.is_read && <View style={styles.dot} />}
           </View>
-          {isSupport && (
+          {(isSupport || isChat) && (
             <Text style={styles.subTitle} numberOfLines={1}>
-              {item.title || 'Support message'}
+              {item.title || (isChat ? 'New message' : 'Support message')}
             </Text>
           )}
           <Text style={styles.body} numberOfLines={3}>{item.body}</Text>
@@ -318,7 +426,7 @@ export default function NotificationsList({ embedded = false }: Props) {
   };
 
   // ----------------------------------------------------------
-  // Support thread modal (read-only, inbound only)
+  // Support thread modal
   // ----------------------------------------------------------
   const renderSupportModal = () => {
     if (!openTicket) return null;
@@ -331,7 +439,6 @@ export default function NotificationsList({ embedded = false }: Props) {
         onRequestClose={closeSupportThread}
       >
         <View style={styles.modalRoot}>
-          {/* Header */}
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8 }]}>
             <TouchableOpacity
               onPress={closeSupportThread}
@@ -355,59 +462,107 @@ export default function NotificationsList({ embedded = false }: Props) {
             </View>
           </View>
 
-          {/* Thread */}
-          <View style={{ flex: 1, backgroundColor: '#F9FAFB' }}>
-            {threadLoading ? (
-              <View style={styles.center}>
-                <ActivityIndicator size="small" color={ORANGE} />
-              </View>
-            ) : threadErr ? (
-              <View style={styles.center}>
-                <Ionicons name="alert-circle-outline" size={36} color="#EF4444" />
-                <Text
-                  style={{
-                    color: '#6B7280',
-                    marginTop: 8,
-                    textAlign: 'center',
-                    paddingHorizontal: 40,
-                  }}
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 60 : 0}
+          >
+            <View style={{ flex: 1, backgroundColor: '#F9FAFB' }}>
+              {threadLoading && thread.length === 0 ? (
+                <View style={styles.center}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                </View>
+              ) : threadErr ? (
+                <View style={styles.center}>
+                  <Ionicons name="alert-circle-outline" size={36} color="#EF4444" />
+                  <Text
+                    style={{
+                      color: '#6B7280',
+                      marginTop: 8,
+                      textAlign: 'center',
+                      paddingHorizontal: 40,
+                    }}
+                  >
+                    {threadErr}
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  ref={scrollRef}
+                  contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  onContentSizeChange={() =>
+                    scrollRef.current?.scrollToEnd({ animated: true })
+                  }
                 >
-                  {threadErr}
-                </Text>
-              </View>
-            ) : (
-              <ScrollView
-                ref={scrollRef}
-                contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
-                showsVerticalScrollIndicator={false}
-                onContentSizeChange={() =>
-                  scrollRef.current?.scrollToEnd({ animated: true })
-                }
-              >
-                {thread.map((m, idx) => (
-                  <View key={`${m.notif_id}-${idx}`} style={styles.msgRow}>
-                    <View style={styles.supportAvatar}>
-                      <Ionicons name="cube" size={14} color="#FFFFFF" />
-                    </View>
-                    <View style={styles.msgBubble}>
-                      <Text style={styles.msgText}>{m.body}</Text>
-                      <Text style={styles.msgTime}>
-                        {SENDER_NAME} · {timeOnly(m.created_at)}
+                  {thread.map((m, idx) => {
+                    const t = (m.type || '').toLowerCase();
+                    const isMe = t === 'support' || t === 'support_user_reply';
+
+                    return (
+                      <View
+                        key={`${m.notif_id}-${idx}`}
+                        style={[styles.msgRow, isMe && styles.msgRowMe]}
+                      >
+                        {!isMe && (
+                          <View style={styles.supportAvatar}>
+                            <Ionicons name="cube" size={14} color="#FFFFFF" />
+                          </View>
+                        )}
+
+                        <View style={[styles.msgBubble, isMe && styles.msgBubbleMe]}>
+                          <Text style={[styles.msgText, isMe && styles.msgTextMe]}>
+                            {m.body}
+                          </Text>
+                          <Text style={[styles.msgTime, isMe && styles.msgTimeMe]}>
+                            {isMe ? 'You' : SENDER_NAME} · {timeOnly(m.created_at)}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+
+                  {thread.length === 0 && (
+                    <View style={styles.center}>
+                      <Text style={{ color: '#9CA3AF', fontSize: 13 }}>
+                        No messages in this conversation.
                       </Text>
                     </View>
-                  </View>
-                ))}
+                  )}
+                </ScrollView>
+              )}
+            </View>
 
-                {thread.length === 0 && (
-                  <View style={styles.center}>
-                    <Text style={{ color: '#9CA3AF', fontSize: 13 }}>
-                      No messages in this conversation.
-                    </Text>
-                  </View>
+            <View
+              style={[
+                styles.composer,
+                { paddingBottom: Math.max(insets.bottom, 12) },
+              ]}
+            >
+              <TextInput
+                style={styles.input}
+                placeholder="Type your reply…"
+                placeholderTextColor="#9CA3AF"
+                value={reply}
+                onChangeText={setReply}
+                multiline
+                maxLength={500}
+              />
+              <TouchableOpacity
+                style={[styles.sendBtn, (!reply.trim() || sending) && { opacity: 0.5 }]}
+                onPress={sendSupportReply}
+                disabled={!reply.trim() || sending}
+                activeOpacity={0.85}
+              >
+                {sending ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Ionicons name="send" size={18} color="#FFFFFF" />
                 )}
-              </ScrollView>
-            )}
-          </View>
+              </TouchableOpacity>
+            </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
     );
@@ -445,7 +600,6 @@ export default function NotificationsList({ embedded = false }: Props) {
   // ----------------------------------------------------------
   return (
     <View style={[styles.container, embedded && { backgroundColor: 'transparent' }]}>
-      {/* Top bar — only when used as a standalone screen */}
       {!embedded && (
         <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity
@@ -498,7 +652,6 @@ export default function NotificationsList({ embedded = false }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
 
-  /* top bar */
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -568,7 +721,7 @@ const styles = StyleSheet.create({
   body: { fontSize: 13, color: '#4B5563', marginTop: 3, lineHeight: 18 },
   time: { fontSize: 11, color: '#9CA3AF', marginTop: 6 },
 
-  /* support modal */
+  /* Support modal */
   modalRoot: { flex: 1, backgroundColor: '#FFFFFF' },
   modalHeader: {
     flexDirection: 'row',
@@ -604,10 +757,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
+  /* Message rows */
   msgRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     marginBottom: 10,
+  },
+  msgRowMe: {
+    justifyContent: 'flex-end',
   },
   supportAvatar: {
     width: 26, height: 26, borderRadius: 13,
@@ -625,11 +782,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#F3F4F6',
   },
+  msgBubbleMe: {
+    backgroundColor: ORANGE,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 6,
+    borderWidth: 0,
+  },
   msgText: {
     fontSize: 14,
     color: '#111827',
     lineHeight: 20,
     fontWeight: '500',
+  },
+  msgTextMe: {
+    color: '#FFFFFF',
   },
   msgTime: {
     fontSize: 10,
@@ -637,5 +803,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 4,
     alignSelf: 'flex-end',
+  },
+  msgTimeMe: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+
+  /* Composer */
+  composer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  input: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minHeight: 42,
+    maxHeight: 120,
+    fontSize: 14,
+    color: '#111827',
+  },
+  sendBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: ORANGE,
+    alignItems: 'center', justifyContent: 'center',
   },
 });

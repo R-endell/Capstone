@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import NotificationsList from '../Disputes/NotificationsList';
 
 /** Brand */
 const ORANGE = '#F27024';
@@ -84,6 +85,9 @@ export default function HomeScreen() {
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // Full NotificationsList modal (support thread chat lives here)
+  const [fullListOpen, setFullListOpen] = useState(false);
 
   /* ------------------ user + notifications ------------------ */
   useEffect(() => {
@@ -197,7 +201,6 @@ export default function HomeScreen() {
 
   const handleOpenNotifs = () => {
     setNotifModalOpen(true);
-    // Refresh in case it's been a while
     loadNotifs();
   };
 
@@ -218,15 +221,10 @@ export default function HomeScreen() {
 
     const type = (n.type || '').toLowerCase();
 
-    // Messages / chat → Messages tab
-    if (type.startsWith('message') || type.startsWith('chat')) {
-      navigation.navigate('MainTabs', { screen: 'Messages' });
-      return;
-    }
-
-    // Support → Messages tab (Notification sub-tab lives there)
-    if (type.startsWith('support')) {
-      navigation.navigate('MainTabs', { screen: 'Messages' });
+    // Support / chat / message → open the full NotificationsList modal
+    // so the user can see the thread and reply.
+    if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
+      setFullListOpen(true);
       return;
     }
 
@@ -242,7 +240,7 @@ export default function HomeScreen() {
       return;
     }
 
-    // Disputes → Dispute detail (resolve numeric id if ref is a string)
+    // Disputes → Dispute detail
     if (type.startsWith('dispute')) {
       const refId = n.ref_id;
       if (refId == null) {
@@ -270,7 +268,6 @@ export default function HomeScreen() {
       return;
     }
 
-    // Fallback
     Alert.alert(n.title || 'Notification', n.body || '');
   };
 
@@ -319,7 +316,7 @@ export default function HomeScreen() {
             </View>
           ) : (
             <FlatList
-              data={notifs}
+              data={notifs.slice(0, 8)}
               keyExtractor={(i) => String(i.notif_id)}
               contentContainerStyle={{ paddingBottom: 8 }}
               renderItem={({ item }) => (
@@ -351,7 +348,7 @@ export default function HomeScreen() {
             style={styles.modalFooter}
             onPress={() => {
               setNotifModalOpen(false);
-              navigation.navigate('NotificationsList');
+              setFullListOpen(true);
             }}
             activeOpacity={0.85}
           >
@@ -360,6 +357,56 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
       </Pressable>
+    </Modal>
+  );
+
+  /* ------------------ full notifications modal ------------------ */
+  const renderFullListModal = () => (
+    <Modal
+      visible={fullListOpen}
+      animationType="slide"
+      onRequestClose={() => setFullListOpen(false)}
+    >
+      <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 16,
+            paddingTop: insets.top + 8,
+            paddingBottom: 12,
+            backgroundColor: '#FFFFFF',
+            borderBottomWidth: 1,
+            borderBottomColor: '#F3F4F6',
+          }}
+        >
+          <TouchableOpacity
+            onPress={() => setFullListOpen(false)}
+            style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}
+            activeOpacity={0.7}
+            hitSlop={10}
+          >
+            <Ionicons name="chevron-back" size={24} color="#111827" />
+          </TouchableOpacity>
+          <Text
+            style={{
+              flex: 1,
+              textAlign: 'center',
+              fontSize: 18,
+              fontWeight: '800',
+              color: '#111827',
+              letterSpacing: -0.3,
+            }}
+          >
+            Notifications
+          </Text>
+          <View style={{ width: 32 }} />
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <NotificationsList embedded />
+        </View>
+      </View>
     </Modal>
   );
 
@@ -548,6 +595,7 @@ export default function HomeScreen() {
       </ScrollView>
 
       {renderNotifModal()}
+      {renderFullListModal()}
     </View>
   );
 }

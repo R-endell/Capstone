@@ -1,6 +1,6 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, LogBox } from 'react-native';
+import { AppState, LogBox, View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -70,6 +70,9 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
+
+// Support FAB
+import SupportFab from './src/components/SupportFab';
 
 // Canonical background matcher
 import {
@@ -254,34 +257,49 @@ function MainTabs() {
   const unreadCount = useUnreadMessages();
 
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
-          if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
-          else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
-          else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: { backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#E5E7EB', height: 60, paddingBottom: 8, paddingTop: 2 },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
-        headerShown: false,
-      })}
-    >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Activity" component={ActivityScreen} />
-      <Tab.Screen name="Explore" component={ExploreScreen} />
-      <Tab.Screen
-        name="Messages"
-        component={MessagesScreen}
-        options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
-      />
-      <Tab.Screen name="Account" component={AccountScreen} />
-    </Tab.Navigator>
+    <View style={{ flex: 1 }}>
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
+            if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
+            else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
+            else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
+            else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: '#6B7280',
+          tabBarStyle: {
+            backgroundColor: '#FFFFFF',
+            borderTopWidth: 1,
+            borderTopColor: '#E5E7EB',
+            height: 60,
+            paddingBottom: 8,
+            paddingTop: 2,
+          },
+          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+          headerShown: false,
+        })}
+      >
+        <Tab.Screen name="Home" component={HomeScreen} />
+        <Tab.Screen name="Activity" component={ActivityScreen} />
+        <Tab.Screen name="Explore" component={ExploreScreen} />
+        <Tab.Screen
+          name="Messages"
+          component={MessagesScreen}
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+          }}
+        />
+        <Tab.Screen name="Account" component={AccountScreen} />
+      </Tab.Navigator>
+
+      {/* Floating customer support bubble (sender) */}
+      <SupportFab role="sender" bottomOffset={78} />
+    </View>
   );
 }
 
@@ -290,55 +308,60 @@ function ProviderTabs() {
   const unreadCount = useUnreadMessages();
 
   return (
-    <ProviderTab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
+    <View style={{ flex: 1 }}>
+      <ProviderTab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
 
-          if (route.name === 'Task') {
-            iconName = focused ? 'clipboard' : 'clipboard-outline';
-          } else if (route.name === 'Earnings') {
-            iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-          } else if (route.name === 'Jobs') {
-            iconName = focused ? 'map' : 'map-outline';
-          } else if (route.name === 'Messages') {
-            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          } else if (route.name === 'Account') {
-            iconName = focused ? 'person' : 'person-outline';
-          }
+            if (route.name === 'Task') {
+              iconName = focused ? 'clipboard' : 'clipboard-outline';
+            } else if (route.name === 'Earnings') {
+              iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+            } else if (route.name === 'Jobs') {
+              iconName = focused ? 'map' : 'map-outline';
+            } else if (route.name === 'Messages') {
+              iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            } else if (route.name === 'Account') {
+              iconName = focused ? 'person' : 'person-outline';
+            }
 
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: {
-          backgroundColor: '#FFFFFF',
-          borderTopWidth: 1,
-          borderTopColor: '#E5E7EB',
-          height: 60,
-          paddingBottom: 8,
-          paddingTop: 2,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '500',
-        },
-        headerShown: false,
-      })}
-    >
-      <ProviderTab.Screen name="Task" component={TaskScreen} />
-      <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-      <ProviderTab.Screen name="Jobs" component={JobsScreen} />
-      <ProviderTab.Screen
-        name="Messages"
-        component={ProviderMessagesScreen}
-        options={{
-          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-          tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-        }}
-      />
-      <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
-    </ProviderTab.Navigator>
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: '#6B7280',
+          tabBarStyle: {
+            backgroundColor: '#FFFFFF',
+            borderTopWidth: 1,
+            borderTopColor: '#E5E7EB',
+            height: 60,
+            paddingBottom: 8,
+            paddingTop: 2,
+          },
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '500',
+          },
+          headerShown: false,
+        })}
+      >
+        <ProviderTab.Screen name="Task" component={TaskScreen} />
+        <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
+        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+        <ProviderTab.Screen
+          name="Messages"
+          component={ProviderMessagesScreen}
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+          }}
+        />
+        <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
+      </ProviderTab.Navigator>
+
+      {/* Floating customer support bubble (provider) */}
+      <SupportFab role="provider" bottomOffset={78} />
+    </View>
   );
 }
 
@@ -434,78 +457,80 @@ export default function App() {
     <ScheduleProvider>
       <UserProvider>
         <NavigationContainer>
-        <Stack.Navigator
-          initialRouteName="Loading"
-          screenOptions={{ headerShown: false }}
-        >
-          <Stack.Screen name="Loading" component={LoadingScreen} />
-          <Stack.Screen name="Login" component={LoginScreen} />
-          <Stack.Screen name="Register" component={RegisterScreen} />
-          <Stack.Screen
-            name="PermissionsPrompt"
-            component={PermissionsPromptScreen}
-          />
-          <Stack.Screen
-            name="IdentityVerification"
-            component={IdentityVerificationScreen}
-          />
-          <Stack.Screen
-            name="TwoFactorAuth"
-            component={TwoFactorAuthScreen}
-          />
-          <Stack.Screen name="MainTabs" component={MainTabs} />
-          <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
-          <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-          <Stack.Screen name="Settings" component={SettingsScreen} />
-          <Stack.Screen
-            name="DisputeCenter"
-            component={DisputeCenterScreen}
-          />
-          <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
-          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
-          <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-          <Stack.Screen
-            name="RegisterProvider"
-            component={RegisterProviderScreen}
-          />
-          <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
-          <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
-          <Stack.Screen name="AddItem" component={AddItemScreen} />
-          <Stack.Screen
-            name="ScheduleCalendar"
-            component={ScheduleCalendarScreen}
-          />
-          <Stack.Screen
-            name="PickupLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen
-            name="DropoffLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen name="Booking" component={BookingScreen} />
-          <Stack.Screen name="DeliveryPayment" component={DeliveryPaymentScreen}
-            options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-/>
-          <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-          <Stack.Screen
-            name="ManageVehicle"
-            component={ManageVehicleScreen}
-          />
-          <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-          <Stack.Screen
-            name="ReceiverPicker"
-            component={ReceiverPickerScreen}
-            options={{
-              presentation: 'modal',
-              animation: 'slide_from_bottom',
-            }}
-          />
-          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
-          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
-          <Stack.Screen name="NotificationsList" component={NotificationsList} />
-        </Stack.Navigator>
-          </NavigationContainer>
+          <Stack.Navigator
+            initialRouteName="Loading"
+            screenOptions={{ headerShown: false }}
+          >
+            <Stack.Screen name="Loading" component={LoadingScreen} />
+            <Stack.Screen name="Login" component={LoginScreen} />
+            <Stack.Screen name="Register" component={RegisterScreen} />
+            <Stack.Screen
+              name="PermissionsPrompt"
+              component={PermissionsPromptScreen}
+            />
+            <Stack.Screen
+              name="IdentityVerification"
+              component={IdentityVerificationScreen}
+            />
+            <Stack.Screen
+              name="TwoFactorAuth"
+              component={TwoFactorAuthScreen}
+            />
+            <Stack.Screen name="MainTabs" component={MainTabs} />
+            <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
+            <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+            <Stack.Screen name="Settings" component={SettingsScreen} />
+            <Stack.Screen
+              name="DisputeCenter"
+              component={DisputeCenterScreen}
+            />
+            <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+            <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
+            <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+            <Stack.Screen
+              name="RegisterProvider"
+              component={RegisterProviderScreen}
+            />
+            <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+            <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+            <Stack.Screen name="AddItem" component={AddItemScreen} />
+            <Stack.Screen
+              name="ScheduleCalendar"
+              component={ScheduleCalendarScreen}
+            />
+            <Stack.Screen
+              name="PickupLocation"
+              component={LocationSelectScreen}
+            />
+            <Stack.Screen
+              name="DropoffLocation"
+              component={LocationSelectScreen}
+            />
+            <Stack.Screen name="Booking" component={BookingScreen} />
+            <Stack.Screen
+              name="DeliveryPayment"
+              component={DeliveryPaymentScreen}
+              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+            <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+            <Stack.Screen
+              name="ManageVehicle"
+              component={ManageVehicleScreen}
+            />
+            <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+            <Stack.Screen
+              name="ReceiverPicker"
+              component={ReceiverPickerScreen}
+              options={{
+                presentation: 'modal',
+                animation: 'slide_from_bottom',
+              }}
+            />
+            <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+            <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+            <Stack.Screen name="NotificationsList" component={NotificationsList} />
+          </Stack.Navigator>
+        </NavigationContainer>
       </UserProvider>
     </ScheduleProvider>
   );
