@@ -68,6 +68,9 @@ import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
 import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen';
 
+// Notifications Section
+import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
+
 // Canonical background matcher
 import {
   startBackgroundMatcher,
@@ -113,6 +116,7 @@ export type RootStackParamList = {
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
   DeliveryPayment: { requestId: number; amount: number };
+  NotificationsList: undefined;
 };
 
 export type MainTabParamList = {
@@ -499,6 +503,7 @@ export default function App() {
           />
           <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
           <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+          <Stack.Screen name="NotificationsList" component={NotificationsList} />
         </Stack.Navigator>
           </NavigationContainer>
       </UserProvider>

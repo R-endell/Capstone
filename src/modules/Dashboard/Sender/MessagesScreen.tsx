@@ -948,10 +948,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <ActivityIndicator size="large" color={ORANGE} />
         </View>
       ) : activeTab === 'notification' ? (
-        <View style={{ flex: 1 }}>
-          <NotificationsList />
-        </View>
-      ) : filteredConversations.length === 0 ? (
+          <View style={{ flex: 1 }}>
+            <NotificationsList embedded />
+          </View>
+        ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons
             name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}

@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Image, TouchableOpacity, Switch,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
-  Animated, Easing, Linking, StatusBar
+  Animated, Easing, Linking, StatusBar, FlatList, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -58,7 +58,7 @@ interface JobItem {
   size: string | null;
   fragile: boolean;
   photo: string | null;
-  localOnly?: boolean; // a photo was taken but it was never uploaded (file only on the sender's phone)
+  localOnly?: boolean;
   boxes: string | null;
 }
 interface JobPlace {
@@ -83,6 +83,16 @@ interface JobRequest {
   senderName: string;
   receiverName: string | null;
 }
+
+type Notif = {
+  notif_id: number;
+  title: string;
+  body: string;
+  type: string;
+  is_read: boolean;
+  created_at: string;
+  ref_id: number | null;
+};
 
 const toNaiveIsoString = (date: Date): string => {
   const y = date.getFullYear();
@@ -154,6 +164,39 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const roadKm = (aLat: number, aLng: number, bLat: number, bLng: number) => haversineKm(aLat, aLng, bLat, bLng) * 1.3;
 
+const ago = (iso: string) => {
+  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
+  const t = (type || '').toLowerCase();
+  if (t.startsWith('dispute')) return 'shield-checkmark-outline';
+  if (t.startsWith('delivery')) return 'cube-outline';
+  if (t === 'match') return 'flash-outline';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'chatbubble-ellipses-outline';
+  if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
+  if (t === 'payment' || t === 'escrow') return 'card-outline';
+  return 'notifications-outline';
+};
+
+const titleForType = (type: string, fallback: string): string => {
+  const t = (type || '').toLowerCase();
+  if (t === 'match') return 'New Delivery Match';
+  if (t.startsWith('delivery')) return 'Delivery Update';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'New Message';
+  if (t.startsWith('dispute')) return 'Dispute Update';
+  if (t.startsWith('support')) return 'Pack-N-Ship';
+  if (t === 'payment' || t === 'escrow') return 'Payment Update';
+  return fallback;
+};
+
 const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest => {
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
@@ -216,7 +259,7 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap - OSRM road-following route (non-interactive preview)         */
+/* RouteMap                                                              */
 /* ==================================================================== */
 const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
   const lat = startLat ?? endLat ?? 10.3157;
@@ -290,8 +333,7 @@ const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLab
 };
 
 /* ==================================================================== */
-/* ProviderMap - live map: provider's current location, active route,    */
-/* the incoming order, and (mock) demand zones                           */
+/* ProviderMap                                                           */
 /* ==================================================================== */
 const PROVIDER_MAP_HTML = `
 <!DOCTYPE html>
@@ -359,7 +401,6 @@ const PROVIDER_MAP_HTML = `
             else { meMarker.setLatLng(me); meMarker.setIcon(meIcon(s.provider.heading)); }
           }
 
-          // Active route (blue)
           var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
           if (rk !== routeKey) {
             routeKey = rk; routeLayer.clearLayers();
@@ -370,7 +411,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // Incoming order (orange)
           var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
           if (ok !== orderKey) {
             orderKey = ok; orderLayer.clearLayers();
@@ -387,7 +427,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // Demand zones (mock)
           var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) : '';
           if (dk !== demandKey) {
             demandKey = dk; demandLayer.clearLayers();
@@ -401,7 +440,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // First GPS fix / recenter button
           if (firstFix && me && !s.order) { firstFix = false; map.setView(me, 15); }
           if (s.tick !== lastTick) { lastTick = s.tick; if (me) map.setView(me, 16, { animate: true }); }
         } catch (e) {}
@@ -476,9 +514,19 @@ export default function JobsScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
+  /* ---------------------- Notification bell ---------------------- */
+  const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notifChannelRef = useRef<string>(
+    `provider-notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
+  const bellPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
@@ -502,8 +550,125 @@ export default function JobsScreen() {
     return () => pulse.stop();
   }, [isOnline, onlinePulse]);
 
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bellPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(bellPulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [bellPulse]);
+
   useEffect(() => { selectedIdRef.current = selectedRequest?.request_id ?? null; }, [selectedRequest]);
 
+  /* ---------------------- Notification loaders ---------------------- */
+  const loadNotifs = useCallback(async () => {
+    if (!providerId) return;
+    setNotifLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('notification_log')
+        .select('notif_id, title, body, type, is_read, created_at, ref_id')
+        .eq('user_id', providerId)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      const list = (data || []) as Notif[];
+      setNotifs(list);
+      setUnreadCount(list.filter(n => !n.is_read).length);
+    } catch (e) {
+      console.warn('[jobs] notif load failed', e);
+    } finally {
+      setNotifLoading(false);
+    }
+  }, [providerId]);
+
+  useEffect(() => {
+    if (providerId) loadNotifs();
+  }, [providerId, loadNotifs]);
+
+  useEffect(() => {
+    if (!providerId) return;
+    const ch = supabase
+      .channel(notifChannelRef.current)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` },
+        () => loadNotifs()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` },
+        () => loadNotifs()
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [providerId, loadNotifs]);
+
+  const handleOpenNotifs = () => {
+    setNotifModalOpen(true);
+    loadNotifs();
+  };
+
+  const markNotifRead = async (n: Notif) => {
+    if (n.is_read) return;
+    setNotifs(prev => prev.map(x => x.notif_id === n.notif_id ? { ...x, is_read: true } : x));
+    setUnreadCount(c => Math.max(0, c - 1));
+    try {
+      await supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id);
+    } catch (e) {
+      console.warn('mark read failed', e);
+    }
+  };
+
+  const goToProviderMessages = () => {
+    let cur: any = navigation;
+    while (cur) {
+      try {
+        const names: string[] = cur.getState?.()?.routeNames || [];
+        const match = names.find(x => /message/i.test(x));
+        if (match) { cur.navigate(match); return; }
+      } catch { /* ignore */ }
+      cur = cur.getParent?.();
+    }
+  };
+
+  const handleNotifPress = async (n: Notif) => {
+    await markNotifRead(n);
+    setNotifModalOpen(false);
+
+    const type = (n.type || '').toLowerCase();
+
+    if (type.startsWith('message') || type.startsWith('chat') || type.startsWith('support')) {
+      goToProviderMessages();
+      return;
+    }
+
+    if (type.startsWith('dispute')) {
+      if (n.ref_id == null) { navigation.navigate('DisputeCenter'); return; }
+      if (typeof n.ref_id === 'number') { navigation.navigate('DisputeDetail', { disputeId: n.ref_id }); return; }
+      try {
+        const { data } = await supabase
+          .from('disputes').select('dispute_id').eq('dispute_ref', String(n.ref_id)).maybeSingle();
+        if (data?.dispute_id) navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
+        else navigation.navigate('DisputeCenter');
+      } catch {
+        navigation.navigate('DisputeCenter');
+      }
+      return;
+    }
+
+    if (type.startsWith('delivery') || type === 'match' || type === 'payment' || type === 'escrow') {
+      refreshMatches();
+      return;
+    }
+
+    Alert.alert(n.title || 'Notification', n.body || '');
+  };
+
+  /* ---------------------- Existing provider data ---------------------- */
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -526,7 +691,6 @@ export default function JobsScreen() {
     try {
       setLoading(true);
 
-      // 1. Get or create vehicle
       let vehicleId: number | null = null;
       const { data: vehData } = await supabase
         .from('vehicles')
@@ -558,7 +722,6 @@ export default function JobsScreen() {
         vehicleId = newVeh.vehicle_id;
       }
 
-      // 2. Create Start & End Locations
       const curLat = myLoc?.lat ?? 10.3157;
       const curLng = myLoc?.lng ?? 123.8854;
 
@@ -592,7 +755,6 @@ export default function JobsScreen() {
         .single();
       if (eErr) throw eErr;
 
-      // 3. Insert route
       const nowIso = toNaiveIsoString(new Date());
       const { data: simpleRoute, error: simpleErr } = await supabase
         .from('provider_routes')
@@ -674,11 +836,11 @@ export default function JobsScreen() {
           );
           const vIds = Array.from(new Set(simpleRoutes.map((r) => r.vehicle_id).filter(Boolean)));
 
-          const { data: locs } = locIds.length > 0 
-            ? await supabase.from('locations').select('*').in('location_id', locIds) 
+          const { data: locs } = locIds.length > 0
+            ? await supabase.from('locations').select('*').in('location_id', locIds)
             : { data: [] };
-          const { data: vehs } = vIds.length > 0 
-            ? await supabase.from('vehicles').select('*').in('vehicle_id', vIds) 
+          const { data: vehs } = vIds.length > 0
+            ? await supabase.from('vehicles').select('*').in('vehicle_id', vIds)
             : { data: [] };
 
           const locMap = new Map((locs || []).map((l: any) => [l.location_id, l]));
@@ -1089,6 +1251,9 @@ export default function JobsScreen() {
   const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
   const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
 
+  const bellScale = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+  const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
+
   const markFailed = (uri: string) => setFailedPhotos(prev => ({ ...prev, [uri]: true }));
 
   /* --------------------------- request details --------------------------- */
@@ -1116,7 +1281,6 @@ export default function JobsScreen() {
           contentContainerStyle={[styles.detailScroll, { paddingBottom: 130 }]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Request ID */}
           <View style={styles.card}>
             <Text style={styles.eyebrow}>REQUEST ID</Text>
             <Text style={styles.bigId}>{requestCode(r.request_id)}</Text>
@@ -1136,7 +1300,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Pay */}
           <View style={styles.earnCard}>
             <Text style={styles.earnLabel}>YOU EARN</Text>
             <Text style={styles.earnValue}>{money(r.estimated_cost)}</Text>
@@ -1148,7 +1311,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Package */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}><Ionicons name="cube" size={14} color={ORANGE} /></View>
@@ -1235,7 +1397,6 @@ export default function JobsScreen() {
             })}
           </View>
 
-          {/* Map + route */}
           <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
             <View style={styles.detailMap} pointerEvents="none">
               <RouteMap
@@ -1273,7 +1434,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Sender + receiver */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}><Ionicons name="people" size={14} color={ORANGE} /></View>
@@ -1300,7 +1460,6 @@ export default function JobsScreen() {
           </View>
         </ScrollView>
 
-        {/* Sticky accept bar */}
         <View style={styles.acceptBar}>
           <View>
             <Text style={styles.eyebrow}>YOU EARN</Text>
@@ -1387,7 +1546,6 @@ export default function JobsScreen() {
           </View>
         </View>
 
-        {/* Package photos — so the provider can judge the package before accepting */}
         {(() => {
           const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
           const localOnly = o.items.some(i => i.localOnly && !i.photo);
@@ -1497,7 +1655,6 @@ export default function JobsScreen() {
 
     return (
       <View style={styles.bottomPanel}>
-        {/* Online Toggle Row */}
         <View style={styles.onlineToggleRow}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Animated.View
@@ -1527,7 +1684,6 @@ export default function JobsScreen() {
 
         <View style={styles.panelDivider} />
 
-        {/* Route / Vehicle Row */}
         <View style={styles.vehicleRow}>
           <View style={styles.vehicleIconBox}>
             <Ionicons name="car-sport" size={22} color={ORANGE} />
@@ -1597,8 +1753,25 @@ export default function JobsScreen() {
           padBottom={currentOffer ? 480 : 200}
         />
 
-        {/* Right: map tools, positioned directly under safe area inset */}
         <View style={[styles.mapTools, { top: insets.top + 20 }]} pointerEvents="box-none">
+          <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
+            <TouchableOpacity
+              style={styles.mapToolBtn}
+              onPress={handleOpenNotifs}
+              activeOpacity={0.85}
+              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+            >
+              <Ionicons name="notifications-outline" size={20} color="#111827" />
+              {unreadCount > 0 && (
+                <View style={styles.mapToolBadge}>
+                  {unreadCount <= 9 && (
+                    <Text style={styles.mapToolBadgeText}>{unreadCount}</Text>
+                  )}
+                </View>
+              )}
+            </TouchableOpacity>
+          </Animated.View>
+
           <TouchableOpacity style={styles.mapToolBtn} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
             <Ionicons name="locate" size={20} color="#111827" />
           </TouchableOpacity>
@@ -1625,13 +1798,90 @@ export default function JobsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Bottom: incoming order popup or sleek status panel */}
         <Animated.View style={[styles.bottomWrap, { opacity: contentAnim }]} pointerEvents="box-none">
           {currentOffer ? renderOfferPopup(currentOffer) : renderBottomPanel()}
         </Animated.View>
       </View>
     );
   };
+
+  /* -------------------- Notification preview modal -------------------- */
+  const renderNotifModal = () => (
+    <Modal
+      visible={notifModalOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setNotifModalOpen(false)}
+    >
+      <Pressable
+        style={styles.notifBackdrop}
+        onPress={() => setNotifModalOpen(false)}
+      >
+        <Pressable
+          style={[styles.notifCard, { marginTop: insets.top + 60 }]}
+          onPress={() => { /* swallow taps inside */ }}
+        >
+          <View style={styles.notifHeader}>
+            <Text style={styles.notifHeaderTitle}>Notifications</Text>
+            <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
+              <Ionicons name="close" size={22} color="#111827" />
+            </TouchableOpacity>
+          </View>
+
+          {notifLoading ? (
+            <View style={styles.notifCenter}>
+              <ActivityIndicator size="small" color={ORANGE} />
+            </View>
+          ) : notifs.length === 0 ? (
+            <View style={styles.notifCenter}>
+              <Ionicons name="notifications-off-outline" size={40} color="#D1D5DB" />
+              <Text style={styles.notifEmptyText}>No notifications yet</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={notifs.slice(0, 8)}
+              keyExtractor={(i) => String(i.notif_id)}
+              contentContainerStyle={{ paddingBottom: 8 }}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.notifRow, !item.is_read && styles.notifRowUnread]}
+                  onPress={() => handleNotifPress(item)}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.notifIconBox}>
+                    <Ionicons name={iconForType(item.type)} size={18} color={ORANGE} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.notifTitleRow}>
+                      <Text style={styles.notifTitle} numberOfLines={1}>
+                        {titleForType(item.type, item.title)}
+                      </Text>
+                      {!item.is_read && <View style={styles.notifDot} />}
+                    </View>
+                    <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
+                    <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color="#D1D5DB" />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+
+          <TouchableOpacity
+            style={styles.notifFooter}
+            onPress={() => {
+              setNotifModalOpen(false);
+              navigation.navigate('NotificationsList');
+            }}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.notifFooterText}>See all in Notifications</Text>
+            <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 
   if (loading) {
     return (
@@ -1648,9 +1898,10 @@ export default function JobsScreen() {
       <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
       {selectedRequest ? renderRequestDetail(selectedRequest) : renderMain()}
 
-      {/* ============================================================ */}
-      {/* Route Picker Modal                                            */}
-      {/* ============================================================ */}
+      {/* Notification preview modal */}
+      {renderNotifModal()}
+
+      {/* Route Picker Modal */}
       <Modal
         visible={routePickerVisible}
         transparent
@@ -1744,9 +1995,7 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
-      {/* ============================================================ */}
-      {/* Confirm Departure Time Sheet                                  */}
-      {/* ============================================================ */}
+      {/* Confirm Departure Time Sheet */}
       <Modal
         visible={confirmSheetVisible}
         transparent
@@ -1886,6 +2135,21 @@ const styles = StyleSheet.create({
   },
   mapToolBtnActive: { backgroundColor: ORANGE },
   sosBtn: { backgroundColor: '#EF4444' },
+  mapToolBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#EF4444',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
   bottomWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
 
@@ -1950,7 +2214,7 @@ const styles = StyleSheet.create({
   },
   reopenText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#4B5563' },
   reopenLink: { fontSize: 13, fontWeight: '800', color: ORANGE },
-  
+
   /* vehicle / route */
   vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   vehicleIconBox: {
@@ -2061,7 +2325,7 @@ const styles = StyleSheet.create({
 
   detailMap: { height: 190, backgroundColor: '#EEF0F2' },
   routePad: { padding: 16 },
-  
+
   /* detail */
   detailHeader: {
     backgroundColor: ORANGE, flexDirection: 'row', alignItems: 'center',
@@ -2230,4 +2494,109 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   confirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: '800' },
+
+  /* Notification preview modal */
+  notifBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(17,24,39,0.45)',
+    paddingHorizontal: 16,
+  },
+  notifCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingTop: 6,
+    paddingBottom: 4,
+    maxHeight: '78%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  notifHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  notifHeaderTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  notifCenter: {
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notifEmptyText: {
+    marginTop: 10,
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  notifRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  notifRowUnread: {
+    backgroundColor: '#FFFBF5',
+  },
+  notifIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFEDD5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  notifTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  notifTitle: {
+    flex: 1,
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: '#111827',
+  },
+  notifDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: ORANGE,
+  },
+  notifBody: {
+    fontSize: 12.5,
+    color: '#4B5563',
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  notifTime: {
+    fontSize: 10.5,
+    color: '#9CA3AF',
+    marginTop: 5,
+    fontWeight: '600',
+  },
+  notifFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+  },
+  notifFooterText: {
+    color: ORANGE,
+    fontWeight: '800',
+    fontSize: 13,
+  },
 });
