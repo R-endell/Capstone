@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
+import { registerPushToken } from '../../services/pushService';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -119,12 +120,29 @@ export default function LoginScreen() {
         Alert.alert('Login Failed', getFriendlyErrorMessage(error));
         return;
       }
-      const lastMode = await AsyncStorage.getItem('last_mode');
-      const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
-      navigation.reset({
-        index: 0,
-        routes: [{ name: route }],
-      });
+            const lastMode = await AsyncStorage.getItem('last_mode');
+            const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+
+            // Register push token (fire-and-forget — does not block navigation)
+            (async () => {
+              try {
+                const { data: { user } } = await supabase.auth.getUser();
+                if (!user) return;
+                const { data: userRow } = await supabase
+                  .from('users')
+                  .select('user_id')
+                  .eq('auth_id', user.id)
+                  .maybeSingle();
+                if (userRow?.user_id) await registerPushToken(userRow.user_id);
+              } catch (e) {
+                console.warn('[push] registration skipped:', e);
+              }
+            })();
+
+            navigation.reset({
+              index: 0,
+              routes: [{ name: route }],
+            });
     } catch (error: any) {
       Alert.alert('Error', getFriendlyErrorMessage(error));
     } finally {
@@ -165,14 +183,29 @@ export default function LoginScreen() {
 
       if (exchangeError) throw exchangeError;
 
-      if (exchangeData?.session) {
-        const lastMode = await AsyncStorage.getItem('last_mode');
-        const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
-        navigation.reset({
-          index: 0,
-          routes: [{ name: route }],
-        });
-      } else {
+            if (exchangeData?.session) {
+            const lastMode = await AsyncStorage.getItem('last_mode');
+            const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+
+            (async () => {
+              try {
+                const uid = exchangeData.session.user.id;
+                const { data: userRow } = await supabase
+                  .from('users')
+                  .select('user_id')
+                  .eq('auth_id', uid)
+                  .maybeSingle();
+                if (userRow?.user_id) await registerPushToken(userRow.user_id);
+              } catch (e) {
+                console.warn('[push] google registration skipped:', e);
+              }
+            })();
+
+            navigation.reset({
+              index: 0,
+              routes: [{ name: route }],
+            });
+          } else {
         Alert.alert('Error', 'Could not retrieve session.');
       }
     } else if (result.type === 'cancel') {

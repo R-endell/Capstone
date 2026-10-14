@@ -17,6 +17,7 @@ import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
 import { clearLocationFix } from '../../../services/locationService';
 import { useMemo } from 'react'; 
+import { notifyUser } from '../../../services/pushService';
 
 // ── Payment provider logos ──────────────────────────────────────────
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -466,6 +467,16 @@ export default function TaskScreen() {
       setCompletedDeliveries(prev => patchDelivery(prev));
 
       Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
+      const senderId = (verifyTarget?.delivery_requests as any)?.sender_id
+        ?? (verifyTarget?.delivery_requests as any)?.sender?.user_id;
+      if (senderId) {
+        notifyUser(
+          senderId,
+          'Package picked up',
+          'Your courier picked up your parcel and is now in transit.',
+          { deliveryId: verifyTarget?.delivery_id },
+        );
+      }
       closeVerifyModal();
 
       if (providerId) await fetchDeliveries(providerId);
@@ -739,6 +750,15 @@ export default function TaskScreen() {
         'Payment has been released to your wallet.',
         [{ text: 'OK' }]
       );
+      const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
+      if (senderId) {
+        notifyUser(
+          senderId,
+          'Delivery complete',
+          `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered.`,
+          { deliveryId },
+        );
+      }
       try { await clearLocationFix(deliveryId); } catch {}
       closeDeliveryOTPModal();
       await loadData();

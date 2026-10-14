@@ -6,6 +6,13 @@ import {
   requestForegroundLocationPermission,
   ProviderFix,
 } from './locationService';
+import {
+  setBroadcastTarget,
+} from './locationBroadcastStore';
+import {
+  startBackgroundLocationUpdates,
+  stopBackgroundLocationUpdates,
+} from './backgroundLocationTask';
 
 type Options = {
   deliveryId: number | null | undefined;
@@ -14,10 +21,6 @@ type Options = {
   intervalMs?: number;
 };
 
-/**
- * Broadcasts the provider's GPS to Supabase while `active` is true.
- * Foreground-only — the courier must have the app open (they do, while delivering).
- */
 export function useProviderLocationBroadcast({
   deliveryId,
   providerId,
@@ -31,11 +34,27 @@ export function useProviderLocationBroadcast({
     let cancelled = false;
 
     const start = async () => {
-      if (!active || !deliveryId || !providerId) return;
+      if (!active || !deliveryId || !providerId) {
+        // ensure background is off when inactive
+        await setBroadcastTarget(null);
+        await stopBackgroundLocationUpdates();
+        return;
+      }
 
       const granted = await requestForegroundLocationPermission();
       if (!granted || cancelled) return;
 
+      // Persist target for the background task
+      await setBroadcastTarget({
+        deliveryId,
+        providerId,
+        startedAt: new Date().toISOString(),
+      });
+
+      // Kick off background updates too
+      await startBackgroundLocationUpdates();
+
+      // Foreground subscription (faster, more accurate while app is open)
       try {
         const sub = await Location.watchPositionAsync(
           {
@@ -56,7 +75,6 @@ export function useProviderLocationBroadcast({
               accuracy: Number.isFinite(pos.coords.accuracy as any) ? pos.coords.accuracy : null,
               updated_at: new Date(pos.timestamp).toISOString(),
             };
-
             pushLocationFix(deliveryId, providerId, fix);
           },
         );
@@ -76,6 +94,8 @@ export function useProviderLocationBroadcast({
         subRef.current.remove();
         subRef.current = null;
       }
+      // Don't stop background here — the provider may minimize. Stop is
+      // driven by delivery completion (see TaskScreen clearLocationFix).
     };
   }, [active, deliveryId, providerId, intervalMs]);
 }

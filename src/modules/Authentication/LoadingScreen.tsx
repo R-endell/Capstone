@@ -14,6 +14,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { registerPushToken } from '../../services/pushService';
 /** Brand */
 const ORANGE = '#F27024';
 
@@ -60,14 +61,30 @@ export default function LoadingScreen() {
           return;
         }
 
-        // Restore the mode the user was last in
-        const lastMode = await AsyncStorage.getItem('last_mode');
-        const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+                // Restore the mode the user was last in
+                const lastMode = await AsyncStorage.getItem('last_mode');
+                const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
 
-        navigation.reset({
-          index: 0,
-          routes: [{ name: route }],
-        });
+                // Fire-and-forget push token registration (does not block nav)
+                (async () => {
+                  try {
+                    const { data: userRow } = await supabase
+                      .from('users')
+                      .select('user_id')
+                      .eq('auth_id', session.user.id)
+                      .maybeSingle();
+                    if (userRow?.user_id) {
+                      await registerPushToken(userRow.user_id);
+                    }
+                  } catch (e) {
+                    console.warn('[push] boot registration skipped:', e);
+                  }
+                })();
+
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: route }],
+                });
       } catch (error) {
         console.error('Session restore error:', error);
         navigation.reset({

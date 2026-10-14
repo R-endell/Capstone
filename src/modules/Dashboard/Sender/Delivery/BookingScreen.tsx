@@ -591,60 +591,100 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  const handleCancelBooking = async () => {
-    if (matchChannelRef.current) {
-      supabase.removeChannel(matchChannelRef.current);
-      matchChannelRef.current = null;
-    }
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
-    }
-
-    if (savedRequestId) {
-      const { data: reqRow } = await supabase
-        .from('delivery_requests')
-        .select('payment_status, escrow_status, estimated_cost, payment_provider')
-        .eq('request_id', savedRequestId)
-        .maybeSingle();
-
-      const wasHeld =
-        reqRow?.payment_status === 'held' ||
-        reqRow?.escrow_status === 'held';
-
-      if (wasHeld) {
-        // Paid → mark for refund, keep the row for audit
-        await supabase
-          .from('delivery_requests')
-          .update({
-            delivery_status: 'Cancelled',
-            payment_status: 'refunded',
-            escrow_status: 'refunded',
-            escrow_refunded_at: new Date().toISOString(),
-          })
-          .eq('request_id', savedRequestId);
-
-        await supabase.from('escrow_transactions').insert({
-          request_id: savedRequestId,
-          event: 'refund_initiated',
-          amount: Number(reqRow?.estimated_cost) || 0,
-          provider: reqRow?.payment_provider ?? null,
-          notes: 'Sender cancelled after payment',
-        });
-      } else {
-        // Unpaid → safe to delete
-        await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
+    const handleCancelBooking = async () => {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
       }
-    }
-    setResumeSubId(null);
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
 
-    if (isResumedSession.current) {
-      isResumedSession.current = false;
-      navigation.goBack();
-      return;
-    }
-    setBookingState('review');
-  };
+      if (savedRequestId) {
+        const { data: reqRow } = await supabase
+          .from('delivery_requests')
+          .select('payment_status, escrow_status, estimated_cost, payment_provider, refund_status')
+          .eq('request_id', savedRequestId)
+          .maybeSingle();
+
+        const wasHeld =
+          reqRow?.payment_status === 'held' ||
+          reqRow?.escrow_status === 'held';
+
+        if (wasHeld) {
+          // ---------------------------------------------------------
+          // Real Xendit refund. Do NOT mark as refunded here — the
+          // webhook will do that when the money actually settles.
+          // ---------------------------------------------------------
+          try {
+            const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
+              'xendit-refund',
+              { body: { request_id: savedRequestId, reason: 'USER_CANCELLED' } },
+            );
+
+            if (refundErr || !refundResult?.success) {
+              const msg =
+                refundResult?.error ||
+                refundErr?.message ||
+                'Refund could not be initiated.';
+
+              // Still cancel so the sender isn't stuck, but be honest
+              await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Cancelled' })
+                .eq('request_id', savedRequestId);
+
+              await supabase.from('escrow_transactions').insert({
+                request_id: savedRequestId,
+                event: 'refund_initiated_manual',
+                amount: Number(reqRow?.estimated_cost) || 0,
+                provider: reqRow?.payment_provider ?? null,
+                notes: `Auto-refund failed (${msg}). Manual review required.`,
+              });
+
+              Alert.alert(
+                'Booking cancelled',
+                `Your booking was cancelled, but the automatic refund could not be started (${msg}). Our team will process your refund manually within 3–5 business days.`,
+              );
+            } else {
+              // Refund accepted by Xendit → wait for webhook
+              await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Cancelled' })
+                .eq('request_id', savedRequestId);
+
+              Alert.alert(
+                'Refund initiated',
+                'Your refund is being processed. It should arrive in 3–5 business days.',
+              );
+            }
+          } catch (e: any) {
+            // Network failure etc. — cancel anyway, flag for manual
+            await supabase
+              .from('delivery_requests')
+              .update({ delivery_status: 'Cancelled' })
+              .eq('request_id', savedRequestId);
+
+            Alert.alert(
+              'Booking cancelled',
+              'Your booking was cancelled, but we could not reach the payment service. Our team will process your refund manually.',
+            );
+          }
+        } else {
+          // Unpaid → safe to delete
+          await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
+        }
+      }
+      setResumeSubId(null);
+
+      if (isResumedSession.current) {
+        isResumedSession.current = false;
+        navigation.goBack();
+        return;
+      }
+      setBookingState('review');
+    };
 
   // Leave the screen WITHOUT cancelling the request.
   const handleGoHome = () => {

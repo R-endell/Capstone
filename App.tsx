@@ -1,7 +1,10 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, LogBox, View } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  useNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -89,6 +92,11 @@ import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/Deliv
 import { UserProvider } from './src/utils/userContext';
 
 import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
+
+import './src/services/backgroundLocationTask';
+
+import * as Notifications from 'expo-notifications';
+import { registerPushToken } from './src/services/pushService';
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -370,6 +378,7 @@ function ProviderTabs() {
 
 // ---------- App ----------
 export default function App() {
+  const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const appStateRef = useRef(AppState.currentState);
   const matcherStartedRef = useRef(false);
 
@@ -456,10 +465,44 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+  let cancelled = false;
+  let notifSub: any = null;
+
+  const bootstrap = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return;
+
+    const { data: userRow } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('auth_id', session.user.id)
+      .maybeSingle();
+    if (!userRow?.user_id) return;
+
+    await registerPushToken(userRow.user_id);
+  };
+
+  bootstrap();
+
+  // Notification tap → open LiveTracking if the payload has a deliveryId
+  notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
+    const payload = response.notification.request.content.data as any;
+    if (payload?.deliveryId && navigationRef.isReady?.()) {
+      navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    if (notifSub) notifSub.remove();
+  };
+}, []);
+
   return (
     <ScheduleProvider>
       <UserProvider>
-        <NavigationContainer>
+        <NavigationContainer ref={navigationRef}>
           <Stack.Navigator
             initialRouteName="Loading"
             screenOptions={{ headerShown: false }}
