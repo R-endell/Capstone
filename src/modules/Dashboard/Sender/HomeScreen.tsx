@@ -89,6 +89,9 @@ export default function HomeScreen() {
   // Full NotificationsList modal (support thread chat lives here)
   const [fullListOpen, setFullListOpen] = useState(false);
 
+  // Keep a ref to the realtime channel so we can remove the exact instance
+  const notifChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
   /* ------------------ user + notifications ------------------ */
   useEffect(() => {
     let active = true;
@@ -138,11 +141,22 @@ export default function HomeScreen() {
   useEffect(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]);
   useFocusEffect(useCallback(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]));
 
-  // Realtime — reload the badge + list whenever a new notification arrives
+  // Realtime — reload the badge + list whenever a new notification arrives.
+  // Uses a UNIQUE channel name per mount so Fast Refresh can't leave a stale
+  // subscribed channel with the same name in the Supabase client's registry.
   useEffect(() => {
     if (!myId) return;
+
+    // Tear down any lingering channel from a previous mount first.
+    if (notifChannelRef.current) {
+      supabase.removeChannel(notifChannelRef.current);
+      notifChannelRef.current = null;
+    }
+
+    const channelName = `home-notif-${myId}-${Date.now()}`;
+
     const ch = supabase
-      .channel(`home-notif-${myId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${myId}` },
@@ -154,7 +168,15 @@ export default function HomeScreen() {
         () => loadNotifs()
       )
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+
+    notifChannelRef.current = ch;
+
+    return () => {
+      supabase.removeChannel(ch);
+      if (notifChannelRef.current === ch) {
+        notifChannelRef.current = null;
+      }
+    };
   }, [myId, loadNotifs]);
 
   /* ------------------ animations ------------------ */

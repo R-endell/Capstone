@@ -12,7 +12,11 @@ import {
   getMyUserId, parseTrackingId, trackingIdFor,
 } from '../../../services/disputeService';
 
-const ORANGE = '#FA7A25';
+/** Brand */
+const ORANGE = '#F27024';
+const ORANGE_SOFT = '#FFF4EC';
+const ORANGE_BORDER = '#FFD9B8';
+
 const MIN_DESC = 10;
 const MAX_DESC = 500;
 
@@ -82,12 +86,20 @@ export default function ReportIssueScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="dark-content" backgroundColor="#FAFAFA" translucent />
+
+      {/* HEADER */}
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} hitSlop={10}>
-          <Ionicons name="arrow-back" size={24} color="#000" />
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          hitSlop={10}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Report an Issue</Text>
+        <View style={{ width: 40 }} />
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -98,7 +110,16 @@ export default function ReportIssueScreen() {
         >
           {/* 1. Tracking ID */}
           <Text style={styles.label}>1. Tracking ID</Text>
-          <View style={[styles.inputWrap, trackingError ? styles.inputError : match && !match.hasOpenDispute ? styles.inputOk : null]}>
+          <View
+            style={[
+              styles.inputWrap,
+              trackingError
+                ? styles.inputError
+                : match && !match.hasOpenDispute
+                ? styles.inputOk
+                : null,
+            ]}
+          >
             <Ionicons name="barcode-outline" size={20} color="#6B7280" />
             <TextInput
               style={styles.input}
@@ -109,14 +130,21 @@ export default function ReportIssueScreen() {
               autoCapitalize="characters"
               autoCorrect={false}
             />
-            {match && !match.hasOpenDispute && <Ionicons name="checkmark-circle" size={20} color="#16A34A" />}
+            {match && !match.hasOpenDispute && (
+              <Ionicons name="checkmark-circle" size={20} color="#16A34A" />
+            )}
           </View>
           {trackingError ? <Text style={styles.errorText}>{trackingError}</Text> : null}
 
           {match && !match.hasOpenDispute && (
             <View style={styles.matchCard}>
-              <Text style={styles.matchRoute} numberOfLines={2}>{match.route}</Text>
-              <Text style={styles.matchMeta}>Provider: {match.providerName} · {match.date}</Text>
+              <View style={styles.matchIconWrap}>
+                <Ionicons name="checkmark-circle" size={18} color="#16A34A" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.matchRoute} numberOfLines={2}>{match.route}</Text>
+                <Text style={styles.matchMeta}>Provider: {match.providerName} · {match.date}</Text>
+              </View>
             </View>
           )}
 
@@ -125,7 +153,11 @@ export default function ReportIssueScreen() {
           ) : deliveries.length > 0 ? (
             <>
               <Text style={styles.subLabel}>Or pick a recent delivery</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 8 }}
+              >
                 {deliveries.slice(0, 10).map(d => {
                   const active = match?.request_id === d.request_id;
                   return (
@@ -133,7 +165,7 @@ export default function ReportIssueScreen() {
                       key={d.request_id}
                       style={[styles.recent, active && styles.recentActive]}
                       onPress={() => setTrackingInput(d.tracking)}
-                      activeOpacity={0.8}
+                      activeOpacity={0.85}
                     >
                       <Text style={[styles.recentId, active && { color: '#FFF' }]}>{d.tracking}</Text>
                       <Text style={[styles.recentSub, active && { color: '#FFEDD5' }]}>{d.date}</Text>
@@ -160,9 +192,18 @@ export default function ReportIssueScreen() {
                   onPress={() => setIssueType(t.type)}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name={t.icon as any} size={22} color={active ? '#FFF' : ORANGE} />
+                  <View
+                    style={[
+                      styles.typeIconWrap,
+                      active && { backgroundColor: 'rgba(255,255,255,0.22)', borderColor: 'rgba(255,255,255,0.4)' },
+                    ]}
+                  >
+                    <Ionicons name={t.icon as any} size={20} color={active ? '#FFF' : ORANGE} />
+                  </View>
                   <Text style={[styles.typeTitle, active && { color: '#FFF' }]}>{t.type}</Text>
-                  <Text style={[styles.typeHint, active && { color: '#FFEDD5' }]} numberOfLines={2}>{t.hint}</Text>
+                  <Text style={[styles.typeHint, active && { color: '#FFEDD5' }]} numberOfLines={2}>
+                    {t.hint}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -180,9 +221,7 @@ export default function ReportIssueScreen() {
             textAlignVertical="top"
           />
           <Text style={styles.counter}>
-            {description.trim().length < MIN_DESC
-              ? `At least ${MIN_DESC} characters · `
-              : ''}
+            {description.trim().length < MIN_DESC ? `At least ${MIN_DESC} characters · ` : ''}
             {description.length}/{MAX_DESC}
           </Text>
 
@@ -199,7 +238,14 @@ export default function ReportIssueScreen() {
             onPress={submit}
             activeOpacity={0.85}
           >
-            {submitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitText}>Submit Report</Text>}
+            {submitting ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <>
+                <Ionicons name="paper-plane-outline" size={18} color="#FFF" />
+                <Text style={styles.submitText}>Submit Report</Text>
+              </>
+            )}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -208,55 +254,224 @@ export default function ReportIssueScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+  container: { flex: 1, backgroundColor: '#FAFAFA' },
+
+  /* ── Header ─────────────────────────────────────── */
   header: {
-    backgroundColor: ORANGE, flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingBottom: 20, gap: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    gap: 12,
   },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: '#000' },
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#F3F4F6',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  headerTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#111827',
+    letterSpacing: -0.4,
+  },
+
+  /* ── Content ────────────────────────────────────── */
   content: { padding: 20, paddingBottom: 60 },
-  label: { fontSize: 15, fontWeight: '800', color: '#111827', marginBottom: 10 },
-  subLabel: { fontSize: 12, fontWeight: '600', color: '#6B7280', marginTop: 14, marginBottom: 8 },
+
+  label: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#111827',
+    marginBottom: 10,
+    letterSpacing: -0.2,
+  },
+  subLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#6B7280',
+    marginTop: 14,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+
+  /* Tracking input */
   inputWrap: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFF',
-    borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 12, paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   inputOk: { borderColor: '#16A34A' },
   inputError: { borderColor: '#EF4444' },
-  input: { flex: 1, paddingVertical: 13, fontSize: 16, color: '#111827', fontWeight: '600', letterSpacing: 0.5 },
-  errorText: { color: '#DC2626', fontSize: 12, marginTop: 6 },
-  hint: { color: '#6B7280', fontSize: 12, marginTop: 12, lineHeight: 18 },
-  matchCard: { backgroundColor: '#F0FDF4', borderRadius: 10, padding: 12, marginTop: 10 },
-  matchRoute: { fontSize: 13, fontWeight: '700', color: '#14532D' },
-  matchMeta: { fontSize: 12, color: '#166534', marginTop: 3 },
-  recent: {
-    backgroundColor: '#FFF', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10,
-    paddingHorizontal: 12, paddingVertical: 8,
+  input: {
+    flex: 1,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: '#111827',
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
-  recentActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  recentId: { fontSize: 13, fontWeight: '800', color: '#111827' },
-  recentSub: { fontSize: 11, color: '#6B7280', marginTop: 1 },
+  errorText: { color: '#DC2626', fontSize: 12, marginTop: 8, fontWeight: '600' },
+  hint: { color: '#6B7280', fontSize: 12, marginTop: 12, lineHeight: 18 },
+
+  /* Matched delivery card */
+  matchCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#F0FDF4',
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+  },
+  matchIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  matchRoute: { fontSize: 13, fontWeight: '800', color: '#14532D', letterSpacing: -0.2 },
+  matchMeta: { fontSize: 12, color: '#166534', marginTop: 3, fontWeight: '500' },
+
+  /* Recent chips */
+  recent: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  recentActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  recentId: { fontSize: 13, fontWeight: '800', color: '#111827', letterSpacing: 0.3 },
+  recentSub: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '600' },
+
+  /* Issue type cards */
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   typeCard: {
-    width: '48%', backgroundColor: '#FFF', borderRadius: 12, padding: 12,
-    borderWidth: 1.5, borderColor: '#F3F4F6', gap: 4,
+    width: '48%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: '#F3F4F6',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
-  typeCardActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  typeTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
-  typeHint: { fontSize: 11, color: '#6B7280', lineHeight: 15 },
+  typeCardActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  typeIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: ORANGE_SOFT,
+    borderWidth: 1,
+    borderColor: ORANGE_BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  typeTitle: { fontSize: 13.5, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  typeHint: { fontSize: 11, color: '#6B7280', lineHeight: 15, fontWeight: '500' },
+
+  /* Description */
   textArea: {
-    minHeight: 120, backgroundColor: '#FFF', borderWidth: 1.5, borderColor: '#E5E7EB',
-    borderRadius: 12, padding: 14, fontSize: 14, color: '#111827',
+    minHeight: 130,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    padding: 16,
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '500',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
-  counter: { fontSize: 11, color: '#9CA3AF', textAlign: 'right', marginTop: 6 },
+  counter: { fontSize: 11, color: '#9CA3AF', textAlign: 'right', marginTop: 6, fontWeight: '600' },
+
+  /* Info note */
   note: {
-    flexDirection: 'row', gap: 8, backgroundColor: '#EFF6FF', padding: 12,
-    borderRadius: 10, marginTop: 16,
+    flexDirection: 'row',
+    gap: 10,
+    backgroundColor: '#EFF6FF',
+    padding: 14,
+    borderRadius: 14,
+    marginTop: 16,
   },
-  noteText: { flex: 1, fontSize: 12, color: '#1E40AF', lineHeight: 17 },
+  noteText: { flex: 1, fontSize: 12, color: '#1E40AF', lineHeight: 18, fontWeight: '500' },
+
+  /* Submit */
   submit: {
-    backgroundColor: ORANGE, paddingVertical: 15, borderRadius: 12, alignItems: 'center', marginTop: 20,
+    flexDirection: 'row',
+    backgroundColor: ORANGE,
+    paddingVertical: 16,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 22,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    elevation: 6,
   },
-  submitDisabled: { backgroundColor: '#FDBA74' },
-  submitText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  submitDisabled: {
+    backgroundColor: '#FDBA74',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  submitText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
 });
