@@ -1154,11 +1154,19 @@ export default function ActivityScreen() {
                         <Text style={styles.actionBadgeCompleteText}>Delivered</Text>
                       </View>
                     ) : item.isMatched ? (
-                      <View style={styles.actionBadgeActive}>
-                        <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
-                        <Text style={styles.actionBadgeActiveText}>Track</Text>
-                      </View>
-                    ) : (
+                        <TouchableOpacity
+                          style={styles.actionBadgeActive}
+                          onPress={() => {
+                            const id = item.deliveryData?.delivery_id;
+                            if (!id) return;
+                            navigation.navigate('LiveTracking', { deliveryId: id });
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
+                          <Text style={styles.actionBadgeActiveText}>Track</Text>
+                        </TouchableOpacity>
+                      ) : (
                       <TouchableOpacity
                         style={styles.actionBadgePending}
                         onPress={() => handleResumeFindingProvider(item)}

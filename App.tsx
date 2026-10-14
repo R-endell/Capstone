@@ -88,6 +88,8 @@ import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/Deliv
 
 import { UserProvider } from './src/utils/userContext';
 
+import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
+
 export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
@@ -119,6 +121,7 @@ export type RootStackParamList = {
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
   DeliveryPayment: { requestId: number; amount: number };
+  LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
 };
 
@@ -511,6 +514,11 @@ export default function App() {
               name="DeliveryPayment"
               component={DeliveryPaymentScreen}
               options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+            />
+            <Stack.Screen
+              name="LiveTracking"
+              component={LiveTrackingScreen}
+              options={{ animation: 'slide_from_right' }}
             />
             <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
             <Stack.Screen

@@ -14,6 +14,9 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
+import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
+import { clearLocationFix } from '../../../services/locationService';
+import { useMemo } from 'react'; 
 
 // ── Payment provider logos ──────────────────────────────────────────
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -736,7 +739,7 @@ export default function TaskScreen() {
         'Payment has been released to your wallet.',
         [{ text: 'OK' }]
       );
-
+      try { await clearLocationFix(deliveryId); } catch {}
       closeDeliveryOTPModal();
       await loadData();
     } catch (error: any) {
@@ -1614,6 +1617,20 @@ export default function TaskScreen() {
       </View>
     </Modal>
   );
+  
+  // Broadcast GPS while the provider has a delivery in transit
+const broadcastingDelivery = useMemo(() => {
+  return activeDeliveries.find((d: any) => {
+    const s = stageOf(d);
+    return s === 'transit';
+  }) ?? null;
+}, [activeDeliveries]);
+
+useProviderLocationBroadcast({
+  deliveryId: broadcastingDelivery?.delivery_id ?? null,
+  providerId,
+  active: !!broadcastingDelivery && !!providerId,
+});
 
   if (loading) {
     return (
