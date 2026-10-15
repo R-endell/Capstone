@@ -68,12 +68,12 @@
       "expo-task-manager",
       [
         "expo-build-properties",
-        { "android": { "ndkVersion": "27.0.12077973" } }
+        { "android": { "ndkVersion": "26.3.11579264" } }
       ],
       [
         "expo-gradle-properties",
         {
-          "ndkVersion": "27.0.12077973",
+          "ndkVersion": "26.3.11579264",
           "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
           "org.gradle.parallel": "false",
           "org.gradle.workers.max": "2",

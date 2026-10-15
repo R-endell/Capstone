@@ -17,7 +17,6 @@ const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
-// Search for a match for 30 seconds, then show the "no_match" state.
 const SEARCH_DURATION_MS = 30000;
 
 const SHOW_ANIMATION_SWITCHER = false;
@@ -118,6 +117,10 @@ export default function BookingScreen({ route, navigation }: any) {
   const isResumedSession = useRef(false);
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Synchronous guards — prevent duplicate side effects before React re-renders
+  const proceedingRef = useRef(false);
+  const cancellingRef = useRef(false);
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
@@ -330,7 +333,7 @@ export default function BookingScreen({ route, navigation }: any) {
   /**
    * Start matching.
    * - Pass `reuseRequestId` to retry against the same request instead of
-   *   creating a duplicate one (used by the "Try Again" button and after payment).
+   *   creating a duplicate one.
    */
   const startMatching = async (opts?: { reuseRequestId?: number | null }) => {
     try {
@@ -355,12 +358,10 @@ export default function BookingScreen({ route, navigation }: any) {
       setSavedRequestId(requestId);
       searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
 
-      // Remove any previous channel before creating a new one
       if (matchChannelRef.current) {
         supabase.removeChannel(matchChannelRef.current);
         matchChannelRef.current = null;
       }
-      // Remove any previous timer
       if (searchTimeoutRef.current) {
         clearTimeout(searchTimeoutRef.current);
         searchTimeoutRef.current = null;
@@ -404,7 +405,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
       matchChannelRef.current = matchChannel;
 
-      // Functional guard so we don't depend on the captured bookingState
       searchTimeoutRef.current = setTimeout(() => {
         setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
         setIsSearching(false);
@@ -547,29 +547,35 @@ export default function BookingScreen({ route, navigation }: any) {
 
   /* ---------------------------------------------------------------- */
   /* Proceed to Payment — saves request then navigates to Payment      */
+  /*                                                                   */
+  /* Guarded by a synchronous ref so double-taps cannot create         */
+  /* duplicate delivery_requests rows.                                 */
   /* ---------------------------------------------------------------- */
   const handleProceedToPayment = async () => {
-    if (!receiver?.receiver_id && !receiver?.receiver_phone) {
-      Alert.alert('Receiver Required', 'Please select who will receive this package.');
-      return;
-    }
-
-    if (mode === 'sendNow' && state.scheduledDate) {
-      const scheduledMs = parseManilaNaive(String(state.scheduledDate));
-      const nowMs = parseManilaNaive(nowManilaNaive());
-      if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
-        const diffMinutes = Math.abs(scheduledMs - nowMs) / 60000;
-        if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
-          Alert.alert(
-            'Schedule Too Far',
-            `Send Now requests must be within ${SEND_NOW_WINDOW_MINUTES} minutes.`,
-          );
-          return;
-        }
-      }
-    }
+    if (proceedingRef.current) return; // hard block re-entry
+    proceedingRef.current = true;
 
     try {
+      if (!receiver?.receiver_id && !receiver?.receiver_phone) {
+        Alert.alert('Receiver Required', 'Please select who will receive this package.');
+        return;
+      }
+
+      if (mode === 'sendNow' && state.scheduledDate) {
+        const scheduledMs = parseManilaNaive(String(state.scheduledDate));
+        const nowMs = parseManilaNaive(nowManilaNaive());
+        if (!isNaN(scheduledMs) && !isNaN(nowMs)) {
+          const diffMinutes = Math.abs(scheduledMs - nowMs) / 60000;
+          if (diffMinutes > SEND_NOW_WINDOW_MINUTES) {
+            Alert.alert(
+              'Schedule Too Far',
+              `Send Now requests must be within ${SEND_NOW_WINDOW_MINUTES} minutes.`,
+            );
+            return;
+          }
+        }
+      }
+
       // Save the request first so DeliveryPayment has a requestId
       let requestId: number;
 
@@ -588,10 +594,18 @@ export default function BookingScreen({ route, navigation }: any) {
       navigation.navigate('DeliveryPayment', { requestId, amount });
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
+    } finally {
+      // Re-enable after navigation settles. If the screen is still mounted
+      // (e.g. user backs out of Payment), they can try again.
+      setTimeout(() => { proceedingRef.current = false; }, 800);
     }
   };
 
-    const handleCancelBooking = async () => {
+  const handleCancelBooking = async () => {
+    if (cancellingRef.current) return;
+    cancellingRef.current = true;
+
+    try {
       if (matchChannelRef.current) {
         supabase.removeChannel(matchChannelRef.current);
         matchChannelRef.current = null;
@@ -613,10 +627,6 @@ export default function BookingScreen({ route, navigation }: any) {
           reqRow?.escrow_status === 'held';
 
         if (wasHeld) {
-          // ---------------------------------------------------------
-          // Real Xendit refund. Do NOT mark as refunded here — the
-          // webhook will do that when the money actually settles.
-          // ---------------------------------------------------------
           try {
             const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
               'xendit-refund',
@@ -629,7 +639,6 @@ export default function BookingScreen({ route, navigation }: any) {
                 refundErr?.message ||
                 'Refund could not be initiated.';
 
-              // Still cancel so the sender isn't stuck, but be honest
               await supabase
                 .from('delivery_requests')
                 .update({ delivery_status: 'Cancelled' })
@@ -648,7 +657,6 @@ export default function BookingScreen({ route, navigation }: any) {
                 `Your booking was cancelled, but the automatic refund could not be started (${msg}). Our team will process your refund manually within 3–5 business days.`,
               );
             } else {
-              // Refund accepted by Xendit → wait for webhook
               await supabase
                 .from('delivery_requests')
                 .update({ delivery_status: 'Cancelled' })
@@ -660,7 +668,6 @@ export default function BookingScreen({ route, navigation }: any) {
               );
             }
           } catch (e: any) {
-            // Network failure etc. — cancel anyway, flag for manual
             await supabase
               .from('delivery_requests')
               .update({ delivery_status: 'Cancelled' })
@@ -684,7 +691,10 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
       setBookingState('review');
-    };
+    } finally {
+      cancellingRef.current = false;
+    }
+  };
 
   // Leave the screen WITHOUT cancelling the request.
   const handleGoHome = () => {
@@ -938,7 +948,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
             <View style={styles.divider} />
 
-            {/* Fare breakdown — only shows when pricing is ready */}
             {pricing ? (
               <View style={styles.fareBreakdown}>
                 <View style={styles.fareRow}>

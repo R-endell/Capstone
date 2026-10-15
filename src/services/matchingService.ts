@@ -146,6 +146,10 @@ function isTimeWithinWindow(
 
 /* ------------------------------------------------------------------ */
 /* Data fetchers                                                       */
+/*                                                                     */
+/* IMPORTANT: only funded requests (payment_status = 'held') are       */
+/* returned here. This is the single source of truth that keeps        */
+/* providers from ever seeing / accepting unpaid requests.             */
 /* ------------------------------------------------------------------ */
 export async function getPendingRequests(): Promise<any[]> {
   const { data } = await supabase
@@ -153,7 +157,8 @@ export async function getPendingRequests(): Promise<any[]> {
     .select(
       '*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)',
     )
-    .eq('delivery_status', 'Pending');
+    .eq('delivery_status', 'Pending')
+    .eq('payment_status', 'held');
   return data || [];
 }
 
@@ -234,11 +239,6 @@ export async function findMatches(
 
 /* ------------------------------------------------------------------ */
 /* autoMatchAndCreateDeliveries — READ-ONLY                            */
-/*                                                                     */
-/* Returns proposed matches to the UI. Does NOT insert a `deliveries`  */
-/* row. The provider must explicitly accept in JobsScreen, which is    */
-/* the only place that creates the delivery + flips the request to     */
-/* "Accepted".                                                         */
 /* ------------------------------------------------------------------ */
 export async function autoMatchAndCreateDeliveries(
   routeId?: number | null,

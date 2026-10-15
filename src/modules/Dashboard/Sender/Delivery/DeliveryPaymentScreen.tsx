@@ -25,6 +25,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const payingRef = useRef(false); // synchronous guard against double-tap
 
   useEffect(() => {
     (async () => {
@@ -59,6 +60,8 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
   const handlePay = async () => {
     if (!selected) return;
+    if (payingRef.current) return; // hard block re-entry
+    payingRef.current = true;
     setPaying(true);
 
     try {
@@ -84,12 +87,14 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           const status = await getDeliveryPaymentStatus(requestId);
           if (status.payment_status === 'held' || status.payment_status === 'released') {
             if (pollRef.current) clearInterval(pollRef.current);
+            payingRef.current = false;
             setPaying(false);
             navigation.navigate('Booking', { paymentJustCompleted: true, requestId });
             return;
           }
           if (status.payment_status === 'failed') {
             if (pollRef.current) clearInterval(pollRef.current);
+            payingRef.current = false;
             setPaying(false);
             Alert.alert('Payment Failed', 'Your payment was declined. Please try another method.');
             return;
@@ -99,6 +104,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         }
         if (attempts >= 30) { // 30 × 2s = 60s
           if (pollRef.current) clearInterval(pollRef.current);
+          payingRef.current = false;
           setPaying(false);
           Alert.alert(
             'Still Processing',
@@ -107,6 +113,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         }
       }, 2000);
     } catch (e: any) {
+      payingRef.current = false;
       setPaying(false);
       Alert.alert('Payment Failed', e.message || 'Something went wrong');
     }
