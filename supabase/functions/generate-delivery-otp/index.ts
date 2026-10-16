@@ -60,6 +60,7 @@ serve(async (req) => {
 
     // ------------------------------------------------------------------
     // VERIFY — courier enters the OTP the receiver read out
+    // On success: release escrow to the provider
     // ------------------------------------------------------------------
     if (action === 'verify') {
       if (!delivery_id || !otp) {
@@ -83,7 +84,10 @@ serve(async (req) => {
         return jsonResponse({ success: true, already_verified: true });
       }
       if (row.otp_expires_at && new Date() > new Date(row.otp_expires_at)) {
-        return jsonResponse({ success: false, message: 'OTP has expired. Ask the sender to send a new one.' });
+        return jsonResponse({
+          success: false,
+          message: 'OTP has expired. Ask the sender to send a new one.',
+        });
       }
       if (String(row.system_otp) !== String(otp).trim()) {
         await supabase
@@ -93,6 +97,7 @@ serve(async (req) => {
         return jsonResponse({ success: false, message: 'Incorrect code. Please try again.' });
       }
 
+      // OTP is valid — mark it verified
       const { error: updErr } = await supabase
         .from('delivery_confirmations')
         .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
@@ -104,6 +109,54 @@ serve(async (req) => {
       }
 
       console.log('[VERIFY] SUCCESS for delivery', delivery_id);
+
+      // --------------------------------------------------------------
+      // ESCROW RELEASE — mark funds as released to the provider
+      // Non-fatal: if this fails, the OTP verification still stands.
+      // --------------------------------------------------------------
+      try {
+        const { data: delivery } = await supabase
+          .from('deliveries')
+          .select('request_id, provider_id')
+          .eq('delivery_id', delivery_id)
+          .maybeSingle();
+
+        if (delivery?.request_id) {
+          const { data: reqRow } = await supabase
+            .from('delivery_requests')
+            .select('estimated_cost, escrow_status')
+            .eq('request_id', delivery.request_id)
+            .single();
+
+          if (reqRow?.escrow_status === 'held') {
+            await supabase
+              .from('delivery_requests')
+              .update({
+                escrow_status: 'released',
+                payment_status: 'released',
+                escrow_released_at: new Date().toISOString(),
+              })
+              .eq('request_id', delivery.request_id);
+
+            await supabase.from('escrow_transactions').insert({
+              request_id: delivery.request_id,
+              event: 'released',
+              amount: Number(reqRow.estimated_cost) || 0,
+              notes: `Escrow released to provider ${delivery.provider_id}`,
+            });
+
+            console.log('[ESCROW] Released for request', delivery.request_id);
+          } else {
+            console.log(
+              '[ESCROW] Skipped — status was:',
+              reqRow?.escrow_status ?? 'unknown'
+            );
+          }
+        }
+      } catch (e) {
+        console.error('[ESCROW] Release failed (non-fatal):', e);
+      }
+
       return jsonResponse({ success: true });
     }
 

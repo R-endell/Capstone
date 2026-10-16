@@ -1,132 +1,199 @@
 // src/modules/Dashboard/Sender/Settings_Sender/SettingsScreen.tsx
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  StatusBar,
-  Image,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme, ThemeColors } from '../../utils/themeContext';
+
+const ORANGE = '#FA7A25';
 
 export default function SettingsScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const handleTwoFactorPress = () => {
-    navigation.navigate('TwoFactorAuth');
-  };
-
-  const handleLegalPress = () => {
-    navigation.navigate('LegalPolicies');
-  };
+  const handleTwoFactorPress = () => navigation.navigate('TwoFactorAuth');
+  const handleLegalPress = () => navigation.navigate('LegalPolicies');
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#FA7A25" />
-      
-      {/* Custom Orange Header */}
-      <View style={[styles.mainHeader, { paddingTop: insets.top + 20 }]}>
-        <TouchableOpacity 
-          onPress={() => navigation.goBack()} 
-          style={styles.backButton}
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
+
+      {/* Header */}
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          activeOpacity={0.85}
         >
-          <Ionicons name="arrow-back" size={24} color="#000" />
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Settings</Text>
-
-        {/* Gray Car Image placed inside the header */}
-        <Image 
-          source={require('../../../assets/Car-Grey.png')} // Adjust relative path to your assets folder as needed
-          style={styles.carImage}
-          resizeMode="contain"
-        />
+        <View style={{ width: 42 }} />
       </View>
 
-      {/* Menu Content */}
-      <ScrollView 
-        showsVerticalScrollIndicator={false} 
-        style={styles.mainContent} 
-        contentContainerStyle={{ paddingBottom: 100 }}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        style={styles.mainContent}
+        contentContainerStyle={styles.mainScrollContent}
       >
-        {/* Security Section */}
+        {/* Security */}
         <Text style={styles.sectionTitle}>Security</Text>
 
-        <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0 }]} onPress={handleTwoFactorPress}>
-          <Text style={styles.menuText}>Two-Factor Authentication</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
+        <View style={styles.menuCard}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={handleTwoFactorPress}
+            activeOpacity={0.7}
+          >
+            <View style={styles.menuItemLeft}>
+              <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#231542' : '#F5F3FF' }]}>
+                <Ionicons name="shield-checkmark-outline" size={19} color="#8B5CF6" />
+              </View>
+              <View style={styles.menuTextWrapper}>
+                <Text style={styles.menuText}>Two-Factor Authentication</Text>
+                <Text style={styles.menuSubtext} numberOfLines={1}>
+                  Extra layer of security for your account
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
 
-        {/* Legal Section */}
-        <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Legal</Text>
+        {/* Legal */}
+        <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Legal</Text>
 
-        <TouchableOpacity style={[styles.menuItem, { borderBottomWidth: 0 }]} onPress={handleLegalPress}>
-          <Text style={styles.menuText}>Legal Policies</Text>
-          <Ionicons name="chevron-forward" size={20} color="#000" />
-        </TouchableOpacity>
+        <View style={styles.menuCard}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={handleLegalPress}
+            activeOpacity={0.7}
+          >
+            <View style={styles.menuItemLeft}>
+              <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#0F2744' : '#EFF6FF' }]}>
+                <Ionicons name="document-text-outline" size={19} color="#3B82F6" />
+              </View>
+              <View style={styles.menuTextWrapper}>
+                <Text style={styles.menuText}>Legal Policies</Text>
+                <Text style={styles.menuSubtext} numberOfLines={1}>
+                  Terms, privacy, and community guidelines
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.versionText}>Pack-N-Ship · v1.0.0</Text>
       </ScrollView>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#FFFFFF' 
-  },
-  mainHeader: {
-    backgroundColor: '#FA7A25', 
-    flexDirection: 'row', 
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
+
+  header: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 24, 
-    paddingBottom: 100,
-    position: 'relative', 
-    overflow: 'hidden',    
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: c.card,
+    borderBottomWidth: 1,
+    borderBottomColor: c.border,
   },
-  backButton: {
-    marginRight: 12,
-    bottom: -40,
-    zIndex: 10, 
+  backBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: c.divider,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: c.border,
   },
   headerTitle: {
-    fontSize: 23,
+    fontSize: 18,
     fontWeight: '800',
-    color: '#000',
-    bottom: -40,
-    zIndex: 10, 
+    color: c.textPrimary,
+    letterSpacing: -0.3,
   },
-  carImage: {
-    position: 'absolute',
-    right: -15,   
-    bottom: -15,  
-    width: 250,   
-    height: 130,  
-    zIndex: 1,
+
+  mainContent: { flex: 1 },
+  mainScrollContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 60 },
+
+  sectionTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: c.textSecondary,
+    marginBottom: 12,
+    letterSpacing: 0.2,
+    textTransform: 'uppercase',
   },
-  mainContent: { 
-    paddingHorizontal: 20, 
-    paddingTop: 24,
-  },
-  sectionTitle: { 
-    fontSize: 23, 
-    fontWeight: '800', 
-    color: '#111827', 
-    marginBottom: 16 
+
+  menuCard: {
+    backgroundColor: c.card,
+    borderRadius: 18,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.05,
+    shadowRadius: 10,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: c.border,
   },
   menuItem: {
-    flexDirection: 'row', 
-    alignItems: 'center', 
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 16, 
-    borderBottomWidth: 1, 
-    borderColor: '#F3F4F6',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    minHeight: 68,
   },
-  menuText: { 
-    fontSize: 20, 
-    color: '#374151' 
+  menuItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
+  },
+  menuIconWrapper: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  menuTextWrapper: { flex: 1 },
+  menuText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: c.textPrimary,
+    letterSpacing: -0.2,
+  },
+  menuSubtext: {
+    fontSize: 13,
+    color: c.textSecondary,
+    marginTop: 3,
+    fontWeight: '500',
+  },
+
+  versionText: {
+    textAlign: 'center',
+    color: c.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 28,
+    marginBottom: 24,
+    letterSpacing: 0.4,
   },
 });

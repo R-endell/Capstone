@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Image, TouchableOpacity, Switch,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
-  Animated, Easing, Linking, StatusBar
+  Animated, Easing, Linking, StatusBar, FlatList, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +14,8 @@ import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
 import { findMatches } from '../../../services/matchingService';
+import NotificationsList from '../Disputes/NotificationsList';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
@@ -58,7 +60,7 @@ interface JobItem {
   size: string | null;
   fragile: boolean;
   photo: string | null;
-  localOnly?: boolean; // a photo was taken but it was never uploaded (file only on the sender's phone)
+  localOnly?: boolean;
   boxes: string | null;
 }
 interface JobPlace {
@@ -83,6 +85,16 @@ interface JobRequest {
   senderName: string;
   receiverName: string | null;
 }
+
+type Notif = {
+  notif_id: number;
+  title: string;
+  body: string;
+  type: string;
+  is_read: boolean;
+  created_at: string;
+  ref_id: number | null;
+};
 
 const toNaiveIsoString = (date: Date): string => {
   const y = date.getFullYear();
@@ -154,6 +166,39 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const roadKm = (aLat: number, aLng: number, bLat: number, bLng: number) => haversineKm(aLat, aLng, bLat, bLng) * 1.3;
 
+const ago = (iso: string) => {
+  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
+  const t = (type || '').toLowerCase();
+  if (t.startsWith('dispute')) return 'shield-checkmark-outline';
+  if (t.startsWith('delivery')) return 'cube-outline';
+  if (t === 'match') return 'flash-outline';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'chatbubble-ellipses-outline';
+  if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
+  if (t === 'payment' || t === 'escrow') return 'card-outline';
+  return 'notifications-outline';
+};
+
+const titleForType = (type: string, fallback: string): string => {
+  const t = (type || '').toLowerCase();
+  if (t === 'match') return 'New Delivery Match';
+  if (t.startsWith('delivery')) return 'Delivery Update';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'New Message';
+  if (t.startsWith('dispute')) return 'Dispute Update';
+  if (t.startsWith('support')) return 'Pack-N-Ship';
+  if (t === 'payment' || t === 'escrow') return 'Payment Update';
+  return fallback;
+};
+
 const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest => {
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
@@ -216,7 +261,7 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap - OSRM road-following route (non-interactive preview)         */
+/* RouteMap — plain OpenStreetMap light tiles only                      */
 /* ==================================================================== */
 const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
   const lat = startLat ?? endLat ?? 10.3157;
@@ -290,8 +335,7 @@ const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLab
 };
 
 /* ==================================================================== */
-/* ProviderMap - live map: provider's current location, active route,    */
-/* the incoming order, and (mock) demand zones                           */
+/* ProviderMap — plain OpenStreetMap light tiles only                   */
 /* ==================================================================== */
 const PROVIDER_MAP_HTML = `
 <!DOCTYPE html>
@@ -359,7 +403,6 @@ const PROVIDER_MAP_HTML = `
             else { meMarker.setLatLng(me); meMarker.setIcon(meIcon(s.provider.heading)); }
           }
 
-          // Active route (blue)
           var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
           if (rk !== routeKey) {
             routeKey = rk; routeLayer.clearLayers();
@@ -370,7 +413,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // Incoming order (orange)
           var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
           if (ok !== orderKey) {
             orderKey = ok; orderLayer.clearLayers();
@@ -387,7 +429,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // Demand zones (mock)
           var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) : '';
           if (dk !== demandKey) {
             demandKey = dk; demandLayer.clearLayers();
@@ -401,7 +442,6 @@ const PROVIDER_MAP_HTML = `
             }
           }
 
-          // First GPS fix / recenter button
           if (firstFix && me && !s.order) { firstFix = false; map.setView(me, 15); }
           if (s.tick !== lastTick) { lastTick = s.tick; if (me) map.setView(me, 16, { animate: true }); }
         } catch (e) {}
@@ -441,6 +481,9 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const { colors, isDark } = useTheme();
+  const styles = makeStyles(colors);
+
   const [isOnline, setIsOnline] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -459,34 +502,38 @@ export default function JobsScreen() {
 
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
 
-  // Live map
   const [myLoc, setMyLoc] = useState<{ lat: number; lng: number; heading: number | null } | null>(null);
   const [locDenied, setLocDenied] = useState(false);
   const [recenterTick, setRecenterTick] = useState(0);
   const [showDemand, setShowDemand] = useState(false);
 
-  // Incoming order popup
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
   const [offerSecondsLeft, setOfferSecondsLeft] = useState(OFFER_SECONDS);
 
-  // Departure confirmation sheet state
   const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
   const [departureDate, setDepartureDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
+  const [notifModalOpen, setNotifModalOpen] = useState(false);
+  const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [notifLoading, setNotifLoading] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notifChannelRef = useRef<string>(
+    `provider-notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+
+  const [fullListOpen, setFullListOpen] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
+  const bellPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
-      Animated.timing(v, {
-        toValue: 1, duration, delay,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      });
+      Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
     Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
   }, [headerAnim, contentAnim]);
 
@@ -502,116 +549,137 @@ export default function JobsScreen() {
     return () => pulse.stop();
   }, [isOnline, onlinePulse]);
 
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bellPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(bellPulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [bellPulse]);
+
   useEffect(() => { selectedIdRef.current = selectedRequest?.request_id ?? null; }, [selectedRequest]);
+
+  const loadNotifs = useCallback(async () => {
+    if (!providerId) return;
+    setNotifLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('notification_log')
+        .select('notif_id, title, body, type, is_read, created_at, ref_id')
+        .eq('user_id', providerId)
+        .order('created_at', { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      const list = (data || []) as Notif[];
+      setNotifs(list);
+      setUnreadCount(list.filter(n => !n.is_read).length);
+    } catch (e) { console.warn('[jobs] notif load failed', e); }
+    finally { setNotifLoading(false); }
+  }, [providerId]);
+
+  useEffect(() => { if (providerId) loadNotifs(); }, [providerId, loadNotifs]);
+
+  useEffect(() => {
+    if (!providerId) return;
+    const ch = supabase
+      .channel(notifChannelRef.current)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [providerId, loadNotifs]);
+
+  const handleOpenNotifs = () => { setNotifModalOpen(true); loadNotifs(); };
+
+  const markNotifRead = async (n: Notif) => {
+    if (n.is_read) return;
+    setNotifs(prev => prev.map(x => x.notif_id === n.notif_id ? { ...x, is_read: true } : x));
+    setUnreadCount(c => Math.max(0, c - 1));
+    try { await supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id); }
+    catch (e) { console.warn('mark read failed', e); }
+  };
+
+  const handleNotifPress = async (n: Notif) => {
+    await markNotifRead(n);
+    setNotifModalOpen(false);
+    const type = (n.type || '').toLowerCase();
+    if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
+      setFullListOpen(true); return;
+    }
+    if (type.startsWith('dispute')) {
+      if (n.ref_id == null) { navigation.navigate('DisputeCenter'); return; }
+      if (typeof n.ref_id === 'number') { navigation.navigate('DisputeDetail', { disputeId: n.ref_id }); return; }
+      try {
+        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(n.ref_id)).maybeSingle();
+        if (data?.dispute_id) navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
+        else navigation.navigate('DisputeCenter');
+      } catch { navigation.navigate('DisputeCenter'); }
+      return;
+    }
+    if (type.startsWith('delivery') || type === 'match' || type === 'payment' || type === 'escrow') {
+      refreshMatches(); return;
+    }
+    Alert.alert(n.title || 'Notification', n.body || '');
+  };
 
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData, error } = await supabase
-        .from('users')
-        .select('user_id, is_active')
-        .eq('auth_id', user.id)
-        .single();
+      const { data: userData, error } = await supabase.from('users').select('user_id, is_active').eq('auth_id', user.id).single();
       if (error) throw error;
       setProviderId(userData.user_id);
       setIsOnline(userData.is_active || false);
       return userData.user_id;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   };
 
   const createQuickRoute = async (pid: number) => {
     try {
       setLoading(true);
-
-      // 1. Get or create vehicle
       let vehicleId: number | null = null;
-      const { data: vehData } = await supabase
-        .from('vehicles')
-        .select('vehicle_id')
-        .eq('provider_id', pid)
-        .limit(1)
-        .maybeSingle();
+      const { data: vehData } = await supabase.from('vehicles').select('vehicle_id').eq('provider_id', pid).limit(1).maybeSingle();
 
-      if (vehData) {
-        vehicleId = vehData.vehicle_id;
-      } else {
-        const { data: newVeh, error: vehErr } = await supabase
-          .from('vehicles')
-          .insert({
-            provider_id: pid,
-            vehicle_type: 'Motorcycle / Van',
-            plate_number: 'PNS-999',
-            max_volume_liters: 500,
-            max_weight_kg: 100,
-            cargo_length_cm: 100,
-            cargo_width_cm: 100,
-            cargo_height_cm: 100,
-            verification_status: 'Verified',
-          })
-          .select('*')
-          .single();
-
+      if (vehData) { vehicleId = vehData.vehicle_id; }
+      else {
+        const { data: newVeh, error: vehErr } = await supabase.from('vehicles').insert({
+          provider_id: pid, vehicle_type: 'Motorcycle / Van', plate_number: 'PNS-999',
+          max_volume_liters: 500, max_weight_kg: 100,
+          cargo_length_cm: 100, cargo_width_cm: 100, cargo_height_cm: 100,
+          verification_status: 'Verified',
+        }).select('*').single();
         if (vehErr) throw vehErr;
         vehicleId = newVeh.vehicle_id;
       }
 
-      // 2. Create Start & End Locations
       const curLat = myLoc?.lat ?? 10.3157;
       const curLng = myLoc?.lng ?? 123.8854;
 
-      const { data: startLoc, error: sErr } = await supabase
-        .from('locations')
-        .insert({
-          street_address: 'Current Location',
-          barangay: 'Lahug',
-          city: 'Cebu City',
-          province: 'Cebu',
-          zip_code: '6000',
-          latitude: curLat,
-          longitude: curLng,
-        })
-        .select('*')
-        .single();
+      const { data: startLoc, error: sErr } = await supabase.from('locations').insert({
+        street_address: 'Current Location', barangay: 'Lahug', city: 'Cebu City', province: 'Cebu',
+        zip_code: '6000', latitude: curLat, longitude: curLng,
+      }).select('*').single();
       if (sErr) throw sErr;
 
-      const { data: endLoc, error: eErr } = await supabase
-        .from('locations')
-        .insert({
-          street_address: 'Cebu Metro Destination',
-          barangay: 'Centro',
-          city: 'Mandaue City',
-          province: 'Cebu',
-          zip_code: '6014',
-          latitude: curLat + 0.03,
-          longitude: curLng + 0.03,
-        })
-        .select('*')
-        .single();
+      const { data: endLoc, error: eErr } = await supabase.from('locations').insert({
+        street_address: 'Cebu Metro Destination', barangay: 'Centro', city: 'Mandaue City', province: 'Cebu',
+        zip_code: '6014', latitude: curLat + 0.03, longitude: curLng + 0.03,
+      }).select('*').single();
       if (eErr) throw eErr;
 
-      // 3. Insert route
       const nowIso = toNaiveIsoString(new Date());
-      const { data: simpleRoute, error: simpleErr } = await supabase
-        .from('provider_routes')
-        .insert({
-          provider_id: pid,
-          vehicle_id: vehicleId,
-          start_location_id: startLoc.location_id,
-          end_location_id: endLoc.location_id,
-          departure_time: nowIso,
-          route_frequency: 'On-Demand',
-        })
-        .select('*')
-        .single();
+      const { data: simpleRoute, error: simpleErr } = await supabase.from('provider_routes').insert({
+        provider_id: pid, vehicle_id: vehicleId,
+        start_location_id: startLoc.location_id, end_location_id: endLoc.location_id,
+        departure_time: nowIso, route_frequency: 'On-Demand',
+      }).select('*').single();
       if (simpleErr) throw simpleErr;
 
       const builtRoute: Route = {
-        ...simpleRoute,
-        start_location: startLoc,
-        end_location: endLoc,
+        ...simpleRoute, start_location: startLoc, end_location: endLoc,
         vehicle: vehData || { vehicle_id: vehicleId, vehicle_type: 'Motorcycle / Van', plate_number: 'PNS-999' } as any,
       };
 
@@ -623,9 +691,7 @@ export default function JobsScreen() {
       console.error('Failed to create quick route:', err);
       Alert.alert('Error', err?.message || 'Could not create active route.');
       return null;
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const fetchRoutes = async (pid: number) => {
@@ -638,8 +704,7 @@ export default function JobsScreen() {
           end_location:locations!provider_routes_end_location_id_fkey(*),
           vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
         `)
-        .eq('provider_id', pid)
-        .order('created_at', { ascending: false });
+        .eq('provider_id', pid).order('created_at', { ascending: false });
 
       if (error || !data) {
         const { data: fkData, error: fkError } = await supabase
@@ -650,40 +715,25 @@ export default function JobsScreen() {
             end_location:locations!end_location_id(*),
             vehicle:vehicles(*)
           `)
-          .eq('provider_id', pid)
-          .order('created_at', { ascending: false });
-
-        if (!fkError && fkData) {
-          data = fkData;
-          error = null;
-        }
+          .eq('provider_id', pid).order('created_at', { ascending: false });
+        if (!fkError && fkData) { data = fkData; error = null; }
       }
 
       let list: Route[] = [];
 
       if (error || !data || data.length === 0) {
-        const { data: simpleRoutes } = await supabase
-          .from('provider_routes')
-          .select('*')
-          .eq('provider_id', pid)
-          .order('created_at', { ascending: false });
-
+        const { data: simpleRoutes } = await supabase.from('provider_routes').select('*').eq('provider_id', pid).order('created_at', { ascending: false });
         if (simpleRoutes && simpleRoutes.length > 0) {
-          const locIds = Array.from(
-            new Set(simpleRoutes.flatMap((r) => [r.start_location_id, r.end_location_id]).filter(Boolean))
-          );
+          const locIds = Array.from(new Set(simpleRoutes.flatMap((r) => [r.start_location_id, r.end_location_id]).filter(Boolean)));
           const vIds = Array.from(new Set(simpleRoutes.map((r) => r.vehicle_id).filter(Boolean)));
-
-          const { data: locs } = locIds.length > 0 
-            ? await supabase.from('locations').select('*').in('location_id', locIds) 
+          const { data: locs } = locIds.length > 0
+            ? await supabase.from('locations').select('*').in('location_id', locIds)
             : { data: [] };
-          const { data: vehs } = vIds.length > 0 
-            ? await supabase.from('vehicles').select('*').in('vehicle_id', vIds) 
+          const { data: vehs } = vIds.length > 0
+            ? await supabase.from('vehicles').select('*').in('vehicle_id', vIds)
             : { data: [] };
-
           const locMap = new Map((locs || []).map((l: any) => [l.location_id, l]));
           const vehMap = new Map((vehs || []).map((v: any) => [v.vehicle_id, v]));
-
           list = simpleRoutes.map((r: any) => ({
             ...r,
             start_location: locMap.get(r.start_location_id),
@@ -691,27 +741,16 @@ export default function JobsScreen() {
             vehicle: vehMap.get(r.vehicle_id),
           }));
         }
-      } else {
-        list = data as Route[];
-      }
+      } else { list = data as Route[]; }
 
       setRoutes(list);
-
       const savedId = await getActiveRouteId();
       const restored = savedId ? list.find((r) => r.route_id === savedId) : null;
 
-      if (restored) {
-        setActiveRoute(restored);
-      } else if (list.length > 0) {
-        setActiveRoute(list[0]);
-        await setActiveRouteId(list[0].route_id);
-      } else {
-        setActiveRoute(null);
-        await setActiveRouteId(null);
-      }
-    } catch (e) {
-      console.error('fetchRoutes error:', e);
-    }
+      if (restored) { setActiveRoute(restored); }
+      else if (list.length > 0) { setActiveRoute(list[0]); await setActiveRouteId(list[0].route_id); }
+      else { setActiveRoute(null); await setActiveRouteId(null); }
+    } catch (e) { console.error('fetchRoutes error:', e); }
   };
 
   const hydrateRequests = async (ids: number[]): Promise<JobRequest[]> => {
@@ -727,8 +766,7 @@ export default function JobsScreen() {
         dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( * ),
         receiver:receiver_id ( * )
       `)
-      .in('request_id', ids)
-      .eq('delivery_status', 'Pending');
+      .in('request_id', ids).eq('delivery_status', 'Pending');
     if (error) throw error;
 
     const { data: taken } = await supabase.from('deliveries').select('request_id').in('request_id', ids);
@@ -738,8 +776,7 @@ export default function JobsScreen() {
     const senderIds = Array.from(new Set(open.map((r: any) => r.sender_id).filter(Boolean)));
     const senders: Record<number, string> = {};
     if (senderIds.length > 0) {
-      const { data: users } = await supabase
-        .from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
+      const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
       (users || []).forEach((u: any) => {
         const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
         senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
@@ -752,11 +789,7 @@ export default function JobsScreen() {
   };
 
   const refreshMatches = async () => {
-    if (!activeRoute) {
-      setRequests([]);
-      setRefreshing(false);
-      return;
-    }
+    if (!activeRoute) { setRequests([]); setRefreshing(false); return; }
     try {
       setCheckingMatches(true);
       const matches = await findMatches(activeRoute.route_id);
@@ -771,12 +804,8 @@ export default function JobsScreen() {
         setSelectedRequest(null);
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
       }
-    } catch (e) {
-      console.warn('refreshMatches error:', e);
-    } finally {
-      setCheckingMatches(false);
-      setRefreshing(false);
-    }
+    } catch (e) { console.warn('refreshMatches error:', e); }
+    finally { setCheckingMatches(false); setRefreshing(false); }
   };
 
   const loadData = async () => {
@@ -789,68 +818,45 @@ export default function JobsScreen() {
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   useEffect(() => {
-    if (!isOnline || !activeRoute) {
-      setRequests([]);
-      setSelectedRequest(null);
-      return;
-    }
-
+    if (!isOnline || !activeRoute) { setRequests([]); setSelectedRequest(null); return; }
     refreshMatches();
-
     const channel = supabase
       .channel(`jobs-realtime-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { refreshMatches(); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => { refreshMatches(); })
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [isOnline, activeRoute?.route_id]);
 
   const toggleOnlineStatus = async (online: boolean) => {
     const pid = providerId || (await getProviderData());
-    if (!pid) {
-      Alert.alert('Error', 'Provider account details could not be loaded.');
-      return;
-    }
+    if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
     if (online) {
       let currentRoute = activeRoute;
-
       if (!currentRoute) {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
           await setActiveRouteId(currentRoute.route_id);
-        } else {
-          currentRoute = await createQuickRoute(pid);
-        }
+        } else { currentRoute = await createQuickRoute(pid); }
       }
-
-      if (!currentRoute) {
-        Alert.alert('Route Error', 'Unable to set an active route. Please try again.');
-        return;
-      }
+      if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route. Please try again.'); return; }
 
       await supabase.from('users').update({ is_active: true }).eq('user_id', pid);
       setIsOnline(true);
       setTimeout(refreshMatches, 200);
     } else {
-      Alert.alert(
-        'Go Offline',
-        'Going offline will stop matching new requests. Your route will remain saved.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Go Offline', style: 'destructive', onPress: async () => {
-              await supabase.from('users').update({ is_active: false }).eq('user_id', pid);
-              setIsOnline(false);
-              setRequests([]);
-            },
+      Alert.alert('Go Offline', 'Going offline will stop matching new requests. Your route will remain saved.', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Go Offline', style: 'destructive', onPress: async () => {
+            await supabase.from('users').update({ is_active: false }).eq('user_id', pid);
+            setIsOnline(false);
+            setRequests([]);
           },
-        ],
-      );
+        },
+      ]);
     }
   };
 
@@ -865,14 +871,9 @@ export default function JobsScreen() {
 
   const confirmDeparture = async () => {
     if (!pendingRoute || !providerId) return;
-
     try {
       const departureValue = toNaiveIsoString(departureDate);
-
-      const { error: updateErr } = await supabase
-        .from('provider_routes')
-        .update({ departure_time: departureValue })
-        .eq('route_id', pendingRoute.route_id);
+      const { error: updateErr } = await supabase.from('provider_routes').update({ departure_time: departureValue }).eq('route_id', pendingRoute.route_id);
       if (updateErr) throw updateErr;
 
       const { data: fullRoute } = await supabase
@@ -883,9 +884,7 @@ export default function JobsScreen() {
           end_location:locations!provider_routes_end_location_id_fkey(*),
           vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
         `)
-        .eq('route_id', pendingRoute.route_id)
-        .single();
-
+        .eq('route_id', pendingRoute.route_id).single();
       if (!fullRoute) throw new Error('Failed to reload route');
 
       setActiveRoute(fullRoute as Route);
@@ -939,17 +938,13 @@ export default function JobsScreen() {
             (p) => { if (!cancelled) setMyLoc(toLoc(p)); },
           );
           if (cancelled) watcher.remove(); else sub = watcher;
-        } catch (e) {
-          console.warn('Location error:', e);
-        }
+        } catch (e) { console.warn('Location error:', e); }
       })();
       return () => { cancelled = true; sub?.remove(); };
     }, []),
   );
 
-  const offers = isOnline && !!activeRoute
-    ? requests.filter(r => !dismissedIds.includes(r.request_id))
-    : [];
+  const offers = isOnline && !!activeRoute ? requests.filter(r => !dismissedIds.includes(r.request_id)) : [];
   const currentOffer = offers[0] ?? null;
 
   const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
@@ -970,14 +965,10 @@ export default function JobsScreen() {
   }, [offerSecondsLeft]);
 
   const triggerSOS = () => {
-    Alert.alert(
-      'Emergency',
-      'Do you need emergency help? You can call the national emergency hotline now.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Call 911', style: 'destructive', onPress: () => Linking.openURL('tel:911') },
-      ],
-    );
+    Alert.alert('Emergency', 'Do you need emergency help? You can call the national emergency hotline now.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Call 911', style: 'destructive', onPress: () => Linking.openURL('tel:911') },
+    ]);
   };
 
   const doAccept = async (req: JobRequest) => {
@@ -987,20 +978,13 @@ export default function JobsScreen() {
       let vehicleId: number | null =
         activeRoute.vehicle?.verification_status === 'Verified' ? activeRoute.vehicle.vehicle_id : null;
       if (!vehicleId) {
-        const { data: v } = await supabase
-          .from('vehicles').select('vehicle_id')
-          .eq('provider_id', providerId).eq('verification_status', 'Verified').limit(1).maybeSingle();
+        const { data: v } = await supabase.from('vehicles').select('vehicle_id').eq('provider_id', providerId).eq('verification_status', 'Verified').limit(1).maybeSingle();
         vehicleId = v?.vehicle_id ?? null;
       }
-      if (!vehicleId) {
-        Alert.alert('Vehicle not verified', 'You need a verified vehicle before you can accept deliveries.');
-        return;
-      }
+      if (!vehicleId) { Alert.alert('Vehicle not verified', 'You need a verified vehicle before you can accept deliveries.'); return; }
 
-      const { data: fresh } = await supabase
-        .from('delivery_requests').select('delivery_status').eq('request_id', req.request_id).maybeSingle();
-      const { data: existing } = await supabase
-        .from('deliveries').select('delivery_id').eq('request_id', req.request_id).limit(1);
+      const { data: fresh } = await supabase.from('delivery_requests').select('delivery_status').eq('request_id', req.request_id).maybeSingle();
+      const { data: existing } = await supabase.from('deliveries').select('delivery_id').eq('request_id', req.request_id).limit(1);
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
         selectedIdRef.current = null;
@@ -1010,10 +994,7 @@ export default function JobsScreen() {
       }
 
       const { data: delivery, error: deliveryError } = await supabase.from('deliveries').insert({
-        request_id: req.request_id,
-        provider_id: providerId,
-        vehicle_id: vehicleId,
-        route_id: activeRoute.route_id,
+        request_id: req.request_id, provider_id: providerId, vehicle_id: vehicleId, route_id: activeRoute.route_id,
         accepted_at: new Date().toISOString(),
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
       }).select('*').single();
@@ -1023,28 +1004,22 @@ export default function JobsScreen() {
         delivery_id: delivery.delivery_id,
         pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
         dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
-        pickup_pin: randPin(),
-        dropoff_pin: randPin(),
+        pickup_pin: randPin(), dropoff_pin: randPin(),
       });
       if (qrError) {
         await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
         throw qrError;
       }
 
-      const { error: reqUpdateError } = await supabase
-        .from('delivery_requests').update({ delivery_status: 'Accepted' }).eq('request_id', req.request_id);
+      const { error: reqUpdateError } = await supabase.from('delivery_requests').update({ delivery_status: 'Accepted' }).eq('request_id', req.request_id);
       if (reqUpdateError) throw reqUpdateError;
 
-      const { data: requestData } = await supabase
-        .from('delivery_requests').select('estimated_cost, sender_id').eq('request_id', req.request_id).single();
+      const { data: requestData } = await supabase.from('delivery_requests').select('estimated_cost, sender_id').eq('request_id', req.request_id).single();
       if (requestData) {
         await supabase.from('escrow_payments').insert({
-          amount: requestData.estimated_cost,
-          delivery_id: delivery.delivery_id,
-          sender_id: requestData.sender_id,
-          provider_id: providerId,
-          escrow_status: 'On hold',
-          emergency_frozen: false,
+          amount: requestData.estimated_cost, delivery_id: delivery.delivery_id,
+          sender_id: requestData.sender_id, provider_id: providerId,
+          escrow_status: 'On hold', emergency_frozen: false,
           created_at: new Date().toISOString(),
         });
       }
@@ -1058,36 +1033,27 @@ export default function JobsScreen() {
       }
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to accept delivery.');
-    } finally {
-      setAccepting(false);
-    }
+    } finally { setAccepting(false); }
   };
 
   const acceptRequest = (req: JobRequest) => {
     if (accepting) return;
-    if (!providerId || !activeRoute) {
-      Alert.alert('Select a route', 'Pick the route you are driving before accepting a request.');
-      return;
-    }
-    Alert.alert(
-      'Accept this delivery?',
-      `You will earn ${money(req.estimated_cost)} for delivering from ${req.pickup.main} to ${req.dropoff.main}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Accept', onPress: () => doAccept(req) },
-      ],
-    );
+    if (!providerId || !activeRoute) { Alert.alert('Select a route', 'Pick the route you are driving before accepting a request.'); return; }
+    Alert.alert('Accept this delivery?', `You will earn ${money(req.estimated_cost)} for delivering from ${req.pickup.main} to ${req.dropoff.main}.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Accept', onPress: () => doAccept(req) },
+    ]);
   };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
-    transform: [{
-      translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
-    }],
+    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
   });
 
   const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
   const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
+  const bellScale = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+  const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
 
   const markFailed = (uri: string) => setFailedPhotos(prev => ({ ...prev, [uri]: true }));
 
@@ -1098,7 +1064,7 @@ export default function JobsScreen() {
     const senderInitial = (r.senderName || 'S').charAt(0).toUpperCase();
 
     return (
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         <View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity
             style={styles.detailBack}
@@ -1112,11 +1078,10 @@ export default function JobsScreen() {
         </View>
 
         <ScrollView
-          style={styles.container}
+          style={{ backgroundColor: colors.background }}
           contentContainerStyle={[styles.detailScroll, { paddingBottom: 130 }]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Request ID */}
           <View style={styles.card}>
             <Text style={styles.eyebrow}>REQUEST ID</Text>
             <Text style={styles.bigId}>{requestCode(r.request_id)}</Text>
@@ -1126,17 +1091,16 @@ export default function JobsScreen() {
                 <Text style={styles.chipSolidText}>NEW MATCH</Text>
               </View>
               <View style={styles.chip}>
-                <Ionicons name={/door/i.test(r.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#6B7280" />
+                <Ionicons name={/door/i.test(r.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color={colors.textSecondary} />
                 <Text style={styles.chipText}>{serviceLabel(r.pickup_type)}</Text>
               </View>
               <View style={styles.chip}>
-                <Ionicons name="calendar-outline" size={12} color="#6B7280" />
+                <Ionicons name="calendar-outline" size={12} color={colors.textSecondary} />
                 <Text style={styles.chipText}>{whenLabel(r)}</Text>
               </View>
             </View>
           </View>
 
-          {/* Pay */}
           <View style={styles.earnCard}>
             <Text style={styles.earnLabel}>YOU EARN</Text>
             <Text style={styles.earnValue}>{money(r.estimated_cost)}</Text>
@@ -1148,7 +1112,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Package */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}><Ionicons name="cube" size={14} color={ORANGE} /></View>
@@ -1168,7 +1131,7 @@ export default function JobsScreen() {
               <View style={styles.statDivider} />
               <View style={styles.stat}>
                 <Text style={styles.statLabel}>FRAGILE</Text>
-                <Text style={[styles.statValue, r.fragile && { color: '#EF4444' }]}>{r.fragile ? 'Yes' : 'No'}</Text>
+                <Text style={[styles.statValue, r.fragile && { color: colors.error }]}>{r.fragile ? 'Yes' : 'No'}</Text>
               </View>
             </View>
 
@@ -1176,18 +1139,14 @@ export default function JobsScreen() {
               <View style={styles.noteList}>
                 {!!r.dims && (
                   <View style={styles.noteRow}>
-                    <Ionicons name="resize-outline" size={14} color="#6B7280" />
+                    <Ionicons name="resize-outline" size={14} color={colors.textSecondary} />
                     <Text style={styles.noteText}>Size {r.dims}</Text>
                   </View>
                 )}
                 {fits !== null && (
                   <View style={styles.noteRow}>
-                    <Ionicons
-                      name={fits ? 'checkmark-circle' : 'alert-circle'}
-                      size={14}
-                      color={fits ? ORANGE : '#EF4444'}
-                    />
-                    <Text style={[styles.noteText, !fits && { color: '#EF4444' }]}>
+                    <Ionicons name={fits ? 'checkmark-circle' : 'alert-circle'} size={14} color={fits ? ORANGE : colors.error} />
+                    <Text style={[styles.noteText, !fits && { color: colors.error }]}>
                       {fits ? `Within your vehicle capacity (${cap} kg)` : `Heavier than your vehicle capacity (${cap} kg)`}
                     </Text>
                   </View>
@@ -1206,7 +1165,7 @@ export default function JobsScreen() {
                     </TouchableOpacity>
                   ) : (
                     <View style={styles.itemNoPhoto}>
-                      <Ionicons name="image-outline" size={18} color="#9CA3AF" />
+                      <Ionicons name="image-outline" size={18} color={colors.textMuted} />
                       <Text style={styles.itemNoPhotoText}>
                         {it.photo ? "Photo couldn't be loaded" : it.localOnly ? "The sender's photo wasn't uploaded" : 'No photo provided'}
                       </Text>
@@ -1219,13 +1178,11 @@ export default function JobsScreen() {
                       {!!it.boxes && <Text style={styles.itemSub}>{it.boxes}</Text>}
                     </View>
                     <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                      {!!it.size && (
-                        <View style={styles.chip}><Text style={styles.chipText}>{it.size}</Text></View>
-                      )}
+                      {!!it.size && <View style={styles.chip}><Text style={styles.chipText}>{it.size}</Text></View>}
                       {it.fragile && (
                         <View style={[styles.chip, styles.chipWarn]}>
-                          <Ionicons name="warning" size={11} color="#EF4444" />
-                          <Text style={[styles.chipText, { color: '#EF4444' }]}>Fragile</Text>
+                          <Ionicons name="warning" size={11} color={colors.error} />
+                          <Text style={[styles.chipText, { color: colors.error }]}>Fragile</Text>
                         </View>
                       )}
                     </View>
@@ -1235,7 +1192,6 @@ export default function JobsScreen() {
             })}
           </View>
 
-          {/* Map + route */}
           <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
             <View style={styles.detailMap} pointerEvents="none">
               <RouteMap
@@ -1273,7 +1229,6 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Sender + receiver */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}><Ionicons name="people" size={14} color={ORANGE} /></View>
@@ -1300,7 +1255,6 @@ export default function JobsScreen() {
           </View>
         </ScrollView>
 
-        {/* Sticky accept bar */}
         <View style={styles.acceptBar}>
           <View>
             <Text style={styles.eyebrow}>YOU EARN</Text>
@@ -1327,7 +1281,6 @@ export default function JobsScreen() {
   };
 
   /* ------------------------------ main view ------------------------------ */
-
   const renderOfferPopup = (o: JobRequest) => {
     const me = myLoc;
     const toPickupKm = me && o.pickup.lat != null && o.pickup.lng != null
@@ -1340,7 +1293,7 @@ export default function JobsScreen() {
     return (
       <View style={styles.offerSheet}>
         <View style={styles.offerTimerTrack}>
-          <View style={[styles.offerTimerFill, { width: `${pct}%` as any }, offerSecondsLeft <= 10 && { backgroundColor: '#EF4444' }]} />
+          <View style={[styles.offerTimerFill, { width: `${pct}%` as any }, offerSecondsLeft <= 10 && { backgroundColor: colors.error }]} />
         </View>
 
         <View style={styles.offerTopRow}>
@@ -1351,8 +1304,8 @@ export default function JobsScreen() {
           {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
           <View style={{ flex: 1 }} />
           <View style={styles.offerTimerPill}>
-            <Ionicons name="timer-outline" size={13} color={offerSecondsLeft <= 10 ? '#EF4444' : '#6B7280'} />
-            <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: '#EF4444' }]}>{Math.max(0, offerSecondsLeft)}s</Text>
+            <Ionicons name="timer-outline" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} />
+            <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>{Math.max(0, offerSecondsLeft)}s</Text>
           </View>
         </View>
 
@@ -1364,7 +1317,7 @@ export default function JobsScreen() {
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={styles.offerCode}>{requestCode(o.request_id)}</Text>
             <View style={[styles.chip, { marginTop: 6 }]}>
-              <Ionicons name={/door/i.test(o.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#6B7280" />
+              <Ionicons name={/door/i.test(o.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color={colors.textSecondary} />
               <Text style={styles.chipText}>{serviceLabel(o.pickup_type)}</Text>
             </View>
           </View>
@@ -1387,7 +1340,6 @@ export default function JobsScreen() {
           </View>
         </View>
 
-        {/* Package photos — so the provider can judge the package before accepting */}
         {(() => {
           const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
           const localOnly = o.items.some(i => i.localOnly && !i.photo);
@@ -1400,17 +1352,10 @@ export default function JobsScreen() {
                 </View>
                 <View style={styles.offerPhotoRow}>
                   {photos.slice(0, 4).map((uri, idx) => (
-                    <TouchableOpacity
-                      key={`${uri}-${idx}`}
-                      style={styles.offerThumbWrap}
-                      onPress={() => setPreviewPhoto(uri)}
-                      activeOpacity={0.85}
-                    >
+                    <TouchableOpacity key={`${uri}-${idx}`} style={styles.offerThumbWrap} onPress={() => setPreviewPhoto(uri)} activeOpacity={0.85}>
                       <Image source={{ uri }} style={styles.offerThumb} resizeMode="cover" onError={() => markFailed(uri)} />
                       {idx === 3 && photos.length > 4 && (
-                        <View style={styles.offerThumbMore}>
-                          <Text style={styles.offerThumbMoreText}>+{photos.length - 4}</Text>
-                        </View>
+                        <View style={styles.offerThumbMore}><Text style={styles.offerThumbMoreText}>+{photos.length - 4}</Text></View>
                       )}
                     </TouchableOpacity>
                   ))}
@@ -1420,7 +1365,7 @@ export default function JobsScreen() {
           }
           return (
             <View style={styles.offerNoPhoto}>
-              <Ionicons name="image-outline" size={18} color="#B45309" />
+              <Ionicons name="image-outline" size={18} color={colors.warning} />
               <Text style={styles.offerNoPhotoText}>
                 {localOnly
                   ? "The sender's package photo wasn't uploaded, so it can't be shown. Check the package details before accepting."
@@ -1443,28 +1388,19 @@ export default function JobsScreen() {
         </View>
 
         <View style={styles.offerBtnRow}>
-          <TouchableOpacity
-            style={styles.declineBtn}
-            onPress={() => dismissOffer(o.request_id)}
-            disabled={accepting}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="close" size={18} color="#EF4444" />
+          <TouchableOpacity style={styles.declineBtn} onPress={() => dismissOffer(o.request_id)} disabled={accepting} activeOpacity={0.85}>
+            <Ionicons name="close" size={18} color={colors.error} />
             <Text style={styles.declineBtnText}>Decline</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.offerAcceptBtn, accepting && { opacity: 0.7 }]}
             onPress={() => {
               if (o.items.some(i => i.photo)) { doAccept(o); return; }
-              Alert.alert(
-                'No package photo',
-                "You can't see what this package looks like. Review the details first, or accept anyway.",
-                [
-                  { text: 'Review details', onPress: () => { selectedIdRef.current = o.request_id; setSelectedRequest(o); } },
-                  { text: 'Accept anyway', onPress: () => doAccept(o) },
-                  { text: 'Cancel', style: 'cancel' },
-                ],
-              );
+              Alert.alert('No package photo', "You can't see what this package looks like. Review the details first, or accept anyway.", [
+                { text: 'Review details', onPress: () => { selectedIdRef.current = o.request_id; setSelectedRequest(o); } },
+                { text: 'Accept anyway', onPress: () => doAccept(o) },
+                { text: 'Cancel', style: 'cancel' },
+              ]);
             }}
             disabled={accepting}
             activeOpacity={0.9}
@@ -1497,29 +1433,24 @@ export default function JobsScreen() {
 
     return (
       <View style={styles.bottomPanel}>
-        {/* Online Toggle Row */}
         <View style={styles.onlineToggleRow}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <Animated.View
-              style={[
-                styles.liveDotBig,
-                { backgroundColor: isOnline ? '#22C55E' : '#9CA3AF' },
-                isOnline && { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
-              ]}
-            />
+            <Animated.View style={[
+              styles.liveDotBig,
+              { backgroundColor: isOnline ? colors.success : colors.textMuted },
+              isOnline && { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
+            ]} />
             <View>
-              <Text style={styles.panelTitle}>
-                {isOnline ? 'You are online' : 'You are offline'}
-              </Text>
+              <Text style={styles.panelTitle}>{isOnline ? 'You are online' : 'You are offline'}</Text>
               <Text style={styles.panelSub}>
                 {checkingMatches ? 'Looking for matches...' : isOnline ? 'Waiting for requests...' : 'Go online to receive requests'}
               </Text>
             </View>
           </View>
           <Switch
-            trackColor={{ false: '#E5E7EB', true: ORANGE }}
-            thumbColor={'#FFFFFF'}
-            ios_backgroundColor="#E5E7EB"
+            trackColor={{ false: colors.border, true: ORANGE }}
+            thumbColor="#FFFFFF"
+            ios_backgroundColor={colors.border}
             onValueChange={toggleOnlineStatus}
             value={isOnline}
           />
@@ -1527,7 +1458,6 @@ export default function JobsScreen() {
 
         <View style={styles.panelDivider} />
 
-        {/* Route / Vehicle Row */}
         <View style={styles.vehicleRow}>
           <View style={styles.vehicleIconBox}>
             <Ionicons name="car-sport" size={22} color={ORANGE} />
@@ -1557,7 +1487,7 @@ export default function JobsScreen() {
 
         {locDenied && (
           <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
-            <Ionicons name="location-outline" size={16} color="#B45309" />
+            <Ionicons name="location-outline" size={16} color={colors.warning} />
             <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
           </TouchableOpacity>
         )}
@@ -1587,7 +1517,7 @@ export default function JobsScreen() {
       : null;
 
     return (
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         <ProviderMap
           provider={loc}
           route={mapRoute}
@@ -1597,27 +1527,29 @@ export default function JobsScreen() {
           padBottom={currentOffer ? 480 : 200}
         />
 
-        {/* Right: map tools, positioned directly under safe area inset */}
         <View style={[styles.mapTools, { top: insets.top + 20 }]} pointerEvents="box-none">
+          <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
+            <TouchableOpacity style={styles.mapToolBtn} onPress={handleOpenNotifs} activeOpacity={0.85} hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}>
+              <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
+              {unreadCount > 0 && (
+                <View style={styles.mapToolBadge}>
+                  {unreadCount <= 9 && (<Text style={styles.mapToolBadgeText}>{unreadCount}</Text>)}
+                </View>
+              )}
+            </TouchableOpacity>
+          </Animated.View>
+
           <TouchableOpacity style={styles.mapToolBtn} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
-            <Ionicons name="locate" size={20} color="#111827" />
+            <Ionicons name="locate" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.mapToolBtn, showDemand && styles.mapToolBtnActive]}
-            onPress={() => setShowDemand(d => !d)}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={[styles.mapToolBtn, showDemand && styles.mapToolBtnActive]} onPress={() => setShowDemand(d => !d)} activeOpacity={0.85}>
             <Ionicons name="flame" size={20} color={showDemand ? '#FFFFFF' : ORANGE} />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.mapToolBtn}
-            onPress={() => { setRefreshing(true); refreshMatches(); }}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.mapToolBtn} onPress={() => { setRefreshing(true); refreshMatches(); }} activeOpacity={0.85}>
             {refreshing || checkingMatches ? (
               <ActivityIndicator size="small" color={ORANGE} />
             ) : (
-              <Ionicons name="refresh" size={20} color="#111827" />
+              <Ionicons name="refresh" size={20} color={colors.textPrimary} />
             )}
           </TouchableOpacity>
           <TouchableOpacity style={[styles.mapToolBtn, styles.sosBtn]} onPress={triggerSOS} activeOpacity={0.85}>
@@ -1625,7 +1557,6 @@ export default function JobsScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Bottom: incoming order popup or sleek status panel */}
         <Animated.View style={[styles.bottomWrap, { opacity: contentAnim }]} pointerEvents="box-none">
           {currentOffer ? renderOfferPopup(currentOffer) : renderBottomPanel()}
         </Animated.View>
@@ -1633,10 +1564,84 @@ export default function JobsScreen() {
     );
   };
 
+  const renderNotifModal = () => (
+    <Modal visible={notifModalOpen} transparent animationType="fade" onRequestClose={() => setNotifModalOpen(false)}>
+      <Pressable style={styles.notifBackdrop} onPress={() => setNotifModalOpen(false)}>
+        <Pressable style={[styles.notifCard, { marginTop: insets.top + 60 }]} onPress={() => { /* swallow */ }}>
+          <View style={styles.notifHeader}>
+            <Text style={styles.notifHeaderTitle}>Notifications</Text>
+            <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
+              <Ionicons name="close" size={22} color={colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {notifLoading ? (
+            <View style={styles.notifCenter}><ActivityIndicator size="small" color={ORANGE} /></View>
+          ) : notifs.length === 0 ? (
+            <View style={styles.notifCenter}>
+              <Ionicons name="notifications-off-outline" size={40} color={colors.textMuted} />
+              <Text style={styles.notifEmptyText}>No notifications yet</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={notifs.slice(0, 8)}
+              keyExtractor={(i) => String(i.notif_id)}
+              contentContainerStyle={{ paddingBottom: 8 }}
+              renderItem={({ item }) => (
+                <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
+                  <View style={styles.notifIconBox}>
+                    <Ionicons name={iconForType(item.type)} size={18} color={ORANGE} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.notifTitleRow}>
+                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForType(item.type, item.title)}</Text>
+                      {!item.is_read && <View style={styles.notifDot} />}
+                    </View>
+                    <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
+                    <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
+            />
+          )}
+
+          <TouchableOpacity style={styles.notifFooter} onPress={() => { setNotifModalOpen(false); setFullListOpen(true); }} activeOpacity={0.85}>
+            <Text style={styles.notifFooterText}>See all in Notifications</Text>
+            <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
+  const renderFullListModal = () => (
+    <Modal visible={fullListOpen} animationType="slide" onRequestClose={() => setFullListOpen(false)}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <View style={{
+          flexDirection: 'row', alignItems: 'center',
+          paddingHorizontal: 16, paddingTop: insets.top + 8, paddingBottom: 12,
+          backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.divider,
+        }}>
+          <TouchableOpacity onPress={() => setFullListOpen(false)} style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }} activeOpacity={0.7} hitSlop={10}>
+            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={{ flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.3 }}>
+            Notifications
+          </Text>
+          <View style={{ width: 32 }} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <NotificationsList embedded />
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: '#FAFAFA' }]}>
-        <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+        <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
         <ActivityIndicator size="large" color={ORANGE} />
         <Text style={styles.loadingText}>Loading...</Text>
       </View>
@@ -1644,19 +1649,14 @@ export default function JobsScreen() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#FAFAFA' }}>
-      <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
       {selectedRequest ? renderRequestDetail(selectedRequest) : renderMain()}
 
-      {/* ============================================================ */}
-      {/* Route Picker Modal                                            */}
-      {/* ============================================================ */}
-      <Modal
-        visible={routePickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setRoutePickerVisible(false)}
-      >
+      {renderNotifModal()}
+      {renderFullListModal()}
+
+      <Modal visible={routePickerVisible} transparent animationType="slide" onRequestClose={() => setRoutePickerVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.routePickerSheet}>
             <View style={styles.routePickerHandle} />
@@ -1664,19 +1664,16 @@ export default function JobsScreen() {
               <Text style={styles.routePickerTitle}>Select a Route</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                 {providerId && (
-                  <TouchableOpacity
-                    style={styles.quickRouteHeaderBtn}
-                    onPress={async () => {
-                      const newR = await createQuickRoute(providerId);
-                      if (newR) setRoutePickerVisible(false);
-                    }}
-                  >
+                  <TouchableOpacity style={styles.quickRouteHeaderBtn} onPress={async () => {
+                    const newR = await createQuickRoute(providerId);
+                    if (newR) setRoutePickerVisible(false);
+                  }}>
                     <Ionicons name="add-circle" size={16} color={ORANGE} />
                     <Text style={styles.quickRouteHeaderBtnText}>+ Quick Route</Text>
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity onPress={() => setRoutePickerVisible(false)}>
-                  <Ionicons name="close" size={22} color="#111827" />
+                  <Ionicons name="close" size={22} color={colors.textPrimary} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -1685,19 +1682,13 @@ export default function JobsScreen() {
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
                 <Text style={styles.routePickerEmptyTitle}>No routes created yet</Text>
-                <Text style={styles.routePickerEmptySub}>
-                  Create an on-demand route now to start accepting nearby deliveries right away.
-                </Text>
-                <TouchableOpacity
-                  style={styles.createQuickRouteBtn}
-                  onPress={async () => {
-                    if (providerId) {
-                      const newR = await createQuickRoute(providerId);
-                      if (newR) setRoutePickerVisible(false);
-                    }
-                  }}
-                  activeOpacity={0.85}
-                >
+                <Text style={styles.routePickerEmptySub}>Create an on-demand route now to start accepting nearby deliveries right away.</Text>
+                <TouchableOpacity style={styles.createQuickRouteBtn} onPress={async () => {
+                  if (providerId) {
+                    const newR = await createQuickRoute(providerId);
+                    if (newR) setRoutePickerVisible(false);
+                  }
+                }} activeOpacity={0.85}>
                   <Ionicons name="flash" size={16} color="#FFFFFF" />
                   <Text style={styles.createQuickRouteBtnText}>Create Quick Route</Text>
                 </TouchableOpacity>
@@ -1708,18 +1699,8 @@ export default function JobsScreen() {
                   const isSelected = activeRoute?.route_id === r.route_id;
                   const rDate = parseNaiveIsoString(r.departure_time);
                   return (
-                    <TouchableOpacity
-                      key={r.route_id}
-                      style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
-                      onPress={() => openConfirmSheet(r)}
-                      activeOpacity={0.85}
-                    >
-                      <View
-                        style={[
-                          styles.routeOptionDot,
-                          { backgroundColor: isSelected ? ORANGE : '#D1D5DB' },
-                        ]}
-                      />
+                    <TouchableOpacity key={r.route_id} style={[styles.routeOption, isSelected && styles.routeOptionSelected]} onPress={() => openConfirmSheet(r)} activeOpacity={0.85}>
+                      <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? ORANGE : colors.textMuted }]} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.routeOptionTitle} numberOfLines={1}>
                           {r.start_location?.city || 'Start'} → {r.end_location?.city || 'End'}
@@ -1731,9 +1712,7 @@ export default function JobsScreen() {
                           {r.start_location?.street_address} → {r.end_location?.street_address}
                         </Text>
                       </View>
-                      {isSelected && (
-                        <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
-                      )}
+                      {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
                     </TouchableOpacity>
                   );
                 })}
@@ -1744,22 +1723,14 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
-      {/* ============================================================ */}
-      {/* Confirm Departure Time Sheet                                  */}
-      {/* ============================================================ */}
-      <Modal
-        visible={confirmSheetVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setConfirmSheetVisible(false)}
-      >
+      <Modal visible={confirmSheetVisible} transparent animationType="slide" onRequestClose={() => setConfirmSheetVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
               <Text style={styles.routePickerTitle}>Confirm Departure</Text>
               <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
-                <Ionicons name="close" size={22} color="#111827" />
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1768,36 +1739,25 @@ export default function JobsScreen() {
                 <View style={styles.confirmRoutePreview}>
                   <View style={styles.confirmRouteRow}>
                     <View style={[styles.confirmDot, { backgroundColor: '#3B82F6' }]} />
-                    <Text style={styles.confirmRouteText} numberOfLines={1}>
-                      {pendingRoute.start_location?.street_address || 'Start'}
-                    </Text>
+                    <Text style={styles.confirmRouteText} numberOfLines={1}>{pendingRoute.start_location?.street_address || 'Start'}</Text>
                   </View>
                   <View style={styles.confirmRouteLine} />
                   <View style={styles.confirmRouteRow}>
-                    <View style={[styles.confirmDot, { backgroundColor: '#EF4444' }]} />
-                    <Text style={styles.confirmRouteText} numberOfLines={1}>
-                      {pendingRoute.end_location?.street_address || 'End'}
-                    </Text>
+                    <View style={[styles.confirmDot, { backgroundColor: colors.error }]} />
+                    <Text style={styles.confirmRouteText} numberOfLines={1}>{pendingRoute.end_location?.street_address || 'End'}</Text>
                   </View>
                 </View>
 
                 <View style={styles.dateTimeRow}>
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Departure Date</Text>
-                    <TouchableOpacity
-                      style={styles.dateTimeButton}
-                      onPress={() => !showDatePicker && setShowDatePicker(true)}
-                    >
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
                       <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>
-                        {departureDate.toLocaleDateString()}
-                      </Text>
+                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
                     </TouchableOpacity>
                     {showDatePicker && (
                       <DateTimePicker
-                        value={departureDate}
-                        mode="date"
-                        display="default"
+                        value={departureDate} mode="date" display="default"
                         minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
                         onChange={(e, d) => {
                           if (Platform.OS === 'android') setShowDatePicker(false);
@@ -1813,20 +1773,13 @@ export default function JobsScreen() {
 
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Departure Time</Text>
-                    <TouchableOpacity
-                      style={styles.dateTimeButton}
-                      onPress={() => !showTimePicker && setShowTimePicker(true)}
-                    >
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
                       <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>
-                        {departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </Text>
+                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                     </TouchableOpacity>
                     {showTimePicker && (
                       <DateTimePicker
-                        value={departureDate}
-                        mode="time"
-                        display="default"
+                        value={departureDate} mode="time" display="default"
                         onChange={(e, t) => {
                           if (Platform.OS === 'android') setShowTimePicker(false);
                           if (e.type === 'set' && t) {
@@ -1841,17 +1794,11 @@ export default function JobsScreen() {
                 </View>
 
                 <View style={styles.infoBox}>
-                  <Ionicons name="information-circle-outline" size={16} color="#1E40AF" />
-                  <Text style={styles.infoBoxText}>
-                    The app will match requests within ±5 minutes of this departure time.
-                  </Text>
+                  <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#1E40AF'} />
+                  <Text style={styles.infoBoxText}>The app will match requests within ±5 minutes of this departure time.</Text>
                 </View>
 
-                <TouchableOpacity
-                  style={styles.confirmBtn}
-                  onPress={confirmDeparture}
-                  activeOpacity={0.9}
-                >
+                <TouchableOpacity style={styles.confirmBtn} onPress={confirmDeparture} activeOpacity={0.9}>
                   <Ionicons name="checkmark-circle" size={18} color="#FFF" />
                   <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
                 </TouchableOpacity>
@@ -1861,12 +1808,9 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
-      {/* Item photo preview */}
       <Modal visible={!!previewPhoto} transparent animationType="fade" onRequestClose={() => setPreviewPhoto(null)}>
         <View style={styles.previewOverlay}>
-          {!!previewPhoto && (
-            <Image source={{ uri: previewPhoto }} style={styles.previewImg} resizeMode="contain" />
-          )}
+          {!!previewPhoto && <Image source={{ uri: previewPhoto }} style={styles.previewImg} resizeMode="contain" />}
           <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPreviewPhoto(null)} activeOpacity={0.85}>
             <Ionicons name="close" size={22} color="#FFFFFF" />
           </TouchableOpacity>
@@ -1876,139 +1820,123 @@ export default function JobsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  /* live map overlays */
+/* ==================================================================== */
+/* Styles                                                               */
+/* ==================================================================== */
+const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mapTools: { position: 'absolute', right: 12, gap: 10 },
   mapToolBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF',
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.15 : 0.4,
+    shadowRadius: 8, elevation: 5,
+    borderWidth: 1, borderColor: c.border,
   },
-  mapToolBtnActive: { backgroundColor: ORANGE },
-  sosBtn: { backgroundColor: '#EF4444' },
+  mapToolBtnActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  sosBtn: { backgroundColor: c.error, borderColor: c.error },
+  mapToolBadge: {
+    position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18,
+    borderRadius: 9, paddingHorizontal: 4, backgroundColor: c.error,
+    borderWidth: 1.5, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
+  },
+  mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
   bottomWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
 
-  /* bottom unified panel */
   bottomPanel: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingHorizontal: 20,
-    paddingTop: 24,
+    backgroundColor: c.card,
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 20, paddingTop: 24,
     paddingBottom: Platform.OS === 'ios' ? 34 : 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
+    shadowRadius: 16, elevation: 16,
+    borderTopWidth: 1, borderColor: c.border,
   },
-  onlineToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  liveDotBig: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  panelTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: '#111827',
-    letterSpacing: -0.5,
-  },
-  panelSub: {
-    fontSize: 13,
-    color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  panelDivider: {
-    height: 1,
-    backgroundColor: '#F3F4F6',
-    marginVertical: 18,
-  },
+  onlineToggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  liveDotBig: { width: 12, height: 12, borderRadius: 6 },
+  panelTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
+  panelSub: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  panelDivider: { height: 1, backgroundColor: c.divider, marginVertical: 18 },
   locWarnBottom: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 16,
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16,
+    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10,
   },
-  locWarnText: { flex: 1, fontSize: 12, fontWeight: '600', color: '#92400E' },
+  locWarnText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.warning },
 
   reopenRow: {
     flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14,
-    backgroundColor: '#F9FAFB', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    backgroundColor: c.background, borderRadius: 14,
+    paddingHorizontal: 14, paddingVertical: 12,
+    borderWidth: 1, borderColor: c.border,
   },
-  reopenText: { flex: 1, fontSize: 13, fontWeight: '700', color: '#4B5563' },
+  reopenText: { flex: 1, fontSize: 13, fontWeight: '700', color: c.textSecondary },
   reopenLink: { fontSize: 13, fontWeight: '800', color: ORANGE },
-  
-  /* vehicle / route */
+
   vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   vehicleIconBox: {
-    width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFF1E6',
+    width: 44, height: 44, borderRadius: 14, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
-  vehicleNameText: { fontSize: 15, fontWeight: '800', color: '#111827' },
-  vehiclePlateText: { fontSize: 13, color: '#6B7280', marginTop: 2, fontWeight: '600' },
-  changeBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: '#FFF1E6' },
+  vehicleNameText: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  vehiclePlateText: { fontSize: 13, color: c.textSecondary, marginTop: 2, fontWeight: '600' },
+  changeBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: c.accentSoft },
   changeBtnText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
 
-  /* incoming order popup */
   offerSheet: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    backgroundColor: c.card, borderTopLeftRadius: 26, borderTopRightRadius: 26,
     paddingHorizontal: 16, paddingBottom: 14, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.18, shadowRadius: 16, elevation: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowRadius: 16, elevation: 16,
+    borderTopWidth: 1, borderColor: c.border,
   },
-  offerTimerTrack: { height: 5, backgroundColor: '#FFE4D2', marginHorizontal: -16 },
+  offerTimerTrack: { height: 5, backgroundColor: c.border, marginHorizontal: -16 },
   offerTimerFill: { height: '100%', backgroundColor: ORANGE },
   offerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14 },
-  offerCount: { fontSize: 12, fontWeight: '700', color: '#6B7280' },
+  offerCount: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
   offerTimerPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F3F4F6',
-    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.divider, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
   },
-  offerTimerText: { fontSize: 12, fontWeight: '800', color: '#4B5563' },
+  offerTimerText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
   offerMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12 },
-  offerPrice: { fontSize: 32, fontWeight: '900', color: '#111827', letterSpacing: -1, marginTop: 2 },
-  offerCode: { fontSize: 13, fontWeight: '800', color: '#9CA3AF' },
+  offerPrice: { fontSize: 32, fontWeight: '900', color: c.textPrimary, letterSpacing: -1, marginTop: 2 },
+  offerCode: { fontSize: 13, fontWeight: '800', color: c.textMuted },
   offerStatsRow: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderRadius: 16,
-    paddingVertical: 12, marginTop: 12,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
+    borderRadius: 16, paddingVertical: 12, marginTop: 12,
+    borderWidth: 1, borderColor: c.border,
   },
   offerStat: { flex: 1, alignItems: 'center' },
-  offerStatValue: { fontSize: 15, fontWeight: '900', color: '#111827' },
-  offerStatLabel: { fontSize: 10, fontWeight: '700', color: '#6B7280', marginTop: 2 },
-  offerStatDivider: { width: 1, height: 28, backgroundColor: '#E5E7EB' },
+  offerStatValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary },
+  offerStatLabel: { fontSize: 10, fontWeight: '700', color: c.textSecondary, marginTop: 2 },
+  offerStatDivider: { width: 1, height: 28, backgroundColor: c.border },
   offerPhotoBlock: { marginTop: 14 },
   offerPhotoHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  offerPhotoHint: { fontSize: 10, fontWeight: '700', color: '#9CA3AF' },
+  offerPhotoHint: { fontSize: 10, fontWeight: '700', color: c.textMuted },
   offerPhotoRow: { flexDirection: 'row', gap: 8 },
-  offerThumbWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
+  offerThumbWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider, borderWidth: 1, borderColor: c.border },
   offerThumb: { width: '100%', height: '100%' },
   offerThumbMore: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(17,24,39,0.6)', alignItems: 'center', justifyContent: 'center' },
   offerThumbMoreText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   offerNoPhoto: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
-    backgroundColor: '#FFFBEB', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 12, padding: 12,
+    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+    borderRadius: 12, padding: 12,
   },
-  offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#92400E', fontWeight: '600' },
+  offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.warning, fontWeight: '600' },
   offerRoute: { marginTop: 14 },
-  offerRouteText: { flex: 1, fontSize: 14, fontWeight: '700', color: '#111827' },
+  offerRouteText: { flex: 1, fontSize: 14, fontWeight: '700', color: c.textPrimary },
   offerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
   declineBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 15, borderRadius: 16, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
+    paddingVertical: 15, borderRadius: 16, backgroundColor: c.errorBg,
+    borderWidth: 1, borderColor: c.error,
   },
-  declineBtnText: { fontSize: 15, fontWeight: '800', color: '#EF4444' },
+  declineBtnText: { fontSize: 15, fontWeight: '800', color: c.error },
   offerAcceptBtn: {
     flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 15, borderRadius: 16, backgroundColor: ORANGE,
@@ -2018,39 +1946,40 @@ const styles = StyleSheet.create({
   offerDetailsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingTop: 12 },
   offerDetailsText: { fontSize: 12, fontWeight: '800', color: ORANGE },
 
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF', gap: 10 },
-  loadingText: { color: '#6B7280', fontWeight: '600' },
+  container: { flex: 1, backgroundColor: c.background },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  loadingText: { color: c.textSecondary, fontWeight: '600' },
 
   detailScroll: { padding: 16 },
 
-  /* shared */
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 14,
-    borderWidth: 1, borderColor: '#F1F1F1',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1,
+    backgroundColor: c.card, borderRadius: 20, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowRadius: 8, elevation: 1,
   },
-  eyebrow: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
+  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
   cardHeaderIcon: {
-    width: 26, height: 26, borderRadius: 8, backgroundColor: '#FFF1E6',
+    width: 26, height: 26, borderRadius: 8, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
-  cardTitle: { fontSize: 15, fontWeight: '800', color: '#111827' },
+  cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5,
-    borderRadius: 999, backgroundColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: c.divider,
   },
-  chipText: { fontSize: 11, fontWeight: '700', color: '#4B5563' },
-  chipWarn: { backgroundColor: '#FEF2F2' },
+  chipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
+  chipWarn: { backgroundColor: c.errorBg },
   chipSolid: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5,
-    borderRadius: 999, backgroundColor: ORANGE,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: ORANGE,
   },
   chipSolidText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5 },
   pinPickup: {
-    width: 18, height: 18, borderRadius: 9, backgroundColor: '#FFF1E6',
+    width: 18, height: 18, borderRadius: 9, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
   pinPickupInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
@@ -2061,18 +1990,18 @@ const styles = StyleSheet.create({
 
   detailMap: { height: 190, backgroundColor: '#EEF0F2' },
   routePad: { padding: 16 },
-  
-  /* detail */
+
   detailHeader: {
     backgroundColor: ORANGE, flexDirection: 'row', alignItems: 'center',
     justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12,
   },
   detailBack: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.22)',
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: 'rgba(255,255,255,0.22)',
     alignItems: 'center', justifyContent: 'center',
   },
   detailHeaderTitle: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
-  bigId: { fontSize: 26, fontWeight: '900', color: '#111827', marginTop: 6, letterSpacing: 0.5 },
+  bigId: { fontSize: 26, fontWeight: '900', color: c.textPrimary, marginTop: 6, letterSpacing: 0.5 },
 
   earnCard: { backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14 },
   earnLabel: { color: '#FFE4D2', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
@@ -2083,54 +2012,55 @@ const styles = StyleSheet.create({
   },
   earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, lineHeight: 16, fontWeight: '600' },
 
-  statsRow: { flexDirection: 'row', backgroundColor: '#FAFAFA', borderRadius: 14, paddingVertical: 12 },
+  statsRow: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 14, paddingVertical: 12 },
   stat: { flex: 1, alignItems: 'center', gap: 4 },
-  statLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
-  statValue: { fontSize: 16, fontWeight: '900', color: '#111827' },
-  statDivider: { width: 1, backgroundColor: '#E5E7EB' },
+  statLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  statValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
+  statDivider: { width: 1, backgroundColor: c.border },
   noteList: { marginTop: 12, gap: 8 },
   noteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  noteText: { fontSize: 12, color: '#4B5563', fontWeight: '600', flex: 1 },
+  noteText: { fontSize: 12, color: c.textSecondary, fontWeight: '600', flex: 1 },
 
-  itemBlock: { marginTop: 14, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 14 },
-  itemPhotoWrap: { borderRadius: 16, overflow: 'hidden', backgroundColor: '#F3F4F6' },
+  itemBlock: { marginTop: 14, borderTopWidth: 1, borderTopColor: c.divider, paddingTop: 14 },
+  itemPhotoWrap: { borderRadius: 16, overflow: 'hidden', backgroundColor: c.divider },
   itemPhoto: { width: '100%', height: 200 },
   enlargeHint: {
     position: 'absolute', right: 10, bottom: 10, width: 28, height: 28, borderRadius: 14,
     backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center',
   },
   itemNoPhoto: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F9FAFB',
-    borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#F1F1F1', borderStyle: 'dashed',
+    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background,
+    borderRadius: 14, padding: 14, borderWidth: 1, borderColor: c.border, borderStyle: 'dashed',
   },
-  itemNoPhotoText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  itemNoPhotoText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
   itemInfoRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  itemTitle: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 2 },
-  itemSub: { fontSize: 12, color: '#6B7280', marginTop: 3 },
+  itemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
+  itemSub: { fontSize: 12, color: c.textSecondary, marginTop: 3 },
 
   routeRow: { flexDirection: 'row', gap: 12 },
   rail: { alignItems: 'center', width: 18 },
-  railLine: { flex: 1, width: 2, backgroundColor: '#FFD2B3', marginVertical: 4, borderRadius: 1 },
+  railLine: { flex: 1, width: 2, backgroundColor: c.border, marginVertical: 4, borderRadius: 1 },
   routeText: { flex: 1, paddingBottom: 16 },
-  routeMain: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 2 },
-  routeSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 17 },
+  routeMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
+  routeSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
 
   personRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: {
     width: 40, height: 40, borderRadius: 20, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
   },
-  avatarSoft: { backgroundColor: '#FFF1E6' },
+  avatarSoft: { backgroundColor: c.accentSoft },
   avatarText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
-  personName: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 2 },
-  personDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 12 },
-  privacyNote: { marginTop: 14, fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  personName: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
+  personDivider: { height: 1, backgroundColor: c.divider, marginVertical: 12 },
+  privacyNote: { marginTop: 14, fontSize: 11, color: c.textMuted, fontWeight: '600' },
 
   acceptBar: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 12, paddingBottom: Platform.OS === 'ios' ? 28 : 16,
-    borderTopWidth: 1, borderTopColor: '#F1F1F1',
+    paddingHorizontal: 16, paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+    borderTopWidth: 1, borderTopColor: c.border,
   },
   acceptPrice: { fontSize: 22, fontWeight: '900', color: ORANGE, marginTop: 2 },
   acceptBtn: {
@@ -2140,7 +2070,6 @@ const styles = StyleSheet.create({
   },
   acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 
-  /* photo preview */
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
@@ -2150,24 +2079,21 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   routePickerSheet: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
     paddingHorizontal: 20, paddingTop: 10,
     paddingBottom: Platform.OS === 'ios' ? 34 : 20,
     maxHeight: '80%',
   },
   routePickerHandle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',
+    width: 40, height: 4, borderRadius: 2, backgroundColor: c.border,
     alignSelf: 'center', marginBottom: 14,
   },
-  routePickerHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 14,
-  },
-  routePickerTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
+  routePickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  routePickerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   routePickerEmpty: { alignItems: 'center', paddingVertical: 40, gap: 10 },
-  routePickerEmptyTitle: { fontSize: 16, fontWeight: '800', color: '#111827', marginTop: 8 },
-  routePickerEmptySub: { fontSize: 12, color: '#6B7280', textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
-  quickRouteHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: '#FFF1E6' },
+  routePickerEmptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginTop: 8 },
+  routePickerEmptySub: { fontSize: 12, color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
+  quickRouteHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: c.accentSoft },
   quickRouteHeaderBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
   createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
   createQuickRouteBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
@@ -2175,53 +2101,49 @@ const styles = StyleSheet.create({
   routeOption: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingVertical: 14, paddingHorizontal: 12,
-    backgroundColor: '#F9FAFB', borderRadius: 14, marginBottom: 8,
+    backgroundColor: c.background, borderRadius: 14, marginBottom: 8,
     borderWidth: 1.5, borderColor: 'transparent',
   },
-  routeOptionSelected: { backgroundColor: '#FFF7ED', borderColor: ORANGE },
+  routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
   routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
-  routeOptionTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
-  routeOptionSub: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500' },
-  routeOptionAddr: { fontSize: 10, color: '#9CA3AF', marginTop: 2 },
+  routeOptionTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  routeOptionSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  routeOptionAddr: { fontSize: 10, color: c.textMuted, marginTop: 2 },
 
   reqRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  reqRouteLine: { width: 1, height: 12, backgroundColor: '#E5E7EB', marginLeft: 8.5, marginVertical: 3 },
+  reqRouteLine: { width: 1, height: 12, backgroundColor: c.border, marginLeft: 8.5, marginVertical: 3 },
 
-  /* Confirm departure sheet */
   confirmSheet: {
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
     paddingHorizontal: 20, paddingTop: 10,
   },
   confirmRoutePreview: {
-    backgroundColor: '#F9FAFB', borderRadius: 14, padding: 14,
-    borderWidth: 1, borderColor: '#F3F4F6', marginBottom: 16,
+    backgroundColor: c.background, borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: c.border, marginBottom: 16,
   },
   confirmRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   confirmDot: { width: 8, height: 8, borderRadius: 4 },
-  confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: '#111827' },
-  confirmRouteLine: {
-    width: 1, height: 14, backgroundColor: '#E5E7EB',
-    marginLeft: 3.5, marginVertical: 4,
-  },
+  confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: c.textPrimary },
+  confirmRouteLine: { width: 1, height: 14, backgroundColor: c.border, marginLeft: 3.5, marginVertical: 4 },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
   inputGroup: { flex: 1 },
-  inputLabel: { marginBottom: 6, fontWeight: '700', color: '#374151', fontSize: 11, letterSpacing: 0.2 },
+  inputLabel: { marginBottom: 6, fontWeight: '700', color: c.textPrimary, fontSize: 11, letterSpacing: 0.2 },
   dateTimeButton: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
     borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
   },
-  dateTimeValue: { fontSize: 13, color: '#111827', fontWeight: '600' },
+  dateTimeValue: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
 
   infoBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: '#EFF6FF', borderRadius: 12, padding: 12,
-    borderWidth: 1, borderColor: '#DBEAFE', marginBottom: 14,
+    backgroundColor: c.statusBarStyle === 'dark-content' ? '#EFF6FF' : '#0F172A',
+    borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: c.statusBarStyle === 'dark-content' ? '#DBEAFE' : '#1E3A5F',
+    marginBottom: 14,
   },
-  infoBoxText: {
-    flex: 1, fontSize: 11, color: '#1E40AF', fontWeight: '600', lineHeight: 16,
-  },
+  infoBoxText: { flex: 1, fontSize: 11, color: c.statusBarStyle === 'dark-content' ? '#1E40AF' : '#93C5FD', fontWeight: '600', lineHeight: 16 },
 
   confirmBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -2230,4 +2152,38 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   confirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: '800' },
+
+  notifBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
+  notifCard: {
+    backgroundColor: c.card, borderRadius: 20,
+    paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowRadius: 20, elevation: 12,
+    borderWidth: 1, borderColor: c.border,
+  },
+  notifHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
+  },
+  notifHeaderTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  notifCenter: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
+  notifEmptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontWeight: '600' },
+  notifRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
+  notifRowUnread: { backgroundColor: c.accentSoft },
+  notifIconBox: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
+  },
+  notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  notifTitle: { flex: 1, fontSize: 13.5, fontWeight: '800', color: c.textPrimary },
+  notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: ORANGE },
+  notifBody: { fontSize: 12.5, color: c.textSecondary, marginTop: 3, lineHeight: 17 },
+  notifTime: { fontSize: 10.5, color: c.textMuted, marginTop: 5, fontWeight: '600' },
+  notifFooter: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider,
+  },
+  notifFooterText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
 });

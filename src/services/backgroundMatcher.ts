@@ -1,64 +1,98 @@
 // src/services/backgroundMatcher.ts
 import { Alert } from 'react-native';
-import { autoMatchAndCreateDeliveries, findMatches } from './matchingService';
+import { autoMatchAndCreateDeliveries } from './matchingService';
 import { getActiveRouteId } from './activeRouteStore';
 import { supabase } from '../utils/supabase';
 
 let globalMatchChannel: any = null;
 
 /* ------------------------------------------------------------------ */
-/* Start background matching service & Global Notifications            */
+/* Start background notifier                                           */
+/*                                                                     */
+/* This DOES NOT create deliveries. Matching is a proposal: the        */
+/* provider must tap Accept in JobsScreen to actually take the job.    */
+/*                                                                     */
+/* IMPORTANT: the provider is only notified once the sender's escrow   */
+/* payment is actually held (payment_status = 'held'). This prevents   */
+/* providers from seeing / accepting unpaid requests.                  */
 /* ------------------------------------------------------------------ */
 export function startBackgroundMatcher() {
-  console.log('🚀 Starting background realtime matcher...');
+  console.log('🚀 Starting background realtime notifier...');
 
-  // 1. Initial boot match check
+  stopBackgroundMatcher();
+
+  // 1. Boot-time proposal check — read only, just logs
   (async () => {
     const routeId = await getActiveRouteId();
     if (!routeId) return;
     try {
-      const matches = await autoMatchAndCreateDeliveries(routeId);
-      console.log(`📊 Initial matching found ${matches.length} matches for route ${routeId}`);
+      const proposals = await autoMatchAndCreateDeliveries(routeId);
+      console.log(`📊 Initial matching proposed ${proposals.length} requests for route ${routeId}`);
     } catch (err) {
       console.error('❌ Initial match error:', err);
     }
   })();
 
-  // 2. Global Realtime Listener for Instant Provider Notifications
+  // Shared handler for both INSERT and UPDATE events
+  const handleIncoming = async (row: any) => {
+    // Only notify when the request is still pending
+    if (row.delivery_status !== 'Pending') return;
+
+    // ONLY notify once the sender's escrow is actually held
+    if (row.payment_status !== 'held') return;
+
+    const routeId = await getActiveRouteId();
+    if (!routeId) return;
+
+    try {
+      const { data: route } = await supabase
+        .from('provider_routes')
+        .select('provider_id')
+        .eq('route_id', routeId)
+        .maybeSingle();
+      if (!route) return;
+
+      const { data: user } = await supabase
+        .from('users')
+        .select('is_active')
+        .eq('user_id', route.provider_id)
+        .maybeSingle();
+      if (!user?.is_active) return;
+
+      const proposals = await autoMatchAndCreateDeliveries(routeId);
+      const matchesThisRequest = proposals.some(
+        (d: any) => d.request_id === row.request_id,
+      );
+
+      if (matchesThisRequest) {
+        Alert.alert(
+          '🎯 New Delivery Match!',
+          'A new sender request matches your route. Open the Jobs tab to review and accept it.',
+          [{ text: 'Got it', style: 'default' }],
+        );
+      }
+    } catch (err) {
+      console.error('❌ Global match check error:', err);
+    }
+  };
+
+  // 2. Realtime listener — notify the provider of new matching requests
   globalMatchChannel = supabase
     .channel('realtime-global-matcher')
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'delivery_requests' },
-      async (payload) => {
-        // Only trigger on brand new pending requests
-        if (payload.new.delivery_status !== 'Pending') return;
-
-        const routeId = await getActiveRouteId();
-        if (!routeId) return;
-
-        try {
-          // Verify provider is actually Online before sending a push notification
-          const { data: route } = await supabase.from('provider_routes').select('provider_id').eq('route_id', routeId).single();
-          if (route) {
-             const { data: user } = await supabase.from('users').select('is_active').eq('user_id', route.provider_id).single();
-             if (!user?.is_active) return; // Silently ignore if offline
-          }
-
-          // Check if this newly inserted request matches the provider's active route
-          const matches = await findMatches(routeId);
-          const isMatch = matches.some(m => m.request.request_id === payload.new.request_id);
-
-          if (isMatch) {
-            // Global cross-screen notification pops up instantly
-            Alert.alert(
-              '🎯 New Delivery Match!',
-              `A new sender request perfectly matches your route. Open the Jobs or Task tab to accept it.`,
-              [{ text: 'Got it', style: 'default' }]
-            );
-          }
-        } catch (err) {
-          console.error('❌ Global match check error:', err);
+      (payload) => handleIncoming(payload.new),
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'delivery_requests' },
+      (payload) => {
+        // Only fire when payment_status transitions into 'held'
+        const before = payload.old?.payment_status;
+        const after = payload.new?.payment_status;
+        if (before !== 'held' && after === 'held') {
+          handleIncoming(payload.new);
         }
       },
     )
@@ -107,7 +141,8 @@ export async function getMatchingStats(providerId: number) {
     const { data: pending } = await supabase
       .from('delivery_requests')
       .select('*')
-      .eq('delivery_status', 'Pending');
+      .eq('delivery_status', 'Pending')
+      .eq('payment_status', 'held');
 
     return {
       totalDeliveries: deliveries?.length || 0,

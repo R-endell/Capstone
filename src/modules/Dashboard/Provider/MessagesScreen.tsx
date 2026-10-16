@@ -1,4 +1,4 @@
-// src/modules/Dashboard/Provider/MessagesScreen.tsx
+// src/modules/Dashboard/Sender/MessagesScreen.tsx
 import React, {
   useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo,
 } from 'react';
@@ -13,30 +13,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#F27024';
+const ORANGE = '#FF751F';
 const PAGE_SIZE = 30;
-
-// Hide the bottom tab bar while a chat is open so it never covers the typing area
-const TAB_BAR_HIDDEN_STYLE = { display: 'none' as const };
-const TAB_BAR_VISIBLE_STYLE: any = undefined;
-
-const getTabNavigations = (nav: any): any[] => {
-  const found: any[] = [];
-  let current = nav;
-  while (current) {
-    try {
-      if (current.getState?.()?.type === 'tab') found.push(current);
-    } catch {
-      /* ignore */
-    }
-    current = current.getParent?.();
-  }
-  if (found.length === 0) {
-    [nav, nav?.getParent?.()].forEach(n => n && found.push(n));
-  }
-  return found;
-};
 
 type Party = {
   user_id: number;
@@ -50,10 +30,12 @@ type ChatRoom = {
   all_room_ids: number[];
   delivery_id: number;
   other: Party;
-  role: 'sender' | 'provider';
+  role: 'sender' | 'provider' | 'support';
   latest_message: string | null;
   latest_sent_at: string | null;
   unread_count: number;
+  is_archived: boolean;
+  is_support?: boolean;
 };
 
 type ChatMessage = {
@@ -121,10 +103,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const insets = useSafeAreaInsets();
   const route = useRoute<any>();
   const isFocused = useIsFocused();
+  const { colors, isDark } = useTheme();
+  const styles = makeStyles(colors);
+
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
   const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
+  const [messagesView, setMessagesView] = useState<'inbox' | 'archived'>('inbox');
 
   const [conversations, setConversations] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -155,28 +141,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
-  const tabBarHidden = useRef(false);
-
-  const setTabBarHidden = useCallback((hidden: boolean) => {
-    if (tabBarHidden.current === hidden) return;
-    tabBarHidden.current = hidden;
-    getTabNavigations(navigationRef.current).forEach(nav => {
-      try {
-        nav.setOptions({ tabBarStyle: hidden ? TAB_BAR_HIDDEN_STYLE : TAB_BAR_VISIBLE_STYLE });
-      } catch {
-        /* ignore */
-      }
-    });
-  }, []);
-
-  // Tab bar is hidden only while a chat is open on this (focused) screen
-  useLayoutEffect(() => {
-    setTabBarHidden(isFocused && !!selectedRoom);
-  }, [isFocused, selectedRoom, setTabBarHidden]);
-
-  useEffect(() => {
-    return () => setTabBarHidden(false);
-  }, [setTabBarHidden]);
 
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
@@ -193,7 +157,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return () => backHandler.remove();
   }, [selectedRoom]);
 
-  // Fetch conversations when screen gains focus
   useFocusEffect(
     useCallback(() => {
       if (!openRoomIdRef.current) {
@@ -209,18 +172,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           supabase.removeChannel(subscription.current);
           subscription.current = null;
         }
-        StatusBar.setBarStyle('dark-content', true);
+        StatusBar.setBarStyle(colors.statusBarStyle, true);
       };
-    }, [])
+    }, [colors.statusBarStyle])
   );
 
-  // Chat open animation
   useLayoutEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
       Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
+        toValue: 1, duration, delay,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
@@ -264,7 +224,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const { data: roomStates } = await supabase
         .from('chat_room_states')
-        .select('room_id, is_deleted')
+        .select('room_id, is_archived, is_deleted')
         .eq('user_id', userId);
 
       const stateMap = new Map();
@@ -285,47 +245,89 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         ...senderDeliveries.map(d => d.delivery_id),
       ]));
 
-      if (deliveryIds.length === 0) {
-        setConversations([]);
-        return;
+      let built: ChatRoom[] = [];
+
+      if (deliveryIds.length > 0) {
+        const { data: rooms, error: roomError } = await supabase
+          .from('chat_rooms')
+          .select('room_id, delivery_id')
+          .in('delivery_id', deliveryIds);
+        if (roomError) throw roomError;
+
+        if (rooms && rooms.length > 0) {
+          const roomDeliveryIds = rooms.map(r => r.delivery_id);
+          const { data: deliveriesInfo, error: dErr } = await supabase
+            .from('deliveries')
+            .select(`
+              delivery_id, provider_id, request_id,
+              provider:provider_id ( user_id, first_name, last_name, profile_photo ),
+              delivery_requests:request_id (
+                sender_id,
+                sender:sender_id ( user_id, first_name, last_name, profile_photo )
+              )
+            `)
+            .in('delivery_id', roomDeliveryIds);
+          if (dErr) throw dErr;
+
+          const deliveryRooms = await Promise.all(
+            rooms.map(async (room): Promise<ChatRoom | null> => {
+              const rState = stateMap.get(room.room_id);
+              if (rState?.is_deleted) return null;
+
+              const d: any = (deliveriesInfo || []).find((x: any) => x.delivery_id === room.delivery_id);
+              if (!d) return null;
+              const req = Array.isArray(d.delivery_requests) ? d.delivery_requests[0] : d.delivery_requests;
+              const provider: Party | null = Array.isArray(d.provider) ? d.provider[0] : d.provider;
+              const sender: Party | null = Array.isArray(req?.sender) ? req.sender[0] : req?.sender;
+
+              const isMeProvider = d.provider_id === userId;
+              const other: Party | null = isMeProvider ? sender : provider;
+              if (!other) return null;
+
+              const [latestResult, unreadResult] = await Promise.all([
+                supabase.from('chat_messages').select('message, sent_at').eq('room_id', room.room_id).order('sent_at', { ascending: false }).limit(1).maybeSingle(),
+                supabase.from('chat_messages').select('*', { count: 'exact', head: true }).eq('room_id', room.room_id).neq('sender_id', userId).eq('is_read', false),
+              ]);
+
+              return {
+                room_id: room.room_id,
+                all_room_ids: [room.room_id],
+                delivery_id: room.delivery_id,
+                other,
+                role: isMeProvider ? 'provider' : 'sender',
+                latest_message: latestResult.data?.message || null,
+                latest_sent_at: latestResult.data?.sent_at || null,
+                unread_count: unreadResult.count || 0,
+                is_archived: rState?.is_archived || false,
+                is_support: false,
+              };
+            })
+          );
+
+          built = deliveryRooms.filter((c): c is ChatRoom => c !== null);
+        }
       }
 
-      const { data: rooms, error: roomError } = await supabase.from('chat_rooms').select('room_id, delivery_id').in('delivery_id', deliveryIds);
-      if (roomError) throw roomError;
-      if (!rooms || rooms.length === 0) {
-        setConversations([]);
-        return;
-      }
+      const { data: adminRooms } = await supabase
+        .from('chat_rooms')
+        .select('room_id, participant_a, participant_b')
+        .eq('is_support', true)
+        .or(`participant_a.eq.${userId},participant_b.eq.${userId}`);
 
-      const roomDeliveryIds = rooms.map(r => r.delivery_id);
-      const { data: deliveriesInfo, error: dErr } = await supabase
-        .from('deliveries')
-        .select(`
-          delivery_id,
-          provider_id,
-          request_id,
-          provider:provider_id ( user_id, first_name, last_name, profile_photo ),
-          delivery_requests:request_id (
-            sender_id,
-            sender:sender_id ( user_id, first_name, last_name, profile_photo )
-          )
-        `)
-        .in('delivery_id', roomDeliveryIds);
-      if (dErr) throw dErr;
+      if (adminRooms && adminRooms.length > 0) {
+        const otherIds = Array.from(new Set(
+          adminRooms.map(r => r.participant_a === userId ? r.participant_b : r.participant_a)
+        )).filter((x): x is number => x != null);
 
-      const built = await Promise.all(
-        rooms.map(async (room): Promise<ChatRoom | null> => {
-          const rState = stateMap.get(room.room_id);
-          if (rState?.is_deleted) return null;
+        const { data: users } = otherIds.length > 0
+          ? await supabase.from('users').select('user_id, first_name, last_name, profile_photo').in('user_id', otherIds)
+          : { data: [] as any[] };
 
-          const d: any = (deliveriesInfo || []).find((x: any) => x.delivery_id === room.delivery_id);
-          if (!d) return null;
-          const req = Array.isArray(d.delivery_requests) ? d.delivery_requests[0] : d.delivery_requests;
-          const provider: Party | null = Array.isArray(d.provider) ? d.provider[0] : d.provider;
-          const sender: Party | null = Array.isArray(req?.sender) ? req.sender[0] : req?.sender;
+        const userMap = new Map((users || []).map((u: any) => [u.user_id, u]));
 
-          const isMeProvider = d.provider_id === userId;
-          const other: Party | null = isMeProvider ? sender : provider;
+        const adminBuilt = await Promise.all(adminRooms.map(async (room: any): Promise<ChatRoom | null> => {
+          const otherId = room.participant_a === userId ? room.participant_b : room.participant_a;
+          const other = userMap.get(otherId);
           if (!other) return null;
 
           const [latestResult, unreadResult] = await Promise.all([
@@ -336,27 +338,32 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           return {
             room_id: room.room_id,
             all_room_ids: [room.room_id],
-            delivery_id: room.delivery_id,
-            other,
-            role: isMeProvider ? 'provider' : 'sender',
+            delivery_id: 0,
+            other: other as Party,
+            role: 'support' as const,
             latest_message: latestResult.data?.message || null,
             latest_sent_at: latestResult.data?.sent_at || null,
             unread_count: unreadResult.count || 0,
+            is_archived: false,
+            is_support: true,
           };
-        })
-      );
+        }));
 
-      const list = sortByLatest(built.filter((c): c is ChatRoom => c !== null));
+        built = [...built, ...adminBuilt.filter((x): x is ChatRoom => x !== null)];
+      }
+
+      const list = sortByLatest(built);
 
       const uniqueConversations: ChatRoom[] = [];
-      const seenUsers = new Map<number, ChatRoom>();
+      const seenUsers = new Map<string, ChatRoom>();
 
       for (const c of list) {
-        if (!seenUsers.has(c.other.user_id)) {
-          seenUsers.set(c.other.user_id, c);
+        const key = c.is_support ? `support-${c.other.user_id}` : `user-${c.other.user_id}`;
+        if (!seenUsers.has(key)) {
+          seenUsers.set(key, c);
           uniqueConversations.push(c);
         } else {
-          const existing = seenUsers.get(c.other.user_id)!;
+          const existing = seenUsers.get(key)!;
           existing.unread_count += c.unread_count;
           if (!existing.all_room_ids.includes(c.room_id)) {
             existing.all_room_ids.push(c.room_id);
@@ -426,10 +433,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         );
 
         if (!isMine) {
-          supabase
-            .from('chat_messages')
-            .update({ is_read: true })
-            .eq('message_id', newMsg.message_id)
+          supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id)
             .then(() => {}, (e: any) => console.warn('Mark read error:', e));
         }
       })
@@ -449,7 +453,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const openConversation = async (room: ChatRoom) => {
     const token = ++openToken.current;
-
     setMessages([]);
     setHasMore(true);
     setLoadMore(false);
@@ -474,9 +477,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           .in('room_id', room.all_room_ids)
           .neq('sender_id', currentUserId.current)
           .eq('is_read', false);
-      } catch (e) {
-        console.warn('Mark read error:', e);
-      }
+      } catch (e) { console.warn('Mark read error:', e); }
       if (token !== openToken.current) return;
       setConversations(prev => prev.map(c => (c.room_id === room.room_id ? { ...c, unread_count: 0 } : c)));
     }
@@ -531,13 +532,16 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       }).select('*').single();
       if (error) throw error;
 
-      await supabase.from('chat_room_states').upsert(
-        allRoomIds.map(id => ({
-          room_id: id,
-          user_id: currentUserId.current,
-          is_deleted: false,
-        }))
-      );
+      if (!selectedRoom.is_support) {
+        await supabase.from('chat_room_states').upsert(
+          allRoomIds.map(id => ({
+            room_id: id,
+            user_id: currentUserId.current,
+            is_archived: false,
+            is_deleted: false,
+          }))
+        );
+      }
 
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
@@ -548,7 +552,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         sortByLatest(
           prev.map(c =>
             c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at }
+              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
               : c
           )
         )
@@ -561,46 +565,59 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Chat options (delete only)                                          */
-  /* ------------------------------------------------------------------ */
   const openChatOptions = (room: ChatRoom) => {
+    if (room.is_support) {
+      Alert.alert('Support conversation', 'This is a support conversation with Pack-N-Ship. You can\'t archive or delete it.');
+      return;
+    }
+
+    const isArchived = room.is_archived;
+
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
       [
         { text: 'Cancel', style: 'cancel' },
+        { text: isArchived ? 'Unarchive' : 'Archive', onPress: () => toggleArchiveChat(room, !isArchived) },
         { text: 'Delete Chat', style: 'destructive', onPress: () => deleteChat(room) },
       ]
     );
   };
 
+  const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
+    setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
+    try {
+      const payloads = room.all_room_ids.map(id => ({
+        room_id: id, user_id: currentUserId.current,
+        is_archived: archive, is_deleted: false,
+      }));
+      await supabase.from('chat_room_states').upsert(payloads);
+    } catch (error) {
+      console.error('Error toggling archive:', error);
+      fetchConversations();
+    }
+  };
+
   const deleteChat = async (room: ChatRoom) => {
-    Alert.alert(
-      'Delete Conversation',
-      'Are you sure? This will permanently remove the chat from your inbox.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            setConversations(prev => prev.filter(c => c.room_id !== room.room_id));
-            try {
-              const payloads = room.all_room_ids.map(id => ({
-                room_id: id,
-                user_id: currentUserId.current,
-                is_deleted: true,
-              }));
-              await supabase.from('chat_room_states').upsert(payloads);
-            } catch (error) {
-              console.error('Error deleting chat:', error);
-              fetchConversations();
-            }
-          },
+    Alert.alert('Delete Conversation', 'Are you sure? This will permanently remove the chat from your inbox.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete', style: 'destructive',
+        onPress: async () => {
+          setConversations(prev => prev.filter(c => c.room_id !== room.room_id));
+          try {
+            const payloads = room.all_room_ids.map(id => ({
+              room_id: id, user_id: currentUserId.current,
+              is_deleted: true, is_archived: false,
+            }));
+            await supabase.from('chat_room_states').upsert(payloads);
+          } catch (error) {
+            console.error('Error deleting chat:', error);
+            fetchConversations();
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   useEffect(() => {
@@ -642,14 +659,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const renderAvatar = (party: Party, size: number, badgeColor?: string) => {
     const initial = party.first_name ? party.first_name.charAt(0).toUpperCase() : '?';
-
     return (
       <View style={{ width: size, height: size, position: 'relative' }}>
         {party.profile_photo ? (
-          <Image
-            source={{ uri: party.profile_photo }}
-            style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE }}
-          />
+          <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE }} />
         ) : (
           <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' }}>
             <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: size * 0.45 }}>{initial}</Text>
@@ -666,16 +679,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const renderConversationItem = ({ item }: { item: ChatRoom }) => {
     const isUnread = item.unread_count > 0;
+    const isSupport = !!item.is_support;
 
     return (
       <View style={styles.chatRowWrapper}>
-        <TouchableOpacity
-          style={styles.chatRow}
-          onPress={() => openConversation(item)}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
           <View style={styles.avatarWrapper}>
-            {item.other.profile_photo ? (
+            {isSupport ? (
+              <View style={styles.supportAvatar}><Ionicons name="headset" size={22} color="#FFFFFF" /></View>
+            ) : item.other.profile_photo ? (
               <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
             ) : (
               <View style={styles.avatarFallback}>
@@ -690,34 +702,28 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <View style={styles.chatInfo}>
             <View style={styles.chatNameRow}>
               <Text style={styles.chatName} numberOfLines={1}>
-                {item.other.first_name} {item.other.last_name}
+                {isSupport ? 'Pack-N-Ship Support' : `${item.other.first_name} ${item.other.last_name}`}
               </Text>
               {item.latest_sent_at && (
-                <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>
-                  {formatChatTime(item.latest_sent_at)}
-                </Text>
+                <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>{formatChatTime(item.latest_sent_at)}</Text>
               )}
             </View>
             <View style={styles.chatMsgRow}>
+              {isSupport && (
+                <View style={styles.supportTag}><Text style={styles.supportTagText}>SUPPORT</Text></View>
+              )}
               <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
                 {item.latest_message || 'Say hi 👋'}
               </Text>
               {isUnread && (
-                <View style={styles.unreadBadge}>
-                  <Text style={styles.unreadBadgeText}>{item.unread_count}</Text>
-                </View>
+                <View style={styles.unreadBadge}><Text style={styles.unreadBadgeText}>{item.unread_count}</Text></View>
               )}
             </View>
           </View>
         </TouchableOpacity>
 
-        {/* Dropdown Options Icon */}
-        <TouchableOpacity
-          style={styles.optionsButton}
-          onPress={() => openChatOptions(item)}
-          activeOpacity={0.6}
-        >
-          <Ionicons name="ellipsis-vertical" size={18} color="#9CA3AF" />
+        <TouchableOpacity style={styles.optionsButton} onPress={() => openChatOptions(item)} activeOpacity={0.6}>
+          <Ionicons name="ellipsis-vertical" size={18} color={colors.textMuted} />
         </TouchableOpacity>
       </View>
     );
@@ -743,7 +749,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
           {!isMe && (
             <View style={styles.msgAvatarSlot}>
-              {showAvatar ? renderAvatar(selectedRoom!.other, 32) : <View style={{ width: 32 }} />}
+              {showAvatar ? (
+                selectedRoom?.is_support ? (
+                  <View style={styles.supportMsgAvatar}><Ionicons name="headset" size={14} color="#FFFFFF" /></View>
+                ) : (
+                  renderAvatar(selectedRoom!.other, 32)
+                )
+              ) : (
+                <View style={{ width: 32 }} />
+              )}
             </View>
           )}
 
@@ -766,9 +780,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     );
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Header with Messages / Notification tabs                            */
-  /* ------------------------------------------------------------------ */
+  const filteredConversations = conversations.filter(c => {
+    if (c.is_support) return messagesView === 'inbox';
+    return messagesView === 'archived' ? c.is_archived : !c.is_archived;
+  });
+
   const renderTabHeader = () => (
     <View style={styles.listHeaderFlat}>
       <View style={styles.headerTopRow}>
@@ -777,12 +793,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       <View style={styles.tabContainer}>
         <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'messages' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('messages')}
+          style={[styles.tabButton, activeTab === 'messages' && messagesView === 'inbox' && styles.tabButtonActive]}
+          onPress={() => { setActiveTab('messages'); setMessagesView('inbox'); }}
           activeOpacity={0.8}
         >
-          <Text style={[styles.tabText, activeTab === 'messages' && styles.tabTextActive]}>Messages</Text>
+          <Text style={[styles.tabText, activeTab === 'messages' && messagesView === 'inbox' && styles.tabTextActive]}>Messages</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'messages' && messagesView === 'archived' && styles.tabButtonActive]}
+          onPress={() => { setActiveTab('messages'); setMessagesView('archived'); }}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.tabText, activeTab === 'messages' && messagesView === 'archived' && styles.tabTextActive]}>Archived</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.tabButton, activeTab === 'notification' && styles.tabButtonActive]}
           onPress={() => setActiveTab('notification')}
@@ -807,10 +832,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
             <View style={styles.chatHeaderInfo}>
               <Text style={styles.chatHeaderName} numberOfLines={1}>
-                {selectedRoom.other.first_name} {selectedRoom.other.last_name}
+                {selectedRoom.is_support ? 'Pack-N-Ship Support' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
-                {selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
+                {selectedRoom.is_support ? 'Official support channel' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
               </Text>
             </View>
 
@@ -822,10 +847,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 44 : 0}
         >
-          <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: '#F9FAFB' }]}>
+          <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: colors.background }]}>
             {chatLoading ? (
               <View style={styles.centerLoader}>
                 <ActivityIndicator size="small" color={ORANGE} />
@@ -845,9 +870,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 onEndReachedThreshold={0.2}
                 ListFooterComponent={
                   loadMore ? (
-                    <View style={styles.loadingMore}>
-                      <ActivityIndicator size="small" color={ORANGE} />
-                    </View>
+                    <View style={styles.loadingMore}><ActivityIndicator size="small" color={ORANGE} /></View>
                   ) : null
                 }
               />
@@ -856,14 +879,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
             <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7}>
-              <Ionicons name="add-circle" size={32} color="#9CA3AF" />
+              <Ionicons name="add-circle" size={32} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.inputWrapperFlat}>
               <TextInput
                 style={styles.textInputFlat}
                 placeholder="Type a message..."
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={newMessage}
                 onChangeText={setNewMessage}
                 onFocus={() => setTimeout(() => scrollToLatest(true), 150)}
@@ -888,7 +911,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <Animated.View style={fadeUp(listHeaderAnim, -10)}>{renderTabHeader()}</Animated.View>
 
@@ -898,20 +921,28 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </View>
       ) : activeTab === 'notification' ? (
         <View style={{ flex: 1 }}>
-          <NotificationsList />
+          <NotificationsList embedded />
         </View>
-      ) : conversations.length === 0 ? (
+      ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
-          <Text style={styles.emptyTitle}>No messages yet</Text>
+          <Ionicons
+            name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
+            size={48}
+            color={colors.textMuted}
+          />
+          <Text style={styles.emptyTitle}>
+            {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
+          </Text>
           <Text style={styles.emptySubtext}>
-            When you contact a provider or sender, your conversation will show up here.
+            {messagesView === 'inbox'
+              ? 'When you contact a provider or sender, your conversation will show up here.'
+              : 'Chats you archive will be saved here.'}
           </Text>
         </View>
       ) : (
         <View style={{ flex: 1 }}>
           <FlatList
-            data={conversations}
+            data={filteredConversations}
             keyExtractor={(item) => item.room_id.toString()}
             renderItem={renderConversationItem}
             contentContainerStyle={styles.listContentFlat}
@@ -924,127 +955,77 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const makeStyles = (c: ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
   flex: { flex: 1 },
 
-  /* Header Tab Row */
   listHeaderFlat: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    backgroundColor: c.card,
+    paddingHorizontal: 20, paddingTop: 24, paddingBottom: 16,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
   },
-  headerTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 16,
-  },
-  mainTitle: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.5,
-  },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  mainTitle: { fontSize: 26, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
   tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 16,
-    padding: 4,
+    flexDirection: 'row', backgroundColor: c.divider,
+    borderRadius: 16, padding: 4,
   },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 12,
-  },
-  headerTabTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    letterSpacing: -0.5,
-    height: 32,
-    lineHeight: 32,
-  },
-  tabText: {
-    color: '#6B7280',
-    fontSize: 13,
-    fontWeight: '600',
-  },
+  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 12 },
+  tabText: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
   tabButtonActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
+    backgroundColor: c.card,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.08 : 0.4,
+    shadowRadius: 4, elevation: 2,
   },
-  tabTextActive: {
-    color: ORANGE,
-    fontWeight: '800',
-  },
+  tabTextActive: { color: ORANGE, fontWeight: '800' },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: '#111827', marginTop: 16, letterSpacing: -0.2 },
-  emptySubtext: { fontSize: 14, color: '#6B7280', textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
-  /* Edge-to-edge list styling */
   listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
 
   chatRowWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    marginBottom: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 1,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.card, marginBottom: 6, borderRadius: 16,
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
+    shadowRadius: 6, elevation: 1,
   },
   chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 12 },
   optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
 
   avatarWrapper: { position: 'relative', marginRight: 14 },
   avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
-  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#F3F4F6' },
+  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.divider },
   avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
-  onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: '#22C55E', borderWidth: 2.5, borderColor: '#FFFFFF' },
+  supportAvatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
+  onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: c.success, borderWidth: 2.5, borderColor: c.card },
 
   chatInfo: { flex: 1, marginRight: 8 },
   chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  chatName: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2, flex: 1, marginRight: 8 },
-  chatTime: { fontSize: 11, color: '#9CA3AF', fontWeight: '600' },
+  chatName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatTime: { fontSize: 11, color: c.textMuted, fontWeight: '600' },
   chatTimeUnread: { color: ORANGE, fontWeight: '800' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chatLastMsg: { fontSize: 13, color: '#6B7280', flex: 1, fontWeight: '500' },
-  chatLastMsgUnread: { color: '#111827', fontWeight: '700' },
+  chatLastMsg: { fontSize: 13, color: c.textSecondary, flex: 1, fontWeight: '500' },
+  chatLastMsgUnread: { color: c.textPrimary, fontWeight: '700' },
+  supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  supportTagText: { color: c.card, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
   unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
 
-  detailContainer: { flex: 1, backgroundColor: '#F9FAFB' },
+  detailContainer: { flex: 1, backgroundColor: c.background },
   chatHeaderFlat: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: ORANGE,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 16,
-    borderBottomLeftRadius: 24,
-    borderBottomRightRadius: 24,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 5,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16,
+    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2, shadowRadius: 10, elevation: 5,
   },
   backBtnFlat: { padding: 4, marginRight: 8, marginLeft: -8 },
   chatHeaderInfo: { flex: 1 },
@@ -1054,48 +1035,38 @@ const styles = StyleSheet.create({
 
   chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
-  dateSeparatorLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
-  dateSeparatorText: { fontSize: 11, color: '#9CA3AF', fontWeight: '700', letterSpacing: 0.3 },
+  dateSeparatorLine: { flex: 1, height: 1, backgroundColor: c.border },
+  dateSeparatorText: { fontSize: 11, color: c.textMuted, fontWeight: '700', letterSpacing: 0.3 },
 
   msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4, paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
   msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
-  avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFFFFF' },
+  supportMsgAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
+  avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
   msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
   myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  theirMsg: { backgroundColor: '#FFFFFF', borderBottomLeftRadius: 6, borderWidth: 1, borderColor: '#F3F4F6', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 1 },
-  msgText: { fontSize: 14.5, color: '#111827', lineHeight: 20, fontWeight: '500' },
+  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.divider, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.05 : 0.35, shadowRadius: 4, elevation: 1 },
+  msgText: { fontSize: 14.5, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
   myMsgText: { color: '#FFFFFF' },
   msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4 },
-  msgTime: { fontSize: 10, color: '#9CA3AF', fontWeight: '600' },
+  msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
   myMsgTime: { color: 'rgba(255,255,255,0.85)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
   inputContainerFlat: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
+    flexDirection: 'row', alignItems: 'flex-end',
+    backgroundColor: c.card, paddingHorizontal: 12, paddingTop: 10,
+    borderTopWidth: 1, borderTopColor: c.border,
   },
   attachBtnFlat: { paddingBottom: 8, marginRight: 8 },
   inputWrapperFlat: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    marginBottom: 8,
-    minHeight: 40,
-    maxHeight: 120,
-    justifyContent: 'center',
+    flex: 1, backgroundColor: c.divider, borderRadius: 20,
+    paddingHorizontal: 16, marginBottom: 8,
+    minHeight: 40, maxHeight: 120, justifyContent: 'center',
   },
   textInputFlat: {
-    flex: 1,
-    fontSize: 15,
-    color: '#111827',
+    flex: 1, fontSize: 15, color: c.textPrimary,
     paddingTop: Platform.OS === 'ios' ? 10 : 8,
     paddingBottom: Platform.OS === 'ios' ? 10 : 8,
   },

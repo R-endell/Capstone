@@ -146,6 +146,10 @@ function isTimeWithinWindow(
 
 /* ------------------------------------------------------------------ */
 /* Data fetchers                                                       */
+/*                                                                     */
+/* IMPORTANT: only funded requests (payment_status = 'held') are       */
+/* returned here. This is the single source of truth that keeps        */
+/* providers from ever seeing / accepting unpaid requests.             */
 /* ------------------------------------------------------------------ */
 export async function getPendingRequests(): Promise<any[]> {
   const { data } = await supabase
@@ -153,7 +157,8 @@ export async function getPendingRequests(): Promise<any[]> {
     .select(
       '*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)',
     )
-    .eq('delivery_status', 'Pending');
+    .eq('delivery_status', 'Pending')
+    .eq('payment_status', 'held');
   return data || [];
 }
 
@@ -173,12 +178,11 @@ async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
     return [];
   }
 
-  // Only return routes where the provider is currently online
   return (data || []).filter((r: any) => r.provider?.is_active === true);
 }
 
 /* ------------------------------------------------------------------ */
-/* findMatches — accepts optional routeId filter                       */
+/* findMatches — read-only match query                                 */
 /* ------------------------------------------------------------------ */
 export async function findMatches(
   routeId?: number | null,
@@ -188,7 +192,6 @@ export async function findMatches(
     getActiveProviderRoutes(),
   ]);
 
-  // ✅ Restrict to a single route if one was passed
   const routesToCheck = routeId
     ? providerRoutes.filter((r) => r.route_id === routeId)
     : providerRoutes;
@@ -235,12 +238,11 @@ export async function findMatches(
 }
 
 /* ------------------------------------------------------------------ */
-/* autoMatchAndCreateDeliveries — passes routeId through               */
+/* autoMatchAndCreateDeliveries — READ-ONLY                            */
 /* ------------------------------------------------------------------ */
 export async function autoMatchAndCreateDeliveries(
   routeId?: number | null,
 ): Promise<any[]> {
-  // Propose model: return matches to the UI; the Provider accepts manually.
   const matches = await findMatches(routeId);
   return matches.map((m) => ({
     request_id: m.request.request_id,
@@ -317,36 +319,10 @@ export function subscribeToDeliveryUpdates(
     .subscribe();
 }
 
-/* ------------------------------------------------------------------ */
-/* Background matcher singleton                                        */
-/* ------------------------------------------------------------------ */
-let globalMatchChannel: any = null;
-let globalMatchInterval: ReturnType<typeof setInterval> | null = null;
-
-export function startBackgroundMatcher(): () => void {
-  globalMatchChannel = supabase
-    .channel('realtime-matcher')
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'delivery_requests' },
-      async () => {
-        const routeId = await getActiveRouteId();
-        if (!routeId) return;
-        await autoMatchAndCreateDeliveries(routeId);
-      },
-    )
-    .subscribe();
-
-  return () => stopBackgroundMatcher();
-}
-
-export function stopBackgroundMatcher(): void {
-  if (globalMatchChannel) {
-    supabase.removeChannel(globalMatchChannel);
-    globalMatchChannel = null;
-  }
-  if (globalMatchInterval) {
-    clearInterval(globalMatchInterval);
-    globalMatchInterval = null;
-  }
-}
+// --- Re-export so existing imports from matchingService keep working ---
+export {
+  startBackgroundMatcher,
+  stopBackgroundMatcher,
+  updateProviderStatus,
+  getMatchingStats,
+} from './backgroundMatcher';

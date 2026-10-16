@@ -1,7 +1,10 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, LogBox } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { AppState, LogBox, View } from 'react-native';
+import {
+  NavigationContainer,
+  useNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -44,7 +47,7 @@ import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
 
-// Dispute Center (report an issue / provider response)
+// Dispute Center
 import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
 import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailScreen';
 
@@ -68,11 +71,33 @@ import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
 import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen';
 
-// Import matching service
-import { startBackgroundMatcher } from './src/services/matchingService';
+// Notifications Section
+import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
+
+// Support FAB
+import SupportFab from './src/components/SupportFab';
+
+// Canonical background matcher
+import {
+  startBackgroundMatcher,
+  stopBackgroundMatcher,
+} from './src/services/backgroundMatcher';
+import { setActiveRouteId } from './src/services/activeRouteStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
+
+import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen';
+
+import { UserProvider } from './src/utils/userContext';
+import { ThemeProvider, useTheme } from './src/utils/themeContext';
+
+import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
+
+import './src/services/backgroundLocationTask';
+
+import * as Notifications from 'expo-notifications';
+import { registerPushToken } from './src/services/pushService';
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -104,14 +129,17 @@ export type RootStackParamList = {
   ReceiverPicker: { selectedReceiverId?: number | null };
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
+  DeliveryPayment: { requestId: number; amount: number };
+  LiveTracking: { deliveryId: number };
+  NotificationsList: undefined;
 };
 
-export type MainTabParamList = { 
-  Home: undefined; 
-  Activity: undefined; 
-  Explore: undefined; 
-  Messages: undefined; 
-  Account: undefined; 
+export type MainTabParamList = {
+  Home: undefined;
+  Activity: undefined;
+  Explore: undefined;
+  Messages: undefined;
+  Account: undefined;
 };
 
 export type ProviderTabParamList = {
@@ -239,213 +267,334 @@ function useUnreadMessages() {
 // ---------- Sender Tab Navigator ----------
 function MainTabs() {
   const unreadCount = useUnreadMessages();
+  const { colors, isDark } = useTheme();
 
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
-          if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
-          else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
-          else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: { backgroundColor: '#FFFFFF', borderTopWidth: 1, borderTopColor: '#E5E7EB', height: 60, paddingBottom: 8, paddingTop: 2 },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
-        headerShown: false,
-      })}
-    >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Activity" component={ActivityScreen} />
-      <Tab.Screen name="Explore" component={ExploreScreen} />
-      <Tab.Screen 
-        name="Messages" 
-        component={MessagesScreen} 
-        options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
-      />
-      <Tab.Screen name="Account" component={AccountScreen} />
-    </Tab.Navigator>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
+            if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
+            else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
+            else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
+            else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
+          tabBarStyle: {
+            backgroundColor: colors.card,
+            borderTopWidth: 1,
+            borderTopColor: colors.border,
+            height: 60,
+            paddingBottom: 8,
+            paddingTop: 2,
+          },
+          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+          headerShown: false,
+        })}
+      >
+        <Tab.Screen name="Home" component={HomeScreen} />
+        <Tab.Screen name="Activity" component={ActivityScreen} />
+        <Tab.Screen name="Explore" component={ExploreScreen} />
+        <Tab.Screen
+          name="Messages"
+          component={MessagesScreen}
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+          }}
+        />
+        <Tab.Screen name="Account" component={AccountScreen} />
+      </Tab.Navigator>
+
+      {/* Floating customer support bubble (sender) */}
+      <SupportFab role="sender" bottomOffset={78} />
+    </View>
   );
 }
 
 // ---------- Provider Tab Navigator ----------
 function ProviderTabs() {
   const unreadCount = useUnreadMessages();
+  const { colors, isDark } = useTheme();
 
   return (
-    <ProviderTab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <ProviderTab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
 
-          if (route.name === 'Task') {
-            iconName = focused ? 'clipboard' : 'clipboard-outline';
-          } else if (route.name === 'Earnings') {
-            iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-          } else if (route.name === 'Jobs') {
-            iconName = focused ? 'map' : 'map-outline';
-          } else if (route.name === 'Messages') {
-            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          } else if (route.name === 'Account') {
-            iconName = focused ? 'person' : 'person-outline';
-          }
+            if (route.name === 'Task') {
+              iconName = focused ? 'clipboard' : 'clipboard-outline';
+            } else if (route.name === 'Earnings') {
+              iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+            } else if (route.name === 'Jobs') {
+              iconName = focused ? 'map' : 'map-outline';
+            } else if (route.name === 'Messages') {
+              iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            } else if (route.name === 'Account') {
+              iconName = focused ? 'person' : 'person-outline';
+            }
 
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: '#6B7280',
-        tabBarStyle: {
-          backgroundColor: '#FFFFFF',
-          borderTopWidth: 1,
-          borderTopColor: '#E5E7EB',
-          height: 60,
-          paddingBottom: 8,
-          paddingTop: 2,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '500',
-        },
-        headerShown: false,
-      })}
-    >
-      <ProviderTab.Screen name="Task" component={TaskScreen} />
-      <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-      <ProviderTab.Screen name="Jobs" component={JobsScreen} />
-      <ProviderTab.Screen
-        name="Messages"
-        component={ProviderMessagesScreen}
-        options={{
-          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-          tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-        }}
-      />
-      <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
-    </ProviderTab.Navigator>
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
+          tabBarStyle: {
+            backgroundColor: colors.card,
+            borderTopWidth: 1,
+            borderTopColor: colors.border,
+            height: 60,
+            paddingBottom: 8,
+            paddingTop: 2,
+          },
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '500',
+          },
+          headerShown: false,
+        })}
+      >
+        <ProviderTab.Screen name="Task" component={TaskScreen} />
+        <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
+        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+        <ProviderTab.Screen
+          name="Messages"
+          component={ProviderMessagesScreen}
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+          }}
+        />
+        <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
+      </ProviderTab.Navigator>
+
+      {/* Floating customer support bubble (provider) */}
+      <SupportFab role="provider" bottomOffset={78} />
+    </View>
+  );
+}
+
+// ---------- Inner App (needs to be inside ThemeProvider so it can use useTheme) ----------
+function AppInner() {
+  const navigationRef = useNavigationContainerRef<RootStackParamList>();
+  const appStateRef = useRef(AppState.currentState);
+  const matcherStartedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootMatcher = async () => {
+      if (cancelled) return;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!userRow?.user_id) return;
+
+      const { data: routeRow } = await supabase
+        .from('provider_routes')
+        .select('route_id')
+        .eq('provider_id', userRow.user_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!routeRow?.route_id) return;
+
+      await setActiveRouteId(routeRow.route_id);
+
+      if (!matcherStartedRef.current) {
+        try {
+          startBackgroundMatcher();
+          matcherStartedRef.current = true;
+          console.log('✅ Background matcher started for route', routeRow.route_id);
+        } catch (error) {
+          console.error('❌ Failed to start background matcher:', error);
+        }
+      }
+    };
+
+    bootMatcher();
+
+    const { data: authSub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (cancelled) return;
+
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      await bootMatcher();
+    });
+
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        next === 'active'
+      ) {
+        bootMatcher();
+      }
+      appStateRef.current = next;
+    });
+
+    return () => {
+      cancelled = true;
+      authSub.subscription.unsubscribe();
+      appStateSub.remove();
+      if (matcherStartedRef.current) {
+        stopBackgroundMatcher();
+        matcherStartedRef.current = false;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let notifSub: any = null;
+
+    const bootstrap = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+      if (!userRow?.user_id) return;
+
+      await registerPushToken(userRow.user_id);
+    };
+
+    bootstrap();
+
+    // Notification tap → open LiveTracking if the payload has a deliveryId
+    notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const payload = response.notification.request.content.data as any;
+      if (payload?.deliveryId && navigationRef.isReady?.()) {
+        navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (notifSub) notifSub.remove();
+    };
+  }, []);
+
+  return (
+    <NavigationContainer ref={navigationRef}>
+      <Stack.Navigator
+        initialRouteName="Loading"
+        screenOptions={{ headerShown: false }}
+      >
+        <Stack.Screen name="Loading" component={LoadingScreen} />
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="Register" component={RegisterScreen} />
+        <Stack.Screen
+          name="PermissionsPrompt"
+          component={PermissionsPromptScreen}
+        />
+        <Stack.Screen
+          name="IdentityVerification"
+          component={IdentityVerificationScreen}
+        />
+        <Stack.Screen
+          name="TwoFactorAuth"
+          component={TwoFactorAuthScreen}
+        />
+        <Stack.Screen name="MainTabs" component={MainTabs} />
+        <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
+        <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+        <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen
+          name="DisputeCenter"
+          component={DisputeCenterScreen}
+        />
+        <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+        <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
+        <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+        <Stack.Screen
+          name="RegisterProvider"
+          component={RegisterProviderScreen}
+        />
+        <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+        <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+        <Stack.Screen name="AddItem" component={AddItemScreen} />
+        <Stack.Screen
+          name="ScheduleCalendar"
+          component={ScheduleCalendarScreen}
+        />
+        <Stack.Screen
+          name="PickupLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen
+          name="DropoffLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen name="Booking" component={BookingScreen} />
+        <Stack.Screen
+          name="DeliveryPayment"
+          component={DeliveryPaymentScreen}
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="LiveTracking"
+          component={LiveTrackingScreen}
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+        <Stack.Screen
+          name="ManageVehicle"
+          component={ManageVehicleScreen}
+        />
+        <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+        <Stack.Screen
+          name="ReceiverPicker"
+          component={ReceiverPickerScreen}
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+        <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+        <Stack.Screen name="NotificationsList" component={NotificationsList} />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }
 
 // ---------- App ----------
 export default function App() {
-  const appStateRef = useRef(AppState.currentState);
-  const matcherCleanupRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    try {
-      matcherCleanupRef.current = startBackgroundMatcher();
-    } catch (error) {
-      console.error('❌ Failed to start background matcher:', error);
-    }
-
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active'
-      ) {
-        if (matcherCleanupRef.current) {
-          try {
-            matcherCleanupRef.current();
-          } catch (error) {}
-          matcherCleanupRef.current = null;
-        }
-
-        try {
-          matcherCleanupRef.current = startBackgroundMatcher();
-        } catch (error) {}
-      }
-
-      appStateRef.current = nextAppState;
-    });
-
-    return () => {
-      if (matcherCleanupRef.current) {
-        try {
-          matcherCleanupRef.current();
-        } catch (error) {}
-
-        matcherCleanupRef.current = null;
-      }
-
-      subscription.remove();
-    };
-  }, []);
-
   return (
-    <ScheduleProvider>
-      <NavigationContainer>
-        <Stack.Navigator
-          initialRouteName="Loading"
-          screenOptions={{ headerShown: false }}
-        >
-          <Stack.Screen name="Loading" component={LoadingScreen} />
-          <Stack.Screen name="Login" component={LoginScreen} />
-          <Stack.Screen name="Register" component={RegisterScreen} />
-          {/* Permission prompt route */}
-          <Stack.Screen
-            name="PermissionsPrompt"
-            component={PermissionsPromptScreen}
-          />
-          <Stack.Screen
-            name="IdentityVerification"
-            component={IdentityVerificationScreen}
-          />
-          <Stack.Screen
-            name="TwoFactorAuth"
-            component={TwoFactorAuthScreen}
-          />
-          <Stack.Screen name="MainTabs" component={MainTabs} />
-          <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
-          <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-          <Stack.Screen name="Settings" component={SettingsScreen} />
-          <Stack.Screen
-            name="DisputeCenter"
-            component={DisputeCenterScreen}
-          />
-          <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
-          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
-          <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-          <Stack.Screen
-            name="RegisterProvider"
-            component={RegisterProviderScreen}
-          />
-          <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
-          <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
-          <Stack.Screen name="AddItem" component={AddItemScreen} />
-          <Stack.Screen
-            name="ScheduleCalendar"
-            component={ScheduleCalendarScreen}
-          />
-          <Stack.Screen
-            name="PickupLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen
-            name="DropoffLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen name="Booking" component={BookingScreen} />
-          <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-          <Stack.Screen
-            name="ManageVehicle"
-            component={ManageVehicleScreen}
-          />
-          <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-          <Stack.Screen
-            name="ReceiverPicker"
-            component={ReceiverPickerScreen}
-            options={{
-              presentation: 'modal',
-              animation: 'slide_from_bottom',
-            }}
-          />
-          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
-          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
-        </Stack.Navigator>
-      </NavigationContainer>
-    </ScheduleProvider>
+    <ThemeProvider>
+      <ScheduleProvider>
+        <UserProvider>
+          <AppInner />
+        </UserProvider>
+      </ScheduleProvider>
+    </ThemeProvider>
   );
 }

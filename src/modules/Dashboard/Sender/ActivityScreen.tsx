@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
@@ -12,6 +12,7 @@ import { WebView } from 'react-native-webview';
 import QRCode from 'react-native-qrcode-svg';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF751F';
@@ -50,7 +51,7 @@ const getTabNavigations = (nav: any): any[] => {
 };
 
 /* ==================================================================== */
-/* LeafletMap — OSRM road-following route with P and D markers          */
+/* LeafletMap — unchanged light tiles                                   */
 /* ==================================================================== */
 const LeafletMap = ({
   pickupLat, pickupLng, dropoffLat, dropoffLng, interactive = false,
@@ -405,6 +406,9 @@ interface MappedDelivery {
 export default function ActivityScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
   const [selectedDelivery, setSelectedDelivery] = useState<MappedDelivery | null>(null);
   const [showFullMap, setShowFullMap] = useState(false);
@@ -495,16 +499,14 @@ export default function ActivityScreen() {
       if (!user) return null;
       const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
       return userRecord?.user_id || null;
-    } catch (error) {
-      return null;
-    }
+    } catch { return null; }
   };
 
   const fetchProviderDetails = async (providerId: number) => {
     try {
       const { data } = await supabase.from('users').select('user_id, first_name, last_name, email, phone_number').eq('user_id', providerId).single();
       return data;
-    } catch (error) { return null; }
+    } catch { return null; }
   };
 
   const fetchData = async () => {
@@ -539,11 +541,7 @@ export default function ActivityScreen() {
 
       const requestIds = requests?.map((r: any) => r.request_id) || [];
       const receiverIds = Array.from(
-        new Set(
-          (requests || [])
-            .map((r: any) => r.receiver_id)
-            .filter((id: any) => id != null)
-        )
+        new Set((requests || []).map((r: any) => r.receiver_id).filter((id: any) => id != null))
       ) as number[];
 
       const receiverById: Record<number, any> = {};
@@ -569,16 +567,10 @@ export default function ActivityScreen() {
 
         const deliveryIds = deliveriesData.map(d => d.delivery_id);
         if (deliveryIds.length > 0) {
-          const { data: qrs } = await supabase
-            .from('qr_verifications')
-            .select('*')
-            .in('delivery_id', deliveryIds);
+          const { data: qrs } = await supabase.from('qr_verifications').select('*').in('delivery_id', deliveryIds);
           (qrs || []).forEach((q: any) => { qrByDeliveryId[q.delivery_id] = q; });
 
-          const { data: confirmations } = await supabase
-            .from('delivery_confirmations')
-            .select('*')
-            .in('delivery_id', deliveryIds);
+          const { data: confirmations } = await supabase.from('delivery_confirmations').select('*').in('delivery_id', deliveryIds);
           (confirmations || []).forEach((c: any) => { confirmationByDeliveryId[c.delivery_id] = c; });
         }
       }
@@ -599,22 +591,15 @@ export default function ActivityScreen() {
         let status = item.delivery_status;
         let statusDisplay = status;
 
-        if (status === 'Pending') {
-          statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
-        } else if (status === 'Accepted') {
-          statusDisplay = 'In Progress';
-        } else if (status === 'In Transit') {
-          statusDisplay = 'In Transit';
-        } else if (status === 'Completed') {
-          statusDisplay = 'Completed';
-        }
+        if (status === 'Pending') statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
+        else if (status === 'Accepted') statusDisplay = 'In Progress';
+        else if (status === 'In Transit') statusDisplay = 'In Transit';
+        else if (status === 'Completed') statusDisplay = 'Completed';
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
         const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
 
-        const joinedReceiver =
-          item.receiver ||
-          (item.receiver_id != null ? receiverById[item.receiver_id] : null);
+        const joinedReceiver = item.receiver || (item.receiver_id != null ? receiverById[item.receiver_id] : null);
 
         const receiverInfo: ReceiverInfo | null = joinedReceiver
           ? {
@@ -689,7 +674,7 @@ export default function ActivityScreen() {
       }
 
       setDeliveries(mappedDeliveries);
-    } catch (error) {
+    } catch {
       setDeliveries([]);
     } finally {
       setIsLoading(false);
@@ -697,42 +682,24 @@ export default function ActivityScreen() {
     }
   };
 
-  // ---------- REALTIME ----------
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel(`sender-activity-${userId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => {
-        fetchData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => {
-        fetchData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => {
-        fetchData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => {
-        fetchData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, () => {
-        fetchData();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchData(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, () => { fetchData(); })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [userId]);
 
-  // Auto-generate OTP after pickup verification
   useEffect(() => {
     const pending = deliveries.filter(
-      (d) =>
-        d.isMatched &&
-        d.qr?.pickup_verified &&
-        !d.deliveryData?.completed_at &&
-        !d.confirmation?.system_otp,
+      (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp,
     );
 
     pending.forEach(async (d) => {
@@ -763,9 +730,6 @@ export default function ActivityScreen() {
   const detailRequestId = selectedDelivery?.request_id ?? null;
   const detailDeliveryId: number | null = (selectedDelivery?.deliveryData as any)?.delivery_id ?? null;
 
-  /* ---------------------------------------------------------------- */
-  /* Load existing rating / escrow for the selected delivery          */
-  /* ---------------------------------------------------------------- */
   useEffect(() => {
     setRatingSaved(null);
     setRatingValue(0);
@@ -786,7 +750,6 @@ export default function ActivityScreen() {
         .maybeSingle();
       if (!cancelled && esc) setEscrowRow(esc);
 
-      // Only fetch the caller's own review
       if (!userId) return;
       const { data: rt } = await supabase
         .from('ratings_reviews')
@@ -820,9 +783,6 @@ export default function ActivityScreen() {
     } catch { /* user dismissed */ }
   };
 
-  /* ---------------------------------------------------------------- */
-  /* Submit rating — writes to public.ratings_reviews                 */
-  /* ---------------------------------------------------------------- */
   const submitRating = async () => {
     const dd: any = selectedDelivery?.deliveryData;
     if (!dd?.delivery_id || ratingValue < 1) return;
@@ -876,9 +836,9 @@ export default function ActivityScreen() {
       fetchData();
 
       return () => {
-        StatusBar.setBarStyle('dark-content', true);
+        StatusBar.setBarStyle(colors.statusBarStyle, true);
       };
-    }, [userId])
+    }, [userId, colors.statusBarStyle])
   );
 
   const handleEdit = (rawData: any) => {
@@ -904,7 +864,7 @@ export default function ActivityScreen() {
             await supabase.from('delivery_requests').delete().eq('request_id', rawData.request_id);
             setSelectedDelivery(null);
             fetchData();
-          } catch (error: any) { Alert.alert('Error', 'Could not delete delivery.'); }
+          } catch { Alert.alert('Error', 'Could not delete delivery.'); }
         }
       }
     ]);
@@ -921,11 +881,8 @@ export default function ActivityScreen() {
         setOpeningChat(false);
         return Alert.alert('Error', 'Could not open chat.');
       }
-      navigation.navigate('MainTabs', {
-        screen: 'Messages',
-        params: { openRoomId: roomId },
-      });
-    } catch (err: any) {
+      navigation.navigate('MainTabs', { screen: 'Messages', params: { openRoomId: roomId } });
+    } catch {
       Alert.alert('Error', 'Could not open chat.');
     } finally {
       setOpeningChat(false);
@@ -941,23 +898,23 @@ export default function ActivityScreen() {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'Waiting for Provider': return '#D97706';
+      case 'Waiting for Provider': return colors.warning;
       case 'Matched': return '#2563EB';
       case 'In Progress': return '#7C3AED';
       case 'In Transit': return '#0284C7';
-      case 'Completed': return '#16A34A';
-      default: return '#4B5563';
+      case 'Completed': return colors.success;
+      default: return colors.textSecondary;
     }
   };
 
   const getStatusBg = (status: string) => {
     switch (status) {
-      case 'Waiting for Provider': return '#FEF3C7';
-      case 'Matched': return '#DBEAFE';
-      case 'In Progress': return '#F3E8FF';
-      case 'In Transit': return '#E0F2FE';
-      case 'Completed': return '#DCFCE7';
-      default: return '#F3F4F6';
+      case 'Waiting for Provider': return colors.warningBg;
+      case 'Matched': return isDark ? '#0F2744' : '#DBEAFE';
+      case 'In Progress': return isDark ? '#231542' : '#F3E8FF';
+      case 'In Transit': return isDark ? '#0C2130' : '#E0F2FE';
+      case 'Completed': return colors.successBg;
+      default: return colors.divider;
     }
   };
 
@@ -997,9 +954,7 @@ export default function ActivityScreen() {
             </Text>
             {count > 0 && (
               <View style={[styles.tabCountBadge, isActive && styles.tabCountBadgeActive]}>
-                <Text style={[styles.tabCountText, isActive && styles.tabCountTextActive]}>
-                  {count}
-                </Text>
+                <Text style={[styles.tabCountText, isActive && styles.tabCountTextActive]}>{count}</Text>
               </View>
             )}
           </TouchableOpacity>
@@ -1008,6 +963,17 @@ export default function ActivityScreen() {
     </ScrollView>
   );
 
+  const packagePhotosOf = (item: any): { url: string; label: string }[] => {
+    const out: { url: string; label: string }[] = [];
+    const seen = new Set<string>();
+    (item?.cargo_items || []).forEach((ci: CargoItem, i: number) => {
+      (ci.photos || []).forEach(url => {
+        if (url && !seen.has(url)) { seen.add(url); out.push({ url, label: ci.name || `Item ${i + 1}` }); }
+      });
+    });
+    return out;
+  };
+
   const renderListView = () => (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
@@ -1015,7 +981,6 @@ export default function ActivityScreen() {
     >
       <View style={styles.headerSection}>
         <Text style={styles.pageTitle}>Activity & Shipments</Text>
-
         {renderTabBar()}
       </View>
 
@@ -1045,9 +1010,7 @@ export default function ActivityScreen() {
               </View>
               <Text style={styles.noResultsText}>No deliveries found</Text>
               <Text style={styles.noResultsSubtext}>
-                {deliveries.length === 0
-                  ? 'Your scheduled shipments will appear here'
-                  : 'No deliveries in this tab yet'}
+                {deliveries.length === 0 ? 'Your scheduled shipments will appear here' : 'No deliveries in this tab yet'}
               </Text>
             </View>
           ) : (
@@ -1086,7 +1049,7 @@ export default function ActivityScreen() {
                       )}
                     </View>
                     <View style={styles.sdItemsChip}>
-                      <Ionicons name="cube-outline" size={12} color="#6B7280" />
+                      <Ionicons name="cube-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.sdItemsChipText}>
                         {item.total_items} {item.total_items === 1 ? 'item' : 'items'}
                       </Text>
@@ -1110,7 +1073,7 @@ export default function ActivityScreen() {
                       {packagePhotosOf(item).slice(0, 3).map((ph, i) => (
                         failedPhotos[ph.url] ? (
                           <View key={`${ph.url}-${i}`} style={[styles.cardPhoto, styles.pkgThumbFailed]}>
-                            <Ionicons name="image-outline" size={16} color="#9CA3AF" />
+                            <Ionicons name="image-outline" size={16} color={colors.textMuted} />
                           </View>
                         ) : (
                           <Image
@@ -1132,15 +1095,13 @@ export default function ActivityScreen() {
 
                   <View style={styles.cardContextRow}>
                     <View style={styles.contextDateBox}>
-                      <Ionicons name="calendar-outline" size={13} color="#6B7280" />
+                      <Ionicons name="calendar-outline" size={13} color={colors.textSecondary} />
                       <Text style={styles.contextText}>{item.date}</Text>
                     </View>
                     {item.isMatched && item.provider_name !== 'Finding...' && (
                       <View style={styles.contextProviderPill}>
-                        <Ionicons name="car-sport" size={13} color="#16A34A" />
-                        <Text style={styles.contextProviderText} numberOfLines={1}>
-                          {item.provider_name}
-                        </Text>
+                        <Ionicons name="car-sport" size={13} color={colors.success} />
+                        <Text style={styles.contextProviderText} numberOfLines={1}>{item.provider_name}</Text>
                       </View>
                     )}
                   </View>
@@ -1150,14 +1111,22 @@ export default function ActivityScreen() {
 
                     {isCompletedItem ? (
                       <View style={styles.actionBadgeComplete}>
-                        <Ionicons name="checkmark-circle" size={14} color="#166534" />
+                        <Ionicons name="checkmark-circle" size={14} color={colors.success} />
                         <Text style={styles.actionBadgeCompleteText}>Delivered</Text>
                       </View>
                     ) : item.isMatched ? (
-                      <View style={styles.actionBadgeActive}>
+                      <TouchableOpacity
+                        style={styles.actionBadgeActive}
+                        onPress={() => {
+                          const id = item.deliveryData?.delivery_id;
+                          if (!id) return;
+                          navigation.navigate('LiveTracking', { deliveryId: id });
+                        }}
+                        activeOpacity={0.85}
+                      >
                         <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
                         <Text style={styles.actionBadgeActiveText}>Track</Text>
-                      </View>
+                      </TouchableOpacity>
                     ) : (
                       <TouchableOpacity
                         style={styles.actionBadgePending}
@@ -1165,9 +1134,9 @@ export default function ActivityScreen() {
                         activeOpacity={0.7}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        <Ionicons name="time-outline" size={13} color="#D97706" />
+                        <Ionicons name="time-outline" size={13} color={colors.warning} />
                         <Text style={styles.actionBadgePendingText}>Find courier</Text>
-                        <Ionicons name="chevron-forward" size={12} color="#92400E" />
+                        <Ionicons name="chevron-forward" size={12} color={colors.warning} />
                       </TouchableOpacity>
                     )}
                   </View>
@@ -1200,29 +1169,19 @@ export default function ActivityScreen() {
           <Text style={styles.courierSub}>Verified courier partner</Text>
           <View style={styles.chipRow}>
             <View style={styles.infoChip}>
-              <Ionicons name="car-sport-outline" size={11} color="#4B5563" />
+              <Ionicons name="car-sport-outline" size={11} color={colors.textSecondary} />
               <Text style={styles.infoChipText}>{vehicle?.vehicle_type || 'Vehicle'}</Text>
             </View>
             <View style={[styles.infoChip, styles.plateChip]}>
-              <Ionicons name="card-outline" size={11} color="#111827" />
-              <Text style={[styles.infoChipText, { color: '#111827', fontWeight: '800' }]}>{vehicle?.plate_number || 'N/A'}</Text>
+              <Ionicons name="card-outline" size={11} color={colors.textPrimary} />
+              <Text style={[styles.infoChipText, { color: colors.textPrimary, fontWeight: '800' }]}>
+                {vehicle?.plate_number || 'N/A'}
+              </Text>
             </View>
           </View>
         </View>
       </View>
     );
-  };
-
-  /* ---- photos of the package the sender requested ---- */
-  const packagePhotosOf = (item: any): { url: string; label: string }[] => {
-    const out: { url: string; label: string }[] = [];
-    const seen = new Set<string>();
-    (item?.cargo_items || []).forEach((ci: CargoItem, i: number) => {
-      (ci.photos || []).forEach(url => {
-        if (url && !seen.has(url)) { seen.add(url); out.push({ url, label: ci.name || `Item ${i + 1}` }); }
-      });
-    });
-    return out;
   };
 
   const renderPackagePhotosCard = (item: any) => {
@@ -1237,7 +1196,7 @@ export default function ActivityScreen() {
 
         {photos.length === 0 ? (
           <View style={styles.pkgEmpty}>
-            <Ionicons name="image-outline" size={18} color="#9CA3AF" />
+            <Ionicons name="image-outline" size={18} color={colors.textMuted} />
             <Text style={styles.pkgEmptyText}>No package photo was added to this request</Text>
           </View>
         ) : (
@@ -1261,7 +1220,7 @@ export default function ActivityScreen() {
                       />
                     ) : (
                       <View style={[styles.pkgThumb, styles.pkgThumbFailed]}>
-                        <Ionicons name="image-outline" size={22} color="#9CA3AF" />
+                        <Ionicons name="image-outline" size={22} color={colors.textMuted} />
                       </View>
                     )}
                     <Text style={styles.pkgThumbLabel} numberOfLines={1}>{ph.label}</Text>
@@ -1292,15 +1251,10 @@ export default function ActivityScreen() {
     const pickupVerified = d?.qr?.pickup_verified === true;
     const isCompleted = !!d?.deliveryData?.completed_at;
 
-    const showPickupQRButton =
-      !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted;
-
+    const showPickupQRButton = !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted;
     const hasConfirmation = !!d?.confirmation;
-    const otpVerified = d?.confirmation?.otp_verified === true;
 
-    const receiverDisplayName =
-      d?.receiver?.receiver_name?.trim() || d?.receiver?.receiver_phone || 'Receiver';
-
+    const receiverDisplayName = d?.receiver?.receiver_name?.trim() || d?.receiver?.receiver_phone || 'Receiver';
     const currentStatus = d?.status || 'Waiting for Provider';
 
     let stepIndex = 0;
@@ -1325,9 +1279,8 @@ export default function ActivityScreen() {
       ? 'Released to courier'
       : escrowRow?.status
         ? String(escrowRow.status).charAt(0).toUpperCase() + String(escrowRow.status).slice(1)
-        : d?.isMatched
-          ? 'Held in escrow'
-          : 'Awaiting courier';
+        : d?.isMatched ? 'Held in escrow' : 'Awaiting courier';
+
     const paymentTypeText = (() => {
       const raw = escrowRow?.payment_method || escrowRow?.payment_type || escrowRow?.method;
       if (!raw) return 'Escrow Payment';
@@ -1343,7 +1296,7 @@ export default function ActivityScreen() {
         <Animated.View style={{ opacity: detailAnim }}>
           <View style={styles.detailHeader}>
             <TouchableOpacity onPress={() => setSelectedDelivery(null)} style={styles.backCircleBtnDetail} activeOpacity={0.8}>
-              <Ionicons name="arrow-back" size={18} color="#111827" />
+              <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
             </TouchableOpacity>
             <Text style={styles.detailHeaderTitle}>Shipment Details</Text>
             <View style={styles.headerSpacer} />
@@ -1377,13 +1330,13 @@ export default function ActivityScreen() {
                 {canResume && <Ionicons name="chevron-forward" size={12} color={ORANGE} />}
               </TouchableOpacity>
               <View style={styles.sdInfoChip}>
-                <Ionicons name="cube-outline" size={12} color="#6B7280" />
+                <Ionicons name="cube-outline" size={12} color={colors.textSecondary} />
                 <Text style={styles.sdInfoChipText}>
                   {d?.total_items ?? 0} {(d?.total_items ?? 0) === 1 ? 'item' : 'items'}
                 </Text>
               </View>
               <View style={styles.sdInfoChip}>
-                <Ionicons name={d?.pickup_type === 'door-to-door' ? 'home-outline' : 'walk-outline'} size={12} color="#6B7280" />
+                <Ionicons name={d?.pickup_type === 'door-to-door' ? 'home-outline' : 'walk-outline'} size={12} color={colors.textSecondary} />
                 <Text style={styles.sdInfoChipText}>
                   {d?.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}
                 </Text>
@@ -1497,23 +1450,15 @@ export default function ActivityScreen() {
           )}
 
           {pickupVerified && !isCompleted && (
-            <TouchableOpacity
-              style={styles.pickupQRCard}
-              onPress={() => setShowDeliveryOTP(true)}
-              activeOpacity={0.9}
-            >
+            <TouchableOpacity style={styles.pickupQRCard} onPress={() => setShowDeliveryOTP(true)} activeOpacity={0.9}>
               <View style={styles.pickupQRIconBox}>
                 <Ionicons name="key" size={20} color="#FFF" />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.pickupQRTitle}>
-                  {hasConfirmation && selectedDelivery?.confirmation?.system_otp
-                    ? 'Delivery OTP Ready'
-                    : 'Generating OTP…'}
+                  {hasConfirmation && selectedDelivery?.confirmation?.system_otp ? 'Delivery OTP Ready' : 'Generating OTP…'}
                 </Text>
-                <Text style={styles.pickupQRDesc}>
-                  Tap to view the code and send it to the receiver
-                </Text>
+                <Text style={styles.pickupQRDesc}>Tap to view the code and send it to the receiver</Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color="#FFF" />
             </TouchableOpacity>
@@ -1545,7 +1490,7 @@ export default function ActivityScreen() {
                   <Ionicons
                     name={n <= shownRating ? 'star' : 'star-outline'}
                     size={38}
-                    color={n <= shownRating ? ORANGE : '#FFC9A3'}
+                    color={n <= shownRating ? ORANGE : (isDark ? '#5A3418' : '#FFC9A3')}
                   />
                 </TouchableOpacity>
               ))}
@@ -1557,7 +1502,7 @@ export default function ActivityScreen() {
               </Text>
             ) : (
               <View style={styles.sdLockedNote}>
-                <Ionicons name="lock-closed-outline" size={12} color="#9CA3AF" />
+                <Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />
                 <Text style={styles.sdLockedNoteText}>
                   {d?.isMatched ? 'You can rate once the delivery is completed.' : 'Available after a courier is assigned.'}
                 </Text>
@@ -1584,7 +1529,7 @@ export default function ActivityScreen() {
                 <TextInput
                   style={styles.sdCommentInput}
                   placeholder="Add a comment (optional)"
-                  placeholderTextColor="#9CA3AF"
+                  placeholderTextColor={colors.textMuted}
                   value={ratingComment}
                   onChangeText={setRatingComment}
                   multiline
@@ -1751,53 +1696,29 @@ export default function ActivityScreen() {
             </View>
 
             <View style={styles.tlRow}>
-              <Ionicons
-                name={d?.isMatched ? 'checkmark-circle' : 'ellipse-outline'}
-                size={20}
-                color={d?.isMatched ? ORANGE : '#D1D5DB'}
-              />
+              <Ionicons name={d?.isMatched ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={d?.isMatched ? ORANGE : colors.border} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.tlTitle, !d?.isMatched && { color: '#9CA3AF' }]}>
-                  Accepted
-                </Text>
+                <Text style={[styles.tlTitle, !d?.isMatched && { color: colors.textMuted }]}>Accepted</Text>
                 <Text style={styles.tlSub}>
-                  {d?.deliveryData?.accepted_at
-                    ? formatDateTimeShort(d.deliveryData.accepted_at)
-                    : d?.isMatched ? 'Courier assigned' : 'Waiting for a courier'}
+                  {d?.deliveryData?.accepted_at ? formatDateTimeShort(d.deliveryData.accepted_at) : d?.isMatched ? 'Courier assigned' : 'Waiting for a courier'}
                 </Text>
               </View>
             </View>
 
             <View style={styles.tlRow}>
-              <Ionicons
-                name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'}
-                size={20}
-                color={pickupVerified ? ORANGE : '#D1D5DB'}
-              />
+              <Ionicons name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={pickupVerified ? ORANGE : colors.border} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.tlTitle, !pickupVerified && { color: '#9CA3AF' }]}>
-                  Package picked up
-                </Text>
+                <Text style={[styles.tlTitle, !pickupVerified && { color: colors.textMuted }]}>Package picked up</Text>
                 <Text style={styles.tlSub}>
-                  {pickupVerified
-                    ? 'Verified with sender QR / PIN'
-                    : d?.isMatched
-                      ? 'Waiting for courier to scan QR or enter PIN'
-                      : 'Awaiting courier'}
+                  {pickupVerified ? 'Verified with sender QR / PIN' : d?.isMatched ? 'Waiting for courier to scan QR or enter PIN' : 'Awaiting courier'}
                 </Text>
               </View>
             </View>
 
             <View style={[styles.tlRow, { paddingBottom: 0 }]}>
-              <Ionicons
-                name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'}
-                size={20}
-                color={isCompleted ? ORANGE : '#D1D5DB'}
-              />
+              <Ionicons name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={isCompleted ? ORANGE : colors.border} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.tlTitle, !isCompleted && { color: '#9CA3AF' }]}>
-                  Delivered
-                </Text>
+                <Text style={[styles.tlTitle, !isCompleted && { color: colors.textMuted }]}>Delivered</Text>
                 <Text style={styles.tlSub}>
                   {isCompleted && d?.deliveryData?.completed_at
                     ? formatDateTimeShort(d.deliveryData.completed_at)
@@ -1837,7 +1758,7 @@ export default function ActivityScreen() {
       />
       <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
         <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={18} color="#111827" />
+          <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={styles.statusPill}>
           <Text style={styles.statusPillText}>{selectedDelivery?.status}</Text>
@@ -1890,7 +1811,7 @@ export default function ActivityScreen() {
                       activeOpacity={0.85}
                       onPress={() => Linking.openURL(`tel:${selectedDelivery.provider_phone}`)}
                     >
-                      <Ionicons name="call-outline" size={15} color="#111827" />
+                      <Ionicons name="call-outline" size={15} color={colors.textPrimary} />
                       <Text style={styles.courierCallBtnText}>Call</Text>
                     </TouchableOpacity>
                   )}
@@ -1959,7 +1880,7 @@ export default function ActivityScreen() {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Pickup Verification</Text>
             <TouchableOpacity onPress={() => setShowPickupQR(false)}>
-              <Ionicons name="close" size={20} color="#111827" />
+              <Ionicons name="close" size={20} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
           <Text style={styles.modalSubtitle}>
@@ -1968,7 +1889,7 @@ export default function ActivityScreen() {
 
           {selectedDelivery?.qr?.pickup_qr ? (
             <View style={styles.qrWrap}>
-              <QRCode value={selectedDelivery.qr.pickup_qr} size={200} color="#111827" backgroundColor="#FFFFFF" />
+              <QRCode value={selectedDelivery.qr.pickup_qr} size={200} color={colors.textPrimary} backgroundColor={colors.card} />
             </View>
           ) : (
             <ActivityIndicator color={ORANGE} style={{ margin: 40 }} />
@@ -1978,9 +1899,7 @@ export default function ActivityScreen() {
             <View style={styles.pinRevealBox}>
               <Text style={styles.pinRevealLabel}>PIN CODE</Text>
               <Text style={styles.pinRevealValue}>{selectedDelivery.qr.pickup_pin}</Text>
-              <Text style={styles.pinRevealHint}>
-                Courier can enter this PIN instead of scanning the QR.
-              </Text>
+              <Text style={styles.pinRevealHint}>Courier can enter this PIN instead of scanning the QR.</Text>
             </View>
           )}
 
@@ -2014,27 +1933,19 @@ export default function ActivityScreen() {
     const copySMS = async () => {
       if (!otp) return;
       try {
-        if (Clipboard?.setStringAsync) {
-          await Clipboard.setStringAsync(smsMessage);
-        } else {
-          await Share.share({ message: smsMessage });
-        }
+        if (Clipboard?.setStringAsync) await Clipboard.setStringAsync(smsMessage);
+        else await Share.share({ message: smsMessage });
       } catch {}
     };
 
     return (
-      <Modal
-        visible={showDeliveryOTP}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowDeliveryOTP(false)}
-      >
+      <Modal visible={showDeliveryOTP} transparent animationType="slide" onRequestClose={() => setShowDeliveryOTP(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { maxWidth: 360 }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Delivery OTP</Text>
               <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
-                <Ionicons name="close" size={20} color="#111827" />
+                <Ionicons name="close" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -2046,7 +1957,7 @@ export default function ActivityScreen() {
 
             {verified ? (
               <View style={styles.verifiedBox}>
-                <Ionicons name="checkmark-circle" size={40} color="#16A34A" />
+                <Ionicons name="checkmark-circle" size={40} color={colors.success} />
                 <Text style={styles.verifiedText}>Verified & Completed</Text>
               </View>
             ) : (
@@ -2057,35 +1968,20 @@ export default function ActivityScreen() {
                 </View>
 
                 {!!receiverPhone && (
-                  <TouchableOpacity
-                    style={styles.otpSendBtn}
-                    onPress={sendSMS}
-                    disabled={!otp}
-                    activeOpacity={0.9}
-                  >
+                  <TouchableOpacity style={styles.otpSendBtn} onPress={sendSMS} disabled={!otp} activeOpacity={0.9}>
                     <Ionicons name="chatbubble-ellipses" size={16} color="#FFF" />
-                    <Text style={styles.otpSendBtnText}>
-                      Send to {receiverName}
-                    </Text>
+                    <Text style={styles.otpSendBtnText}>Send to {receiverName}</Text>
                   </TouchableOpacity>
                 )}
 
-                <TouchableOpacity
-                  style={styles.otpCopyBtn}
-                  onPress={copySMS}
-                  disabled={!otp}
-                  activeOpacity={0.85}
-                >
+                <TouchableOpacity style={styles.otpCopyBtn} onPress={copySMS} disabled={!otp} activeOpacity={0.85}>
                   <Ionicons name="copy-outline" size={16} color={ORANGE} />
                   <Text style={styles.otpCopyBtnText}>Copy message</Text>
                 </TouchableOpacity>
               </>
             )}
 
-            <TouchableOpacity
-              style={styles.modalDoneBtn}
-              onPress={() => setShowDeliveryOTP(false)}
-            >
+            <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setShowDeliveryOTP(false)}>
               <Text style={styles.modalDoneBtnText}>Done</Text>
             </TouchableOpacity>
           </View>
@@ -2096,7 +1992,7 @@ export default function ActivityScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={showFullMap ? [] : ['top']}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
@@ -2105,8 +2001,8 @@ export default function ActivityScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
   headerSection: {
     backgroundColor: 'transparent',
@@ -2116,81 +2012,80 @@ const styles = StyleSheet.create({
   },
 
   dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
+  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary },
 
   pageTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.5,
-    marginBottom: 12,
+    fontSize: 28, fontWeight: '800', color: c.textPrimary,
+    letterSpacing: -0.5, marginBottom: 12,
   },
 
   tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingBottom: 16 },
-  tlTitle: { fontSize: 14, fontWeight: '700', color: '#111827' },
-  tlSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 17 },
+  tlTitle: { fontSize: 14, fontWeight: '700', color: c.textPrimary },
+  tlSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
 
   tabBarScroll: { gap: 8, paddingTop: 16, paddingBottom: 4 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#E5E7EB', gap: 6,
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, gap: 6,
   },
-  tabItemActive: { backgroundColor: '#FFF7ED', borderColor: ORANGE },
-  tabText: { fontSize: 13, fontWeight: '700', color: '#4B5563' },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
   tabTextActive: { color: ORANGE },
-  tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: '#F3F4F6', paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: '#4B5563' },
+  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
   tabCountTextActive: { color: ORANGE },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 80 },
   loadingContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50 },
-  loadingText: { fontSize: 12, color: '#6B7280', marginTop: 8, fontWeight: '500' },
+  loadingText: { fontSize: 12, color: c.textSecondary, marginTop: 8, fontWeight: '500' },
   noResultsContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 20 },
-  emptyIconCircle: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: '#FFE4D2' },
-  noResultsText: { fontSize: 15, fontWeight: '800', color: '#111827' },
-  noResultsSubtext: { fontSize: 11, color: '#6B7280', marginTop: 3, textAlign: 'center' },
+  emptyIconCircle: { width: 56, height: 56, borderRadius: 28, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 1, borderColor: ORANGE },
+  noResultsText: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  noResultsSubtext: { fontSize: 11, color: c.textSecondary, marginTop: 3, textAlign: 'center' },
 
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: c.border,
   },
-  completedCard: { backgroundColor: '#FAFAF9', borderColor: '#E5E7EB', opacity: 0.95 },
+  completedCard: { backgroundColor: c.background, borderColor: c.border, opacity: 0.95 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8 },
-  serviceTypeBadge: { backgroundColor: '#F3F4F6', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  serviceTypeText: { fontSize: 11, fontWeight: '800', color: '#374151' },
+  serviceTypeBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  serviceTypeText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
   statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4 },
   statusBadgeText: { fontSize: 11, fontWeight: '800' },
 
   routeBox: {
-    backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
-    marginBottom: 12, borderWidth: 1, borderColor: '#F3F4F6',
+    backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
+    marginBottom: 12, borderWidth: 1, borderColor: c.divider,
   },
   routeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  routeConnectorLine: { width: 2, height: 10, backgroundColor: '#D1D5DB', marginLeft: 3, marginVertical: 3 },
-  routeAddressText: { fontSize: 14, fontWeight: '600', color: '#111827', flex: 1 },
+  routeConnectorLine: { width: 2, height: 10, backgroundColor: c.border, marginLeft: 3, marginVertical: 3 },
+  routeAddressText: { fontSize: 14, fontWeight: '600', color: c.textPrimary, flex: 1 },
 
-  pkgCount: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
+  pkgCount: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
   pkgRow: { gap: 12, paddingRight: 4 },
   pkgThumbWrap: { width: 150 },
-  pkgThumb: { width: 150, height: 150, borderRadius: 14, backgroundColor: '#F3F4F6' },
-  pkgThumbFailed: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E5E7EB' },
-  pkgThumbLabel: { marginTop: 6, fontSize: 12, fontWeight: '600', color: '#374151' },
-  pkgHint: { marginTop: 12, fontSize: 12, color: '#6B7280', lineHeight: 17 },
+  pkgThumb: { width: 150, height: 150, borderRadius: 14, backgroundColor: c.divider },
+  pkgThumbFailed: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.border },
+  pkgThumbLabel: { marginTop: 6, fontSize: 12, fontWeight: '600', color: c.textSecondary },
+  pkgHint: { marginTop: 12, fontSize: 12, color: c.textSecondary, lineHeight: 17 },
   pkgEmpty: {
-    height: 64, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
+    height: 64, borderRadius: 14, backgroundColor: c.background,
+    borderWidth: 1, borderColor: c.border,
     alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
   },
-  pkgEmptyText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  pkgEmptyText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
   cardPhotoRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
-  cardPhoto: { width: 48, height: 48, borderRadius: 10, backgroundColor: '#F3F4F6' },
-  cardPhotoMore: { alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF4EC' },
+  cardPhoto: { width: 48, height: 48, borderRadius: 10, backgroundColor: c.divider },
+  cardPhotoMore: { alignItems: 'center', justifyContent: 'center', backgroundColor: c.accentSoft },
   cardPhotoMoreText: { fontSize: 12, fontWeight: '800', color: ORANGE },
-  cardPhotoLabel: { marginLeft: 4, fontSize: 11, fontWeight: '700', color: '#9CA3AF' },
+  cardPhotoLabel: { marginLeft: 4, fontSize: 11, fontWeight: '700', color: c.textMuted },
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
@@ -2199,19 +2094,19 @@ const styles = StyleSheet.create({
   },
   cardContextRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
   contextDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  contextText: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
+  contextText: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
   contextProviderPill: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0FDF4',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.successBg,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 5,
-    borderWidth: 1, borderColor: '#DCFCE7', flexShrink: 1,
+    borderWidth: 1, borderColor: c.success, flexShrink: 1,
   },
-  contextProviderText: { fontSize: 11, fontWeight: '700', color: '#166534' },
+  contextProviderText: { fontSize: 11, fontWeight: '700', color: c.success },
 
   cardFooter: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6',
+    paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
   },
-  priceText: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  priceText: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
 
   actionBadgeActive: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#7C3AED',
@@ -2219,76 +2114,78 @@ const styles = StyleSheet.create({
   },
   actionBadgeActiveText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
   actionBadgeComplete: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.successBg,
     paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 5,
-    borderWidth: 1, borderColor: '#BBF7D0',
+    borderWidth: 1, borderColor: c.success,
   },
-  actionBadgeCompleteText: { fontSize: 13, fontWeight: '700', color: '#166534' },
+  actionBadgeCompleteText: { fontSize: 13, fontWeight: '700', color: c.success },
   actionBadgePending: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FEF3C7',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.warningBg,
     paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 5,
-    borderWidth: 1, borderColor: '#FDE68A',
+    borderWidth: 1, borderColor: c.warning,
   },
-  actionBadgePendingText: { fontSize: 12, fontWeight: '700', color: '#92400E' },
+  actionBadgePendingText: { fontSize: 12, fontWeight: '700', color: c.warning },
 
   sdItemsChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F9FAFB',
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#F1F1F1',
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.background,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: c.divider,
   },
-  sdItemsChipText: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
+  sdItemsChipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
 
   detailContainer: { paddingHorizontal: 20, paddingBottom: 48, paddingTop: 12 },
   detailHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   backCircleBtnDetail: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border,
   },
-  detailHeaderTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  detailHeaderTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
   headerSpacer: { width: 36, height: 36 },
 
   sdCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 14,
-    borderWidth: 1, borderColor: '#F1F1F1',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 12, elevation: 3,
+    backgroundColor: c.card, borderRadius: 20, padding: 18, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3,
+    shadowRadius: 12, elevation: 3,
   },
-  sdEyebrow: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1 },
+  sdEyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
   sdTrackRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  sdTrackId: { fontSize: 26, fontWeight: '900', color: '#111827', letterSpacing: -0.6, marginTop: 4 },
+  sdTrackId: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.6, marginTop: 4 },
   sdCopyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF4EC',
-    borderWidth: 1, borderColor: '#FFD9BF', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accentSoft,
+    borderWidth: 1, borderColor: ORANGE, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
   },
   sdCopyBtnDone: { backgroundColor: ORANGE, borderColor: ORANGE },
   sdCopyBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
   sdChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, marginBottom: 16 },
   sdStatusChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#FFF4EC',
+    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.accentSoft,
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10,
   },
   sdStatusChipSolid: { backgroundColor: ORANGE },
   sdStatusChipText: { fontSize: 11, fontWeight: '800', color: ORANGE },
   sdInfoChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F9FAFB',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: '#F1F1F1',
+    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.background,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: c.divider,
   },
-  sdInfoChipText: { fontSize: 11, fontWeight: '700', color: '#4B5563' },
+  sdInfoChipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
 
   stepperContainer: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6',
+    paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
   },
   stepItem: { flex: 1, alignItems: 'center' },
   stepRowIndicator: { flexDirection: 'row', alignItems: 'center', width: '100%', justifyContent: 'center' },
   stepDot: {
-    width: 22, height: 22, borderRadius: 11, backgroundColor: '#E5E7EB',
+    width: 22, height: 22, borderRadius: 11, backgroundColor: c.border,
     justifyContent: 'center', alignItems: 'center', zIndex: 2,
   },
   stepDotActive: { backgroundColor: ORANGE },
-  stepDotCurrent: { backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFE4D2' },
-  stepInnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#9CA3AF' },
-  stepLine: { position: 'absolute', left: '50%', right: '-50%', height: 2, backgroundColor: '#E5E7EB', zIndex: 1 },
+  stepDotCurrent: { backgroundColor: ORANGE, borderWidth: 3, borderColor: isDark ? '#3A2411' : '#FFE4D2' },
+  stepInnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.textMuted },
+  stepLine: { position: 'absolute', left: '50%', right: '-50%', height: 2, backgroundColor: c.border, zIndex: 1 },
   stepLineActive: { backgroundColor: ORANGE },
-  stepLabel: { fontSize: 9, fontWeight: '700', color: '#9CA3AF', marginTop: 8, textAlign: 'center' },
+  stepLabel: { fontSize: 9, fontWeight: '700', color: c.textMuted, marginTop: 8, textAlign: 'center' },
   stepLabelActive: { color: ORANGE, fontWeight: '900' },
 
   sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
@@ -2297,30 +2194,30 @@ const styles = StyleSheet.create({
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
   sdPinPickup: {
     width: 18, height: 18, borderRadius: 9, borderWidth: 3, borderColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center', backgroundColor: c.card,
   },
   sdPinPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
   sdPinDropoff: { width: 20, height: 20, borderRadius: 10, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: '#FFD9BF', marginVertical: 3, borderRadius: 1 },
+  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: ORANGE, marginVertical: 3, borderRadius: 1, opacity: 0.4 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 3 },
-  sdRouteSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 16 },
+  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
+  sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
   sdReceiverRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 16, paddingTop: 14,
-    borderTopWidth: 1, borderTopColor: '#F3F4F6',
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
   sdReceiverIcon: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFF4EC',
+    width: 30, height: 30, borderRadius: 15, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
   },
-  sdReceiverName: { fontSize: 13, fontWeight: '800', color: '#111827', marginTop: 2 },
+  sdReceiverName: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
 
   mapOverlayPill: {
-    position: 'absolute', bottom: 10, left: 10, backgroundColor: '#FFFFFF',
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8,
+    position: 'absolute', bottom: 10, left: 10, backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border, borderRadius: 8,
     paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4,
   },
-  overlayPillText: { fontSize: 10, fontWeight: '700', color: '#111827' },
+  overlayPillText: { fontSize: 10, fontWeight: '700', color: c.textPrimary },
   mapTapHint: {
     position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
@@ -2337,24 +2234,24 @@ const styles = StyleSheet.create({
   pickupQRDesc: { color: '#FFE0C7', fontSize: 10, marginTop: 1 },
 
   sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
-  sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF4EC', justifyContent: 'center', alignItems: 'center' },
-  sdCardTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
-  sdRatedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#FFF4EC', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
+  sdCardTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  sdRatedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.accentSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   sdRatedBadgeText: { fontSize: 10, fontWeight: '800', color: ORANGE },
 
   sdStarsRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginVertical: 4 },
   sdRatingLabel: { textAlign: 'center', fontSize: 14, fontWeight: '800', color: ORANGE, marginTop: 8 },
   sdLockedNote: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
-  sdLockedNoteText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  sdLockedNoteText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
   sdTagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 },
-  sdTag: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' },
-  sdTagOn: { backgroundColor: '#FFF4EC', borderColor: ORANGE },
-  sdTagText: { fontSize: 12, fontWeight: '700', color: '#6B7280' },
+  sdTag: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
+  sdTagOn: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  sdTagText: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
   sdTagTextOn: { color: ORANGE },
   sdCommentInput: {
-    marginTop: 14, minHeight: 78, borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 14,
-    paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12, fontSize: 13, color: '#111827',
-    backgroundColor: '#FAFAFA', textAlignVertical: 'top',
+    marginTop: 14, minHeight: 78, borderWidth: 1, borderColor: c.border, borderRadius: 14,
+    paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12, fontSize: 13, color: c.textPrimary,
+    backgroundColor: c.background, textAlignVertical: 'top',
   },
   sdPrimaryBtn: {
     marginTop: 14, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 15,
@@ -2363,27 +2260,27 @@ const styles = StyleSheet.create({
   },
   sdPrimaryBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   sdThanks: { marginTop: 4 },
-  sdThanksComment: { marginTop: 12, fontSize: 13, color: '#4B5563', fontStyle: 'italic', textAlign: 'center' },
-  sdThanksText: { marginTop: 12, textAlign: 'center', fontSize: 12, fontWeight: '700', color: '#9CA3AF' },
+  sdThanksComment: { marginTop: 12, fontSize: 13, color: c.textSecondary, fontStyle: 'italic', textAlign: 'center' },
+  sdThanksText: { marginTop: 12, textAlign: 'center', fontSize: 12, fontWeight: '700', color: c.textMuted },
 
   sdProviderTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   sdAvatar: {
     width: 58, height: 58, borderRadius: 29, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 3, borderColor: '#FFE4D2',
+    borderWidth: 3, borderColor: ORANGE,
   },
   sdAvatarText: { color: '#FFFFFF', fontSize: 20, fontWeight: '900', letterSpacing: 0.5 },
-  sdProviderName: { fontSize: 17, fontWeight: '900', color: '#111827', letterSpacing: -0.3 },
+  sdProviderName: { fontSize: 17, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
   sdVerifiedRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4 },
   sdVerifiedText: { fontSize: 12, fontWeight: '700', color: ORANGE },
   sdStatsRow: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 14,
-    paddingVertical: 12, marginTop: 16, borderWidth: 1, borderColor: '#F1F1F1',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, borderRadius: 14,
+    paddingVertical: 12, marginTop: 16, borderWidth: 1, borderColor: c.divider,
   },
   sdStat: { flex: 1, alignItems: 'center', paddingHorizontal: 6 },
-  sdStatLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
-  sdStatValue: { fontSize: 13, fontWeight: '800', color: '#111827', marginTop: 4 },
-  sdStatDivider: { width: 1, height: 28, backgroundColor: '#E5E7EB' },
+  sdStatLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  sdStatValue: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginTop: 4 },
+  sdStatDivider: { width: 1, height: 28, backgroundColor: c.border },
   sdBtnRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
   sdPrimaryBtnSm: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -2391,22 +2288,22 @@ const styles = StyleSheet.create({
   },
   sdOutlineBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#FFFFFF', borderRadius: 14, paddingVertical: 13, borderWidth: 1.5, borderColor: ORANGE,
+    backgroundColor: c.card, borderRadius: 14, paddingVertical: 13, borderWidth: 1.5, borderColor: ORANGE,
   },
   sdOutlineBtnText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
   sdFindingBox: { alignItems: 'center', paddingVertical: 6 },
   sdFindingIcon: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFF4EC',
+    width: 48, height: 48, borderRadius: 24, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 10,
   },
-  sdFindingTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
-  sdFindingSub: { fontSize: 12, color: '#6B7280', textAlign: 'center', marginTop: 4, lineHeight: 17 },
+  sdFindingTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  sdFindingSub: { fontSize: 12, color: c.textSecondary, textAlign: 'center', marginTop: 4, lineHeight: 17 },
 
   sdPayRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
-  sdPayLabel: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  sdPayLabel: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
   sdPayValueRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  sdPayValue: { fontSize: 13, color: '#111827', fontWeight: '800' },
-  sdPayDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 10 },
+  sdPayValue: { fontSize: 13, color: c.textPrimary, fontWeight: '800' },
+  sdPayDivider: { height: 1, backgroundColor: c.divider, marginVertical: 10 },
   sdTotalBox: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: ORANGE, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 16, marginTop: 16,
@@ -2423,46 +2320,46 @@ const styles = StyleSheet.create({
   editBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
   sdCancelBtn: {
     flex: 1, paddingVertical: 16, borderRadius: 14, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#EF4444',
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.error,
   },
-  sdCancelBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 14 },
+  sdCancelBtnText: { color: c.error, fontWeight: '700', fontSize: 14 },
 
-  fullMapContainer: { flex: 1 },
+  fullMapContainer: { flex: 1, backgroundColor: c.background },
   topOverlay: {
     position: 'absolute', left: 16, right: 16,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10,
   },
   backCircleBtn: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB',
+    width: 38, height: 38, borderRadius: 19, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border,
   },
   statusPill: {
-    backgroundColor: '#FFFFFF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16,
+    borderWidth: 1, borderColor: c.border,
   },
-  statusPillText: { fontSize: 11, fontWeight: '700', color: '#111827' },
+  statusPillText: { fontSize: 11, fontWeight: '700', color: c.textPrimary },
 
   courierIdentityRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   courierAvatarWrap: { width: 52, height: 52 },
   courierAvatar: {
-    width: 52, height: 52, borderRadius: 26, backgroundColor: '#111827',
+    width: 52, height: 52, borderRadius: 26, backgroundColor: c.textPrimary,
     justifyContent: 'center', alignItems: 'center',
   },
-  courierAvatarText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  courierAvatarText: { color: c.card, fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
   courierVerifiedDot: {
     position: 'absolute', right: -1, bottom: -1, width: 18, height: 18, borderRadius: 9,
-    backgroundColor: '#16A34A', borderWidth: 2, borderColor: '#FFFFFF',
+    backgroundColor: c.success, borderWidth: 2, borderColor: c.card,
     justifyContent: 'center', alignItems: 'center',
   },
-  courierName: { fontSize: 15, fontWeight: '800', color: '#111827' },
-  courierSub: { fontSize: 10, color: '#16A34A', fontWeight: '700', marginTop: 1 },
+  courierName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  courierSub: { fontSize: 10, color: c.success, fontWeight: '700', marginTop: 1 },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   infoChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.divider,
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
   },
-  plateChip: { backgroundColor: '#FEF9C3', borderWidth: 1, borderColor: '#FDE68A' },
-  infoChipText: { fontSize: 10, fontWeight: '700', color: '#4B5563' },
+  plateChip: { backgroundColor: isDark ? '#2A1F0A' : '#FEF9C3', borderWidth: 1, borderColor: c.warning },
+  infoChipText: { fontSize: 10, fontWeight: '700', color: c.textSecondary },
   courierActionsRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
   courierMsgBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -2471,103 +2368,76 @@ const styles = StyleSheet.create({
   courierMsgBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12 },
   courierCallBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: '#FFFFFF', paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB',
+    backgroundColor: c.card, paddingVertical: 11, borderRadius: 12, borderWidth: 1, borderColor: c.border,
   },
-  courierCallBtnText: { color: '#111827', fontWeight: '700', fontSize: 12 },
+  courierCallBtnText: { color: c.textPrimary, fontWeight: '700', fontSize: 12 },
 
   mapInfoSheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.12, shadowRadius: 16, elevation: 14,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.5,
+    shadowRadius: 16, elevation: 14,
   },
-  sheetGrabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 12 },
+  sheetGrabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.border, alignSelf: 'center', marginBottom: 12 },
   etaPayRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  etaPayBox: { flex: 1, backgroundColor: '#FFF7ED', borderRadius: 12, borderWidth: 1, borderColor: '#FFE4D2', padding: 12 },
+  etaPayBox: { flex: 1, backgroundColor: c.accentSoft, borderRadius: 12, borderWidth: 1, borderColor: ORANGE, padding: 12 },
   etaPayLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
-  etaPayLabel: { fontSize: 8, fontWeight: '900', color: '#9A3412', letterSpacing: 0.6 },
-  etaPayValue: { fontSize: 15, fontWeight: '900', color: '#111827' },
+  etaPayLabel: { fontSize: 8, fontWeight: '900', color: ORANGE, letterSpacing: 0.6 },
+  etaPayValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary },
   mapSection: {
-    backgroundColor: '#F9FAFB', borderRadius: 14, borderWidth: 1, borderColor: '#F3F4F6',
+    backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider,
     padding: 12, marginBottom: 12,
   },
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  waitingText: { flex: 1, fontSize: 11, color: '#6B7280', fontWeight: '600' },
+  waitingText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '600' },
   detailLine: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingVertical: 5, gap: 12,
   },
-  detailLineLabel: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
-  detailLineValue: { fontSize: 11, color: '#111827', fontWeight: '800', flexShrink: 1, textAlign: 'right' },
+  detailLineLabel: { fontSize: 11, color: c.textSecondary, fontWeight: '600' },
+  detailLineValue: { fontSize: 11, color: c.textPrimary, fontWeight: '800', flexShrink: 1, textAlign: 'right' },
   trackerPlaceholder: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#F5F3FF',
-    borderRadius: 14, borderWidth: 1, borderColor: '#DDD6FE', padding: 12, marginBottom: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: isDark ? '#231542' : '#F5F3FF',
+    borderRadius: 14, borderWidth: 1, borderColor: '#7C3AED', padding: 12, marginBottom: 6,
   },
   trackerIconBox: {
-    width: 36, height: 36, borderRadius: 10, backgroundColor: '#FFFFFF',
+    width: 36, height: 36, borderRadius: 10, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
   },
-  trackerTitle: { fontSize: 12, fontWeight: '800', color: '#5B21B6' },
-  trackerSub: { fontSize: 10, color: '#7C3AED', marginTop: 1 },
+  trackerTitle: { fontSize: 12, fontWeight: '800', color: isDark ? '#C4B5FD' : '#5B21B6' },
+  trackerSub: { fontSize: 10, color: isDark ? '#A78BFA' : '#7C3AED', marginTop: 1 },
   soonBadge: { backgroundColor: '#7C3AED', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
   soonBadgeText: { fontSize: 8, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.6 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalCard: { width: '100%', maxWidth: 340, backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center' },
+  modalCard: { width: '100%', maxWidth: 340, backgroundColor: c.card, borderRadius: 20, padding: 20, alignItems: 'center', borderWidth: 1, borderColor: c.border },
   modalHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: '#111827' },
-  modalSubtitle: { fontSize: 11, color: '#6B7280', textAlign: 'center', marginBottom: 14 },
-  qrWrap: { width: 200, height: 200, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12, marginBottom: 14 },
-  modalDoneBtn: { width: '100%', backgroundColor: '#111827', paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 8 },
-  modalDoneBtnText: { color: '#FFF', fontWeight: '700', fontSize: 13 },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
+  modalSubtitle: { fontSize: 11, color: c.textSecondary, textAlign: 'center', marginBottom: 14 },
+  qrWrap: { width: 200, height: 200, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border, borderRadius: 12, marginBottom: 14, backgroundColor: '#FFFFFF', padding: 8 },
+  modalDoneBtn: { width: '100%', backgroundColor: c.textPrimary, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 8 },
+  modalDoneBtnText: { color: c.card, fontWeight: '700', fontSize: 13 },
   verifiedBox: { alignItems: 'center', paddingVertical: 20, marginBottom: 14 },
-  verifiedText: { fontSize: 15, fontWeight: '800', color: '#16A34A', marginTop: 8 },
-  otpBox: { alignItems: 'center', paddingVertical: 20, marginBottom: 14, backgroundColor: '#F5F3FF', width: '100%', borderRadius: 12 },
-  otpHint: { fontSize: 12, fontWeight: '700', color: '#5B21B6', marginTop: 8 },
+  verifiedText: { fontSize: 15, fontWeight: '800', color: c.success, marginTop: 8 },
 
   pinRevealBox: {
-    width: '100%',
-    backgroundColor: '#FFF7ED',
-    borderRadius: 16,
-    borderWidth: 1.5,
-    borderColor: '#FFD9BF',
-    paddingVertical: 16,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    marginBottom: 14,
+    width: '100%', backgroundColor: c.accentSoft, borderRadius: 16,
+    borderWidth: 1.5, borderColor: ORANGE,
+    paddingVertical: 16, paddingHorizontal: 16, alignItems: 'center', marginBottom: 14,
   },
-  pinRevealLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#9A3412',
-    letterSpacing: 1.2,
-    marginBottom: 6,
-  },
-  pinRevealValue: {
-    fontSize: 34,
-    fontWeight: '900',
-    color: '#111827',
-    letterSpacing: 10,
-  },
-  pinRevealHint: {
-    fontSize: 10,
-    color: '#9A3412',
-    marginTop: 8,
-    textAlign: 'center',
-    fontWeight: '600',
-  },
+  pinRevealLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 1.2, marginBottom: 6 },
+  pinRevealValue: { fontSize: 34, fontWeight: '900', color: c.textPrimary, letterSpacing: 10 },
+  pinRevealHint: { fontSize: 10, color: c.textSecondary, marginTop: 8, textAlign: 'center', fontWeight: '600' },
 
   otpBigBox: {
-    backgroundColor: '#FFF7ED', borderWidth: 2, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderWidth: 2, borderColor: ORANGE,
     borderRadius: 16, paddingVertical: 20, paddingHorizontal: 16,
     alignItems: 'center', marginBottom: 16, width: '100%',
   },
-  otpBigLabel: {
-    fontSize: 10, fontWeight: '800', color: '#9A3412',
-    letterSpacing: 1, marginBottom: 8,
-  },
-  otpBigValue: {
-    fontSize: 34, fontWeight: '900', color: '#111827', letterSpacing: 6,
-  },
+  otpBigLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 1, marginBottom: 8 },
+  otpBigValue: { fontSize: 34, fontWeight: '900', color: c.textPrimary, letterSpacing: 6 },
   otpSendBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
@@ -2578,7 +2448,7 @@ const styles = StyleSheet.create({
   otpSendBtnText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
   otpCopyBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: '#FFF4EC', borderRadius: 14, paddingVertical: 12, width: '100%',
+    backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 12, width: '100%',
     borderWidth: 1.5, borderColor: ORANGE,
   },
   otpCopyBtnText: { color: ORANGE, fontSize: 13, fontWeight: '800' },

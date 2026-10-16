@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen.tsx
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Image,
   Dimensions, Animated, Easing, StatusBar, ScrollView,
@@ -7,6 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#F27024';
@@ -15,23 +16,19 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
   const { mode, editData } = route.params || {};
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const titleAnim = useRef(new Animated.Value(0)).current;
   const option1Anim = useRef(new Animated.Value(0)).current;
   const option2Anim = useRef(new Animated.Value(0)).current;
   const graphicAnim = useRef(new Animated.Value(0)).current;
 
-  /* ------------------------------------------------------------------ */
-  /* Entrance animation                                                  */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
+        toValue: 1, duration, delay,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
@@ -45,9 +42,6 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     ]).start();
   }, [headerAnim, graphicAnim, titleAnim, option1Anim, option2Anim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Reconstruct edit data                                               */
-  /* ------------------------------------------------------------------ */
   useEffect(() => {
     if (editData) {
       const cargo = editData.cargo_profiles || {};
@@ -118,56 +112,30 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     }
   }, [mode]);
 
-  /* ------------------------------------------------------------------ */
-  /* Select handler                                                      */
-  /* ------------------------------------------------------------------ */
   const selectType = (type: 'curb-side' | 'door-to-door') => {
     dispatch({ type: 'SET_DROPOFF_TYPE', payload: type });
     navigation.navigate('ShipmentSize');
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Interpolations                                                      */
-  /* ------------------------------------------------------------------ */
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
-    transform: [
-      {
-        translateY: value.interpolate({
-          inputRange: [0, 1],
-          outputRange: [distance, 0],
-        }),
-      },
-    ],
+    transform: [{
+      translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
+    }],
   });
 
   const graphicSlide = {
     opacity: graphicAnim,
-    transform: [
-      {
-        translateX: graphicAnim.interpolate({
-          inputRange: [0, 1],
-          outputRange: [40, 0],
-        }),
-      },
-    ],
+    transform: [{
+      translateX: graphicAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }),
+    }],
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
 
-      {/* Full-width Header */}
-      <Animated.View
-        style={[
-          styles.headerBackground,
-          { paddingTop: insets.top + 12 },
-          fadeUp(headerAnim, -14),
-        ]}
-      >
+      <Animated.View style={[styles.headerBackground, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
         <View style={styles.headerInnerContent}>
           <View style={styles.stepRow}>
             <View style={styles.stepPill}>
@@ -176,11 +144,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
           </View>
 
           <View style={styles.headerTopRow}>
-            <TouchableOpacity
-              onPress={() => navigation.goBack()}
-              style={styles.backButton}
-              activeOpacity={0.85}
-            >
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
               <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
@@ -203,37 +167,25 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
         />
       </Animated.View>
 
-      {/* Scrollable Content Container */}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
         <Animated.View style={[styles.card, fadeUp(titleAnim, 20)]}>
-          
           <View style={styles.textTitleContainer}>
             <Text style={styles.cardTitle}>Select drop-off method</Text>
             <Text style={styles.cardSubtitle}>Choose the option that fits best for your receiver</Text>
           </View>
 
-          {/* Options */}
           <View style={styles.optionsWrapper}>
-            {/* Curb-side */}
             <Animated.View style={[styles.optionWrapper, fadeUp(option1Anim, 20)]}>
               <TouchableOpacity
-                style={[
-                  styles.optionBox,
-                  state.dropoffType === 'curb-side' && styles.optionBoxActive,
-                ]}
+                style={[styles.optionBox, state.dropoffType === 'curb-side' && styles.optionBoxActive]}
                 onPress={() => selectType('curb-side')}
                 activeOpacity={0.9}
               >
-                <View
-                  style={[
-                    styles.activeIndicator,
-                    state.dropoffType === 'curb-side' && styles.activeIndicatorOn,
-                  ]}
-                >
+                <View style={[styles.activeIndicator, state.dropoffType === 'curb-side' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'curb-side' && (
                     <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                   )}
@@ -253,22 +205,13 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               </TouchableOpacity>
             </Animated.View>
 
-            {/* Door-to-Door */}
             <Animated.View style={[styles.optionWrapper, fadeUp(option2Anim, 20)]}>
               <TouchableOpacity
-                style={[
-                  styles.optionBox,
-                  state.dropoffType === 'door-to-door' && styles.optionBoxActive,
-                ]}
+                style={[styles.optionBox, state.dropoffType === 'door-to-door' && styles.optionBoxActive]}
                 onPress={() => selectType('door-to-door')}
                 activeOpacity={0.9}
               >
-                <View
-                  style={[
-                    styles.activeIndicator,
-                    state.dropoffType === 'door-to-door' && styles.activeIndicatorOn,
-                  ]}
-                >
+                <View style={[styles.activeIndicator, state.dropoffType === 'door-to-door' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'door-to-door' && (
                     <Ionicons name="checkmark" size={10} color="#FFFFFF" />
                   )}
@@ -289,7 +232,6 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
             </Animated.View>
           </View>
 
-          {/* Info footer */}
           <View style={styles.infoFooter}>
             <Ionicons name="information-circle-outline" size={16} color={ORANGE} />
             <Text style={styles.infoFooterText}>
@@ -302,8 +244,8 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
   headerBackground: {
     backgroundColor: ORANGE,
@@ -373,14 +315,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: -10,
     bottom: -5,
-    width: 190, 
+    width: 190,
     height: 130,
     zIndex: 2,
   },
 
   scrollView: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: c.background,
     zIndex: 3,
     elevation: 3,
   },
@@ -390,7 +332,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: c.background,
     borderRadius: 0,
     padding: 0,
   },
@@ -401,13 +343,13 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#111827',
+    color: c.textPrimary,
     letterSpacing: -0.3,
     marginBottom: 4,
   },
   cardSubtitle: {
     fontSize: 13,
-    color: '#6B7280',
+    color: c.textSecondary,
     fontWeight: '400',
     lineHeight: 18,
   },
@@ -419,12 +361,12 @@ const styles = StyleSheet.create({
   optionWrapper: { width: '100%' },
   optionBox: {
     width: '100%',
-    backgroundColor: '#F9FAFB',
+    backgroundColor: c.card,
     borderRadius: 16,
     paddingVertical: 22,
     paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: c.border,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -432,7 +374,7 @@ const styles = StyleSheet.create({
   optionBoxActive: {
     borderColor: ORANGE,
     borderWidth: 1.5,
-    backgroundColor: '#FFFBF8',
+    backgroundColor: c.accentSoft,
   },
   activeIndicator: {
     position: 'absolute',
@@ -442,8 +384,8 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: '#D1D5DB',
-    backgroundColor: '#FFFFFF',
+    borderColor: c.border,
+    backgroundColor: c.card,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -460,7 +402,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: c.border,
   },
   customOptionIcon: {
     width: 36,
@@ -469,13 +411,13 @@ const styles = StyleSheet.create({
   optionLabel: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#111827',
+    color: c.textPrimary,
     marginBottom: 4,
     letterSpacing: -0.2,
   },
   optionSub: {
     fontSize: 12,
-    color: '#6B7280',
+    color: c.textSecondary,
     textAlign: 'center',
     lineHeight: 16,
     paddingHorizontal: 12,
@@ -486,16 +428,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: c.card,
     borderRadius: 12,
     padding: 14,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: c.border,
   },
   infoFooterText: {
     flex: 1,
     fontSize: 12,
-    color: '#4B5563',
+    color: c.textSecondary,
     fontWeight: '500',
     lineHeight: 18,
   },

@@ -11,6 +11,7 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Pack-N-Ship shares your location with the sender while you are delivering.",
         "NSCameraUsageDescription": "Allow Pack-N-Ship to take photos of your package."
       }
     },
@@ -27,50 +28,61 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
+    "web": { "favicon": "./assets/favicon.png" },
     "plugins": [
-  "expo-web-browser",
-  "expo-sqlite",
-  "expo-status-bar",
-  "@react-native-community/datetimepicker",
-  [
-    "expo-location",
-    {
-      "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points."
-    }
-  ],
-  [
-    "expo-build-properties",
-    {
-      "android": {
-        "ndkVersion": "26.1.10909125"
-      }
-    }
-  ],
-  [
-  "expo-gradle-properties",
-  {
-    "ndkVersion": "26.1.10909125",
-    "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
-    "org.gradle.parallel": "false",
-    "org.gradle.workers.max": "2",
-    "kotlin.daemon.jvmargs": "-Xmx2048m"
-  }
-]
+      "expo-splash-screen",
+      "expo-web-browser",
+      "expo-sqlite",
+      "expo-status-bar",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/applogo.jpeg",
+          "color": "#FF751F"
+        }
+      ],
+      "expo-task-manager",
+      [
+        "expo-build-properties",
+        { "android": { "ndkVersion": "26.3.11579264" } }
+      ],
+      [
+        "expo-gradle-properties",
+        {
+          "ndkVersion": "26.3.11579264",
+          "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
+          "org.gradle.parallel": "false",
+          "org.gradle.workers.max": "2",
+          "kotlin.daemon.jvmargs": "-Xmx2048m"
+        }
+      ]
     ],
     "extra": {
-      "eas": {
-        "projectId": "341c2e19-38c9-4bbf-aa65-419406bc1150"
-      }
+      "eas": { "projectId": "341c2e19-38c9-4bbf-aa65-419406bc1150" }
     }
   }
-} 
+}
