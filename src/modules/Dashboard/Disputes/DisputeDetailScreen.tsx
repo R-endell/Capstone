@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Disputes/DisputeDetailScreen.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar, TextInput,
   KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
@@ -11,11 +11,9 @@ import { supabase } from '../../../utils/supabase';
 import {
   Dispute, fetchDispute, getMyUserId, respondToDispute, trackingIdFor, displayName, STATUS_STYLE,
 } from '../../../services/disputeService';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-/** Brand */
 const ORANGE = '#F27024';
-const ORANGE_SOFT = '#FFF4EC';
-const ORANGE_BORDER = '#FFD9B8';
 
 const MIN_RESPONSE = 10;
 const MAX_RESPONSE = 500;
@@ -30,6 +28,8 @@ export default function DisputeDetailScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
   const disputeId: number = route.params?.disputeId;
 
   const [dispute, setDispute] = useState<Dispute | null>(null);
@@ -93,7 +93,7 @@ export default function DisputeDetailScreen() {
         hitSlop={10}
         activeOpacity={0.8}
       >
-        <Ionicons name="arrow-back" size={22} color="#111827" />
+        <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>Dispute Details</Text>
       <View style={{ width: 40 }} />
@@ -103,7 +103,7 @@ export default function DisputeDetailScreen() {
   if (loading) {
     return (
       <View style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#FAFAFA" translucent />
+        <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
         {header}
         <ActivityIndicator color={ORANGE} style={{ marginTop: 60 }} />
       </View>
@@ -113,11 +113,11 @@ export default function DisputeDetailScreen() {
   if (!dispute) {
     return (
       <View style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#FAFAFA" translucent />
+        <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
         {header}
         <View style={styles.missingWrap}>
           <View style={styles.missingIcon}>
-            <Ionicons name="alert-circle-outline" size={32} color="#9CA3AF" />
+            <Ionicons name="alert-circle-outline" size={32} color={colors.textMuted} />
           </View>
           <Text style={styles.missing}>This report could not be found.</Text>
         </View>
@@ -152,7 +152,7 @@ export default function DisputeDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FAFAFA" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
       {header}
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -171,15 +171,15 @@ export default function DisputeDetailScreen() {
             </View>
             <Text style={styles.issue}>{dispute.issue_type}</Text>
             <View style={styles.metaRow}>
-              <Ionicons name="barcode-outline" size={14} color="#6B7280" />
+              <Ionicons name="barcode-outline" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Tracking ID: {trackingIdFor(dispute.request_id)}</Text>
             </View>
             <View style={styles.metaRow}>
-              <Ionicons name="person-outline" size={14} color="#6B7280" />
+              <Ionicons name="person-outline" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Reported by: {isReporter ? 'You' : displayName(dispute.reporter)}</Text>
             </View>
             <View style={styles.metaRow}>
-              <Ionicons name="cube-outline" size={14} color="#6B7280" />
+              <Ionicons name="cube-outline" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Provider: {isProvider ? 'You' : displayName(dispute.provider)}</Text>
             </View>
           </View>
@@ -188,7 +188,7 @@ export default function DisputeDetailScreen() {
           {canRespond && (
             <View style={styles.actionBanner}>
               <View style={styles.actionBannerIcon}>
-                <Ionicons name="alert-circle" size={20} color="#92400E" />
+                <Ionicons name="alert-circle" size={20} color={colors.warning} />
               </View>
               <Text style={styles.actionBannerText}>
                 A sender reported an issue on this delivery. Please explain what happened so the admin can review both sides.
@@ -208,7 +208,7 @@ export default function DisputeDetailScreen() {
                   {i < steps.length - 1 && <View style={[styles.line, s.done && styles.lineDone]} />}
                 </View>
                 <View style={{ flex: 1, paddingBottom: i < steps.length - 1 ? 18 : 0 }}>
-                  <Text style={[styles.stepTitle, !s.done && !s.current && { color: '#9CA3AF' }]}>
+                  <Text style={[styles.stepTitle, !s.done && !s.current && { color: colors.textMuted }]}>
                     {s.title}
                   </Text>
                   <Text style={styles.stepSub}>{s.sub}</Text>
@@ -220,8 +220,10 @@ export default function DisputeDetailScreen() {
           {/* Sender's report */}
           <View style={styles.card}>
             <View style={styles.sectionHeaderRow}>
-              <View style={[styles.sectionIconWrap, { backgroundColor: '#EFF6FF', borderColor: '#DBEAFE' }]}>
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color="#1D4ED8" />
+              <View style={[styles.sectionIconWrap, isDark
+                ? { backgroundColor: '#0F2744', borderColor: '#1E3A5F' }
+                : { backgroundColor: '#EFF6FF', borderColor: '#DBEAFE' }]}>
+                <Ionicons name="chatbubble-ellipses-outline" size={16} color="#3B82F6" />
               </View>
               <Text style={styles.sectionTitle}>Sender's report</Text>
             </View>
@@ -234,12 +236,12 @@ export default function DisputeDetailScreen() {
           {responded && (
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={[styles.sectionIconWrap, { backgroundColor: ORANGE_SOFT, borderColor: ORANGE_BORDER }]}>
+                <View style={[styles.sectionIconWrap, { backgroundColor: colors.accentSoft, borderColor: ORANGE }]}>
                   <Ionicons name="chatbox-ellipses-outline" size={16} color={ORANGE} />
                 </View>
                 <Text style={styles.sectionTitle}>Provider's response</Text>
               </View>
-              <View style={[styles.quoteBox, { backgroundColor: ORANGE_SOFT, borderColor: ORANGE_BORDER }]}>
+              <View style={[styles.quoteBox, { backgroundColor: colors.accentSoft, borderColor: ORANGE }]}>
                 <Text style={styles.body}>{dispute.provider_response}</Text>
               </View>
               <Text style={styles.stamp}>{fmt(dispute.provider_responded_at)}</Text>
@@ -254,7 +256,7 @@ export default function DisputeDetailScreen() {
                 value={response}
                 onChangeText={t => setResponse(t.slice(0, MAX_RESPONSE))}
                 placeholder="Explain what happened during the delivery, the condition of the item, and any proof you can describe…"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 multiline
                 textAlignVertical="top"
               />
@@ -287,7 +289,7 @@ export default function DisputeDetailScreen() {
           {!closed && !canRespond && (
             <View style={styles.waitCard}>
               <View style={styles.waitIcon}>
-                <Ionicons name="time-outline" size={18} color="#1D4ED8" />
+                <Ionicons name="time-outline" size={18} color={isDark ? '#93C5FD' : '#1D4ED8'} />
               </View>
               <Text style={styles.waitText}>
                 {dispute.status === 'Awaiting Provider'
@@ -305,8 +307,8 @@ export default function DisputeDetailScreen() {
               style={[
                 styles.card,
                 {
-                  borderColor: dispute.status === 'Resolved' ? '#86EFAC' : '#E5E7EB',
-                  backgroundColor: dispute.status === 'Resolved' ? '#F0FDF4' : '#FFFFFF',
+                  borderColor: dispute.status === 'Resolved' ? colors.success : colors.border,
+                  backgroundColor: dispute.status === 'Resolved' ? colors.successBg : colors.card,
                 },
               ]}
             >
@@ -315,15 +317,15 @@ export default function DisputeDetailScreen() {
                   style={[
                     styles.sectionIconWrap,
                     {
-                      backgroundColor: dispute.status === 'Resolved' ? '#DCFCE7' : '#F3F4F6',
-                      borderColor: dispute.status === 'Resolved' ? '#BBF7D0' : '#E5E7EB',
+                      backgroundColor: dispute.status === 'Resolved' ? colors.successBg : colors.divider,
+                      borderColor: dispute.status === 'Resolved' ? colors.success : colors.border,
                     },
                   ]}
                 >
                   <Ionicons
                     name={dispute.status === 'Resolved' ? 'checkmark-done-outline' : 'close-outline'}
                     size={16}
-                    color={dispute.status === 'Resolved' ? '#16A34A' : '#6B7280'}
+                    color={dispute.status === 'Resolved' ? colors.success : colors.textSecondary}
                   />
                 </View>
                 <Text style={styles.sectionTitle}>Admin decision</Text>
@@ -342,216 +344,139 @@ export default function DisputeDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
   /* ── Header ─────────────────────────────────────── */
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    gap: 12,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingBottom: 12, gap: 12,
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.06, shadowRadius: 6, elevation: 2,
   },
   headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.4,
+    flex: 1, textAlign: 'center',
+    fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
   },
   missingWrap: { alignItems: 'center', marginTop: 80, gap: 12 },
   missingIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#F3F4F6',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 64, height: 64, borderRadius: 32, backgroundColor: c.divider,
+    alignItems: 'center', justifyContent: 'center',
   },
-  missing: { color: '#6B7280', fontSize: 14, fontWeight: '600' },
+  missing: { color: c.textSecondary, fontSize: 14, fontWeight: '600' },
 
   /* ── Content ────────────────────────────────────── */
   content: { padding: 20, paddingBottom: 60, gap: 14 },
 
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    backgroundColor: c.card, borderRadius: 18, padding: 18,
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 8, elevation: 2,
   },
 
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
-  caseRef: { fontSize: 12, fontWeight: '800', color: '#6B7280', letterSpacing: 0.4 },
+  caseRef: { fontSize: 12, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.4 },
   issue: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#111827',
-    marginTop: 10,
-    marginBottom: 12,
-    letterSpacing: -0.4,
+    fontSize: 20, fontWeight: '800', color: c.textPrimary,
+    marginTop: 10, marginBottom: 12, letterSpacing: -0.4,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
-  meta: { fontSize: 12.5, color: '#4B5563', fontWeight: '500' },
+  meta: { fontSize: 12.5, color: c.textSecondary, fontWeight: '500' },
 
   badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999 },
   badgeText: { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.4, textTransform: 'uppercase' },
 
   /* Action banner */
   actionBanner: {
-    flexDirection: 'row',
-    gap: 12,
-    backgroundColor: '#FEF3C7',
-    padding: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
+    flexDirection: 'row', gap: 12, backgroundColor: c.warningBg,
+    padding: 14, borderRadius: 16, borderWidth: 1, borderColor: c.warning,
   },
   actionBannerIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#FDE68A',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: isDark ? '#3A2411' : '#FDE68A',
+    alignItems: 'center', justifyContent: 'center',
   },
-  actionBannerText: {
-    flex: 1,
-    color: '#92400E',
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '600',
-  },
+  actionBannerText: { flex: 1, color: c.warning, fontSize: 13, lineHeight: 19, fontWeight: '600' },
 
   /* Section headers */
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
   sectionIconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
+    width: 30, height: 30, borderRadius: 10,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1,
   },
   sectionTitle: {
-    fontSize: 14.5,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
+    fontSize: 14.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2,
   },
   quoteBox: {
-    backgroundColor: '#F9FAFB',
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
+    backgroundColor: c.background, padding: 14, borderRadius: 14,
+    borderWidth: 1, borderColor: c.divider,
   },
-  body: { fontSize: 14, color: '#374151', lineHeight: 21, fontWeight: '500' },
-  stamp: { fontSize: 11, color: '#9CA3AF', marginTop: 10, fontWeight: '600' },
+  body: { fontSize: 14, color: c.textSecondary, lineHeight: 21, fontWeight: '500' },
+  stamp: { fontSize: 11, color: c.textMuted, marginTop: 10, fontWeight: '600' },
 
   /* Progress */
   stepRow: { flexDirection: 'row', gap: 12 },
   stepRail: { alignItems: 'center', width: 22 },
   dot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#E5E7EB',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 22, height: 22, borderRadius: 11, backgroundColor: c.border,
+    alignItems: 'center', justifyContent: 'center',
   },
   dotDone: {
     backgroundColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOpacity: 0.4,
-    shadowRadius: 5,
-    elevation: 3,
+    shadowColor: ORANGE, shadowOpacity: 0.4, shadowRadius: 5, elevation: 3,
   },
-  dotCurrent: { backgroundColor: '#FFF', borderWidth: 3, borderColor: ORANGE },
-  line: { flex: 1, width: 2, backgroundColor: '#E5E7EB', marginVertical: 2 },
+  dotCurrent: { backgroundColor: c.card, borderWidth: 3, borderColor: ORANGE },
+  line: { flex: 1, width: 2, backgroundColor: c.border, marginVertical: 2 },
   lineDone: { backgroundColor: ORANGE },
-  stepTitle: { fontSize: 14, fontWeight: '700', color: '#111827', letterSpacing: -0.2 },
-  stepSub: { fontSize: 12, color: '#6B7280', marginTop: 3, fontWeight: '500' },
+  stepTitle: { fontSize: 14, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
+  stepSub: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500' },
 
   /* Response input */
   textArea: {
-    minHeight: 120,
-    backgroundColor: '#F9FAFB',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    padding: 14,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '500',
+    minHeight: 120, backgroundColor: c.background,
+    borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    padding: 14, fontSize: 14, color: c.textPrimary, fontWeight: '500',
   },
-  counter: { fontSize: 11, color: '#9CA3AF', textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
 
   /* Submit */
   submit: {
-    flexDirection: 'row',
-    backgroundColor: ORANGE,
-    paddingVertical: 15,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 14,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
-    shadowRadius: 12,
-    elevation: 5,
+    flexDirection: 'row', backgroundColor: ORANGE,
+    paddingVertical: 15, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28, shadowRadius: 12, elevation: 5,
   },
-  submitDisabled: { backgroundColor: '#FDBA74', shadowOpacity: 0, elevation: 0 },
+  submitDisabled: {
+    backgroundColor: isDark ? '#5A3418' : '#FDBA74',
+    shadowOpacity: 0, elevation: 0,
+  },
   submitText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
   footnote: {
-    fontSize: 11,
-    color: '#6B7280',
-    textAlign: 'center',
-    marginTop: 10,
-    fontWeight: '500',
+    fontSize: 11, color: c.textSecondary, textAlign: 'center', marginTop: 10, fontWeight: '500',
   },
 
   /* Waiting card */
   waitCard: {
-    flexDirection: 'row',
-    gap: 12,
-    backgroundColor: '#EFF6FF',
-    padding: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#DBEAFE',
+    flexDirection: 'row', gap: 12,
+    backgroundColor: isDark ? '#0F2744' : '#EFF6FF',
+    padding: 14, borderRadius: 16, borderWidth: 1,
+    borderColor: isDark ? '#1E3A5F' : '#DBEAFE',
   },
   waitIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#DBEAFE',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: isDark ? '#1E3A5F' : '#DBEAFE',
+    alignItems: 'center', justifyContent: 'center',
   },
-  waitText: { flex: 1, fontSize: 13, color: '#1E40AF', lineHeight: 19, fontWeight: '500' },
+  waitText: {
+    flex: 1, fontSize: 13,
+    color: isDark ? '#93C5FD' : '#1E40AF',
+    lineHeight: 19, fontWeight: '500',
+  },
 });

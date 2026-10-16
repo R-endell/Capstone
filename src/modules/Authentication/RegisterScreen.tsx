@@ -1,28 +1,28 @@
 // src/modules/Authentication/RegisterScreen.tsx
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ScrollView, Alert, Image,
-  KeyboardAvoidingView, Platform, TouchableWithoutFeedback,
-  Keyboard, ActivityIndicator, Animated, Easing
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Image,
+  KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
+  ActivityIndicator, Animated, Easing,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { decode } from 'base64-arraybuffer';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
+import { useTheme, ThemeColors } from '../../utils/themeContext';
 
-/** Brand */
 const ORANGE = '#F27024';
 
 export default function RegisterScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const insets = useSafeAreaInsets();
+  const { colors, isDark, toggleDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // Form state
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [phone, setPhone] = useState('');
@@ -34,11 +34,9 @@ export default function RegisterScreen() {
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Image states
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
 
-  // Error states
   const [firstNameError, setFirstNameError] = useState('');
   const [lastNameError, setLastNameError] = useState('');
   const [phoneError, setPhoneError] = useState('');
@@ -46,42 +44,26 @@ export default function RegisterScreen() {
   const [passwordError, setPasswordError] = useState('');
   const [confirmPasswordError, setConfirmPasswordError] = useState('');
 
-  // Entrance & Glow Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 500,
+      toValue: 1, duration: 500,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
 
     const glow = Animated.loop(
       Animated.sequence([
-        Animated.timing(glowAnim, {
-          toValue: 1,
-          duration: 2600,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(glowAnim, {
-          toValue: 0,
-          duration: 2600,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
+        Animated.timing(glowAnim, { toValue: 1, duration: 2600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(glowAnim, { toValue: 0, duration: 2600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ]),
     );
     glow.start();
-
     return () => glow.stop();
   }, [fadeAnim, glowAnim]);
 
-  /* ------------------------------------------------------------------ */
-  /* Validation functions                                                */
-  /* ------------------------------------------------------------------ */
   const validateName = (name: string, field: string) => {
     if (!name) return `${field} is required`;
     if (name.length < 2) return `${field} must be at least 2 characters`;
@@ -120,9 +102,6 @@ export default function RegisterScreen() {
     return '';
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Handlers                                                            */
-  /* ------------------------------------------------------------------ */
   const handleFirstNameChange = (text: string) => {
     setFirstName(text);
     setFirstNameError(validateName(text, 'First name'));
@@ -167,7 +146,6 @@ export default function RegisterScreen() {
         Alert.alert('Permission Required', 'Please allow access to your photos.');
         return;
       }
-
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
@@ -175,7 +153,6 @@ export default function RegisterScreen() {
         quality: 0.5,
         base64: true,
       });
-
       if (!result.canceled && result.assets && result.assets.length > 0) {
         setImageUri(result.assets[0].uri);
         setImageBase64(result.assets[0].base64 || null);
@@ -187,12 +164,10 @@ export default function RegisterScreen() {
 
   const getFriendlyErrorMessage = (error: any) => {
     const message = error?.message || '';
-    const raw = JSON.stringify(error);  
-
+    const raw = JSON.stringify(error);
     if (raw.includes('users_phone_number_key') || message.includes('duplicate key')) {
       return 'This phone number is already registered. Please log in or use a different number.';
     }
-
     if (message.includes('User already registered')) return 'This email is already registered. Please log in instead.';
     if (message.includes('Password should be at least 6 characters')) return 'Password must be at least 6 characters.';
     if (message.includes('Invalid email')) return 'Please enter a valid email address.';
@@ -216,41 +191,25 @@ export default function RegisterScreen() {
     if (confirmValidation) { setConfirmPasswordError(confirmValidation); return; }
 
     setLoading(true);
-
     try {
       const cleanedPhone = phone.trim();
       const { data: existingPhone, error: phoneCheckError } = await supabase
-        .from('users')
-        .select('user_id')
-        .eq('phone_number', cleanedPhone)
-        .maybeSingle();
+        .from('users').select('user_id').eq('phone_number', cleanedPhone).maybeSingle();
 
       if (phoneCheckError) console.error('Phone check error:', phoneCheckError);
-
       if (existingPhone) {
         setPhoneError('This phone number is already registered.');
-        Alert.alert(
-          'Phone Number Already Used',
-          'An account already exists with this phone number. Please log in or use a different number.',
-          [{ text: 'OK' }]
-        );
+        Alert.alert('Phone Number Already Used', 'An account already exists with this phone number. Please log in or use a different number.', [{ text: 'OK' }]);
         setLoading(false);
         return;
       }
 
       const { data: existingEmail } = await supabase
-        .from('users')
-        .select('user_id')
-        .eq('email', email.trim().toLowerCase())
-        .maybeSingle();
+        .from('users').select('user_id').eq('email', email.trim().toLowerCase()).maybeSingle();
 
       if (existingEmail) {
         setEmailError('This email is already registered.');
-        Alert.alert(
-          'Email Already Used',
-          'An account already exists with this email. Please log in instead.',
-          [{ text: 'OK' }]
-        );
+        Alert.alert('Email Already Used', 'An account already exists with this email. Please log in instead.', [{ text: 'OK' }]);
         setLoading(false);
         return;
       }
@@ -276,28 +235,17 @@ export default function RegisterScreen() {
           const fileName = `${signUpData.user.id}_${Date.now()}.jpg`;
           const { error: uploadError } = await supabase.storage
             .from('avatars')
-            .upload(fileName, decode(imageBase64), {
-              contentType: 'image/jpeg',
-              upsert: true,
-            });
-
+            .upload(fileName, decode(imageBase64), { contentType: 'image/jpeg', upsert: true });
           if (uploadError) throw uploadError;
 
-          const { data: { publicUrl } } = supabase.storage
-            .from('avatars')
-            .getPublicUrl(fileName);
-
+          const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(fileName);
           await supabase.auth.updateUser({ data: { avatar_url: publicUrl } });
         } catch (uploadErr: any) {
           console.warn('Avatar upload failed:', uploadErr?.message);
         }
       }
 
-      // Navigate to the new Permissions Prompt screen
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'PermissionsPrompt' }],
-      });
+      navigation.reset({ index: 0, routes: [{ name: 'PermissionsPrompt' }] });
     } catch (error: any) {
       console.error('SIGNUP ERROR:', error);
       Alert.alert('Signup Failed', getFriendlyErrorMessage(error));
@@ -306,55 +254,40 @@ export default function RegisterScreen() {
     }
   };
 
-  const glowScale = glowAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.12],
-  });
-  const glowOpacity = glowAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.06, 0.12],
-  });
+  const glowScale = glowAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+  const glowOpacity = glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0.06, 0.12] });
 
   const fadeUpStyle = {
     opacity: fadeAnim,
     transform: [{
-      translateY: fadeAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [20, 0],
-      })
+      translateY: fadeAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }),
     }],
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Ambient Background Glows */}
+      {/* Dark mode toggle — top-right */}
+      <TouchableOpacity
+        style={[styles.themeToggle, { top: insets.top + 12 }]}
+        onPress={toggleDark}
+        activeOpacity={0.85}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <Ionicons name={isDark ? 'sunny-outline' : 'moon-outline'} size={20} color={colors.textPrimary} />
+      </TouchableOpacity>
+
       <View style={styles.backgroundLayer} pointerEvents="none">
-        <Animated.View
-          style={[
-            styles.glow,
-            styles.glowTop,
-            { transform: [{ scale: glowScale }], opacity: glowOpacity },
-          ]}
-        />
+        <Animated.View style={[styles.glow, styles.glowTop, { transform: [{ scale: glowScale }], opacity: glowOpacity }]} />
         <View style={[styles.glow, styles.glowBottom]} />
       </View>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardAvoid}
-      >
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardAvoid}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
-
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
-              {/* Header with Larger Brand Logo Identity */}
               <View style={styles.headerContainer}>
                 <View style={styles.brandRow}>
-                  <Image
-                    source={require('../../../assets/Pack-N-Ship-Logo2.png')}
-                    style={styles.logoImage}
-                    resizeMode="contain"
-                  />
+                  <Image source={require('../../../assets/Pack-N-Ship-Logo2.png')} style={styles.logoImage} resizeMode="contain" />
                   <Text style={styles.brandText}>
                     Pack-<Text style={styles.brandTextOrange}>N-Ship</Text>
                   </Text>
@@ -363,14 +296,13 @@ export default function RegisterScreen() {
                 <Text style={styles.subHeader}>Start shipping your packages securely today.</Text>
               </View>
 
-              {/* Avatar Picker */}
               <View style={styles.imageUploadSection}>
                 <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.85}>
                   {imageUri ? (
                     <Image source={{ uri: imageUri }} style={styles.profilePreview} />
                   ) : (
                     <View style={styles.imagePlaceholder}>
-                      <Ionicons name="camera-outline" size={26} color="#9CA3AF" />
+                      <Ionicons name="camera-outline" size={26} color={colors.textMuted} />
                     </View>
                   )}
                   <View style={styles.uploadBadge}>
@@ -379,15 +311,14 @@ export default function RegisterScreen() {
                 </TouchableOpacity>
               </View>
 
-              {/* Input Fields */}
               <View style={styles.formContainer}>
                 {/* First Name */}
                 <View style={[styles.inputWrapper, focusedInput === 'firstName' && styles.inputFocused, firstNameError && styles.inputError]}>
-                  <Ionicons name="person-outline" size={20} color={focusedInput === 'firstName' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="person-outline" size={20} color={focusedInput === 'firstName' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="First Name"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     value={firstName}
                     onChangeText={handleFirstNameChange}
                     onFocus={() => setFocusedInput('firstName')}
@@ -398,11 +329,11 @@ export default function RegisterScreen() {
 
                 {/* Last Name */}
                 <View style={[styles.inputWrapper, focusedInput === 'lastName' && styles.inputFocused, lastNameError && styles.inputError]}>
-                  <Ionicons name="person-outline" size={20} color={focusedInput === 'lastName' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="person-outline" size={20} color={focusedInput === 'lastName' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Last Name"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     value={lastName}
                     onChangeText={handleLastNameChange}
                     onFocus={() => setFocusedInput('lastName')}
@@ -413,11 +344,11 @@ export default function RegisterScreen() {
 
                 {/* Phone */}
                 <View style={[styles.inputWrapper, focusedInput === 'phone' && styles.inputFocused, phoneError && styles.inputError]}>
-                  <Ionicons name="call-outline" size={20} color={focusedInput === 'phone' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="call-outline" size={20} color={focusedInput === 'phone' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Phone Number (e.g., 09123456789)"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     keyboardType="phone-pad"
                     value={phone}
                     onChangeText={handlePhoneChange}
@@ -429,11 +360,11 @@ export default function RegisterScreen() {
 
                 {/* Email */}
                 <View style={[styles.inputWrapper, focusedInput === 'email' && styles.inputFocused, emailError && styles.inputError]}>
-                  <Ionicons name="mail-outline" size={20} color={focusedInput === 'email' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="mail-outline" size={20} color={focusedInput === 'email' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Email Address"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     keyboardType="email-address"
                     autoCapitalize="none"
                     value={email}
@@ -446,11 +377,11 @@ export default function RegisterScreen() {
 
                 {/* Password */}
                 <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
-                  <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Password"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     secureTextEntry={!showPassword}
                     value={password}
                     onChangeText={handlePasswordChange}
@@ -458,18 +389,18 @@ export default function RegisterScreen() {
                     onBlur={() => setFocusedInput(null)}
                   />
                   <TouchableOpacity style={styles.eyeButton} onPress={togglePasswordVisibility}>
-                    <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#6B7280" />
+                    <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
                 </View>
                 {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
 
                 {/* Confirm Password */}
                 <View style={[styles.inputWrapper, focusedInput === 'confirmPassword' && styles.inputFocused, confirmPasswordError && styles.inputError]}>
-                  <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'confirmPassword' ? ORANGE : '#9CA3AF'} style={styles.inputIcon} />
+                  <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'confirmPassword' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
                     placeholder="Confirm Password"
-                    placeholderTextColor="#9CA3AF"
+                    placeholderTextColor={colors.textMuted}
                     secureTextEntry={!showConfirmPassword}
                     value={confirmPassword}
                     onChangeText={handleConfirmPasswordChange}
@@ -477,13 +408,12 @@ export default function RegisterScreen() {
                     onBlur={() => setFocusedInput(null)}
                   />
                   <TouchableOpacity style={styles.eyeButton} onPress={toggleConfirmPasswordVisibility}>
-                    <Ionicons name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#6B7280" />
+                    <Ionicons name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
                 </View>
                 {confirmPasswordError ? <Text style={styles.errorText}>{confirmPasswordError}</Text> : null}
               </View>
 
-              {/* Sign Up Button */}
               <TouchableOpacity
                 style={[styles.button, loading && styles.buttonDisabled]}
                 onPress={handleSignUp}
@@ -497,14 +427,12 @@ export default function RegisterScreen() {
                 )}
               </TouchableOpacity>
 
-              {/* Login Link */}
               <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.linkContainer}>
                 <Text style={styles.link}>
                   Already have an account? <Text style={styles.linkBold}>Log In</Text>
                 </Text>
               </TouchableOpacity>
             </Animated.View>
-
           </ScrollView>
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
@@ -512,190 +440,87 @@ export default function RegisterScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  keyboardAvoid: {
-    flex: 1,
-  },
-  backgroundLayer: {
-    ...StyleSheet.absoluteFill,
-    overflow: 'hidden',
-  },
-  glow: {
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
+  keyboardAvoid: { flex: 1 },
+
+  themeToggle: {
     position: 'absolute',
-    borderRadius: 999,
-    backgroundColor: ORANGE,
-  },
-  glowTop: {
-    width: 360,
-    height: 360,
-    top: -160,
-    right: -140,
-  },
-  glowBottom: {
-    width: 300,
-    height: 300,
-    bottom: -140,
-    left: -120,
-    opacity: 0.05,
-  },
-  innerContainer: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 40,
-    flexGrow: 1,
-  },
-  contentWrapper: {
-    flex: 1,
-  },
-  headerContainer: {
-    marginBottom: 20,
-    alignItems: 'flex-start',
-  },
-  brandRow: {
-    flexDirection: 'row',
+    right: 20,
+    zIndex: 20,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: c.card,
     alignItems: 'center',
-    marginBottom: 16,
-    gap: 12,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.4 : 0.08,
+    shadowRadius: 6,
+    elevation: 3,
   },
-  logoImage: {
-    width: 54,
-    height: 54,
-  },
-  brandText: {
-    fontSize: 22,
-    fontWeight: '800',
-    fontStyle: 'italic',
-    color: '#111827',
-    letterSpacing: -0.3,
-  },
-  brandTextOrange: {
-    color: ORANGE,
-  },
-  header: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 6,
-    letterSpacing: -0.5,
-  },
-  subHeader: {
-    fontSize: 15,
-    color: '#6B7280',
-    fontWeight: '400',
-    lineHeight: 22,
-  },
-  imageUploadSection: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
+
+  backgroundLayer: { ...StyleSheet.absoluteFillObject, overflow: 'hidden' },
+  glow: { position: 'absolute', borderRadius: 999, backgroundColor: ORANGE },
+  glowTop: { width: 360, height: 360, top: -160, right: -140 },
+  glowBottom: { width: 300, height: 300, bottom: -140, left: -120, opacity: 0.05 },
+
+  innerContainer: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40, flexGrow: 1 },
+  contentWrapper: { flex: 1 },
+
+  headerContainer: { marginBottom: 20, alignItems: 'flex-start' },
+  brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
+  logoImage: { width: 54, height: 54 },
+  brandText: { fontSize: 22, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3 },
+  brandTextOrange: { color: ORANGE },
+  header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.5 },
+  subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
+
+  imageUploadSection: { alignItems: 'center', marginBottom: 20 },
   imagePicker: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: '#F9FAFB',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    position: 'relative',
+    width: 76, height: 76, borderRadius: 38,
+    backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: c.border, position: 'relative',
   },
-  imagePlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  profilePreview: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-  },
+  imagePlaceholder: { justifyContent: 'center', alignItems: 'center' },
+  profilePreview: { width: 76, height: 76, borderRadius: 38 },
   uploadBadge: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    backgroundColor: ORANGE,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
+    position: 'absolute', bottom: 0, right: 0,
+    backgroundColor: ORANGE, width: 22, height: 22, borderRadius: 11,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: c.card,
   },
-  formContainer: {
-    marginBottom: 12,
-  },
+
+  formContainer: { marginBottom: 12 },
   inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 12,
-    marginBottom: 12,
-    height: 52,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border,
+    borderRadius: 12, marginBottom: 12, height: 52,
   },
-  inputIcon: {
-    paddingLeft: 16,
-    paddingRight: 8,
-  },
-  input: {
-    flex: 1,
-    height: '100%',
-    fontSize: 15,
-    color: '#111827',
-  },
-  inputFocused: {
-    backgroundColor: '#FFFFFF',
-    borderColor: ORANGE,
-  },
-  inputError: {
-    borderColor: '#EF4444',
-    backgroundColor: '#FEF2F2',
-  },
-  eyeButton: {
-    paddingHorizontal: 16,
-    height: '100%',
-    justifyContent: 'center',
-  },
+  inputIcon: { paddingLeft: 16, paddingRight: 8 },
+  input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary },
+  inputFocused: { backgroundColor: c.card, borderColor: ORANGE },
+  inputError: { borderColor: c.error, backgroundColor: c.errorBg },
+  eyeButton: { paddingHorizontal: 16, height: '100%', justifyContent: 'center' },
   errorText: {
-    color: '#EF4444',
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: -8,
-    marginBottom: 10,
-    marginLeft: 4,
+    color: c.error, fontSize: 12, fontWeight: '500',
+    marginTop: -8, marginBottom: 10, marginLeft: 4,
   },
+
   button: {
-    backgroundColor: ORANGE,
-    height: 54,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-    marginBottom: 20,
+    backgroundColor: ORANGE, height: 54, borderRadius: 12,
+    alignItems: 'center', justifyContent: 'center',
+    width: '100%', marginBottom: 20,
   },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  buttonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  linkContainer: {
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
-  link: {
-    color: '#6B7280',
-    fontSize: 14,
-  },
-  linkBold: {
-    color: ORANGE,
-    fontWeight: '600',
-  },
+  buttonDisabled: { opacity: 0.7 },
+  buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+
+  linkContainer: { alignItems: 'center', paddingVertical: 6 },
+  link: { color: c.textSecondary, fontSize: 14 },
+  linkBold: { color: ORANGE, fontWeight: '600' },
 });

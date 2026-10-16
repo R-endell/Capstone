@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/HomeScreen.tsx
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -24,11 +24,9 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import NotificationsList from '../Disputes/NotificationsList';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-/** Brand */
 const ORANGE = '#F27024';
-const ORANGE_SOFT = '#FFF4EC';
-const ORANGE_BORDER = '#FFD9B8';
 
 type Notif = {
   notif_id: number;
@@ -76,20 +74,18 @@ const titleForType = (type: string, fallback: string): string => {
 export default function HomeScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [userName, setUserName] = useState('there');
   const [myId, setMyId] = useState<number | null>(null);
 
-  // Notifications
   const [notifModalOpen, setNotifModalOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-
-  // Full NotificationsList modal (support thread chat lives here)
   const [fullListOpen, setFullListOpen] = useState(false);
 
-  // Keep a ref to the realtime channel so we can remove the exact instance
   const notifChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   /* ------------------ user + notifications ------------------ */
@@ -141,41 +137,22 @@ export default function HomeScreen() {
   useEffect(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]);
   useFocusEffect(useCallback(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]));
 
-  // Realtime — reload the badge + list whenever a new notification arrives.
-  // Uses a UNIQUE channel name per mount so Fast Refresh can't leave a stale
-  // subscribed channel with the same name in the Supabase client's registry.
   useEffect(() => {
     if (!myId) return;
-
-    // Tear down any lingering channel from a previous mount first.
     if (notifChannelRef.current) {
       supabase.removeChannel(notifChannelRef.current);
       notifChannelRef.current = null;
     }
-
     const channelName = `home-notif-${myId}-${Date.now()}`;
-
     const ch = supabase
       .channel(channelName)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${myId}` },
-        () => loadNotifs()
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${myId}` },
-        () => loadNotifs()
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${myId}` }, () => loadNotifs())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${myId}` }, () => loadNotifs())
       .subscribe();
-
     notifChannelRef.current = ch;
-
     return () => {
       supabase.removeChannel(ch);
-      if (notifChannelRef.current === ch) {
-        notifChannelRef.current = null;
-      }
+      if (notifChannelRef.current === ch) notifChannelRef.current = null;
     };
   }, [myId, loadNotifs]);
 
@@ -189,9 +166,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
+        toValue: 1, duration, delay,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
@@ -220,7 +195,6 @@ export default function HomeScreen() {
   const handleScheduleDelivery = () => {
     navigation.navigate('DropoffType', { mode: 'schedule' });
   };
-
   const handleOpenNotifs = () => {
     setNotifModalOpen(true);
     loadNotifs();
@@ -243,53 +217,29 @@ export default function HomeScreen() {
 
     const type = (n.type || '').toLowerCase();
 
-    // Support / chat / message → open the full NotificationsList modal
-    // so the user can see the thread and reply.
     if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
       setFullListOpen(true);
       return;
     }
-
-    // Match / delivery → Activity tab
     if (type === 'match' || type.startsWith('delivery')) {
       navigation.navigate('MainTabs', { screen: 'Activity' });
       return;
     }
-
-    // Payment / escrow → Activity
     if (type === 'payment' || type === 'escrow') {
       navigation.navigate('MainTabs', { screen: 'Activity' });
       return;
     }
-
-    // Disputes → Dispute detail
     if (type.startsWith('dispute')) {
       const refId = n.ref_id;
-      if (refId == null) {
-        navigation.navigate('DisputeCenter' as any);
-        return;
-      }
-      if (typeof refId === 'number') {
-        navigation.navigate('DisputeDetail' as any, { disputeId: refId });
-        return;
-      }
+      if (refId == null) { navigation.navigate('DisputeCenter' as any); return; }
+      if (typeof refId === 'number') { navigation.navigate('DisputeDetail' as any, { disputeId: refId }); return; }
       try {
-        const { data } = await supabase
-          .from('disputes')
-          .select('dispute_id')
-          .eq('dispute_ref', String(refId))
-          .maybeSingle();
-        if (data?.dispute_id) {
-          navigation.navigate('DisputeDetail' as any, { disputeId: data.dispute_id });
-        } else {
-          navigation.navigate('DisputeCenter' as any);
-        }
-      } catch {
-        navigation.navigate('DisputeCenter' as any);
-      }
+        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(refId)).maybeSingle();
+        if (data?.dispute_id) navigation.navigate('DisputeDetail' as any, { disputeId: data.dispute_id });
+        else navigation.navigate('DisputeCenter' as any);
+      } catch { navigation.navigate('DisputeCenter' as any); }
       return;
     }
-
     Alert.alert(n.title || 'Notification', n.body || '');
   };
 
@@ -309,31 +259,21 @@ export default function HomeScreen() {
 
   /* ------------------ notification modal ------------------ */
   const renderNotifModal = () => (
-    <Modal
-      visible={notifModalOpen}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setNotifModalOpen(false)}
-    >
-      <Pressable
-        style={styles.modalBackdrop}
-        onPress={() => setNotifModalOpen(false)}
-      >
+    <Modal visible={notifModalOpen} transparent animationType="fade" onRequestClose={() => setNotifModalOpen(false)}>
+      <Pressable style={styles.modalBackdrop} onPress={() => setNotifModalOpen(false)}>
         <View style={[styles.modalCard, { marginTop: insets.top + 60 }]}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Notifications</Text>
             <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
-              <Ionicons name="close" size={22} color="#111827" />
+              <Ionicons name="close" size={22} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
 
           {notifLoading ? (
-            <View style={styles.modalCenter}>
-              <ActivityIndicator size="small" color={ORANGE} />
-            </View>
+            <View style={styles.modalCenter}><ActivityIndicator size="small" color={ORANGE} /></View>
           ) : notifs.length === 0 ? (
             <View style={styles.modalCenter}>
-              <Ionicons name="notifications-off-outline" size={40} color="#D1D5DB" />
+              <Ionicons name="notifications-off-outline" size={40} color={colors.textMuted} />
               <Text style={styles.emptyText}>No notifications yet</Text>
             </View>
           ) : (
@@ -360,7 +300,7 @@ export default function HomeScreen() {
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
                     <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="#D1D5DB" />
+                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
                 </TouchableOpacity>
               )}
             />
@@ -368,10 +308,7 @@ export default function HomeScreen() {
 
           <TouchableOpacity
             style={styles.modalFooter}
-            onPress={() => {
-              setNotifModalOpen(false);
-              setFullListOpen(true);
-            }}
+            onPress={() => { setNotifModalOpen(false); setFullListOpen(true); }}
             activeOpacity={0.85}
           >
             <Text style={styles.modalFooterText}>See all in Notifications</Text>
@@ -384,44 +321,27 @@ export default function HomeScreen() {
 
   /* ------------------ full notifications modal ------------------ */
   const renderFullListModal = () => (
-    <Modal
-      visible={fullListOpen}
-      animationType="slide"
-      onRequestClose={() => setFullListOpen(false)}
-    >
-      <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            paddingHorizontal: 16,
-            paddingTop: insets.top + 8,
-            paddingBottom: 12,
-            backgroundColor: '#FFFFFF',
-            borderBottomWidth: 1,
-            borderBottomColor: '#F3F4F6',
-          }}
-        >
+    <Modal visible={fullListOpen} animationType="slide" onRequestClose={() => setFullListOpen(false)}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <View style={{
+          flexDirection: 'row', alignItems: 'center',
+          paddingHorizontal: 16, paddingTop: insets.top + 8, paddingBottom: 12,
+          backgroundColor: colors.card,
+          borderBottomWidth: 1, borderBottomColor: colors.divider,
+        }}>
           <TouchableOpacity
             onPress={() => setFullListOpen(false)}
             style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}
             activeOpacity={0.7}
             hitSlop={10}
           >
-            <Ionicons name="chevron-back" size={24} color="#111827" />
+            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text
-            style={{
-              flex: 1,
-              textAlign: 'center',
-              fontSize: 18,
-              fontWeight: '800',
-              color: '#111827',
-              letterSpacing: -0.3,
-            }}
-          >
-            Notifications
-          </Text>
+          <Text style={{
+            flex: 1, textAlign: 'center',
+            fontSize: 18, fontWeight: '800',
+            color: colors.textPrimary, letterSpacing: -0.3,
+          }}>Notifications</Text>
           <View style={{ width: 32 }} />
         </View>
 
@@ -434,35 +354,30 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16 }]}
       >
-        {/* HEADER & GREETING SECTION */}
+        {/* HEADER & GREETING */}
         <Animated.View style={[styles.header, fadeUp(headerAnim, -10)]}>
           <View style={styles.greetingTextContainer}>
             <Text style={styles.greetingTitle}>Hello, {userName} 👋</Text>
             <Text style={styles.greetingSubtitle}>Ready to send a package today?</Text>
           </View>
 
-          <Animated.View
-            style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}
-            pointerEvents="box-none"
-          >
+          <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }} pointerEvents="box-none">
             <TouchableOpacity
               style={styles.notificationIcon}
               onPress={handleOpenNotifs}
               activeOpacity={0.8}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="notifications-outline" size={22} color="#111827" />
+              <Ionicons name="notifications-outline" size={22} color={colors.textPrimary} />
               {unreadCount > 0 && (
                 <View style={styles.notificationBadge}>
-                  {unreadCount <= 9 && (
-                    <Text style={styles.notificationBadgeText}>{unreadCount}</Text>
-                  )}
+                  {unreadCount <= 9 && (<Text style={styles.notificationBadgeText}>{unreadCount}</Text>)}
                 </View>
               )}
             </TouchableOpacity>
@@ -485,9 +400,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.actionTextContainer}>
               <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
-              <Text style={styles.actionSubtitlePrimary}>
-                Instant booking & real-time tracking
-              </Text>
+              <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
             </View>
             <View style={styles.chevronPrimary}>
               <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
@@ -508,11 +421,9 @@ export default function HomeScreen() {
             </View>
             <View style={styles.actionTextContainer}>
               <Text style={styles.actionTitle}>Schedule a Delivery</Text>
-              <Text style={styles.actionSubtitle}>
-                Plan shipments for a future date
-              </Text>
+              <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </Animated.View>
 
@@ -525,12 +436,12 @@ export default function HomeScreen() {
             contentContainerStyle={styles.promoScrollContainer}
           >
             <TouchableOpacity
-              style={[styles.promoCard, { backgroundColor: '#FFF7ED', borderColor: '#FFE4D2' }]}
+              style={[styles.promoCard, isDark ? styles.promoCardAmberDark : styles.promoCardAmberLight]}
               activeOpacity={0.85}
               onPress={() => handleContentTap('20% Off Promotion')}
             >
-              <View style={[styles.promoIconWrap, { backgroundColor: '#FFEDD5' }]}>
-                <Ionicons name="ticket" size={24} color="#EA580C" />
+              <View style={[styles.promoIconWrap, { backgroundColor: isDark ? '#3A2411' : '#FFEDD5' }]}>
+                <Ionicons name="ticket" size={24} color={isDark ? '#FDBA74' : '#EA580C'} />
               </View>
               <View>
                 <Text style={styles.promoTitle}>20% Off First Delivery</Text>
@@ -539,12 +450,12 @@ export default function HomeScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.promoCard, { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' }]}
+              style={[styles.promoCard, isDark ? styles.promoCardGreenDark : styles.promoCardGreenLight]}
               activeOpacity={0.85}
               onPress={() => handleContentTap('Free Priority Matching')}
             >
-              <View style={[styles.promoIconWrap, { backgroundColor: '#DCFCE7' }]}>
-                <Ionicons name="flash" size={24} color="#16A34A" />
+              <View style={[styles.promoIconWrap, { backgroundColor: isDark ? '#0F2A1F' : '#DCFCE7' }]}>
+                <Ionicons name="flash" size={24} color={isDark ? '#34D399' : '#16A34A'} />
               </View>
               <View>
                 <Text style={styles.promoTitle}>Fast Track Upgrade</Text>
@@ -557,7 +468,7 @@ export default function HomeScreen() {
         {/* SHIPPING TIPS SECTION */}
         <Animated.View style={[styles.sectionContainer, fadeUp(tipsAnim)]}>
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>Shipping Tips & Guides</Text>
+            <Text style={styles.sectionTitleNoPad}>Shipping Tips & Guides</Text>
             <TouchableOpacity onPress={() => handleContentTap('All Tips')}>
               <Text style={styles.seeAllText}>See all</Text>
             </TouchableOpacity>
@@ -577,7 +488,7 @@ export default function HomeScreen() {
                 Use adequate bubble wrap and secure the corners to prevent any damage during transit.
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -594,7 +505,7 @@ export default function HomeScreen() {
                 Ensure your package weight is accurate to avoid unexpected extra charges.
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -603,7 +514,7 @@ export default function HomeScreen() {
             onPress={() => handleContentTap('Prohibited Items')}
           >
             <View style={styles.tipIconWrap}>
-              <Ionicons name="warning-outline" size={20} color="#EF4444" />
+              <Ionicons name="warning-outline" size={20} color={colors.error} />
             </View>
             <View style={styles.tipTextWrap}>
               <Text style={styles.tipTitle}>Prohibited Delivery Items</Text>
@@ -611,7 +522,7 @@ export default function HomeScreen() {
                 Review the list of items that our courier partners are not allowed to transport.
               </Text>
             </View>
-            <Ionicons name="chevron-forward" size={16} color="#9CA3AF" />
+            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
           </TouchableOpacity>
         </Animated.View>
       </ScrollView>
@@ -622,14 +533,9 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FAFAFA',
-  },
-  scrollContent: {
-    paddingBottom: Platform.OS === 'ios' ? 50 : 40,
-  },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
+  scrollContent: { paddingBottom: Platform.OS === 'ios' ? 50 : 40 },
 
   /* ── Header & Greeting ─────────────────────────────── */
   header: {
@@ -639,350 +545,170 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     marginBottom: 32,
   },
-  greetingTextContainer: {
-    flex: 1,
-    paddingRight: 16,
-  },
+  greetingTextContainer: { flex: 1, paddingRight: 16 },
   greetingTitle: {
     fontSize: 26,
     fontWeight: '800',
-    color: '#111827',
+    color: c.textPrimary,
     letterSpacing: -0.5,
     marginBottom: 4,
   },
-  greetingSubtitle: {
-    fontSize: 15,
-    color: '#6B7280',
-    fontWeight: '400',
-  },
+  greetingSubtitle: { fontSize: 15, color: c.textSecondary, fontWeight: '400' },
   notificationIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.08 : 0.4,
+    shadowRadius: 8, elevation: 3,
+    borderWidth: 1, borderColor: c.divider,
   },
   notificationBadge: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    paddingHorizontal: 4,
-    backgroundColor: '#EF4444',
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
+    position: 'absolute', top: 8, right: 8,
+    minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4,
+    backgroundColor: c.error,
+    borderWidth: 1.5, borderColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
   },
-  notificationBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
-    fontWeight: '800',
-  },
+  notificationBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
   /* ── Action Cards ──────────────────────────────────── */
-  actionContainer: {
-    paddingHorizontal: 24,
-    marginBottom: 28,
-  },
+  actionContainer: { paddingHorizontal: 24, marginBottom: 28 },
   actionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 18,
-    paddingVertical: 18,
-    paddingHorizontal: 16,
-    marginBottom: 14,
-    minHeight: 80,
+    flexDirection: 'row', alignItems: 'center',
+    borderRadius: 18, paddingVertical: 18, paddingHorizontal: 16,
+    marginBottom: 14, minHeight: 80,
   },
   actionCardPrimary: {
-    backgroundColor: ORANGE,
-    borderWidth: 0,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 6,
+    backgroundColor: ORANGE, borderWidth: 0,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25, shadowRadius: 12, elevation: 6,
   },
   actionCardSecondary: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
+    backgroundColor: c.card,
+    borderWidth: 1.5, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowRadius: 6, elevation: 2,
   },
   actionIconContainer: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    backgroundColor: ORANGE_SOFT,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 52, height: 52, borderRadius: 14,
+    backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
     marginRight: 14,
-    borderWidth: 1,
-    borderColor: ORANGE_BORDER,
+    borderWidth: 1, borderColor: ORANGE,
   },
   actionIconPrimary: {
     backgroundColor: 'rgba(255,255,255,0.22)',
     borderColor: 'rgba(255,255,255,0.35)',
   },
-  actionCustomIcon: {
-    width: 28,
-    height: 28,
-  },
-  actionTextContainer: {
-    flex: 1,
-    paddingRight: 8,
-  },
-  actionTitlePrimary: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  actionSubtitlePrimary: {
-    color: 'rgba(255,255,255,0.88)',
-    fontSize: 13,
-    marginTop: 3,
-    fontWeight: '400',
-  },
-  actionTitle: {
-    color: '#111827',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  actionSubtitle: {
-    color: '#6B7280',
-    fontSize: 13,
-    marginTop: 3,
-    fontWeight: '400',
-  },
+  actionCustomIcon: { width: 28, height: 28 },
+  actionTextContainer: { flex: 1, paddingRight: 8 },
+  actionTitlePrimary: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
+  actionSubtitlePrimary: { color: 'rgba(255,255,255,0.88)', fontSize: 13, marginTop: 3, fontWeight: '400' },
+  actionTitle: { color: c.textPrimary, fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
+  actionSubtitle: { color: c.textSecondary, fontSize: 13, marginTop: 3, fontWeight: '400' },
   chevronPrimary: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 32, height: 32, borderRadius: 16,
     backgroundColor: 'rgba(255,255,255,0.22)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
 
   /* ── Bottom Content Sections ───────────────────────── */
-  sectionContainer: {
-    marginBottom: 28,
-  },
+  sectionContainer: { marginBottom: 28 },
   sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    marginBottom: 14,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 24, marginBottom: 14,
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.4,
-    paddingHorizontal: 24,
-    marginBottom: 14,
+    fontSize: 18, fontWeight: '800', color: c.textPrimary,
+    letterSpacing: -0.4, paddingHorizontal: 24, marginBottom: 14,
   },
-  seeAllText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: ORANGE,
+  sectionTitleNoPad: {
+    fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
   },
+  seeAllText: { fontSize: 14, fontWeight: '700', color: ORANGE },
 
   /* Promotions */
-  promoScrollContainer: {
-    paddingHorizontal: 24,
-    gap: 12,
-  },
+  promoScrollContainer: { paddingHorizontal: 24, gap: 12 },
   promoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: 16,
-    padding: 16,
-    width: 260,
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderRadius: 16, padding: 16, width: 260,
   },
+  promoCardAmberLight: { backgroundColor: '#FFF7ED', borderColor: '#FFE4D2' },
+  promoCardAmberDark: { backgroundColor: '#2A1A0E', borderColor: '#5A3418' },
+  promoCardGreenLight: { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' },
+  promoCardGreenDark: { backgroundColor: '#0F2A1F', borderColor: '#1F5138' },
   promoIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
+    width: 44, height: 44, borderRadius: 12,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
   },
-  promoTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  promoSub: {
-    fontSize: 12,
-    color: '#4B5563',
-    fontWeight: '500',
-  },
+  promoTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  promoSub: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
 
   /* Shipping Tips */
   tipCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 16,
-    padding: 16,
-    marginHorizontal: 24,
-    marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border,
+    borderRadius: 16, padding: 16,
+    marginHorizontal: 24, marginBottom: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
+    shadowRadius: 4, elevation: 1,
   },
   tipIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 44, height: 44, borderRadius: 12,
+    backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
     marginRight: 14,
   },
-  tipTextWrap: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  tipTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  tipSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    lineHeight: 16,
-  },
+  tipTextWrap: { flex: 1, paddingRight: 12 },
+  tipTitle: { fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 4 },
+  tipSub: { fontSize: 12, color: c.textSecondary, lineHeight: 16 },
 
   /* ── Notification modal ─────────────────────────────── */
   modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(17,24,39,0.45)',
+    flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
     paddingHorizontal: 16,
   },
   modalCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingTop: 6,
-    paddingBottom: 4,
-    maxHeight: '78%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.18,
-    shadowRadius: 20,
-    elevation: 12,
+    backgroundColor: c.card, borderRadius: 20,
+    paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowRadius: 20, elevation: 12,
+    borderWidth: 1, borderColor: c.border,
   },
   modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
   },
-  modalTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#111827',
-  },
-  modalCenter: {
-    paddingVertical: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyText: {
-    marginTop: 10,
-    color: '#9CA3AF',
-    fontSize: 13,
-    fontWeight: '600',
-  },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  modalCenter: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
+  emptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontWeight: '600' },
 
   notifRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 14, paddingVertical: 12,
   },
-  notifRowUnread: {
-    backgroundColor: '#FFFBF5',
-  },
+  notifRowUnread: { backgroundColor: c.accentSoft },
   notifIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#FFEDD5',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
   },
-  notifTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  notifTitle: {
-    flex: 1,
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#111827',
-  },
-  notifDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: ORANGE,
-  },
-  notifBody: {
-    fontSize: 12.5,
-    color: '#4B5563',
-    marginTop: 3,
-    lineHeight: 17,
-  },
-  notifTime: {
-    fontSize: 10.5,
-    color: '#9CA3AF',
-    marginTop: 5,
-    fontWeight: '600',
-  },
+  notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  notifTitle: { flex: 1, fontSize: 13.5, fontWeight: '800', color: c.textPrimary },
+  notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: ORANGE },
+  notifBody: { fontSize: 12.5, color: c.textSecondary, marginTop: 3, lineHeight: 17 },
+  notifTime: { fontSize: 10.5, color: c.textMuted, marginTop: 5, fontWeight: '600' },
 
   modalFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
-  modalFooterText: {
-    color: ORANGE,
-    fontWeight: '800',
-    fontSize: 13,
-  },
+  modalFooterText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
 });

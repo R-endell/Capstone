@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/Delivery/ScheduleCalendarScreen.tsx
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
   Dimensions, Platform, Animated, Easing, StatusBar, ScrollView,
@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#F27024';
@@ -18,6 +19,8 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
   const { state, dispatch } = useSchedule();
   const today = new Date();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -25,7 +28,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
   const [selectedTime, setSelectedTime] = useState<Date>(state.scheduledDate || new Date());
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  // Animations
   const headerAnim = useRef(new Animated.Value(0)).current;
   const cardAnim = useRef(new Animated.Value(0)).current;
   const gridAnim = useRef(new Animated.Value(0)).current;
@@ -35,9 +37,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
+        toValue: 1, duration, delay,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
@@ -52,14 +52,9 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
-    transform: [
-      {
-        translateY: value.interpolate({
-          inputRange: [0, 1],
-          outputRange: [distance, 0],
-        }),
-      },
-    ],
+    transform: [{
+      translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
+    }],
   });
 
   const animatePressIn = () => {
@@ -69,9 +64,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
     Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Calendar math                                                       */
-  /* ------------------------------------------------------------------ */
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDayOfWeek = new Date(year, month, 1).getDay();
 
@@ -122,30 +114,19 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
       selectedDate.getDate(),
       selectedTime.getHours(),
       selectedTime.getMinutes(),
-      0,
-      0
+      0, 0
     );
     dispatch({ type: 'SET_SCHEDULED_DATE', payload: finalDateTime });
     navigation.navigate('PickupLocation', { type: 'pickup' });
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Render                                                              */
-  /* ------------------------------------------------------------------ */
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
 
-      {/* Minimalist Top Header */}
-      <Animated.View
-        style={[styles.headerContainer, { paddingTop: insets.top + 10 }, fadeUp(headerAnim, -14)]}
-      >
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backCircleBtn}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="arrow-back" size={20} color="#111827" />
+      <Animated.View style={[styles.headerContainer, { paddingTop: insets.top + 10 }, fadeUp(headerAnim, -14)]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backCircleBtn} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <View style={styles.headerTextContainer}>
@@ -156,14 +137,12 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
         </View>
       </Animated.View>
 
-      {/* Content */}
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]}
         showsVerticalScrollIndicator={false}
       >
         <Animated.View style={[styles.card, fadeUp(cardAnim, 20)]}>
-          {/* Card Header */}
           <View style={styles.cardTitleRow}>
             <View style={styles.cardIconBox}>
               <Ionicons name="calendar-outline" size={18} color={ORANGE} />
@@ -174,32 +153,21 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             </View>
           </View>
 
-          {/* Calendar */}
           <Animated.View style={[styles.calendarContainer, fadeUp(gridAnim, 20)]}>
-            {/* Month Navigation */}
             <View style={styles.monthSelectorRow}>
-              <TouchableOpacity
-                onPress={goPrevMonth}
-                style={styles.navBtn}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="chevron-back" size={16} color="#111827" />
+              <TouchableOpacity onPress={goPrevMonth} style={styles.navBtn} activeOpacity={0.7}>
+                <Ionicons name="chevron-back" size={16} color={colors.textPrimary} />
               </TouchableOpacity>
 
               <View style={styles.monthTitleBox}>
                 <Text style={styles.monthTitle}>{MONTHS_FULL[month]} {year}</Text>
               </View>
 
-              <TouchableOpacity
-                onPress={goNextMonth}
-                style={styles.navBtn}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="chevron-forward" size={16} color="#111827" />
+              <TouchableOpacity onPress={goNextMonth} style={styles.navBtn} activeOpacity={0.7}>
+                <Ionicons name="chevron-forward" size={16} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
-            {/* Week header */}
             <View style={styles.weekRow}>
               {WEEK_DAYS.map((d, i) => (
                 <Text
@@ -211,7 +179,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               ))}
             </View>
 
-            {/* Grid */}
             <View style={styles.calendarGrid}>
               {calendarDays.map((day, idx) => (
                 <View key={`day-${idx}`} style={styles.dayCellContainer}>
@@ -252,7 +219,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             </View>
           </Animated.View>
 
-          {/* Time Section */}
           <View style={styles.timeSection}>
             <View style={styles.timeSectionLeft}>
               <View style={styles.timeIconBox}>
@@ -290,10 +256,9 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             />
           )}
 
-          {/* Summary */}
           {selectedDate && (
             <View style={styles.summaryCard}>
-              <Ionicons name="checkmark-circle" size={16} color="#059669" />
+              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.summaryLabel}>Selected schedule</Text>
                 <Text style={styles.summaryValue} numberOfLines={1}>
@@ -305,7 +270,6 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             </View>
           )}
 
-          {/* Next Button */}
           <Animated.View style={[fadeUp(buttonAnim, 20), { transform: [{ scale: buttonScale }] }]}>
             <TouchableOpacity
               style={[styles.nextBtn, !selectedDate && styles.disabledBtn]}
@@ -315,8 +279,10 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               onPressOut={animatePressOut}
               activeOpacity={0.9}
             >
-              <Text style={styles.nextBtnText}>Continue to Location</Text>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <Text style={[styles.nextBtnText, !selectedDate && styles.disabledBtnText]}>
+                Continue to Location
+              </Text>
+              <Ionicons name="arrow-forward" size={16} color={selectedDate ? colors.card : colors.textMuted} />
             </TouchableOpacity>
           </Animated.View>
         </Animated.View>
@@ -325,301 +291,138 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
-  /* Minimalist Header */
   headerContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-    backgroundColor: '#FFFFFF',
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
+    backgroundColor: c.card,
   },
   backCircleBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 3,
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3,
+    marginRight: 12, borderWidth: 1, borderColor: c.border,
   },
   headerTextContainer: { flex: 1 },
   stepBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#FFF7ED',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
-    marginBottom: 2,
+    alignSelf: 'flex-start', backgroundColor: c.accentSoft,
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
+    borderWidth: 1, borderColor: ORANGE, marginBottom: 2,
   },
-  stepBadgeText: {
-    color: ORANGE,
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-  },
-  headerTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.3,
-  },
+  stepBadgeText: { color: ORANGE, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  headerTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
 
-  /* Scroll */
   scrollView: { flex: 1 },
   scrollContent: { paddingHorizontal: 20, paddingTop: 16 },
 
-  /* Card */
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 3,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderRadius: 20, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.4 : 0.06, shadowRadius: 12, elevation: 3,
+    borderWidth: 1, borderColor: c.border,
   },
-  cardTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   cardIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
+    width: 38, height: 38, borderRadius: 12, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: ORANGE,
   },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.3,
-  },
-  cardSubtitle: {
-    fontSize: 11,
-    color: '#6B7280',
-    fontWeight: '500',
-    marginTop: 2,
-  },
+  cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  cardSubtitle: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
 
-  /* Calendar */
   calendarContainer: {
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 12,
-    backgroundColor: '#F9FAFB',
+    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 12,
+    marginBottom: 12, backgroundColor: c.background,
   },
   monthSelectorRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12,
   },
   navBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    width: 32, height: 32, borderRadius: 16, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 2, elevation: 1,
   },
   monthTitleBox: { alignItems: 'center' },
-  monthTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
-  },
+  monthTitle: { fontSize: 13, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
 
   weekRow: { flexDirection: 'row', marginBottom: 8 },
   weekDay: {
-    flex: 1,
-    textAlign: 'center',
-    fontWeight: '800',
-    color: '#9CA3AF',
-    fontSize: 10,
-    letterSpacing: 0.5,
+    flex: 1, textAlign: 'center', fontWeight: '800', color: c.textMuted,
+    fontSize: 10, letterSpacing: 0.5,
   },
   weekDayWeekend: { color: ORANGE },
 
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   dayCellContainer: {
-    width: '14.28%',
-    aspectRatio: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 2,
+    width: '14.28%', aspectRatio: 1,
+    justifyContent: 'center', alignItems: 'center', padding: 2,
   },
   dayCell: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 10,
+    width: '100%', height: '100%',
+    justifyContent: 'center', alignItems: 'center', borderRadius: 10,
   },
-  dayText: {
-    fontSize: 12,
-    color: '#111827',
-    fontWeight: '700',
-  },
+  dayText: { fontSize: 12, color: c.textPrimary, fontWeight: '700' },
   selectedDay: {
     backgroundColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25, shadowRadius: 4, elevation: 3,
   },
   selectedDayText: { color: '#FFFFFF', fontWeight: '800' },
   todayCell: {
-    backgroundColor: '#FFF7ED',
-    borderWidth: 1,
-    borderColor: ORANGE,
+    backgroundColor: c.accentSoft,
+    borderWidth: 1, borderColor: ORANGE,
   },
   todayDayText: { color: ORANGE, fontWeight: '800' },
-  pastDayText: { color: '#D1D5DB' },
-  trailingDayText: { color: '#E5E7EB', fontSize: 12, fontWeight: '500' },
+  pastDayText: { color: c.textMuted },
+  trailingDayText: { color: c.textMuted, fontSize: 12, fontWeight: '500', opacity: 0.5 },
 
-  /* Time Section */
   timeSection: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: c.background, borderRadius: 14, padding: 12, marginBottom: 12,
+    borderWidth: 1, borderColor: c.border,
   },
-  timeSectionLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
+  timeSectionLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   timeIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
+    width: 36, height: 36, borderRadius: 10, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: ORANGE,
   },
-  timeLabel: {
-    fontSize: 8,
-    color: '#6B7280',
-    fontWeight: '800',
-    letterSpacing: 0.8,
-  },
-  timeValue: {
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '800',
-    marginTop: 1,
-    letterSpacing: -0.2,
-  },
+  timeLabel: { fontSize: 8, color: c.textSecondary, fontWeight: '800', letterSpacing: 0.8 },
+  timeValue: { fontSize: 14, color: c.textPrimary, fontWeight: '800', marginTop: 1, letterSpacing: -0.2 },
   changeTimeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
-    backgroundColor: '#FFF7ED',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12,
+    backgroundColor: c.accentSoft,
+    borderWidth: 1, borderColor: ORANGE,
   },
-  changeTimeText: {
-    color: ORANGE,
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
+  changeTimeText: { color: ORANGE, fontSize: 11, fontWeight: '800', letterSpacing: 0.2 },
 
-  /* Summary */
   summaryCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#ECFDF5',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.successBg, borderRadius: 12, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success,
   },
   summaryLabel: {
-    fontSize: 9,
-    color: '#059669',
-    fontWeight: '800',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
+    fontSize: 9, color: c.success, fontWeight: '800',
+    letterSpacing: 0.8, textTransform: 'uppercase',
   },
-  summaryValue: {
-    fontSize: 12,
-    color: '#065F46',
-    fontWeight: '700',
-    marginTop: 1,
-  },
+  summaryValue: { fontSize: 12, color: c.success, fontWeight: '700', marginTop: 1 },
 
-  /* Next Button */
   nextBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#111827',
-    borderRadius: 16,
-    paddingVertical: 16,
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
   disabledBtn: {
-    backgroundColor: '#F3F4F6',
-    shadowOpacity: 0,
-    elevation: 0,
+    backgroundColor: c.divider, shadowOpacity: 0, elevation: 0,
   },
-  nextBtnText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 15,
-    letterSpacing: 0.2,
-  },
+  nextBtnText: { color: c.card, fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
+  disabledBtnText: { color: c.textMuted },
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
   Alert, StatusBar, ScrollView, Image,
@@ -9,8 +9,8 @@ import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '../../../../utils/supabase';
 import { fetchPaymentMethods, chargeDelivery, getDeliveryPaymentStatus } from '../../../../services/paymentService';
 import type { PaymentMethod, PaymentProvider } from '../../../../types/payment';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-// ── Payment provider logos ──────────────────────────────────────────
 const GCASH_LOGO = require('../../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
 
@@ -19,13 +19,15 @@ const ORANGE = '#F27024';
 export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const { requestId, amount } = route.params;
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [methods, setMethods] = useState<PaymentMethod[]>([]);
   const [selected, setSelected] = useState<PaymentProvider | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const payingRef = useRef(false); // synchronous guard against double-tap
+  const payingRef = useRef(false);
 
   useEffect(() => {
     (async () => {
@@ -60,7 +62,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
   const handlePay = async () => {
     if (!selected) return;
-    if (payingRef.current) return; // hard block re-entry
+    if (payingRef.current) return;
     payingRef.current = true;
     setPaying(true);
 
@@ -79,7 +81,6 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
       });
 
-      // Start polling for webhook confirmation
       let attempts = 0;
       pollRef.current = setInterval(async () => {
         attempts++;
@@ -102,7 +103,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         } catch (e) {
           console.warn('Poll error', e);
         }
-        if (attempts >= 30) { // 30 × 2s = 60s
+        if (attempts >= 30) {
           if (pollRef.current) clearInterval(pollRef.current);
           payingRef.current = false;
           setPaying(false);
@@ -122,6 +123,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   if (loading) {
     return (
       <View style={styles.container}>
+        <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
         <ActivityIndicator size="large" color={ORANGE} style={{ marginTop: 100 }} />
       </View>
     );
@@ -129,11 +131,11 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
+      <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
 
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} disabled={paying}>
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Payment</Text>
         <View style={{ width: 40 }} />
@@ -183,7 +185,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
                 <Ionicons
                   name={isSelected ? 'radio-button-on' : 'radio-button-off'}
                   size={22}
-                  color={isSelected ? ORANGE : '#D1D5DB'}
+                  color={isSelected ? ORANGE : colors.textMuted}
                 />
               </TouchableOpacity>
             );
@@ -191,7 +193,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         )}
 
         <View style={styles.infoBox}>
-          <Ionicons name="shield-checkmark-outline" size={16} color="#7C3AED" />
+          <Ionicons name="shield-checkmark-outline" size={16} color={isDark ? '#C4B5FD' : '#7C3AED'} />
           <Text style={styles.infoText}>
             Your payment is held securely and only released to the provider after delivery is confirmed.
           </Text>
@@ -206,10 +208,10 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           activeOpacity={0.9}
         >
           {paying ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <ActivityIndicator color={colors.card} />
           ) : (
             <>
-              <Ionicons name="lock-closed" size={16} color="#FFFFFF" />
+              <Ionicons name="lock-closed" size={16} color={colors.card} />
               <Text style={styles.payBtnText}>Pay ₱{Number(amount).toFixed(2)}</Text>
             </>
           )}
@@ -219,59 +221,61 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 16, backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1, borderBottomColor: '#E5E7EB',
+    paddingHorizontal: 16, paddingBottom: 16, backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#E5E7EB',
+    borderWidth: 1, borderColor: c.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   content: { padding: 20, paddingBottom: 40 },
   amountCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 24, alignItems: 'center',
-    borderWidth: 1, borderColor: '#E5E7EB', marginBottom: 24,
+    backgroundColor: c.card, borderRadius: 20, padding: 24, alignItems: 'center',
+    borderWidth: 1, borderColor: c.border, marginBottom: 24,
   },
-  amountLabel: { fontSize: 11, fontWeight: '800', color: '#6B7280', letterSpacing: 1 },
-  amountValue: { fontSize: 36, fontWeight: '900', color: '#111827', marginVertical: 8, letterSpacing: -1 },
-  amountNote: { fontSize: 11, color: '#6B7280', textAlign: 'center' },
-  sectionTitle: { fontSize: 13, fontWeight: '800', color: '#374151', marginBottom: 12 },
+  amountLabel: { fontSize: 11, fontWeight: '800', color: c.textSecondary, letterSpacing: 1 },
+  amountValue: { fontSize: 36, fontWeight: '900', color: c.textPrimary, marginVertical: 8, letterSpacing: -1 },
+  amountNote: { fontSize: 11, color: c.textSecondary, textAlign: 'center' },
+  sectionTitle: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginBottom: 12 },
   methodRow: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card,
     borderRadius: 14, padding: 14, marginBottom: 10,
-    borderWidth: 2, borderColor: '#E5E7EB',
+    borderWidth: 2, borderColor: c.border,
   },
-  methodRowSelected: { borderColor: ORANGE, backgroundColor: '#FFF7ED' },
+  methodRowSelected: { borderColor: ORANGE, backgroundColor: c.accentSoft },
   methodIcon: {
     width: 44, height: 44, borderRadius: 12,
     backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, borderWidth: 1, borderColor: '#E5E7EB', overflow: 'hidden',
+    marginRight: 12, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
   },
   methodLogo: { width: 32, height: 32 },
-  methodName: { fontSize: 15, fontWeight: '700', color: '#111827' },
-  methodDefault: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
+  methodName: { fontSize: 15, fontWeight: '700', color: c.textPrimary },
+  methodDefault: { fontSize: 10, color: c.success, fontWeight: '700', marginTop: 2 },
   emptyBox: { alignItems: 'center', paddingVertical: 40 },
-  emptyText: { marginTop: 12, fontSize: 13, color: '#6B7280' },
+  emptyText: { marginTop: 12, fontSize: 13, color: c.textSecondary },
   linkBtn: { marginTop: 12, backgroundColor: ORANGE, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 },
   linkBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
   infoBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F5F3FF',
-    borderRadius: 12, padding: 12, marginTop: 20, borderWidth: 1, borderColor: '#DDD6FE',
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: isDark ? '#231542' : '#F5F3FF',
+    borderRadius: 12, padding: 12, marginTop: 20,
+    borderWidth: 1, borderColor: isDark ? '#5B21B6' : '#DDD6FE',
   },
-  infoText: { flex: 1, fontSize: 11, color: '#5B21B6', fontWeight: '600', lineHeight: 15 },
+  infoText: { flex: 1, fontSize: 11, color: isDark ? '#C4B5FD' : '#5B21B6', fontWeight: '600', lineHeight: 15 },
   footer: {
-    paddingHorizontal: 20, paddingTop: 12, backgroundColor: '#FFFFFF',
-    borderTopWidth: 1, borderTopColor: '#E5E7EB',
+    paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card,
+    borderTopWidth: 1, borderTopColor: c.border,
   },
   payBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
+    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
   },
-  payBtnDisabled: { backgroundColor: '#9CA3AF' },
-  payBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  payBtnDisabled: { backgroundColor: c.textMuted },
+  payBtnText: { color: c.card, fontSize: 16, fontWeight: '800' },
 });

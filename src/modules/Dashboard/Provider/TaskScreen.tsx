@@ -16,10 +16,10 @@ import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
 import { clearLocationFix } from '../../../services/locationService';
-import { useMemo } from 'react'; 
+import { useMemo } from 'react';
 import { notifyUser } from '../../../services/pushService';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-// ── Payment provider logos ──────────────────────────────────────────
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
 
@@ -31,9 +31,6 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
-/* ==================================================================== */
-/* Helper: read the real error body from a failed functions.invoke       */
-/* ==================================================================== */
 const extractFunctionError = async (error: any, fallback = 'Something went wrong.'): Promise<string> => {
   if (!error) return fallback;
   let detail = error.message || fallback;
@@ -51,7 +48,7 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
 };
 
 /* ==================================================================== */
-/* TaskRouteMap — two-point map with OSRM road-following route          */
+/* TaskRouteMap — unchanged light tiles                                 */
 /* ==================================================================== */
 const TaskRouteMap = ({
   pickupLat, pickupLng,
@@ -174,11 +171,7 @@ const hydrateQr = async (deliveries: any[]) => {
   const ids = deliveries.map(d => d.delivery_id).filter(Boolean);
   if (ids.length === 0) return deliveries;
 
-  const { data: qrRows } = await supabase
-    .from('qr_verifications')
-    .select('*')
-    .in('delivery_id', ids);
-
+  const { data: qrRows } = await supabase.from('qr_verifications').select('*').in('delivery_id', ids);
   const byId: Record<number, any> = {};
   (qrRows || []).forEach((q: any) => { byId[q.delivery_id] = q; });
 
@@ -300,18 +293,32 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
   const tint = isGcash ? '#0284C7' : '#059669';
 
   return (
-    <View style={[styles.payBadge, { borderColor: `${tint}22` }]}>
-      <View style={[styles.payBadgeLogoWrap, { width: size + 8, height: size + 8 }]}>
+    <View style={{
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      backgroundColor: '#FFFFFF',
+      paddingHorizontal: 8, paddingVertical: 4,
+      borderRadius: 10, borderWidth: 1, borderColor: `${tint}22`,
+    }}>
+      <View style={{
+        width: size + 8, height: size + 8, borderRadius: 6, overflow: 'hidden',
+        justifyContent: 'center', alignItems: 'center', backgroundColor: '#FFFFFF',
+      }}>
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
-      <Text style={[styles.payBadgeText, { color: tint }]}>{label}</Text>
+      <Text style={{ fontSize: 12, fontWeight: '800', color: tint }}>{label}</Text>
     </View>
   );
 };
 
+/* ==================================================================== */
+/* TaskScreen                                                           */
+/* ==================================================================== */
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const { colors, isDark } = useTheme();
+  const styles = makeStyles(colors);
+
   const hasLoadedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -390,7 +397,7 @@ export default function TaskScreen() {
       setUserData(userData);
       setProviderId(userData.user_id);
       return userData.user_id;
-    } catch (error) { return null; }
+    } catch { return null; }
   };
 
   const fetchDeliveries = async (pid: number) => {
@@ -431,20 +438,15 @@ export default function TaskScreen() {
   const markPickupVerified = async (deliveryId: number, requestId: number) => {
     try {
       const { error: qrErr } = await supabase
-        .from('qr_verifications')
-        .update({ pickup_verified: true })
-        .eq('delivery_id', deliveryId);
+        .from('qr_verifications').update({ pickup_verified: true }).eq('delivery_id', deliveryId);
       if (qrErr) throw qrErr;
 
       const { error: reqErr } = await supabase
-        .from('delivery_requests')
-        .update({ delivery_status: 'In Transit' })
-        .eq('request_id', requestId);
+        .from('delivery_requests').update({ delivery_status: 'In Transit' }).eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
       await supabase.from('delivery_status_history').insert({
-        delivery_id: deliveryId,
-        status: 'Picked up',
+        delivery_id: deliveryId, status: 'Picked up',
         updated_at: new Date().toISOString(),
       });
 
@@ -470,15 +472,9 @@ export default function TaskScreen() {
       const senderId = (verifyTarget?.delivery_requests as any)?.sender_id
         ?? (verifyTarget?.delivery_requests as any)?.sender?.user_id;
       if (senderId) {
-        notifyUser(
-          senderId,
-          'Package picked up',
-          'Your courier picked up your parcel and is now in transit.',
-          { deliveryId: verifyTarget?.delivery_id },
-        );
+        notifyUser(senderId, 'Package picked up', 'Your courier picked up your parcel and is now in transit.', { deliveryId: verifyTarget?.delivery_id });
       }
       closeVerifyModal();
-
       if (providerId) await fetchDeliveries(providerId);
     } catch (e: any) {
       Alert.alert('Verification Failed', e.message || 'Could not verify pickup.');
@@ -490,11 +486,8 @@ export default function TaskScreen() {
     setScanned(true);
     try {
       const { data: row, error } = await supabase
-        .from('qr_verifications')
-        .select('*')
-        .eq('pickup_qr', data)
-        .eq('delivery_id', verifyTarget.delivery_id)
-        .single();
+        .from('qr_verifications').select('*')
+        .eq('pickup_qr', data).eq('delivery_id', verifyTarget.delivery_id).single();
 
       if (error || !row) {
         Alert.alert('Invalid QR', 'This QR does not match the selected delivery.', [
@@ -508,7 +501,6 @@ export default function TaskScreen() {
         ]);
         return;
       }
-
       await markPickupVerified(row.delivery_id, verifyTarget.request_id);
     } catch (e: any) {
       Alert.alert('Error', e.message || 'QR scan failed.', [
@@ -522,16 +514,11 @@ export default function TaskScreen() {
     setPinVerifying(true);
     try {
       const { data: row, error } = await supabase
-        .from('qr_verifications')
-        .select('*')
-        .eq('delivery_id', verifyTarget.delivery_id)
-        .single();
+        .from('qr_verifications').select('*')
+        .eq('delivery_id', verifyTarget.delivery_id).single();
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
-      if (row.pickup_verified) {
-        Alert.alert('Already Verified', 'Pickup already verified.');
-        return;
-      }
+      if (row.pickup_verified) { Alert.alert('Already Verified', 'Pickup already verified.'); return; }
       if (String(row.pickup_pin) !== String(pinInput).trim()) {
         Alert.alert('Wrong PIN', 'Please ask the sender for the correct 4-digit PIN.');
         return;
@@ -539,14 +526,9 @@ export default function TaskScreen() {
       await markPickupVerified(row.delivery_id, verifyTarget.request_id);
     } catch (e: any) {
       Alert.alert('Verification Failed', e.message || 'Could not verify PIN.');
-    } finally {
-      setPinVerifying(false);
-    }
+    } finally { setPinVerifying(false); }
   };
 
-  /* ==================================================================== */
-  /* DELIVERY CONFIRMATION (OTP)                                          */
-  /* ==================================================================== */
   const openDeliveryOTPModal = (delivery: any) => {
     setDeliveryOTPTarget(delivery);
     setDeliveryOTPInput('');
@@ -561,92 +543,56 @@ export default function TaskScreen() {
     setDeliveryOTPResending(false);
   };
 
-  /**
-   * Local fallback: check the code against delivery_confirmations.system_otp.
-   */
-  const tryLocalSystemOtpFallback = async (
-    deliveryId: number,
-    otp: string,
-  ): Promise<{ handled: boolean; success: boolean }> => {
+  const tryLocalSystemOtpFallback = async (deliveryId: number, otp: string): Promise<{ handled: boolean; success: boolean }> => {
     try {
       const { data: row, error } = await supabase
-        .from('delivery_confirmations')
-        .select('*')
-        .eq('delivery_id', deliveryId)
-        .maybeSingle();
-
-      console.log('[OTP fallback] row:', row, 'error:', error);
+        .from('delivery_confirmations').select('*').eq('delivery_id', deliveryId).maybeSingle();
 
       if (error || !row) return { handled: false, success: false };
-
-      if (row.contiguity_otp_id) {
-        console.log('[OTP fallback] row uses contiguity_otp_id, skipping fallback');
-        return { handled: false, success: false };
-      }
-
+      if (row.contiguity_otp_id) return { handled: false, success: false };
       if (Number(row.attempts) >= 5) {
         Alert.alert('Too Many Attempts', 'Please request a new OTP.');
         return { handled: true, success: false };
       }
-
       if (String(row.system_otp || '').trim() !== String(otp).trim()) {
-        await supabase
-          .from('delivery_confirmations')
-          .update({ attempts: Number(row.attempts || 0) + 1 })
-          .eq('delivery_id', deliveryId);
+        await supabase.from('delivery_confirmations').update({ attempts: Number(row.attempts || 0) + 1 }).eq('delivery_id', deliveryId);
         Alert.alert('Invalid OTP', 'The code you entered is incorrect.');
         return { handled: true, success: false };
       }
-
-      await supabase
-        .from('delivery_confirmations')
-        .update({ otp_verified: true, otp_verified_at: new Date().toISOString() })
-        .eq('delivery_id', deliveryId);
-      console.log('[OTP fallback] SUCCESS for delivery', deliveryId);
+      await supabase.from('delivery_confirmations').update({ otp_verified: true, otp_verified_at: new Date().toISOString() }).eq('delivery_id', deliveryId);
       return { handled: true, success: true };
-    } catch (e) {
-      console.warn('[OTP fallback] exception:', e);
-      return { handled: false, success: false };
-    }
+    } catch { return { handled: false, success: false }; }
   };
 
   const handleResendDeliveryOTP = async () => {
     if (!deliveryOTPTarget) return;
 
-    Alert.alert(
-      'Send New OTP',
-      'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Send New OTP',
-          onPress: async () => {
-            try {
-              setDeliveryOTPResending(true);
-              const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-                body: { action: 'regenerate', delivery_id: deliveryOTPTarget.delivery_id },
-              });
-
-              if (error || !data?.success) {
-                const detail = await extractFunctionError(error, data?.error || 'Could not send new OTP.');
-                console.warn('[contiguity-otp regenerate]', detail);
-                Alert.alert('Error', detail);
-                return;
-              }
-
-              Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
-              setDeliveryOTPInput('');
-            } catch (err: any) {
-              const detail = await extractFunctionError(err, 'Failed to send new OTP.');
-              console.warn('[contiguity-otp regenerate exception]', detail);
+    Alert.alert('Send New OTP', 'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Send New OTP',
+        onPress: async () => {
+          try {
+            setDeliveryOTPResending(true);
+            const { data, error } = await supabase.functions.invoke('contiguity-otp', {
+              body: { action: 'regenerate', delivery_id: deliveryOTPTarget.delivery_id },
+            });
+            if (error || !data?.success) {
+              const detail = await extractFunctionError(error, data?.error || 'Could not send new OTP.');
+              console.warn('[contiguity-otp regenerate]', detail);
               Alert.alert('Error', detail);
-            } finally {
-              setDeliveryOTPResending(false);
+              return;
             }
-          },
+            Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
+            setDeliveryOTPInput('');
+          } catch (err: any) {
+            const detail = await extractFunctionError(err, 'Failed to send new OTP.');
+            console.warn('[contiguity-otp regenerate exception]', detail);
+            Alert.alert('Error', detail);
+          } finally { setDeliveryOTPResending(false); }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const completeDelivery = async () => {
@@ -656,108 +602,62 @@ export default function TaskScreen() {
     const requestId = deliveryOTPTarget.delivery_requests?.request_id;
     const otp = deliveryOTPInput.trim();
 
-    console.log('=== VERIFY OTP ===', { deliveryId, otp, requestId });
-
     setDeliveryOTPVerifying(true);
     try {
       let verified = false;
-
       const { data: verifyResult, error: verifyError } = await supabase.functions.invoke(
         'contiguity-otp',
         { body: { action: 'verify', delivery_id: deliveryId, otp } },
       );
 
-      console.log('[contiguity-otp verify] data:', verifyResult, 'error:', verifyError);
-
-      if (!verifyError && verifyResult?.success) {
-        verified = true;
-      } else if (!verifyError && !verifyResult?.success) {
-        console.log('[contiguity-otp] says not success:', verifyResult?.message);
-      }
+      if (!verifyError && verifyResult?.success) verified = true;
 
       if (!verified) {
         const local = await tryLocalSystemOtpFallback(deliveryId, otp);
-        if (local.success) {
-          verified = true;
-        } else if (local.handled) {
-          return;
-        } else {
-          const detail = await extractFunctionError(
-            verifyError,
-            verifyResult?.message || 'Could not verify OTP.',
-          );
+        if (local.success) verified = true;
+        else if (local.handled) return;
+        else {
+          const detail = await extractFunctionError(verifyError, verifyResult?.message || 'Could not verify OTP.');
           Alert.alert('Verification Failed', detail);
           return;
         }
       }
 
-      if (!verified) {
-        Alert.alert('Verification Failed', 'The code could not be verified. Please try again.');
-        return;
-      }
+      if (!verified) { Alert.alert('Verification Failed', 'The code could not be verified. Please try again.'); return; }
 
       const now = new Date().toISOString();
 
-      const { error: delError } = await supabase
-        .from('deliveries')
-        .update({ completed_at: now })
-        .eq('delivery_id', deliveryId);
+      const { error: delError } = await supabase.from('deliveries').update({ completed_at: now }).eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
       if (requestId) {
-        const { error: reqError } = await supabase
-          .from('delivery_requests')
-          .update({ delivery_status: 'Completed' })
-          .eq('request_id', requestId);
+        const { error: reqError } = await supabase.from('delivery_requests').update({ delivery_status: 'Completed' }).eq('request_id', requestId);
         if (reqError) throw reqError;
       }
 
-      await supabase
-        .from('qr_verifications')
-        .update({ dropoff_verified: true })
-        .eq('delivery_id', deliveryId);
+      await supabase.from('qr_verifications').update({ dropoff_verified: true }).eq('delivery_id', deliveryId);
 
       const { data: escrowData } = await supabase
-        .from('escrow_payments')
-        .update({ escrow_status: 'Completed' })
-        .eq('delivery_id', deliveryId)
-        .select('*')
-        .single();
+        .from('escrow_payments').update({ escrow_status: 'Completed' })
+        .eq('delivery_id', deliveryId).select('*').single();
 
       if (escrowData && escrowData.provider_id) {
-        const { data: wallet } = await supabase
-          .from('provider_wallet')
-          .select('*')
-          .eq('provider_id', escrowData.provider_id)
-          .single();
-
+        const { data: wallet } = await supabase.from('provider_wallet').select('*').eq('provider_id', escrowData.provider_id).single();
         if (wallet) {
-          await supabase
-            .from('provider_wallet')
+          await supabase.from('provider_wallet')
             .update({ balance: Number(wallet.balance) + Number(escrowData.amount) })
             .eq('wallet_id', wallet.wallet_id);
         }
       }
 
       await supabase.from('delivery_status_history').insert({
-        delivery_id: deliveryId,
-        status: 'Delivered',
-        updated_at: now,
+        delivery_id: deliveryId, status: 'Delivered', updated_at: now,
       });
 
-      Alert.alert(
-        '✅ Delivery Complete!',
-        'Payment has been released to your wallet.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
       if (senderId) {
-        notifyUser(
-          senderId,
-          'Delivery complete',
-          `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered.`,
-          { deliveryId },
-        );
+        notifyUser(senderId, 'Delivery complete', `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered.`, { deliveryId });
       }
       try { await clearLocationFix(deliveryId); } catch {}
       closeDeliveryOTPModal();
@@ -765,48 +665,29 @@ export default function TaskScreen() {
     } catch (error: any) {
       console.error('[completeDelivery] exception:', error);
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
-    } finally {
-      setDeliveryOTPVerifying(false);
-    }
+    } finally { setDeliveryOTPVerifying(false); }
   };
 
   const loadData = async () => {
     try {
       if (!hasLoadedRef.current) setLoading(true);
       const pid = await getProviderData();
-      if (pid) {
-        await fetchDeliveries(pid);
-      }
+      if (pid) await fetchDeliveries(pid);
     } finally { hasLoadedRef.current = true; setLoading(false); setRefreshing(false); }
   };
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    loadData();
-  };
+  const onRefresh = () => { setRefreshing(true); loadData(); };
 
   useEffect(() => {
     if (!providerId) return;
-
     const channel = supabase
       .channel(`task-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => {
-        fetchDeliveries(providerId);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, () => {
-        fetchDeliveries(providerId);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => {
-        fetchDeliveries(providerId);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => {
-        fetchDeliveries(providerId);
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [providerId]);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
@@ -821,11 +702,8 @@ export default function TaskScreen() {
   const isPickupVerified = (delivery: any) => {
     const qr = delivery?.qr_verifications;
     if (qr) {
-      if (Array.isArray(qr)) {
-        if (qr[0]?.pickup_verified) return true;
-      } else if (qr.pickup_verified) {
-        return true;
-      }
+      if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
+      else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
     return status === 'In Transit' || status === 'Completed';
@@ -836,15 +714,14 @@ export default function TaskScreen() {
 
   const statusMeta = (stage: 'pickup' | 'transit' | 'done') =>
     stage === 'done'
-      ? { label: 'Completed', bg: '#DCFCE7', fg: '#166534', icon: 'checkmark-circle' }
+      ? { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' }
       : stage === 'transit'
-        ? { label: 'In Transit', bg: '#FFF4EC', fg: ORANGE, icon: 'navigate' }
-        : { label: 'Awaiting Pickup', bg: '#FEF3C7', fg: '#92400E', icon: 'time-outline' };
+        ? { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' }
+        : { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
 
   const dateLabel = (request: any) => {
-    try {
-      return formatDate(request?.scheduled_time || request?.created_at, 'MMM d, yyyy');
-    } catch { return ''; }
+    try { return formatDate(request?.scheduled_time || request?.created_at, 'MMM d, yyyy'); }
+    catch { return ''; }
   };
 
   const copyTracking = async (text: string) => {
@@ -854,9 +731,7 @@ export default function TaskScreen() {
         setCopied(true);
         if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
         copyTimerRef.current = setTimeout(() => setCopied(false), 1800);
-      } else {
-        await Share.share({ message: text });
-      }
+      } else { await Share.share({ message: text }); }
     } catch { }
   };
 
@@ -877,9 +752,7 @@ export default function TaskScreen() {
       navigation.navigate('MainTabs', { screen: 'Messages', params: { openRoomId: roomId } });
     } catch {
       Alert.alert('Chat unavailable', 'Could not open the conversation with the sender.');
-    } finally {
-      setOpeningChat(false);
-    }
+    } finally { setOpeningChat(false); }
   };
 
   const allTasks = [...activeDeliveries, ...completedDeliveries];
@@ -915,7 +788,7 @@ export default function TaskScreen() {
             </View>
           </View>
           <View style={styles.itemsChip}>
-            <Ionicons name="cube-outline" size={12} color="#6B7280" />
+            <Ionicons name="cube-outline" size={12} color={colors.textSecondary} />
             <Text style={styles.itemsChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
           </View>
         </View>
@@ -949,19 +822,19 @@ export default function TaskScreen() {
         <View style={styles.cardChipRow}>
           {info.weightKg != null && (
             <View style={styles.infoChip}>
-              <Ionicons name="barbell-outline" size={12} color="#6B7280" />
+              <Ionicons name="barbell-outline" size={12} color={colors.textSecondary} />
               <Text style={styles.infoChipText}>{info.weightKg} kg</Text>
             </View>
           )}
           {info.fragile && (
-            <View style={[styles.infoChip, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
-              <Ionicons name="warning" size={12} color="#EF4444" />
-              <Text style={[styles.infoChipText, { color: '#EF4444' }]}>Fragile</Text>
+            <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+              <Ionicons name="warning" size={12} color={colors.error} />
+              <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
             </View>
           )}
           {!!info.receiverName && (
             <View style={styles.infoChip}>
-              <Ionicons name="person-outline" size={12} color="#6B7280" />
+              <Ionicons name="person-outline" size={12} color={colors.textSecondary} />
               <Text style={styles.infoChipText} numberOfLines={1}>{info.receiverName}</Text>
             </View>
           )}
@@ -984,7 +857,7 @@ export default function TaskScreen() {
             </TouchableOpacity>
           ) : (
             <View style={styles.doneBadge}>
-              <Ionicons name="checkmark-circle" size={14} color="#166534" />
+              <Ionicons name="checkmark-circle" size={14} color={colors.success} />
               <Text style={styles.doneBadgeText}>Delivered</Text>
             </View>
           )}
@@ -995,7 +868,7 @@ export default function TaskScreen() {
 
   /* ---------------------------- list view ---------------------------- */
   const renderListView = () => (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
@@ -1003,12 +876,7 @@ export default function TaskScreen() {
             const on = activeTab === t;
             const count = tabCount(t);
             return (
-              <TouchableOpacity
-                key={t}
-                style={[styles.tabItem, on && styles.tabItemActive]}
-                onPress={() => setActiveTab(t)}
-                activeOpacity={0.8}
-              >
+              <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
                 <Text style={[styles.tabText, on && styles.tabTextActive]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
                 {count > 0 && (
                   <View style={[styles.tabCountBadge, on && styles.tabCountBadgeActive]}>
@@ -1042,9 +910,7 @@ export default function TaskScreen() {
                   : 'Try another tab to view history.'}
               </Text>
             </View>
-          ) : (
-            filteredTasks.map(renderTaskCard)
-          )}
+          ) : filteredTasks.map(renderTaskCard)}
           <View style={styles.bottomSpacer} />
         </Animated.View>
       </ScrollView>
@@ -1086,10 +952,10 @@ export default function TaskScreen() {
     const paymentLabel = released ? 'Released to your wallet' : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
 
     return (
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         <Animated.View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
           <TouchableOpacity onPress={() => setSelectedId(null)} style={styles.backCircleBtn} activeOpacity={0.8}>
-            <Ionicons name="arrow-back" size={20} color="#111827" />
+            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.detailHeaderTitle}>Task Details</Text>
           <View style={styles.headerSpacer} />
@@ -1097,7 +963,6 @@ export default function TaskScreen() {
 
         <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
           <Animated.View style={{ opacity: detailAnim }}>
-            {/* 1. NEXT STEP */}
             {stage !== 'done' ? (
               <View style={styles.nextCard}>
                 <View style={styles.nextTop}>
@@ -1105,9 +970,7 @@ export default function TaskScreen() {
                     <Ionicons name={stage === 'pickup' ? 'qr-code' : 'shield-checkmark'} size={22} color={ORANGE} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.nextEyebrow}>
-                      STEP {stage === 'pickup' ? 1 : 2} OF 2 · {meta.label.toUpperCase()}
-                    </Text>
+                    <Text style={styles.nextEyebrow}>STEP {stage === 'pickup' ? 1 : 2} OF 2 · {meta.label.toUpperCase()}</Text>
                     <Text style={styles.nextTitle}>{stage === 'pickup' ? 'Pick up the package' : 'Deliver to the receiver'}</Text>
                   </View>
                 </View>
@@ -1126,7 +989,7 @@ export default function TaskScreen() {
                       <Text style={styles.nextChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
                     </View>
                     {info.fragile && (
-                      <View style={[styles.nextChip, { backgroundColor: '#EF4444' }]}>
+                      <View style={[styles.nextChip, { backgroundColor: colors.error }]}>
                         <Ionicons name="warning" size={12} color="#FFFFFF" />
                         <Text style={styles.nextChipText}>Fragile</Text>
                       </View>
@@ -1165,7 +1028,7 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color="#16A34A" /></View>
+                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1176,7 +1039,6 @@ export default function TaskScreen() {
               </View>
             )}
 
-            {/* 2. Tracking ID */}
             <View style={styles.trackTextRow}>
               <Text style={styles.trackTextLabel}>Tracking ID</Text>
               <Text style={styles.trackTextId} selectable numberOfLines={1}>#{code}</Text>
@@ -1191,7 +1053,6 @@ export default function TaskScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* 3. Map + pickup / drop-off */}
             <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
               <TouchableOpacity style={styles.sdMap} activeOpacity={0.9} onPress={() => setMapModalVisible(true)}>
                 <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -1235,7 +1096,6 @@ export default function TaskScreen() {
               </View>
             </View>
 
-            {/* 4. Contacts */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
                 <View style={styles.sdCardHeaderIcon}><Ionicons name="people-outline" size={15} color={ORANGE} /></View>
@@ -1251,7 +1111,6 @@ export default function TaskScreen() {
               })}
             </View>
 
-            {/* 5. Package */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
                 <View style={styles.sdCardHeaderIcon}><Ionicons name="cube-outline" size={15} color={ORANGE} /></View>
@@ -1271,13 +1130,13 @@ export default function TaskScreen() {
                 <View style={styles.statDivider} />
                 <View style={styles.stat}>
                   <Text style={styles.statLabel}>FRAGILE</Text>
-                  <Text style={[styles.statValue, info.fragile && { color: '#EF4444' }]}>{info.fragile ? 'Yes' : 'No'}</Text>
+                  <Text style={[styles.statValue, info.fragile && { color: colors.error }]}>{info.fragile ? 'Yes' : 'No'}</Text>
                 </View>
               </View>
 
               {!!info.dims && (
                 <View style={styles.noteRow}>
-                  <Ionicons name="resize-outline" size={15} color="#6B7280" />
+                  <Ionicons name="resize-outline" size={15} color={colors.textSecondary} />
                   <Text style={styles.noteText}>Size {info.dims}</Text>
                 </View>
               )}
@@ -1286,9 +1145,9 @@ export default function TaskScreen() {
                 <Ionicons
                   name={info.fragile ? 'warning' : 'information-circle-outline'}
                   size={16}
-                  color={info.fragile ? '#EF4444' : ORANGE}
+                  color={info.fragile ? colors.error : ORANGE}
                 />
-                <Text style={[styles.handlingText, info.fragile && { color: '#B91C1C' }]}>
+                <Text style={[styles.handlingText, info.fragile && { color: colors.error }]}>
                   {info.fragile ? 'Fragile — handle with care and keep upright. ' : ''}
                   {/door/i.test(info.request?.pickup_type || '')
                     ? 'Door-to-door: collect from and hand over at the door.'
@@ -1312,7 +1171,7 @@ export default function TaskScreen() {
                       </TouchableOpacity>
                     ) : (
                       <View style={styles.itemNoPhoto}>
-                        <Ionicons name="image-outline" size={18} color="#9CA3AF" />
+                        <Ionicons name="image-outline" size={18} color={colors.textMuted} />
                         <Text style={styles.itemNoPhotoText}>{it.photo ? "Photo couldn't be loaded" : 'No photo provided'}</Text>
                       </View>
                     )}
@@ -1324,9 +1183,9 @@ export default function TaskScreen() {
                       <View style={{ alignItems: 'flex-end', gap: 6 }}>
                         {!!it.size && <View style={styles.infoChip}><Text style={styles.infoChipText}>{it.size}</Text></View>}
                         {it.fragile && (
-                          <View style={[styles.infoChip, { backgroundColor: '#FEF2F2', borderColor: '#FECACA' }]}>
-                            <Ionicons name="warning" size={11} color="#EF4444" />
-                            <Text style={[styles.infoChipText, { color: '#EF4444' }]}>Fragile</Text>
+                          <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+                            <Ionicons name="warning" size={11} color={colors.error} />
+                            <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
                           </View>
                         )}
                       </View>
@@ -1336,7 +1195,6 @@ export default function TaskScreen() {
               })}
             </View>
 
-            {/* 6. Timeline */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
                 <View style={styles.sdCardHeaderIcon}><Ionicons name="time-outline" size={15} color={ORANGE} /></View>
@@ -1350,16 +1208,16 @@ export default function TaskScreen() {
                 </View>
               </View>
               <View style={styles.tlRow}>
-                <Ionicons name={stage !== 'pickup' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage !== 'pickup' ? ORANGE : '#D1D5DB'} />
+                <Ionicons name={stage !== 'pickup' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage !== 'pickup' ? ORANGE : colors.border} />
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, stage === 'pickup' && { color: '#9CA3AF' }]}>Package picked up</Text>
+                  <Text style={[styles.tlTitle, stage === 'pickup' && { color: colors.textMuted }]}>Package picked up</Text>
                   <Text style={styles.tlSub}>{stage !== 'pickup' ? 'Verified with sender QR / PIN' : 'Waiting for pickup verification'}</Text>
                 </View>
               </View>
               <View style={styles.tlRow}>
-                <Ionicons name={stage === 'done' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage === 'done' ? ORANGE : '#D1D5DB'} />
+                <Ionicons name={stage === 'done' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage === 'done' ? ORANGE : colors.border} />
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, stage !== 'done' && { color: '#9CA3AF' }]}>Delivered</Text>
+                  <Text style={[styles.tlTitle, stage !== 'done' && { color: colors.textMuted }]}>Delivered</Text>
                   <Text style={styles.tlSub}>
                     {stage === 'done' && d.completed_at
                       ? formatDateTime(d.completed_at)
@@ -1369,7 +1227,6 @@ export default function TaskScreen() {
               </View>
             </View>
 
-            {/* 7. Earnings */}
             <View style={styles.sdCard}>
               <View style={styles.sdCardHeader}>
                 <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
@@ -1378,12 +1235,11 @@ export default function TaskScreen() {
               <View style={styles.payRow}>
                 <Text style={styles.payLabel}>Payment type</Text>
                 <View style={styles.payValueRow}>
-                  <Ionicons name="shield-checkmark-outline" size={15} color="#4B5563" />
+                  <Ionicons name="shield-checkmark-outline" size={15} color={colors.textSecondary} />
                   <Text style={styles.payValue}>Escrow payment</Text>
                 </View>
               </View>
 
-              {/* Payment method row — shows GCash/Maya logo when available */}
               <View style={styles.payRow}>
                 <Text style={styles.payLabel}>Payout method</Text>
                 <PaymentMethodBadge provider={d.escrow?.payment_method} />
@@ -1407,12 +1263,7 @@ export default function TaskScreen() {
   };
 
   const renderScannerModal = () => (
-    <Modal
-      visible={verifyModalVisible}
-      animationType="slide"
-      transparent={false}
-      onRequestClose={closeVerifyModal}
-    >
+    <Modal visible={verifyModalVisible} animationType="slide" transparent={false} onRequestClose={closeVerifyModal}>
       <View style={styles.scannerRoot}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
 
@@ -1449,11 +1300,8 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
           <View style={styles.sheetHandle} />
-
           <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
-          <Text style={styles.sheetSubheading}>
-            Point your camera at the Sender's screen to automatically verify pickup.
-          </Text>
+          <Text style={styles.sheetSubheading}>Point your camera at the Sender's screen to automatically verify pickup.</Text>
 
           <View style={styles.orRow}>
             <View style={styles.orLine} />
@@ -1468,7 +1316,7 @@ export default function TaskScreen() {
               onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
               keyboardType="number-pad"
               placeholder="••••"
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor={colors.textMuted}
               maxLength={4}
             />
             <TouchableOpacity
@@ -1477,11 +1325,7 @@ export default function TaskScreen() {
               onPress={handlePinVerify}
               activeOpacity={0.9}
             >
-              {pinVerifying ? (
-                <ActivityIndicator color="#FFF" size="small" />
-              ) : (
-                <Text style={styles.pinBtnText}>Verify</Text>
-              )}
+              {pinVerifying ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.pinBtnText}>Verify</Text>}
             </TouchableOpacity>
           </View>
         </View>
@@ -1494,7 +1338,7 @@ export default function TaskScreen() {
     const info = buildTaskInfo(selectedTask);
     return (
       <Modal visible={mapModalVisible} animationType="slide" onRequestClose={() => setMapModalVisible(false)}>
-        <View style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+        <View style={{ flex: 1, backgroundColor: colors.background }}>
           <View style={StyleSheet.absoluteFill}>
             <TaskRouteMap
               pickupLat={info.pickup.lat}
@@ -1505,12 +1349,8 @@ export default function TaskScreen() {
               interactive
             />
           </View>
-          <TouchableOpacity
-            style={[styles.mapCloseBtn, { top: insets.top + 12 }]}
-            onPress={() => setMapModalVisible(false)}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="arrow-back" size={20} color="#111827" />
+          <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
+            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -1547,20 +1387,15 @@ export default function TaskScreen() {
   );
 
   const renderDeliveryOTPModal = () => (
-    <Modal
-      visible={deliveryOTPModalVisible}
-      transparent
-      animationType="slide"
-      onRequestClose={closeDeliveryOTPModal}
-    >
+    <Modal visible={deliveryOTPModalVisible} transparent animationType="slide" onRequestClose={closeDeliveryOTPModal}>
       <View style={styles.otpModalOverlay}>
         <View style={styles.otpModalCard}>
           <View style={styles.otpModalHeader}>
             <View style={styles.otpModalIconBox}>
-              <Ionicons name="shield-checkmark" size={24} color="#22C55E" />
+              <Ionicons name="shield-checkmark" size={24} color={colors.success} />
             </View>
             <TouchableOpacity onPress={closeDeliveryOTPModal}>
-              <Ionicons name="close" size={24} color="#111827" />
+              <Ionicons name="close" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
 
@@ -1576,13 +1411,13 @@ export default function TaskScreen() {
               onChangeText={(t) => setDeliveryOTPInput(t.replace(/[^0-9]/g, '').slice(0, 6))}
               keyboardType="number-pad"
               placeholder="000000"
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor={colors.textMuted}
               maxLength={6}
             />
           </View>
 
           <View style={styles.otpInfoBox}>
-            <Ionicons name="information-circle-outline" size={16} color="#6B7280" />
+            <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
             <Text style={styles.otpInfoText} numberOfLines={2}>
               Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
               {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
@@ -1591,7 +1426,6 @@ export default function TaskScreen() {
             </Text>
           </View>
 
-          {/* Payout method — shows GCash/Maya logo when the escrow has one */}
           {!!deliveryOTPTarget?.escrow?.payment_method && (
             <View style={styles.otpPayoutRow}>
               <Text style={styles.otpPayoutLabel}>Sender paid via</Text>
@@ -1600,10 +1434,7 @@ export default function TaskScreen() {
           )}
 
           <TouchableOpacity
-            style={[
-              styles.otpVerifyButton,
-              (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
-            ]}
+            style={[styles.otpVerifyButton, (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled]}
             disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
             onPress={completeDelivery}
             activeOpacity={0.9}
@@ -1618,17 +1449,12 @@ export default function TaskScreen() {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.otpResendButton}
-            onPress={handleResendDeliveryOTP}
-            disabled={deliveryOTPResending}
-            activeOpacity={0.85}
-          >
+          <TouchableOpacity style={styles.otpResendButton} onPress={handleResendDeliveryOTP} disabled={deliveryOTPResending} activeOpacity={0.85}>
             {deliveryOTPResending ? (
-              <ActivityIndicator size="small" color="#6B7280" />
+              <ActivityIndicator size="small" color={colors.textSecondary} />
             ) : (
               <>
-                <Ionicons name="refresh" size={14} color="#6B7280" />
+                <Ionicons name="refresh" size={14} color={colors.textSecondary} />
                 <Text style={styles.otpResendText}>Send New OTP</Text>
               </>
             )}
@@ -1637,24 +1463,21 @@ export default function TaskScreen() {
       </View>
     </Modal>
   );
-  
-  // Broadcast GPS while the provider has a delivery in transit
-const broadcastingDelivery = useMemo(() => {
-  return activeDeliveries.find((d: any) => {
-    const s = stageOf(d);
-    return s === 'transit';
-  }) ?? null;
-}, [activeDeliveries]);
 
-useProviderLocationBroadcast({
-  deliveryId: broadcastingDelivery?.delivery_id ?? null,
-  providerId,
-  active: !!broadcastingDelivery && !!providerId,
-});
+  const broadcastingDelivery = useMemo(() => {
+    return activeDeliveries.find((d: any) => stageOf(d) === 'transit') ?? null;
+  }, [activeDeliveries]);
+
+  useProviderLocationBroadcast({
+    deliveryId: broadcastingDelivery?.delivery_id ?? null,
+    providerId,
+    active: !!broadcastingDelivery && !!providerId,
+  });
 
   if (loading) {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
+        <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
         <ActivityIndicator size="large" color={ORANGE} />
         <Text style={styles.loadingText}>Loading tasks...</Text>
       </View>
@@ -1663,7 +1486,7 @@ useProviderLocationBroadcast({
 
   return (
     <View style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {selectedTask ? renderDetailView(selectedTask) : renderListView()}
 
       {renderScannerModal()}
@@ -1674,150 +1497,117 @@ useProviderLocationBroadcast({
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#F9FAFB' },
+const makeStyles = (c: ThemeColors) => StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
-
-  /* Payment method badge */
-  payBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 10, borderWidth: 1,
-  },
-  payBadgeLogoWrap: {
-    justifyContent: 'center', alignItems: 'center',
-    borderRadius: 6, overflow: 'hidden',
-    backgroundColor: '#FFFFFF',
-  },
-  payBadgeText: { fontSize: 12, fontWeight: '800' },
+  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
 
   headerSection: {
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+    paddingHorizontal: 20, paddingBottom: 16,
+    backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: '#111827', letterSpacing: -0.5 },
+  pageTitle: { fontSize: 28, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
   tabBarScroll: { gap: 8, paddingTop: 14 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB', gap: 6,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
   },
-  tabItemActive: { backgroundColor: '#FFF7ED', borderColor: ORANGE, borderWidth: 1.5 },
-  tabText: { fontSize: 13, fontWeight: '700', color: '#4B5563' },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1.5 },
+  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
   tabTextActive: { color: ORANGE },
-  tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: '#F3F4F6', paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: '#4B5563' },
+  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
   tabCountTextActive: { color: ORANGE },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: '#FFE4D2' },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: '#111827' },
-  emptySubtext: { fontSize: 13, color: '#6B7280', textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
+  emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
 
   card: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: c.border,
   },
-  cardDone: { backgroundColor: '#FAFAF9', opacity: 0.95 },
+  cardDone: { backgroundColor: c.background, opacity: 0.95 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8, flexWrap: 'wrap' },
-  serviceBadge: { backgroundColor: '#F3F4F6', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  serviceBadgeText: { fontSize: 11, fontWeight: '800', color: '#374151' },
+  serviceBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
+  serviceBadgeText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
   statusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4 },
   statusBadgeText: { fontSize: 11, fontWeight: '800' },
-  itemsChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#F9FAFB', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 10, borderWidth: 1, borderColor: '#F1F1F1' },
-  itemsChipText: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
-  cardDate: { fontSize: 12, fontWeight: '700', color: '#6B7280', marginBottom: 10 },
+  itemsChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.background, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 10, borderWidth: 1, borderColor: c.border },
+  itemsChipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
+  cardDate: { fontSize: 12, fontWeight: '700', color: c.textSecondary, marginBottom: 10 },
 
   dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#111827' },
-  routeBox: { backgroundColor: '#F9FAFB', borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 10, borderWidth: 1, borderColor: '#F3F4F6' },
+  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary },
+  routeBox: { backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 10, borderWidth: 1, borderColor: c.divider },
   routeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  routeConnectorLine: { width: 1, height: 12, backgroundColor: '#D1D5DB', marginLeft: 3.5, marginVertical: 3 },
-  routeAddressText: { flex: 1, fontSize: 14, fontWeight: '700', color: '#111827' },
+  routeConnectorLine: { width: 1, height: 12, backgroundColor: c.border, marginLeft: 3.5, marginVertical: 3 },
+  routeAddressText: { flex: 1, fontSize: 14, fontWeight: '700', color: c.textPrimary },
 
   nextStopRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFF7ED',
-    borderWidth: 1, borderColor: '#FFE4D2', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.accentSoft,
+    borderWidth: 1, borderColor: ORANGE, borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10,
   },
-  nextStopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  nextStopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   nextStopEyebrow: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
-  nextStopMain: { fontSize: 13, fontWeight: '800', color: '#111827', marginTop: 1 },
+  nextStopMain: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginTop: 1 },
   cardChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   infoChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F9FAFB',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: '#F1F1F1',
+    flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.background,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: c.divider,
   },
-  infoChipText: { fontSize: 11, fontWeight: '700', color: '#4B5563', maxWidth: 160 },
+  infoChipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary, maxWidth: 160 },
 
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  footerLabel: { fontSize: 9, color: '#9CA3AF', fontWeight: '800', letterSpacing: 0.6, marginBottom: 2 },
-  priceText: { fontSize: 20, fontWeight: '900', color: '#111827', letterSpacing: -0.4 },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider },
+  footerLabel: { fontSize: 9, color: c.textMuted, fontWeight: '800', letterSpacing: 0.6, marginBottom: 2 },
+  priceText: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.4 },
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
     paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
-  actionBtnGreen: { backgroundColor: '#22C55E', shadowColor: '#22C55E' },
+  actionBtnGreen: { backgroundColor: c.success, shadowColor: c.success },
   actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
-  doneBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#DCFCE7', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, gap: 5, borderWidth: 1, borderColor: '#BBF7D0' },
-  doneBadgeText: { fontSize: 13, fontWeight: '700', color: '#166534' },
+  doneBadge: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.successBg, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 12, gap: 5, borderWidth: 1, borderColor: c.success,
+  },
+  doneBadgeText: { fontSize: 13, fontWeight: '700', color: c.success },
 
   detailContainer: { paddingHorizontal: 20, paddingBottom: 60, paddingTop: 16 },
   detailHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, paddingBottom: 16,
+    backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: c.border,
   },
   backCircleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#E5E7EB',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border,
   },
-  detailHeaderTitle: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  detailHeaderTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
   headerSpacer: { width: 40, height: 40 },
 
   sdCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 14,
-    borderWidth: 1, borderColor: '#E5E7EB',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2,
+    backgroundColor: c.card, borderRadius: 20, padding: 18, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowRadius: 8, elevation: 2,
   },
-  eyebrow: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1 },
+  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
   sdTrackRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  sdTrackId: { fontSize: 26, fontWeight: '900', color: '#111827', letterSpacing: -0.6, marginTop: 4 },
-  sdCopyBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF4EC',
-    borderWidth: 1, borderColor: '#FFD9BF', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 14,
-  },
-  sdCopyBtnDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  sdCopyBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
-  sdChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, marginBottom: 16 },
-  sdStatusChip: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
-  sdStatusChipText: { fontSize: 11, fontWeight: '800' },
-
-  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  stepItem: { flex: 1, alignItems: 'center' },
-  stepRowIndicator: { flexDirection: 'row', alignItems: 'center', width: '100%', justifyContent: 'center' },
-  stepDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center', zIndex: 2 },
-  stepDotActive: { backgroundColor: ORANGE },
-  stepDotCurrent: { backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFE4D2' },
-  stepInnerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#9CA3AF' },
-  stepLine: { position: 'absolute', left: '50%', right: '-50%', height: 2, backgroundColor: '#E5E7EB', zIndex: 1 },
-  stepLineActive: { backgroundColor: ORANGE },
-  stepLabel: { fontSize: 11, fontWeight: '700', color: '#9CA3AF', marginTop: 8, textAlign: 'center' },
-  stepLabelActive: { color: ORANGE, fontWeight: '900' },
 
   nextCard: {
     backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14,
@@ -1827,7 +1617,6 @@ const styles = StyleSheet.create({
   nextIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
   nextEyebrow: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.3, marginTop: 2 },
-  nextDesc: { fontSize: 13, lineHeight: 19, color: '#FFF1E6', marginTop: 12, fontWeight: '500' },
   nextLocBox: { backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 16, padding: 14, marginTop: 14 },
   nextLocLabel: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextLocMain: { fontSize: 16, fontWeight: '900', color: '#FFFFFF', marginTop: 4, letterSpacing: -0.2 },
@@ -1841,27 +1630,23 @@ const styles = StyleSheet.create({
   nextStepNumText: { fontSize: 12, fontWeight: '900', color: ORANGE },
   nextStepText: { flex: 1, fontSize: 13, lineHeight: 19, color: '#FFFFFF', fontWeight: '600' },
   trackTextRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, marginBottom: 14 },
-  trackTextLabel: { fontSize: 12, fontWeight: '700', color: '#9CA3AF' },
-  trackTextId: { flex: 1, fontSize: 16, fontWeight: '900', color: '#111827', letterSpacing: -0.2 },
+  trackTextLabel: { fontSize: 12, fontWeight: '700', color: c.textMuted },
+  trackTextId: { flex: 1, fontSize: 16, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2 },
   trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: ORANGE },
-  nextGhostBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 14, borderRadius: 14, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.7)',
-  },
-  nextGhostText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   nextPrimaryBtn: {
     marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 14, borderRadius: 14, backgroundColor: '#FFFFFF',
   },
   nextPrimaryText: { color: ORANGE, fontSize: 14, fontWeight: '900' },
   doneCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F0FDF4',
-    borderWidth: 1, borderColor: '#BBF7D0', borderRadius: 20, padding: 16, marginBottom: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: c.successBg,
+    borderWidth: 1, borderColor: c.success, borderRadius: 20, padding: 16, marginBottom: 14,
   },
-  doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#DCFCE7', alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 15, fontWeight: '800', color: '#166534' },
-  doneSub: { fontSize: 12, color: '#4B5563', marginTop: 2, lineHeight: 17 },
+  doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
+  doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
 
   sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
   mapTapHint: {
@@ -1873,61 +1658,60 @@ const styles = StyleSheet.create({
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
   sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#111827', borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
+  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
   sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: '#FFD9BF', marginVertical: 3, borderRadius: 1 },
+  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 3 },
-  sdRouteSub: { fontSize: 12, color: '#6B7280', marginTop: 2, lineHeight: 16 },
-  navMini: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
+  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
+  sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
 
   sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
-  sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFF4EC', justifyContent: 'center', alignItems: 'center' },
-  sdCardTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
+  sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
+  sdCardTitle: { flex: 1, fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
 
   contactRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  contactAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center' },
-  contactName: { fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 2 },
-  contactPhone: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginTop: 1 },
-  contactDivider: { height: 1, backgroundColor: '#F3F4F6', marginVertical: 14 },
-  roundBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFF4EC', alignItems: 'center', justifyContent: 'center' },
+  contactAvatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  contactName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
+  contactPhone: { fontSize: 12, color: c.textSecondary, fontWeight: '600', marginTop: 1 },
+  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+  roundBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
   roundBtnPrimary: { backgroundColor: ORANGE },
 
-  statsRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB', borderRadius: 14, paddingVertical: 12, borderWidth: 1, borderColor: '#F3F4F6' },
+  statsRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, borderRadius: 14, paddingVertical: 12, borderWidth: 1, borderColor: c.divider },
   stat: { flex: 1, alignItems: 'center' },
-  statLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
-  statValue: { fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 4 },
-  statDivider: { width: 1, height: 28, backgroundColor: '#E5E7EB' },
+  statLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  statValue: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginTop: 4 },
+  statDivider: { width: 1, height: 28, backgroundColor: c.border },
   noteRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
-  noteText: { fontSize: 13, color: '#4B5563', fontWeight: '600' },
+  noteText: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
   handlingBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 12,
-    backgroundColor: '#FFF7ED', borderRadius: 12, padding: 12,
+    backgroundColor: c.accentSoft, borderRadius: 12, padding: 12,
   },
-  handlingBoxWarn: { backgroundColor: '#FEF2F2' },
-  handlingText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#9A4A12', fontWeight: '600' },
+  handlingBoxWarn: { backgroundColor: c.errorBg },
+  handlingText: { flex: 1, fontSize: 12, lineHeight: 17, color: ORANGE, fontWeight: '600' },
 
-  itemBlock: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
-  itemPhotoWrap: { width: '100%', height: 170, borderRadius: 14, overflow: 'hidden', backgroundColor: '#F3F4F6' },
+  itemBlock: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  itemPhotoWrap: { width: '100%', height: 170, borderRadius: 14, overflow: 'hidden', backgroundColor: c.divider },
   itemPhoto: { width: '100%', height: '100%' },
   enlargeHint: { position: 'absolute', right: 8, bottom: 8, width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(17,24,39,0.7)', alignItems: 'center', justifyContent: 'center' },
-  itemNoPhoto: { height: 64, borderRadius: 14, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  itemNoPhotoText: { fontSize: 12, color: '#9CA3AF', fontWeight: '600' },
+  itemNoPhoto: { height: 64, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
+  itemNoPhotoText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
   itemInfoRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginTop: 10 },
-  itemTitle: { fontSize: 14, fontWeight: '800', color: '#111827', marginTop: 2 },
+  itemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
 
   tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 8 },
-  tlTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
-  tlSub: { fontSize: 12, color: '#6B7280', marginTop: 2 },
+  tlTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  tlSub: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
 
   payRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
-  payLabel: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  payLabel: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
   payValueRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  payValue: { fontSize: 13, color: '#111827', fontWeight: '800' },
-  payChip: { backgroundColor: '#FFF4EC', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
-  payChipDone: { backgroundColor: '#DCFCE7' },
+  payValue: { fontSize: 13, color: c.textPrimary, fontWeight: '800' },
+  payChip: { backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  payChipDone: { backgroundColor: c.successBg },
   payChipText: { fontSize: 12, fontWeight: '800', color: ORANGE },
-  payChipTextDone: { color: '#166534' },
+  payChipTextDone: { color: c.success },
   sdTotalBox: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: ORANGE, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 16, marginTop: 14,
@@ -1936,14 +1720,20 @@ const styles = StyleSheet.create({
   sdTotalValue: { fontSize: 24, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5 },
 
   mapCloseBtn: {
-    position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowRadius: 8, elevation: 6,
+    borderWidth: 1, borderColor: c.border,
   },
   mapSheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF',
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.12, shadowRadius: 12, elevation: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
+    shadowRadius: 12, elevation: 12,
+    borderTopWidth: 1, borderColor: c.border,
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
@@ -1972,24 +1762,24 @@ const styles = StyleSheet.create({
   },
   scannerBottomSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: c.card,
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
     paddingHorizontal: 24, paddingTop: 12,
   },
   sheetHandle: {
     alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
-    backgroundColor: '#E5E7EB', marginBottom: 18,
+    backgroundColor: c.border, marginBottom: 18,
   },
-  sheetHeading: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 4 },
-  sheetSubheading: { fontSize: 13, color: '#6B7280', marginBottom: 16, lineHeight: 18 },
+  sheetHeading: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  sheetSubheading: { fontSize: 13, color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
-  orLine: { flex: 1, height: 1, backgroundColor: '#E5E7EB' },
-  orText: { fontSize: 10, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1.2 },
+  orLine: { flex: 1, height: 1, backgroundColor: c.border },
+  orText: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1.2 },
   pinRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinInput: {
-    flex: 1, borderWidth: 1.5, borderColor: '#E5E7EB', borderRadius: 14,
+    flex: 1, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
     paddingHorizontal: 16, paddingVertical: 14, fontSize: 18, letterSpacing: 6,
-    color: '#111827', fontWeight: '700', textAlign: 'center', backgroundColor: '#F9FAFB'
+    color: c.textPrimary, fontWeight: '700', textAlign: 'center', backgroundColor: c.background,
   },
   pinBtn: {
     backgroundColor: ORANGE, paddingHorizontal: 24, justifyContent: 'center',
@@ -2004,54 +1794,50 @@ const styles = StyleSheet.create({
   },
   otpModalCard: {
     width: '100%', maxWidth: 380,
-    backgroundColor: '#FFFFFF', borderRadius: 24, padding: 24,
+    backgroundColor: c.card, borderRadius: 24, padding: 24,
+    borderWidth: 1, borderColor: c.border,
   },
   otpModalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', marginBottom: 16,
   },
   otpModalIconBox: {
-    width: 48, height: 48, borderRadius: 14, backgroundColor: '#DCFCE7',
+    width: 48, height: 48, borderRadius: 14, backgroundColor: c.successBg,
     justifyContent: 'center', alignItems: 'center',
   },
-  otpModalTitle: {
-    fontSize: 20, fontWeight: '800', color: '#111827',
-    marginBottom: 8, letterSpacing: -0.3,
-  },
-  otpModalSubtitle: {
-    fontSize: 13, color: '#6B7280', lineHeight: 19, marginBottom: 20,
-  },
+  otpModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
+  otpModalSubtitle: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
   otpInputContainer: { marginBottom: 16 },
   otpInput: {
-    borderWidth: 2, borderColor: '#E5E7EB', borderRadius: 16,
+    borderWidth: 2, borderColor: c.border, borderRadius: 16,
     paddingHorizontal: 20, paddingVertical: 18,
-    fontSize: 28, letterSpacing: 12, color: '#111827',
-    fontWeight: '800', textAlign: 'center', backgroundColor: '#F9FAFB',
+    fontSize: 28, letterSpacing: 12, color: c.textPrimary,
+    fontWeight: '800', textAlign: 'center', backgroundColor: c.background,
   },
   otpInfoBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#F3F4F6', paddingHorizontal: 12,
+    backgroundColor: c.divider, paddingHorizontal: 12,
     paddingVertical: 10, borderRadius: 10, marginBottom: 20,
   },
-  otpInfoText: { flex: 1, fontSize: 11, color: '#6B7280', fontWeight: '500' },
+  otpInfoText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '500' },
   otpPayoutRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: '#F9FAFB', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.border,
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
   },
-  otpPayoutLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
+  otpPayoutLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#22C55E', borderRadius: 16,
+    backgroundColor: c.success, borderRadius: 16,
     paddingVertical: 16, gap: 8, marginBottom: 12,
-    shadowColor: '#22C55E', shadowOffset: { width: 0, height: 4 },
+    shadowColor: c.success, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  otpVerifyButtonDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  otpVerifyButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
   otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
   otpResendButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, paddingVertical: 12,
   },
-  otpResendText: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
+  otpResendText: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
 });

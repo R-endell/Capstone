@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/LocationSelectScreen.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Alert, StatusBar,
   Dimensions, ActivityIndicator, Animated, Easing, TextInput, FlatList, Keyboard, ScrollView,
@@ -9,11 +9,11 @@ import { WebView } from 'react-native-webview';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext'; 
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#F27024';
 
-// Popular Cebu quick-select landmarks for effortless micro-move booking
 const CEBU_QUICK_SPOTS = [
   { name: 'IT Park', lat: 10.3288, lon: 123.9065 },
   { name: 'Ayala Center', lat: 10.3179, lon: 123.9051 },
@@ -39,7 +39,7 @@ const openStreetMapHtml = `
       <div id="map"></div>
       <script>
         window.map = L.map('map', {zoomControl: false}).setView([10.3157, 123.8854], 16);
-        
+
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap contributors',
           maxZoom: 19
@@ -67,6 +67,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
   const mode = state.mode;
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
   const webViewRef = useRef<WebView>(null);
 
   const [markerCoord, setMarkerCoord] = useState({
@@ -80,13 +82,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const [locating, setLocating] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
 
-  // Search States
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
 
-  // Animations
   const topAnim = useRef(new Animated.Value(0)).current;
   const sheetAnim = useRef(new Animated.Value(0)).current;
   const pinBounce = useRef(new Animated.Value(0)).current;
@@ -95,9 +95,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
-        toValue: 1,
-        duration,
-        delay,
+        toValue: 1, duration, delay,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       });
@@ -126,17 +124,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
-    transform: [
-      {
-        translateY: value.interpolate({
-          inputRange: [0, 1],
-          outputRange: [distance, 0],
-        }),
-      },
-    ],
+    transform: [{
+      translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
+    }],
   });
 
-  /* Reverse Geocode */
   const reverseGeocode = async (coords: { latitude: number; longitude: number }) => {
     try {
       const [addr] = await Location.reverseGeocodeAsync(coords);
@@ -146,9 +138,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           addr.street !== addr.name ? addr.street : null,
           addr.city,
           addr.region,
-        ]
-          .filter(Boolean)
-          .join(', ');
+        ].filter(Boolean).join(', ');
 
         setAddressName(mainName);
         setAddressSub(subParts || `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`);
@@ -205,7 +195,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           true;
         `);
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Could not fetch your current location.');
     } finally {
       setLocating(false);
@@ -227,7 +217,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  /* Fixed Search Bar with proper User-Agent headers */
   const handleSearch = async (text: string) => {
     setSearchQuery(text);
     if (!text.trim()) {
@@ -310,10 +299,12 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   };
 
   const isPickup = type === 'pickup';
-  // Distinct modern palette for Pack-N-Ship (Deep Navy & Vibrant Orange accent)
-  const themeColor = ORANGE;
-  const badgeBg = isPickup ? '#FFF7ED' : '#FEF2F2';
-  const badgeTextColor = isPickup ? '#C2410C' : '#DC2626';
+  const badgeBg = isPickup
+    ? (isDark ? '#2A1A0E' : '#FFF7ED')
+    : (isDark ? '#2A1214' : '#FEF2F2');
+  const badgeTextColor = isPickup
+    ? (isDark ? '#FDBA74' : '#C2410C')
+    : (isDark ? '#F87171' : '#DC2626');
 
   const handleMessage = (event: any) => {
     try {
@@ -350,7 +341,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <WebView
         ref={webViewRef}
@@ -373,27 +364,19 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
       )}
 
-      {/* Floating Center Pin with Pack-N-Ship Branding */}
       <View style={styles.centerPinContainer} pointerEvents="none">
         <Animated.View style={[styles.pinWrapper, { transform: [{ translateY: pinTranslateY }] }]}>
           <View style={styles.pinHead}>
-            <Ionicons name={isPickup ? "radio-button-on" : "location"} size={22} color="#FFFFFF" />
+            <Ionicons name={isPickup ? 'radio-button-on' : 'location'} size={22} color="#FFFFFF" />
           </View>
           <View style={styles.pinPoint} />
         </Animated.View>
         <View style={styles.pinShadow} />
       </View>
 
-      {/* Top Floating Glass Header */}
-      <Animated.View
-        style={[styles.topOverlay, { top: insets.top + 10 }, fadeUp(topAnim, -20)]}
-      >
-        <TouchableOpacity
-          style={styles.backCircleBtn}
-          onPress={() => navigation.goBack()}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="arrow-back" size={20} color="#111827" />
+      <Animated.View style={[styles.topOverlay, { top: insets.top + 10 }, fadeUp(topAnim, -20)]}>
+        <TouchableOpacity style={styles.backCircleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -414,11 +397,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               {addressName !== 'Loading...' ? addressName : 'Tap to search Cebu address...'}
             </Text>
           </View>
-          <Ionicons name="search-outline" size={18} color="#6B7280" />
+          <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Search Modal / Overlay */}
       {isSearching && (
         <View style={[styles.searchOverlay, { paddingTop: insets.top + 10 }]}>
           <View style={styles.searchModalHeader}>
@@ -430,21 +412,21 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 setSearchResults([]);
               }}
             >
-              <Ionicons name="arrow-back" size={20} color="#111827" />
+              <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
             </TouchableOpacity>
             <View style={styles.searchInputWrapper}>
-              <Ionicons name="search" size={18} color="#9CA3AF" style={{ marginRight: 8 }} />
+              <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
               <TextInput
                 style={styles.searchInput}
                 placeholder={isPickup ? 'Search pickup in Cebu...' : 'Search drop-off in Cebu...'}
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={searchQuery}
                 onChangeText={handleSearch}
                 autoFocus
               />
               {searchQuery.length > 0 && (
                 <TouchableOpacity onPress={() => handleSearch('')}>
-                  <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+                  <Ionicons name="close-circle" size={18} color={colors.textMuted} />
                 </TouchableOpacity>
               )}
             </View>
@@ -463,10 +445,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 40 }}
             renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.searchResultItem}
-                onPress={() => selectSearchResult(item)}
-              >
+              <TouchableOpacity style={styles.searchResultItem} onPress={() => selectSearchResult(item)}>
                 <View style={styles.searchResultIconBox}>
                   <Ionicons name="location-outline" size={18} color={ORANGE} />
                 </View>
@@ -484,7 +463,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
       )}
 
-      {/* Quick Access Cebu Hotspot Chips */}
       <Animated.View style={[styles.quickChipsWrapper, fadeUp(topAnim, -10)]}>
         <ScrollView
           horizontal
@@ -505,16 +483,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </ScrollView>
       </Animated.View>
 
-      <Animated.View
-        style={[styles.locateMeWrapper, fadeUp(topAnim, -20)]}
-        pointerEvents="box-none"
-      >
-        <TouchableOpacity
-          style={styles.locateMeBtn}
-          onPress={handleLocateMe}
-          disabled={locating}
-          activeOpacity={0.85}
-        >
+      <Animated.View style={[styles.locateMeWrapper, fadeUp(topAnim, -20)]} pointerEvents="box-none">
+        <TouchableOpacity style={styles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
           {locating ? (
             <ActivityIndicator size="small" color={ORANGE} />
           ) : (
@@ -523,28 +493,19 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Floating Modern Bottom Sheet Card */}
-      <Animated.View
-        style={[styles.bottomSheet, { paddingBottom: insets.bottom + 16 }, fadeUp(sheetAnim, 30)]}
-      >
+      <Animated.View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 16 }, fadeUp(sheetAnim, 30)]}>
         <View style={styles.dragHandle} />
 
         <View style={styles.sheetHeader}>
           <View style={styles.sheetHeaderLeft}>
             <View style={[styles.sheetIconBox, { backgroundColor: badgeBg }]}>
-              <Ionicons
-                name={isPickup ? "radio-button-on" : "location"}
-                size={18}
-                color={badgeTextColor}
-              />
+              <Ionicons name={isPickup ? 'radio-button-on' : 'location'} size={18} color={badgeTextColor} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.sheetTitle}>
                 {isPickup ? 'Confirm Pickup Location' : 'Confirm Drop-off Location'}
               </Text>
-              <Text style={styles.sheetSub}>
-                Pan map or select quick spot above
-              </Text>
+              <Text style={styles.sheetSub}>Pan map or select quick spot above</Text>
             </View>
           </View>
         </View>
@@ -552,9 +513,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         <View style={styles.addressCard}>
           <View style={styles.addressAccentBar} />
           <View style={styles.addressTextContainer}>
-            <Text style={styles.addressMainText} numberOfLines={1}>
-              {addressName}
-            </Text>
+            <Text style={styles.addressMainText} numberOfLines={1}>{addressName}</Text>
             <Text style={styles.addressSubText} numberOfLines={2}>
               {addressSub || 'Fetching exact address...'}
             </Text>
@@ -562,7 +521,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
 
         <View style={styles.coordsRow}>
-          <Ionicons name="navigate-outline" size={12} color="#9CA3AF" />
+          <Ionicons name="navigate-outline" size={12} color={colors.textMuted} />
           <Text style={styles.coordsText}>
             GPS: {markerCoord.latitude.toFixed(5)}, {markerCoord.longitude.toFixed(5)}
           </Text>
@@ -579,7 +538,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             <Text style={styles.confirmBtnText}>
               {isPickup ? 'Confirm Pickup Point' : 'Confirm Dropoff Point'}
             </Text>
-            <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+            <Ionicons name="arrow-forward" size={16} color={colors.card} />
           </TouchableOpacity>
         </Animated.View>
       </Animated.View>
@@ -587,380 +546,181 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFF' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
   map: { flex: 1 },
 
   loadingOverlay: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: '#F3F4F6',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: c.background,
+    justifyContent: 'center', alignItems: 'center', zIndex: 10,
   },
-  loadingText: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginTop: 12,
-    fontWeight: '500',
-  },
+  loadingText: { fontSize: 13, color: c.textSecondary, marginTop: 12, fontWeight: '500' },
 
   centerPinContainer: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    marginLeft: -22,
-    marginTop: -44,
-    alignItems: 'center',
-    zIndex: 4,
-    pointerEvents: 'none',
+    position: 'absolute', top: '50%', left: '50%',
+    marginLeft: -22, marginTop: -44,
+    alignItems: 'center', zIndex: 4, pointerEvents: 'none',
   },
-  pinWrapper: {
-    alignItems: 'center',
-  },
+  pinWrapper: { alignItems: 'center' },
   pinHead: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: ORANGE,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 8,
+    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 3, borderColor: '#FFFFFF',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25, shadowRadius: 8, elevation: 8,
   },
   pinPoint: {
-    width: 0,
-    height: 0,
-    backgroundColor: 'transparent',
-    borderStyle: 'solid',
-    borderLeftWidth: 6,
-    borderRightWidth: 6,
-    borderTopWidth: 10,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderTopColor: ORANGE,
-    marginTop: -1,
+    width: 0, height: 0, backgroundColor: 'transparent', borderStyle: 'solid',
+    borderLeftWidth: 6, borderRightWidth: 6, borderTopWidth: 10,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
+    borderTopColor: ORANGE, marginTop: -1,
   },
   pinShadow: {
-    width: 12,
-    height: 4,
-    borderRadius: 6,
-    backgroundColor: 'rgba(0,0,0,0.25)',
-    marginTop: 2,
+    width: 12, height: 4, borderRadius: 6,
+    backgroundColor: 'rgba(0,0,0,0.25)', marginTop: 2,
   },
 
   topOverlay: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    zIndex: 5,
+    position: 'absolute', left: 16, right: 16,
+    flexDirection: 'row', alignItems: 'center', zIndex: 5,
   },
   backCircleBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 5,
-    marginRight: 10,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.4 : 0.12, shadowRadius: 8, elevation: 5,
+    marginRight: 10, borderWidth: 1, borderColor: c.border,
   },
   searchPill: {
-    flex: 1,
-    height: 54,
-    backgroundColor: '#FFF',
-    borderRadius: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    gap: 10,
+    flex: 1, height: 54, backgroundColor: c.card, borderRadius: 16,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 5,
+    borderWidth: 1, borderColor: c.border, gap: 10,
   },
-  badgeIndicator: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgeText: {
-    fontSize: 9,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
+  badgeIndicator: { paddingHorizontal: 6, paddingVertical: 3, borderRadius: 6 },
+  badgeText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
   searchPillTextContainer: { flex: 1 },
   searchPillLabel: {
-    fontSize: 8,
-    fontWeight: '800',
-    color: '#9CA3AF',
-    letterSpacing: 0.8,
-    marginBottom: 1,
+    fontSize: 8, fontWeight: '800', color: c.textMuted,
+    letterSpacing: 0.8, marginBottom: 1,
   },
   searchPillText: {
-    fontSize: 13,
-    color: '#111827',
-    fontWeight: '700',
-    letterSpacing: -0.2,
+    fontSize: 13, color: c.textPrimary, fontWeight: '700', letterSpacing: -0.2,
   },
 
   quickChipsWrapper: {
-    position: 'absolute',
-    top: 135,
-    left: 0,
-    right: 0,
-    zIndex: 5,
+    position: 'absolute', top: 135, left: 0, right: 0, zIndex: 5,
   },
   quickChip: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 3,
+    backgroundColor: c.card, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 5,
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.08, shadowRadius: 4, elevation: 3,
   },
-  quickChipText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#111827',
-  },
+  quickChipText: { fontSize: 11, fontWeight: '700', color: c.textPrimary },
 
   searchOverlay: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: '#FFFFFF',
-    zIndex: 20,
-    flex: 1,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: c.background, zIndex: 20, flex: 1,
   },
   searchModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingBottom: 14,
+    borderBottomWidth: 1, borderBottomColor: c.divider, gap: 10,
   },
   searchInputWrapper: {
-    flex: 1,
-    height: 46,
-    backgroundColor: '#F9FAFB',
-    borderRadius: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    flex: 1, height: 46, backgroundColor: c.card, borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14,
+    borderWidth: 1, borderColor: c.border,
   },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '600',
-  },
+  searchInput: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '600' },
   searchResultItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F9FAFB',
-    gap: 14,
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: c.divider, gap: 14,
   },
   searchResultIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: '#FFF7ED',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FFE4D2',
+    width: 36, height: 36, borderRadius: 10, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: ORANGE,
   },
   searchResultTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#111827',
-    marginBottom: 2,
+    fontSize: 14, fontWeight: '700', color: c.textPrimary, marginBottom: 2,
   },
   searchResultSub: {
-    fontSize: 11,
-    color: '#6B7280',
-    fontWeight: '500',
-    lineHeight: 15,
+    fontSize: 11, color: c.textSecondary, fontWeight: '500', lineHeight: 15,
   },
 
-  locateMeWrapper: {
-    position: 'absolute',
-    right: 16,
-    bottom: 270,
-    zIndex: 6,
-  },
+  locateMeWrapper: { position: 'absolute', right: 16, bottom: 270, zIndex: 6 },
   locateMeBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 5,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.4 : 0.12, shadowRadius: 8, elevation: 5,
+    borderWidth: 1, borderColor: c.border,
   },
 
   bottomSheet: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFF',
-    paddingTop: 8,
-    paddingHorizontal: 20,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    elevation: 12,
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: c.card, paddingTop: 8, paddingHorizontal: 20,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
     zIndex: 5,
   },
   dragHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: '#E5E7EB',
-    alignSelf: 'center',
-    marginBottom: 10,
+    width: 36, height: 4, borderRadius: 2,
+    backgroundColor: c.border, alignSelf: 'center', marginBottom: 10,
   },
   sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', marginBottom: 12,
   },
-  sheetHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
+  sheetHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   sheetIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 38, height: 38, borderRadius: 12,
+    justifyContent: 'center', alignItems: 'center',
   },
   sheetTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
+    fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2,
   },
-  sheetSub: {
-    fontSize: 11,
-    color: '#6B7280',
-    marginTop: 1,
-    fontWeight: '500',
-  },
+  sheetSub: { fontSize: 11, color: c.textSecondary, marginTop: 1, fontWeight: '500' },
 
   addressCard: {
-    flexDirection: 'row',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 14,
-    padding: 12,
-    paddingLeft: 16,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    position: 'relative',
-    overflow: 'hidden',
+    flexDirection: 'row', backgroundColor: c.background, borderRadius: 14,
+    padding: 12, paddingLeft: 16, marginBottom: 8,
+    borderWidth: 1, borderColor: c.border,
+    position: 'relative', overflow: 'hidden',
   },
   addressAccentBar: {
-    position: 'absolute',
-    left: 0, top: 0, bottom: 0,
-    width: 4,
-    backgroundColor: ORANGE,
-    borderTopRightRadius: 4,
-    borderBottomRightRadius: 4,
+    position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
+    backgroundColor: ORANGE, borderTopRightRadius: 4, borderBottomRightRadius: 4,
   },
   addressTextContainer: { flex: 1 },
   addressMainText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 2,
-    letterSpacing: -0.2,
+    fontSize: 14, fontWeight: '800', color: c.textPrimary,
+    marginBottom: 2, letterSpacing: -0.2,
   },
-  addressSubText: {
-    fontSize: 11,
-    color: '#6B7280',
-    lineHeight: 15,
-    fontWeight: '500',
-  },
+  addressSubText: { fontSize: 11, color: c.textSecondary, lineHeight: 15, fontWeight: '500' },
 
   coordsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginBottom: 14,
-    paddingLeft: 2,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    marginBottom: 14, paddingLeft: 2,
   },
   coordsText: {
-    fontSize: 10,
-    color: '#9CA3AF',
-    fontWeight: '600',
-    letterSpacing: 0.3,
+    fontSize: 10, color: c.textMuted, fontWeight: '600', letterSpacing: 0.3,
   },
 
   confirmBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#111827',
-    borderRadius: 16,
-    paddingVertical: 16,
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
   confirmBtnText: {
-    color: '#FFF',
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    color: c.card, fontSize: 15, fontWeight: '700', letterSpacing: 0.2,
   },
 });

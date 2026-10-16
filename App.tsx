@@ -90,6 +90,7 @@ import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScree
 import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen';
 
 import { UserProvider } from './src/utils/userContext';
+import { ThemeProvider, useTheme } from './src/utils/themeContext';
 
 import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
 
@@ -266,9 +267,10 @@ function useUnreadMessages() {
 // ---------- Sender Tab Navigator ----------
 function MainTabs() {
   const unreadCount = useUnreadMessages();
+  const { colors, isDark } = useTheme();
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ focused, color, size }) => {
@@ -281,11 +283,11 @@ function MainTabs() {
             return <Ionicons name={iconName} size={size} color={color} />;
           },
           tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: '#6B7280',
+          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
           tabBarStyle: {
-            backgroundColor: '#FFFFFF',
+            backgroundColor: colors.card,
             borderTopWidth: 1,
-            borderTopColor: '#E5E7EB',
+            borderTopColor: colors.border,
             height: 60,
             paddingBottom: 8,
             paddingTop: 2,
@@ -317,9 +319,10 @@ function MainTabs() {
 // ---------- Provider Tab Navigator ----------
 function ProviderTabs() {
   const unreadCount = useUnreadMessages();
+  const { colors, isDark } = useTheme();
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
       <ProviderTab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ focused, color, size }) => {
@@ -340,11 +343,11 @@ function ProviderTabs() {
             return <Ionicons name={iconName} size={size} color={color} />;
           },
           tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: '#6B7280',
+          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
           tabBarStyle: {
-            backgroundColor: '#FFFFFF',
+            backgroundColor: colors.card,
             borderTopWidth: 1,
-            borderTopColor: '#E5E7EB',
+            borderTopColor: colors.border,
             height: 60,
             paddingBottom: 8,
             paddingTop: 2,
@@ -376,8 +379,8 @@ function ProviderTabs() {
   );
 }
 
-// ---------- App ----------
-export default function App() {
+// ---------- Inner App (needs to be inside ThemeProvider so it can use useTheme) ----------
+function AppInner() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const appStateRef = useRef(AppState.currentState);
   const matcherStartedRef = useRef(false);
@@ -466,123 +469,132 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-  let cancelled = false;
-  let notifSub: any = null;
+    let cancelled = false;
+    let notifSub: any = null;
 
-  const bootstrap = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return;
+    const bootstrap = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
 
-    const { data: userRow } = await supabase
-      .from('users')
-      .select('user_id')
-      .eq('auth_id', session.user.id)
-      .maybeSingle();
-    if (!userRow?.user_id) return;
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+      if (!userRow?.user_id) return;
 
-    await registerPushToken(userRow.user_id);
-  };
+      await registerPushToken(userRow.user_id);
+    };
 
-  bootstrap();
+    bootstrap();
 
-  // Notification tap → open LiveTracking if the payload has a deliveryId
-  notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
-    const payload = response.notification.request.content.data as any;
-    if (payload?.deliveryId && navigationRef.isReady?.()) {
-      navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
-    }
-  });
+    // Notification tap → open LiveTracking if the payload has a deliveryId
+    notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const payload = response.notification.request.content.data as any;
+      if (payload?.deliveryId && navigationRef.isReady?.()) {
+        navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
+      }
+    });
 
-  return () => {
-    cancelled = true;
-    if (notifSub) notifSub.remove();
-  };
-}, []);
+    return () => {
+      cancelled = true;
+      if (notifSub) notifSub.remove();
+    };
+  }, []);
 
   return (
-    <ScheduleProvider>
-      <UserProvider>
-        <NavigationContainer ref={navigationRef}>
-          <Stack.Navigator
-            initialRouteName="Loading"
-            screenOptions={{ headerShown: false }}
-          >
-            <Stack.Screen name="Loading" component={LoadingScreen} />
-            <Stack.Screen name="Login" component={LoginScreen} />
-            <Stack.Screen name="Register" component={RegisterScreen} />
-            <Stack.Screen
-              name="PermissionsPrompt"
-              component={PermissionsPromptScreen}
-            />
-            <Stack.Screen
-              name="IdentityVerification"
-              component={IdentityVerificationScreen}
-            />
-            <Stack.Screen
-              name="TwoFactorAuth"
-              component={TwoFactorAuthScreen}
-            />
-            <Stack.Screen name="MainTabs" component={MainTabs} />
-            <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
-            <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-            <Stack.Screen name="Settings" component={SettingsScreen} />
-            <Stack.Screen
-              name="DisputeCenter"
-              component={DisputeCenterScreen}
-            />
-            <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
-            <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
-            <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-            <Stack.Screen
-              name="RegisterProvider"
-              component={RegisterProviderScreen}
-            />
-            <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
-            <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
-            <Stack.Screen name="AddItem" component={AddItemScreen} />
-            <Stack.Screen
-              name="ScheduleCalendar"
-              component={ScheduleCalendarScreen}
-            />
-            <Stack.Screen
-              name="PickupLocation"
-              component={LocationSelectScreen}
-            />
-            <Stack.Screen
-              name="DropoffLocation"
-              component={LocationSelectScreen}
-            />
-            <Stack.Screen name="Booking" component={BookingScreen} />
-            <Stack.Screen
-              name="DeliveryPayment"
-              component={DeliveryPaymentScreen}
-              options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-            />
-            <Stack.Screen
-              name="LiveTracking"
-              component={LiveTrackingScreen}
-              options={{ animation: 'slide_from_right' }}
-            />
-            <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-            <Stack.Screen
-              name="ManageVehicle"
-              component={ManageVehicleScreen}
-            />
-            <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-            <Stack.Screen
-              name="ReceiverPicker"
-              component={ReceiverPickerScreen}
-              options={{
-                presentation: 'modal',
-                animation: 'slide_from_bottom',
-              }}
-            />
-            <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
-            <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
-            <Stack.Screen name="NotificationsList" component={NotificationsList} />
-          </Stack.Navigator>
-        </NavigationContainer>
-      </UserProvider>
-    </ScheduleProvider>
+    <NavigationContainer ref={navigationRef}>
+      <Stack.Navigator
+        initialRouteName="Loading"
+        screenOptions={{ headerShown: false }}
+      >
+        <Stack.Screen name="Loading" component={LoadingScreen} />
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="Register" component={RegisterScreen} />
+        <Stack.Screen
+          name="PermissionsPrompt"
+          component={PermissionsPromptScreen}
+        />
+        <Stack.Screen
+          name="IdentityVerification"
+          component={IdentityVerificationScreen}
+        />
+        <Stack.Screen
+          name="TwoFactorAuth"
+          component={TwoFactorAuthScreen}
+        />
+        <Stack.Screen name="MainTabs" component={MainTabs} />
+        <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
+        <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+        <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen
+          name="DisputeCenter"
+          component={DisputeCenterScreen}
+        />
+        <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+        <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
+        <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+        <Stack.Screen
+          name="RegisterProvider"
+          component={RegisterProviderScreen}
+        />
+        <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+        <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+        <Stack.Screen name="AddItem" component={AddItemScreen} />
+        <Stack.Screen
+          name="ScheduleCalendar"
+          component={ScheduleCalendarScreen}
+        />
+        <Stack.Screen
+          name="PickupLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen
+          name="DropoffLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen name="Booking" component={BookingScreen} />
+        <Stack.Screen
+          name="DeliveryPayment"
+          component={DeliveryPaymentScreen}
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="LiveTracking"
+          component={LiveTrackingScreen}
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+        <Stack.Screen
+          name="ManageVehicle"
+          component={ManageVehicleScreen}
+        />
+        <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+        <Stack.Screen
+          name="ReceiverPicker"
+          component={ReceiverPickerScreen}
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+        <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+        <Stack.Screen name="NotificationsList" component={NotificationsList} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+// ---------- App ----------
+export default function App() {
+  return (
+    <ThemeProvider>
+      <ScheduleProvider>
+        <UserProvider>
+          <AppInner />
+        </UserProvider>
+      </ScheduleProvider>
+    </ThemeProvider>
   );
 }

@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Sender/Delivery/BookingScreen.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
   Alert, Easing, ScrollView, Dimensions,
@@ -11,6 +11,7 @@ import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
 import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown } from '../../../../services/routeService';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
@@ -81,6 +82,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
   const mode = routeMode || state.mode;
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'no_match'>('review');
   const [matchFound, setMatchFound] = useState(false);
@@ -118,7 +121,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Synchronous guards — prevent duplicate side effects before React re-renders
   const proceedingRef = useRef(false);
   const cancellingRef = useRef(false);
 
@@ -127,9 +129,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
   const [refiningDistance, setRefiningDistance] = useState(false);
 
-  // ------------------------------------------------------------------
-  // Fare estimation: instant quick estimate, then refine with OSRM
-  // ------------------------------------------------------------------
   useEffect(() => {
     if (!state.pickupLocation || !state.dropoffLocation) return;
 
@@ -190,7 +189,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }).start();
   }, [bookingState, sheetAnim]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (matchChannelRef.current) {
@@ -293,9 +291,6 @@ export default function BookingScreen({ route, navigation }: any) {
     });
   };
 
-  /* ---------------------------------------------------------------- */
-  /* Fetch provider ratings                                           */
-  /* ---------------------------------------------------------------- */
   const loadProviderRating = async (providerId: number) => {
     try {
       const { data, error } = await supabase
@@ -330,11 +325,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  /**
-   * Start matching.
-   * - Pass `reuseRequestId` to retry against the same request instead of
-   *   creating a duplicate one.
-   */
   const startMatching = async (opts?: { reuseRequestId?: number | null }) => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
@@ -530,9 +520,6 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, [bookingState, resumeSubId]);
 
-  /* ---------------------------------------------------------------- */
-  /* Resume matching after payment just succeeded                     */
-  /* ---------------------------------------------------------------- */
   useEffect(() => {
     const justPaid = route.params?.paymentJustCompleted;
     const reqId = route.params?.requestId;
@@ -545,14 +532,8 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
-  /* ---------------------------------------------------------------- */
-  /* Proceed to Payment — saves request then navigates to Payment      */
-  /*                                                                   */
-  /* Guarded by a synchronous ref so double-taps cannot create         */
-  /* duplicate delivery_requests rows.                                 */
-  /* ---------------------------------------------------------------- */
   const handleProceedToPayment = async () => {
-    if (proceedingRef.current) return; // hard block re-entry
+    if (proceedingRef.current) return;
     proceedingRef.current = true;
 
     try {
@@ -576,7 +557,6 @@ export default function BookingScreen({ route, navigation }: any) {
         }
       }
 
-      // Save the request first so DeliveryPayment has a requestId
       let requestId: number;
 
       if (state.isEdit && state.editIds) {
@@ -595,8 +575,6 @@ export default function BookingScreen({ route, navigation }: any) {
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
     } finally {
-      // Re-enable after navigation settles. If the screen is still mounted
-      // (e.g. user backs out of Payment), they can try again.
       setTimeout(() => { proceedingRef.current = false; }, 800);
     }
   };
@@ -679,7 +657,6 @@ export default function BookingScreen({ route, navigation }: any) {
             );
           }
         } else {
-          // Unpaid → safe to delete
           await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
         }
       }
@@ -696,7 +673,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  // Leave the screen WITHOUT cancelling the request.
   const handleGoHome = () => {
     if (matchChannelRef.current) {
       supabase.removeChannel(matchChannelRef.current);
@@ -711,7 +687,6 @@ export default function BookingScreen({ route, navigation }: any) {
     navigation.navigate('MainTabs');
   };
 
-  // Retry against the same request (no duplicate insert).
   const handleTryAgain = () => {
     searchStartRef.current = Date.now();
     setBookingState('finding');
@@ -843,7 +818,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <WebView
         style={styles.map}
@@ -858,7 +833,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       <View style={[styles.topOverlay, { top: insets.top + 8 }]}>
         <TouchableOpacity style={styles.backCircleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={20} color="#111827" />
+          <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <View style={styles.pillsContainer}>
@@ -880,10 +855,10 @@ export default function BookingScreen({ route, navigation }: any) {
             <View style={styles.routeDivider} />
             <View style={styles.routeRow}>
               <View style={styles.routeIconSlot}>
-                <Ionicons name="location" size={18} color="#EF4444" />
+                <Ionicons name="location" size={18} color={colors.error} />
               </View>
               <View style={styles.pillTextContainer}>
-                <Text style={[styles.pillLabel, { color: '#EF4444' }]}>DROPOFF</Text>
+                <Text style={[styles.pillLabel, { color: colors.error }]}>DROPOFF</Text>
                 <Text numberOfLines={1}>
                   <Text style={styles.pillMainText}>{dropoff.main}</Text>
                   <Text style={styles.pillSubText}>{dropoff.sub ? `  ${dropoff.sub}` : ''}</Text>
@@ -934,7 +909,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   </>
                 )}
               </View>
-              <Ionicons name={receiver ? 'create-outline' : 'chevron-forward'} size={18} color={receiver ? '#6B7280' : ORANGE} />
+              <Ionicons name={receiver ? 'create-outline' : 'chevron-forward'} size={18} color={receiver ? colors.textSecondary : ORANGE} />
             </TouchableOpacity>
 
             {receiver && (
@@ -1028,7 +1003,6 @@ export default function BookingScreen({ route, navigation }: any) {
               contentContainerStyle={[styles.findingScrollContent, { paddingBottom: Math.max(insets.bottom, 24) }]}
               showsVerticalScrollIndicator={false}
             >
-
               <View style={styles.findingTopRow}>
                 <View style={styles.radarContainer}>
                   <View style={[styles.radarGuideRing, { width: 56, height: 56, borderRadius: 28 }]} />
@@ -1136,7 +1110,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
 
               <TouchableOpacity style={styles.cancelTextButton} onPress={handleCancelBooking} activeOpacity={0.85}>
-                <Ionicons name="close-circle-outline" size={18} color="#EF4444" />
+                <Ionicons name="close-circle-outline" size={18} color={colors.error} />
                 <Text style={styles.cancelTextButtonLabel}>Cancel Search</Text>
               </TouchableOpacity>
             </ScrollView>
@@ -1149,7 +1123,7 @@ export default function BookingScreen({ route, navigation }: any) {
             <View style={styles.sheetHandle} />
             <View style={styles.matchedHeader}>
               <View style={styles.matchedHeaderIcon}>
-                <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
+                <Ionicons name="checkmark-circle" size={22} color={colors.success} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.matchedHeaderTitle}>Provider Matched!</Text>
@@ -1173,11 +1147,11 @@ export default function BookingScreen({ route, navigation }: any) {
                   </Text>
                   <View style={styles.carDetailBox}>
                     <View style={styles.carDetailRow}>
-                      <Ionicons name="car-sport-outline" size={12} color="#6B7280" />
+                      <Ionicons name="car-sport-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.carText} numberOfLines={1}>{providerData?.vehicle_type || 'Loading...'}</Text>
                     </View>
                     <View style={styles.carDetailRow}>
-                      <Ionicons name="pricetag-outline" size={12} color="#6B7280" />
+                      <Ionicons name="pricetag-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.carText}>{providerData?.plate_number || 'Loading...'}</Text>
                     </View>
                   </View>
@@ -1194,7 +1168,7 @@ export default function BookingScreen({ route, navigation }: any) {
                           key={n}
                           name={n <= Math.round(providerRating.avg) ? 'star' : 'star-outline'}
                           size={14}
-                          color="#F59E0B"
+                          color={colors.warning}
                         />
                       ))}
                     </View>
@@ -1215,7 +1189,7 @@ export default function BookingScreen({ route, navigation }: any) {
                                 key={n}
                                 name={n <= r.rating ? 'star' : 'star-outline'}
                                 size={11}
-                                color="#F59E0B"
+                                color={colors.warning}
                               />
                             ))}
                           </View>
@@ -1235,7 +1209,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 <>
                   <View style={styles.matchedDivider} />
                   <View style={styles.matchedReceiverRow}>
-                    <Ionicons name="person-circle-outline" size={16} color="#6B7280" />
+                    <Ionicons name="person-circle-outline" size={16} color={colors.textSecondary} />
                     <View style={{ flex: 1, marginLeft: 8 }}>
                       <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
                       <Text style={styles.matchedReceiverName} numberOfLines={1}>
@@ -1250,7 +1224,7 @@ export default function BookingScreen({ route, navigation }: any) {
               )}
 
               <View style={styles.otpSentBanner}>
-                <Ionicons name="qr-code-outline" size={16} color="#22C55E" />
+                <Ionicons name="qr-code-outline" size={16} color={colors.success} />
                 <Text style={styles.otpSentText}>
                   Show your pickup QR code when the courier arrives
                 </Text>
@@ -1302,7 +1276,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 onPress={handleGoHome}
                 activeOpacity={0.9}
               >
-                <Ionicons name="home-outline" size={15} color="#6B7280" />
+                <Ionicons name="home-outline" size={15} color={colors.textSecondary} />
                 <Text style={styles.modifyBtnText}>Go Home</Text>
               </TouchableOpacity>
             </View>
@@ -1313,27 +1287,28 @@ export default function BookingScreen({ route, navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
   map: { ...StyleSheet.absoluteFill },
 
   topOverlay: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'flex-start', zIndex: 10 },
   backCircleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08, shadowRadius: 6, elevation: 3,
-    marginRight: 10, borderWidth: 1, borderColor: '#E5E7EB',
+    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3,
+    marginRight: 10, borderWidth: 1, borderColor: c.border,
   },
   pillsContainer: { flex: 1 },
   routeCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 12, paddingVertical: 4,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 4,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 8, elevation: 3,
+    borderWidth: 1, borderColor: c.border,
   },
   routeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 7 },
   routeIconSlot: { width: 22, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  routeDivider: { height: 1, backgroundColor: '#F3F4F6', marginLeft: 32 },
+  routeDivider: { height: 1, backgroundColor: c.divider, marginLeft: 32 },
   pillIconPickup: {
     width: 16, height: 16, borderRadius: 8, borderWidth: 3,
     borderColor: ORANGE, justifyContent: 'center', alignItems: 'center',
@@ -1341,224 +1316,241 @@ const styles = StyleSheet.create({
   pillIconPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
   pillTextContainer: { flex: 1 },
   pillLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 0.8, marginBottom: 1 },
-  pillMainText: { fontSize: 14, fontWeight: '700', color: '#111827', letterSpacing: -0.2 },
-  pillSubText: { fontSize: 12, color: '#6B7280', fontWeight: '500' },
+  pillMainText: { fontSize: 14, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
+  pillSubText: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
 
   bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center' },
   bottomSheetFinding: { bottom: 0 },
-  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 6 },
+  sheetHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.border, alignSelf: 'center', marginBottom: 6 },
 
   sheetCard: {
-    backgroundColor: '#FFFFFF', width: '100%', paddingHorizontal: 24, paddingTop: 6,
+    backgroundColor: c.card, width: '100%', paddingHorizontal: 24, paddingTop: 6,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
   sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   sheetIconBox: {
-    width: 40, height: 40, borderRadius: 12, backgroundColor: '#FFF7ED',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#FFE4D2',
+    width: 40, height: 40, borderRadius: 12, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: ORANGE,
   },
-  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
-  sheetHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
+  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  sheetHeaderSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
 
-  divider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 12 },
+  divider: { height: 1, backgroundColor: c.border, marginVertical: 12 },
 
   fareBreakdown: { marginBottom: 8 },
   fareRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingVertical: 5,
   },
-  fareLabel: { fontSize: 12, color: '#6B7280', fontWeight: '500' },
-  fareValue: { fontSize: 12, color: '#374151', fontWeight: '700' },
-  fareDivider: { height: 1, backgroundColor: '#F3F4F6', marginTop: 6 },
+  fareLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
+  fareValue: { fontSize: 12, color: c.textPrimary, fontWeight: '700' },
+  fareDivider: { height: 1, backgroundColor: c.divider, marginTop: 6 },
 
   receiverCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F9FAFB',
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 16, padding: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background,
+    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 14,
   },
-  receiverCardEmpty: { borderStyle: 'dashed', borderColor: '#FDBA74', backgroundColor: '#FFFBF5' },
+  receiverCardEmpty: { borderStyle: 'dashed', borderColor: ORANGE, backgroundColor: c.accentSoft },
   receiverIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   receiverIconBoxFilled: { backgroundColor: ORANGE },
-  receiverIconBoxEmpty: { backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFE4D2' },
-  receiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 0.8, marginBottom: 3 },
-  receiverName: { fontSize: 14, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
-  receiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '500' },
+  receiverIconBoxEmpty: { backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE },
+  receiverLabel: { fontSize: 9, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 3 },
+  receiverName: { fontSize: 14, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  receiverPhone: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
   receiverPlaceholder: { fontSize: 13, fontWeight: '700', color: ORANGE },
-  receiverHelper: { fontSize: 10, color: '#9CA3AF', marginTop: 2, fontWeight: '500' },
+  receiverHelper: { fontSize: 10, color: c.textMuted, marginTop: 2, fontWeight: '500' },
 
   otpInfoBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F5F3FF', borderRadius: 12,
-    paddingHorizontal: 12, paddingVertical: 10, marginTop: 10, borderWidth: 1, borderColor: '#DDD6FE',
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: isDark ? '#231542' : '#F5F3FF',
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginTop: 10,
+    borderWidth: 1, borderColor: isDark ? '#5B21B6' : '#DDD6FE',
   },
-  otpInfoBannerText: { flex: 1, fontSize: 11, color: '#5B21B6', fontWeight: '600', lineHeight: 15 },
+  otpInfoBannerText: { flex: 1, fontSize: 11, color: isDark ? '#C4B5FD' : '#5B21B6', fontWeight: '600', lineHeight: 15 },
 
   costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  costLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  costSub: { fontSize: 10, color: '#9CA3AF', fontWeight: '500', marginTop: 2 },
-  costValue: { fontSize: 20, fontWeight: '800', color: '#111827', letterSpacing: -0.4 },
+  costLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  costSub: { fontSize: 10, color: c.textMuted, fontWeight: '500', marginTop: 2 },
+  costValue: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
 
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#111827', borderRadius: 16, paddingVertical: 16, gap: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
-  primaryButtonDisabled: { backgroundColor: '#9CA3AF', shadowOpacity: 0, elevation: 0 },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: '#9CA3AF', marginTop: 8, fontWeight: '500' },
+  primaryButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
+  primaryButtonText: { color: c.card, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: c.textMuted, marginTop: 8, fontWeight: '500' },
 
   sheetCardFinding: {
-    width: '100%', backgroundColor: '#FFFFFF',
+    width: '100%', backgroundColor: c.card,
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
-    maxHeight: height * 0.45,
-    minHeight: 320,
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
+    maxHeight: height * 0.45, minHeight: 320,
   },
   findingScrollView: { flex: 1, width: '100%' },
   findingScrollContent: { paddingHorizontal: 20, paddingTop: 10, alignItems: 'center' },
 
   findingTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    width: '100%',
-    marginTop: 4,
-    marginBottom: 16,
+    flexDirection: 'row', alignItems: 'center', width: '100%',
+    marginTop: 4, marginBottom: 16,
   },
 
   radarContainer: {
     width: 80, height: 80,
     justifyContent: 'center', alignItems: 'center',
-    marginRight: 16
+    marginRight: 16,
   },
-  radarGuideRing: { position: 'absolute', borderWidth: 1, borderColor: '#FFEDD5' },
+  radarGuideRing: { position: 'absolute', borderWidth: 1, borderColor: ORANGE, opacity: 0.15 },
   radarWaveRing: {
     position: 'absolute', width: 36, height: 36, borderRadius: 18,
     borderWidth: 2, borderColor: ORANGE, backgroundColor: 'rgba(242,112,36,0.08)',
   },
   radarHalo: { position: 'absolute', width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(242,112,36,0.14)' },
   radarCenterCore: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+    width: 30, height: 30, borderRadius: 15, backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 6, elevation: 5, zIndex: 2,
   },
 
   findingTextGroup: { flex: 1, alignItems: 'flex-start' },
   findingTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  findingTitle: { fontSize: 17, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
+  findingTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
   findingDots: { width: 20, textAlign: 'left', color: ORANGE },
   findingSubWrap: { minHeight: 36, justifyContent: 'flex-start' },
-  findingSub: { fontSize: 12, lineHeight: 16, color: '#6B7280', fontWeight: '500' },
+  findingSub: { fontSize: 12, lineHeight: 16, color: c.textSecondary, fontWeight: '500' },
 
   findingInfoRow: { flexDirection: 'row', alignItems: 'stretch', gap: 10, width: '100%', marginBottom: 12 },
   searchingReceiverMiniCard: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFE4D2',
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
     borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10,
   },
   searchMiniAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
   searchMiniLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 1 },
   searchMiniLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
-  searchMiniName: { fontSize: 14, fontWeight: '700', color: '#111827' },
-  searchMiniPhone: { fontSize: 12, fontWeight: '500', color: '#6B7280', marginTop: 1 },
+  searchMiniName: { fontSize: 14, fontWeight: '700', color: c.textPrimary },
+  searchMiniPhone: { fontSize: 12, fontWeight: '500', color: c.textSecondary, marginTop: 1 },
 
   searchCostOnlyBox: {
-    minWidth: 104, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
-    borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14, justifyContent: 'center', alignItems: 'center',
+    minWidth: 104, backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
+    borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14,
+    justifyContent: 'center', alignItems: 'center',
   },
-  searchCostLabel: { fontSize: 10, fontWeight: '800', color: '#6B7280', letterSpacing: 0.8, marginBottom: 2 },
-  searchCostValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.4 },
+  searchCostLabel: { fontSize: 10, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
+  searchCostValue: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
 
-  progressContainer: { width: '100%', height: 5, backgroundColor: '#F3F4F6', borderRadius: 3, marginBottom: 16, overflow: 'hidden' },
+  progressContainer: { width: '100%', height: 5, backgroundColor: c.divider, borderRadius: 3, marginBottom: 16, overflow: 'hidden' },
   progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 3 },
 
   cancelTextButton: {
     width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 14, borderRadius: 14, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA',
+    paddingVertical: 14, borderRadius: 14, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
   },
-  cancelTextButtonLabel: { color: '#EF4444', fontWeight: '700', fontSize: 15 },
+  cancelTextButtonLabel: { color: c.error, fontWeight: '700', fontSize: 15 },
 
   sheetCardMatched: {
-    width: '100%', backgroundColor: '#FFFFFF', paddingHorizontal: 24, paddingTop: 8,
+    width: '100%', backgroundColor: c.card, paddingHorizontal: 24, paddingTop: 8,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
   matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   matchedHeaderIcon: {
-    width: 40, height: 40, borderRadius: 12, backgroundColor: '#DCFCE7',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#BBF7D0',
+    width: 40, height: 40, borderRadius: 12, backgroundColor: c.successBg,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.success,
   },
-  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
-  matchedHeaderSub: { fontSize: 11, color: '#6B7280', fontWeight: '500', marginTop: 2 },
-  matchedInnerCard: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 16, padding: 14, backgroundColor: '#F9FAFB', marginBottom: 14 },
+  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  matchedHeaderSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  matchedInnerCard: {
+    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 14,
+    backgroundColor: c.background, marginBottom: 14,
+  },
   matchedRow: { flexDirection: 'row', alignItems: 'center' },
   matchedLeftCol: { width: 70, alignItems: 'center', marginRight: 14, position: 'relative' },
   matchedAvatarCircle: {
-    width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
-    borderWidth: 3, borderColor: '#FFFFFF', shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4,
+    width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 3, borderColor: c.card,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4,
   },
   matchedVerifiedBadge: {
-    position: 'absolute', bottom: 0, right: 4, width: 20, height: 20, borderRadius: 10, backgroundColor: '#22C55E',
-    justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#FFFFFF',
+    position: 'absolute', bottom: 0, right: 4, width: 20, height: 20, borderRadius: 10,
+    backgroundColor: c.success,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: c.card,
   },
-  noMatchModifyLink: {
-  marginTop: 14,
-  alignItems: 'center',
-  },
-  noMatchModifyLinkText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#9CA3AF',
-    textDecorationLine: 'underline',
-  },
+  noMatchModifyLink: { marginTop: 14, alignItems: 'center' },
+  noMatchModifyLinkText: { fontSize: 12, fontWeight: '700', color: c.textMuted, textDecorationLine: 'underline' },
   matchedRightCol: { flex: 1 },
-  matchedName: { fontSize: 15, fontWeight: '800', color: '#111827', marginBottom: 6, letterSpacing: -0.2 },
+  matchedName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
   carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  carText: { fontSize: 11, color: '#6B7280', fontWeight: '600' },
-  matchedDivider: { height: 1, backgroundColor: '#E5E7EB', marginVertical: 10 },
+  carText: { fontSize: 11, color: c.textSecondary, fontWeight: '600' },
+  matchedDivider: { height: 1, backgroundColor: c.border, marginVertical: 10 },
   matchedReceiverRow: { flexDirection: 'row', alignItems: 'center' },
-  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: '#6B7280', letterSpacing: 0.8, marginBottom: 2 },
-  matchedReceiverName: { fontSize: 13, fontWeight: '700', color: '#111827' },
-  matchedReceiverPhone: { fontSize: 11, color: '#6B7280', marginTop: 1, fontWeight: '500' },
+  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
+  matchedReceiverName: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+  matchedReceiverPhone: { fontSize: 11, color: c.textSecondary, marginTop: 1, fontWeight: '500' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  totalLabel: { fontSize: 12, color: '#6B7280', fontWeight: '600' },
-  totalValue: { fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3 },
-  totalPaidBadge: { fontSize: 10, color: '#10B981', fontWeight: '700', marginTop: 2 },
+  totalLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  totalValue: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  totalPaidBadge: { fontSize: 10, color: c.success, fontWeight: '700', marginTop: 2 },
 
   ratingSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   ratingStarsInline: { flexDirection: 'row', gap: 2 },
-  ratingAvgText: { fontSize: 12, fontWeight: '800', color: '#374151' },
+  ratingAvgText: { fontSize: 12, fontWeight: '800', color: c.textPrimary },
   recentReviewsWrap: { marginTop: 10, gap: 8 },
-  recentReviewItem: { backgroundColor: '#FFFBEB', borderRadius: 10, padding: 10, borderWidth: 1, borderColor: '#FDE68A' },
+  recentReviewItem: {
+    backgroundColor: isDark ? '#2A1F0A' : '#FFFBEB',
+    borderRadius: 10, padding: 10,
+    borderWidth: 1, borderColor: c.warning,
+  },
   recentReviewHead: { flexDirection: 'row', gap: 2, marginBottom: 4 },
-  recentReviewComment: { fontSize: 12, color: '#78350F', fontWeight: '600', lineHeight: 16 },
+  recentReviewComment: {
+    fontSize: 12, color: isDark ? '#FCD34D' : '#78350F',
+    fontWeight: '600', lineHeight: 16,
+  },
 
   confirmButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#111827', borderRadius: 16,
-    paddingVertical: 16, gap: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 4,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
-  confirmButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  confirmButtonText: { color: c.card, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
 
   otpSentBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#DCFCE7', borderRadius: 12,
-    padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#BBF7D0',
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.successBg, borderRadius: 12, padding: 10, marginTop: 10,
+    borderWidth: 1, borderColor: c.success,
   },
-  otpSentText: { flex: 1, fontSize: 12, color: '#166534', fontWeight: '600' },
+  otpSentText: { flex: 1, fontSize: 12, color: c.success, fontWeight: '600' },
 
   sheetCardNoMatch: {
-    width: '100%', backgroundColor: '#FFFFFF', paddingHorizontal: 24, paddingTop: 8,
+    width: '100%', backgroundColor: c.card, paddingHorizontal: 24, paddingTop: 8,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.1, shadowRadius: 16, elevation: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
   noMatchIconCircle: {
-    width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF7ED', justifyContent: 'center', alignItems: 'center',
-    marginBottom: 12, marginTop: 2, borderWidth: 1, borderColor: '#FFE4D2',
+    width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+    marginBottom: 12, marginTop: 2, borderWidth: 1, borderColor: ORANGE,
   },
-  noMatchTitle: { fontSize: 17, fontWeight: '800', color: '#111827', marginBottom: 4, letterSpacing: -0.3, textAlign: 'center' },
-  noMatchSubtitle: { fontSize: 12, color: '#6B7280', textAlign: 'center', lineHeight: 18, marginBottom: 18, paddingHorizontal: 10, fontWeight: '500' },
+  noMatchTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 4, letterSpacing: -0.3, textAlign: 'center' },
+  noMatchSubtitle: {
+    fontSize: 12, color: c.textSecondary, textAlign: 'center',
+    lineHeight: 18, marginBottom: 18, paddingHorizontal: 10, fontWeight: '500',
+  },
   noMatchActions: { flexDirection: 'row', gap: 12, width: '100%' },
   noMatchBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, borderRadius: 16, gap: 6 },
   retryBtn: { backgroundColor: ORANGE, shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 3 },
   retryBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
-  modifyBtn: { backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB' },
-  modifyBtnText: { color: '#6B7280', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
+  modifyBtn: { backgroundColor: c.divider, borderWidth: 1, borderColor: c.border },
+  modifyBtnText: { color: c.textSecondary, fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
 });

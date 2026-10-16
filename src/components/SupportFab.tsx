@@ -1,5 +1,5 @@
 // src/components/SupportFab.tsx
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView,
   Pressable, ActivityIndicator, Alert, TextInput, Platform,
@@ -8,10 +8,9 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../utils/supabase';
+import { useTheme, ThemeColors } from '../utils/themeContext';
 
 const ORANGE = '#FF751F';
-const ORANGE_SOFT = '#FFF4EC';
-const ORANGE_BORDER = '#FFE4D2';
 
 type SupportCase = {
   kind: 'dispute' | 'issue' | 'delivery';
@@ -31,6 +30,9 @@ type Props = {
 
 export default function SupportFab({ role, bottomOffset = 90 }: Props) {
   const navigation = useNavigation<any>();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [me, setMe] = useState<number | null>(null);
@@ -40,7 +42,6 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
   const [kbHeight, setKbHeight] = useState(0);
   const pulse = useRef(new Animated.Value(0)).current;
 
-  /* ---------- Keyboard listener (this is the actual fix) ---------- */
   useEffect(() => {
     const onShow = (e: KeyboardEvent) => {
       setKbHeight(e.endCoordinates.height);
@@ -62,7 +63,6 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
     };
   }, []);
 
-  /* ---------- Pulse animation ---------- */
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
@@ -77,7 +77,6 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
   const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] });
   const glow = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.7] });
 
-  /* ---------- Resolve current user id ---------- */
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -110,7 +109,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
           status: d.status,
           created_at: d.created_at,
           ref: d.dispute_ref,
-          badge_color: '#EF4444',
+          badge_color: colors.error,
         });
       });
 
@@ -153,7 +152,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
             status: i.status,
             created_at: i.created_at,
             ref: `DEL-${i.delivery_id}`,
-            badge_color: '#F59E0B',
+            badge_color: colors.warning,
           });
         });
       }
@@ -188,7 +187,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [me, role]);
+  }, [me, role, colors.error, colors.warning]);
 
   const openModal = () => {
     setOpen(true);
@@ -249,13 +248,9 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
 
   return (
     <>
-      {/* Floating button */}
       <Animated.View
         pointerEvents="box-none"
-        style={[
-          styles.fabWrap,
-          { bottom: bottomOffset, transform: [{ scale }] },
-        ]}
+        style={[styles.fabWrap, { bottom: bottomOffset, transform: [{ scale }] }]}
       >
         <Animated.View style={[styles.fabGlow, { opacity: glow }]} pointerEvents="none" />
         <TouchableOpacity
@@ -268,21 +263,10 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Modal */}
-      <Modal
-        visible={open}
-        transparent
-        animationType="slide"
-        onRequestClose={closeModal}
-      >
+      <Modal visible={open} transparent animationType="slide" onRequestClose={closeModal}>
         <View style={styles.modalRoot}>
           <Pressable style={styles.backdrop} onPress={closeModal} />
 
-          {/*
-            The sheet is anchored to the bottom with `bottom: kbHeight`.
-            When the keyboard is up, kbHeight > 0, so the sheet slides
-            up by exactly the keyboard height — no overlap.
-          */}
           <View
             style={[
               styles.sheet,
@@ -291,7 +275,6 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
           >
             <View style={styles.handle} />
 
-            {/* Header */}
             <View style={styles.header}>
               <View style={styles.headerIcon}>
                 <Ionicons name="headset" size={20} color={ORANGE} />
@@ -308,11 +291,10 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
                 hitSlop={10}
                 activeOpacity={0.7}
               >
-                <Ionicons name="close" size={18} color="#6B7280" />
+                <Ionicons name="close" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
-            {/* Scrollable body — hidden when keyboard is up so the composer is fully visible */}
             {kbHeight === 0 && (
               <ScrollView
                 showsVerticalScrollIndicator={false}
@@ -322,11 +304,15 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
                 <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
                 <View style={styles.quickRow}>
                   <QuickAction
+                    styles={styles}
+                    colors={colors}
                     icon="alert-circle-outline"
                     label={role === 'provider' ? 'Report an issue' : 'Report a problem'}
                     onPress={() => { closeModal(); navigation.navigate('ReportIssue'); }}
                   />
                   <QuickAction
+                    styles={styles}
+                    colors={colors}
                     icon="shield-checkmark-outline"
                     label="Dispute center"
                     onPress={() => { closeModal(); navigation.navigate('DisputeCenter'); }}
@@ -335,6 +321,8 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
 
                 <View style={styles.quickRow}>
                   <QuickAction
+                    styles={styles}
+                    colors={colors}
                     icon="chatbubbles-outline"
                     label="Messages"
                     onPress={() => {
@@ -351,6 +339,8 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
                     }}
                   />
                   <QuickAction
+                    styles={styles}
+                    colors={colors}
                     icon="document-text-outline"
                     label="Policies"
                     onPress={() => { closeModal(); navigation.navigate('LegalPolicies'); }}
@@ -362,7 +352,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
                   <View style={styles.center}><ActivityIndicator color={ORANGE} /></View>
                 ) : cases.length === 0 ? (
                   <View style={styles.emptyBox}>
-                    <Ionicons name="checkmark-circle" size={22} color="#22C55E" />
+                    <Ionicons name="checkmark-circle" size={22} color={colors.success} />
                     <Text style={styles.emptyText}>No open cases — you're all set.</Text>
                   </View>
                 ) : (
@@ -384,7 +374,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
                             {c.subtitle} · {c.status}
                           </Text>
                         </View>
-                        <Ionicons name="chevron-forward" size={16} color="#D1D5DB" />
+                        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -392,22 +382,18 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
               </ScrollView>
             )}
 
-            {/* Composer */}
             <View style={styles.composer}>
               <TextInput
                 style={styles.input}
                 placeholder="Describe your concern…"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={message}
                 onChangeText={setMessage}
                 multiline
                 maxLength={500}
               />
               <TouchableOpacity
-                style={[
-                  styles.sendBtn,
-                  (!message.trim() || sending) && { opacity: 0.5 },
-                ]}
+                style={[styles.sendBtn, (!message.trim() || sending) && { opacity: 0.5 }]}
                 onPress={sendMessage}
                 disabled={!message.trim() || sending}
                 activeOpacity={0.85}
@@ -426,7 +412,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
   );
 }
 
-const QuickAction = ({ icon, label, onPress }: any) => (
+const QuickAction = ({ icon, label, onPress, styles, colors }: any) => (
   <TouchableOpacity style={styles.quickCard} onPress={onPress} activeOpacity={0.8}>
     <View style={styles.quickIcon}>
       <Ionicons name={icon} size={18} color={ORANGE} />
@@ -435,223 +421,131 @@ const QuickAction = ({ icon, label, onPress }: any) => (
   </TouchableOpacity>
 );
 
-const styles = StyleSheet.create({
-  /* FAB */
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   fabWrap: {
-    position: 'absolute',
-    right: 18,
-    zIndex: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
+    position: 'absolute', right: 18, zIndex: 999,
+    alignItems: 'center', justifyContent: 'center',
   },
   fabGlow: {
-    position: 'absolute',
-    width: 62, height: 62, borderRadius: 31,
+    position: 'absolute', width: 62, height: 62, borderRadius: 31,
     backgroundColor: 'rgba(255,117,31,0.35)',
   },
   fab: {
-    width: 54, height: 54, borderRadius: 27,
-    backgroundColor: ORANGE,
+    width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
-    shadowRadius: 14,
-    elevation: 8,
-    borderWidth: 2, borderColor: '#FFFFFF',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4, shadowRadius: 14, elevation: 8,
+    borderWidth: 2, borderColor: c.card,
   },
 
-  /* Modal */
-  modalRoot: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(17,24,39,0.45)',
   },
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    maxHeight: '88%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    elevation: 24,
+    position: 'absolute', left: 0, right: 0, bottom: 0,
+    backgroundColor: c.card,
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingHorizontal: 20, paddingTop: 10, maxHeight: '88%',
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.12, shadowRadius: 20, elevation: 24,
   },
   handle: {
-    alignSelf: 'center',
-    width: 40, height: 4, borderRadius: 2,
-    backgroundColor: '#E5E7EB',
-    marginBottom: 16,
+    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
+    backgroundColor: c.border, marginBottom: 16,
   },
 
-  /* Header */
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 18,
+    flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18,
   },
   headerIcon: {
     width: 44, height: 44, borderRadius: 22,
-    backgroundColor: ORANGE_SOFT,
+    backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: ORANGE_BORDER,
+    borderWidth: 1, borderColor: ORANGE,
   },
   headerTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.3,
+    fontSize: 17, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3,
   },
   headerSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 2,
-    fontWeight: '500',
+    fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500',
   },
   closeBtn: {
     width: 32, height: 32, borderRadius: 16,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: c.divider,
     alignItems: 'center', justifyContent: 'center',
   },
 
-  /* Body */
   scrollBody: { paddingBottom: 8 },
 
   sectionLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#9CA3AF',
-    letterSpacing: 1.2,
-    marginBottom: 10,
+    fontSize: 10, fontWeight: '800', color: c.textMuted,
+    letterSpacing: 1.2, marginBottom: 10,
   },
 
-  quickRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 10,
-  },
+  quickRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   quickCard: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#F1F1F1',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderRadius: 14, backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: isDark ? 0.3 : 0.03, shadowRadius: 4, elevation: 1,
   },
   quickIcon: {
     width: 34, height: 34, borderRadius: 17,
-    backgroundColor: ORANGE_SOFT,
+    backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: ORANGE_BORDER,
+    borderWidth: 1, borderColor: ORANGE,
   },
   quickLabel: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#111827',
-    letterSpacing: -0.2,
+    flex: 1, fontSize: 13, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2,
   },
 
   caseList: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#F1F1F1',
-    overflow: 'hidden',
+    backgroundColor: c.card, borderRadius: 16,
+    borderWidth: 1, borderColor: c.divider, overflow: 'hidden',
   },
   caseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, paddingHorizontal: 14,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   caseRowLast: { borderBottomWidth: 0 },
   caseDot: { width: 8, height: 8, borderRadius: 4 },
   caseTitle: {
-    fontSize: 13.5,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.2,
+    fontSize: 13.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2,
   },
   caseSub: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 3,
-    fontWeight: '500',
+    fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500',
   },
 
   center: { paddingVertical: 24, alignItems: 'center' },
   emptyBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
-    borderRadius: 14,
-    padding: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.successBg, borderWidth: 1, borderColor: c.success,
+    borderRadius: 14, padding: 14,
   },
-  emptyText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#166534',
-    fontWeight: '600',
-  },
+  emptyText: { flex: 1, fontSize: 13, color: c.success, fontWeight: '600' },
 
   composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 10,
-    marginTop: 14,
-    paddingTop: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'flex-end', gap: 10,
+    marginTop: 14, paddingTop: 14,
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
   input: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 22,
+    flex: 1, backgroundColor: c.divider, borderRadius: 22,
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 12 : 10,
     paddingBottom: Platform.OS === 'ios' ? 12 : 10,
-    minHeight: 44,
-    maxHeight: 110,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '500',
+    minHeight: 44, maxHeight: 110, fontSize: 14,
+    color: c.textPrimary, fontWeight: '500',
   },
   sendBtn: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: ORANGE,
+    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
 });

@@ -7,6 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../../utils/supabase';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const ORANGE = '#FA7A25';
 
@@ -21,6 +22,9 @@ const toE164 = (raw: string): string => {
 
 export default function ReceiverPickerScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+
   const [loading, setLoading] = useState(true);
   const [receivers, setReceivers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
@@ -108,7 +112,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     );
   };
 
-  /* -------- Save button gating -------- */
   const canAdd =
     !!userId &&
     !saving &&
@@ -183,7 +186,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           <View style={{ flex: 1, marginRight: 8 }}>
             <View style={styles.itemNameRow}>
               <Text style={styles.itemName} numberOfLines={1}>{item.receiver_name}</Text>
-              {item.is_favorite && <Ionicons name="star" size={12} color="#F59E0B" style={{ marginLeft: 4 }} />}
+              {item.is_favorite && <Ionicons name="star" size={12} color={colors.warning} style={{ marginLeft: 4 }} />}
             </View>
             <Text style={styles.itemPhone} numberOfLines={1}>{item.receiver_phone}</Text>
             {item.receiver_email ? (
@@ -201,18 +204,18 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
             onPress={() => handleDeleteReceiver(item.receiver_id, item.receiver_name)}
             activeOpacity={0.7}
           >
-            <Ionicons name="trash-outline" size={18} color="#EF4444" />
+            <Ionicons name="trash-outline" size={18} color={colors.error} />
           </TouchableOpacity>
         </View>
       </View>
     );
-  }, [selectedId]);
+  }, [selectedId, colors, styles]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Select Receiver</Text>
         <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddModal(true)} activeOpacity={0.85}>
@@ -221,17 +224,17 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       </View>
 
       <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={18} color="#9CA3AF" />
+        <Ionicons name="search-outline" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search receivers..."
-          placeholderTextColor="#9CA3AF"
+          placeholderTextColor={colors.textMuted}
           value={search}
           onChangeText={setSearch}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
@@ -289,7 +292,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add New Receiver</Text>
               <TouchableOpacity onPress={() => setShowAddModal(false)}>
-                <Ionicons name="close" size={22} color="#111827" />
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -299,7 +302,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                 <TextInput
                   style={styles.textInput}
                   placeholder="Full name"
-                  placeholderTextColor="#9CA3AF"
+                  placeholderTextColor={colors.textMuted}
                   value={newName}
                   onChangeText={setNewName}
                 />
@@ -310,7 +313,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                 <TextInput
                   style={styles.textInput}
                   placeholder="e.g. 0917 123 4567"
-                  placeholderTextColor="#9CA3AF"
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="phone-pad"
                   value={newPhone}
                   onChangeText={setNewPhone}
@@ -325,7 +328,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                 <TextInput
                   style={styles.textInput}
                   placeholder="receiver@email.com"
-                  placeholderTextColor="#9CA3AF"
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="email-address"
                   autoCapitalize="none"
                   value={newEmail}
@@ -369,20 +372,20 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
   header: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 20, paddingBottom: 14, paddingTop: 6, gap: 12,
   },
   backBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: '#E5E7EB',
+    borderWidth: 1, borderColor: c.border,
   },
   headerTitle: {
-    flex: 1, fontSize: 18, fontWeight: '800', color: '#111827',
+    flex: 1, fontSize: 18, fontWeight: '800', color: c.textPrimary,
     letterSpacing: -0.3,
   },
   addBtn: {
@@ -394,27 +397,27 @@ const styles = StyleSheet.create({
 
   searchBar: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
     borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12,
     marginHorizontal: 20, marginBottom: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.02, shadowRadius: 4, elevation: 1,
+    shadowOpacity: isDark ? 0.3 : 0.02, shadowRadius: 4, elevation: 1,
   },
-  searchInput: { flex: 1, fontSize: 14, color: '#111827', padding: 0 },
+  searchInput: { flex: 1, fontSize: 14, color: c.textPrimary, padding: 0 },
 
   listContent: { paddingHorizontal: 20, paddingBottom: 40 },
 
   itemCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: c.card,
     borderRadius: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: '#E5E7EB',
+    borderWidth: 1, borderColor: c.border,
     overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.3 : 0.03, shadowRadius: 6, elevation: 2,
   },
   itemCardSelected: {
-    borderColor: ORANGE, backgroundColor: '#FFFBF5',
+    borderColor: ORANGE, backgroundColor: c.accentSoft,
     borderWidth: 1.5,
   },
   itemMainTouchable: {
@@ -430,37 +433,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', marginBottom: 3,
   },
   itemName: {
-    fontSize: 15, fontWeight: '700', color: '#111827',
+    fontSize: 15, fontWeight: '700', color: c.textPrimary,
     letterSpacing: -0.2, flexShrink: 1,
   },
-  itemPhone: { fontSize: 13, color: '#4B5563', fontWeight: '500' },
-  itemEmail: { fontSize: 11, color: '#9CA3AF', marginTop: 2, fontWeight: '400' },
+  itemPhone: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  itemEmail: { fontSize: 11, color: c.textMuted, marginTop: 2, fontWeight: '400' },
 
   itemActions: {
     flexDirection: 'row', alignItems: 'center', paddingRight: 14,
   },
   deleteBtn: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: '#FEF2F2',
+    width: 36, height: 36, borderRadius: 18, backgroundColor: c.errorBg,
     justifyContent: 'center', alignItems: 'center',
   },
 
   loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { color: '#6B7280', fontWeight: '500', fontSize: 13 },
+  loadingText: { color: c.textSecondary, fontWeight: '500', fontSize: 13 },
 
   emptyBox: {
     flex: 1, justifyContent: 'center', alignItems: 'center',
     paddingHorizontal: 40, paddingBottom: 60,
   },
   emptyIconBox: {
-    width: 84, height: 84, borderRadius: 42, backgroundColor: '#FFF7ED',
+    width: 84, height: 84, borderRadius: 42, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
   },
   emptyTitle: {
-    fontSize: 18, fontWeight: '800', color: '#111827',
+    fontSize: 18, fontWeight: '800', color: c.textPrimary,
     marginBottom: 6, textAlign: 'center',
   },
   emptySubtitle: {
-    fontSize: 13, color: '#6B7280', textAlign: 'center',
+    fontSize: 13, color: c.textSecondary, textAlign: 'center',
     lineHeight: 18, marginBottom: 20,
   },
   emptyCta: {
@@ -476,31 +479,32 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
   },
   modalCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34,
     maxHeight: '85%',
+    borderTopWidth: 1, borderColor: c.border,
   },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', marginBottom: 20,
   },
   modalTitle: {
-    fontSize: 18, fontWeight: '800', color: '#111827', letterSpacing: -0.3,
+    fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3,
   },
   fieldGroup: { marginBottom: 16 },
   fieldLabel: {
-    fontSize: 13, fontWeight: '700', color: '#374151',
+    fontSize: 13, fontWeight: '700', color: c.textPrimary,
     marginBottom: 6, letterSpacing: 0.1,
   },
   fieldHint: {
-    fontSize: 11, color: '#9CA3AF', marginTop: 4, fontWeight: '500',
+    fontSize: 11, color: c.textMuted, marginTop: 4, fontWeight: '500',
   },
   textInput: {
-    backgroundColor: '#F9FAFB',
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12,
+    backgroundColor: c.background,
+    borderWidth: 1, borderColor: c.border, borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 14, color: '#111827', fontWeight: '500',
+    fontSize: 14, color: c.textPrimary, fontWeight: '500',
   },
   saveBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -509,11 +513,11 @@ const styles = StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  saveBtnDisabled: { backgroundColor: '#D1D5DB', shadowOpacity: 0, elevation: 0 },
+  saveBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
   saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
   saveBtnHint: {
     fontSize: 11,
-    color: '#9CA3AF',
+    color: c.textMuted,
     textAlign: 'center',
     marginTop: 8,
     fontWeight: '500',

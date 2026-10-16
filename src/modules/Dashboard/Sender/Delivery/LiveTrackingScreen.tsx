@@ -10,11 +10,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { supabase } from '../../../../utils/supabase';
 import { fetchLatestFix, ProviderFix } from '../../../../services/locationService';
+import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
-const DARK = '#111827';
-const GREY = '#6B7280';
-
 const AVG_CITY_SPEED_KMH = 22;
 const STALE_MS = 45_000;
 
@@ -52,7 +50,7 @@ function formatLastSeen(iso: string | null | undefined): string {
 }
 
 /* ================================================================== */
-/* Leaflet HTML builder                                              */
+/* Leaflet HTML builder — unchanged, always light tiles              */
 /* ================================================================== */
 function buildMapHtml(
   pickup: LatLng,
@@ -146,12 +144,10 @@ function buildMapHtml(
 
       window.recenter = function() { fitAll(); };
 
-      // Initial draw
       if (COURIER) {
         courierMarker = L.marker(COURIER, { icon: courierIcon }).addTo(map);
         refreshRoute(COURIER[0], COURIER[1]);
       } else {
-        // Draw a straight dashed fallback so something is visible
         routeLine = L.polyline([PICKUP, DROPOFF], {
           color:'#FF751F', weight:4, opacity:0.7, dashArray:'8,8'
         }).addTo(map);
@@ -171,6 +167,9 @@ export default function LiveTrackingScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+
   const deliveryId: number = route.params?.deliveryId;
 
   const webRef = useRef<WebView>(null);
@@ -188,7 +187,6 @@ export default function LiveTrackingScreen() {
   const bannerAnim = useRef(new Animated.Value(0)).current;
   const lastStageRef = useRef<number>(-1);
 
-  /* ---------------- static load ---------------- */
   const loadStatic = useCallback(async () => {
     if (!deliveryId) return;
     const { data: d } = await supabase
@@ -257,7 +255,6 @@ export default function LiveTrackingScreen() {
 
   useEffect(() => { loadStatic(); }, [loadStatic]);
 
-  /* ---------------- realtime ---------------- */
   useEffect(() => {
     if (!deliveryId) return;
     const ch = supabase
@@ -295,7 +292,6 @@ export default function LiveTrackingScreen() {
     return () => clearInterval(t);
   }, []);
 
-  /* ---------------- push fix to WebView ---------------- */
   const targetIsDropoff = !!data?.pickupVerified && !data?.completedAt;
 
   useEffect(() => {
@@ -308,7 +304,6 @@ export default function LiveTrackingScreen() {
     webRef.current.injectJavaScript(js);
   }, [fix, data, targetIsDropoff]);
 
-  /* ---------------- stage-change banner ---------------- */
   const stage = timelineStage(data);
   useEffect(() => {
     if (stage === lastStageRef.current) return;
@@ -329,7 +324,6 @@ export default function LiveTrackingScreen() {
     ]).start(() => setStageBanner(null));
   }, [stage, bannerAnim]);
 
-  /* ---------------- handlers ---------------- */
   const recenter = () => webRef.current?.injectJavaScript('window.recenter(); true;');
 
   const callProvider = () => {
@@ -349,11 +343,10 @@ export default function LiveTrackingScreen() {
     : 'Courier';
   const initials = providerName.split(' ').filter(Boolean).slice(0, 2).map(s => s[0]?.toUpperCase()).join('') || 'C';
 
-  /* ---------------- render ---------------- */
   if (loading || !data) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" />
+        <StatusBar barStyle={colors.statusBarStyle} />
         <View style={styles.center}>
           <ActivityIndicator size="large" color={ORANGE} />
           <Text style={styles.loadingText}>Loading live tracking…</Text>
@@ -379,7 +372,7 @@ export default function LiveTrackingScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <WebView
         ref={webRef}
@@ -404,10 +397,10 @@ export default function LiveTrackingScreen() {
       {/* Top bar */}
       <View style={[styles.topBar, { top: insets.top + 10 }]}>
         <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={18} color={DARK} />
+          <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={[styles.livePill, isStale && styles.livePillStale]}>
-          <View style={[styles.liveDot, { backgroundColor: isStale ? '#F59E0B' : '#22C55E' }]} />
+          <View style={[styles.liveDot, { backgroundColor: isStale ? colors.warning : colors.success }]} />
           <Text style={styles.liveText}>{isStale ? 'Stale' : 'Live'}</Text>
         </View>
       </View>
@@ -488,7 +481,7 @@ export default function LiveTrackingScreen() {
             <View style={styles.statDivider} />
             <View style={styles.statBox}>
               <Text style={styles.statLabel}>STATUS</Text>
-              <Text style={[styles.statValue, { color: isStale ? '#F59E0B' : '#22C55E' }]} numberOfLines={1}>
+              <Text style={[styles.statValue, { color: isStale ? colors.warning : colors.success }]} numberOfLines={1}>
                 {data.completedAt ? 'Done' : isStale ? 'Stale' : 'Live'}
               </Text>
             </View>
@@ -519,10 +512,10 @@ export default function LiveTrackingScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: GREY, fontWeight: '500' },
+  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
 
   topBar: {
     position: 'absolute', left: 16, right: 16,
@@ -530,85 +523,95 @@ const styles = StyleSheet.create({
     zIndex: 20,
   },
   circleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#E5E7EB',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 6, elevation: 4,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
+    shadowRadius: 6, elevation: 4,
   },
   livePill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E5E7EB',
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
   },
-  livePillStale: { borderColor: '#FDE68A' },
+  livePillStale: { borderColor: c.warning },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontSize: 11, fontWeight: '800', color: DARK, letterSpacing: 0.4 },
+  liveText: { fontSize: 11, fontWeight: '800', color: c.textPrimary, letterSpacing: 0.4 },
 
   fab: {
     position: 'absolute', right: 16,
-    width: 46, height: 46, borderRadius: 23, backgroundColor: '#FFFFFF',
+    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: '#F1F1F1', zIndex: 15,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowRadius: 8, elevation: 6,
+    borderWidth: 1, borderColor: c.border, zIndex: 15,
   },
 
   banner: {
     position: 'absolute', left: 16, right: 16,
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: DARK, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: c.textPrimary, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
     zIndex: 25,
   },
-  bannerText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, flex: 1 },
+  bannerText: { color: c.card, fontWeight: '700', fontSize: 12, flex: 1 },
 
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
-    backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 20, paddingTop: 10, maxHeight: '58%',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.12, shadowRadius: 16, elevation: 14,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.5,
+    shadowRadius: 16, elevation: 14,
   },
-  grabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB', alignSelf: 'center', marginBottom: 12 },
+  grabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.border, alignSelf: 'center', marginBottom: 12 },
 
   providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: {
     width: 48, height: 48, borderRadius: 24, backgroundColor: ORANGE,
-    alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFE4D2',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: isDark ? '#3A2411' : '#FFE4D2',
     overflow: 'hidden',
   },
   avatarImg: { width: '100%', height: '100%' },
   avatarText: { color: '#FFFFFF', fontWeight: '900', fontSize: 16 },
   verifiedDot: {
     position: 'absolute', right: -1, bottom: -1, width: 16, height: 16, borderRadius: 8,
-    backgroundColor: '#22C55E', borderWidth: 2, borderColor: '#FFFFFF',
+    backgroundColor: c.success, borderWidth: 2, borderColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  providerName: { fontSize: 15, fontWeight: '800', color: DARK },
-  providerSub: { fontSize: 12, color: GREY, fontWeight: '600', marginTop: 1 },
+  providerName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  providerSub: { fontSize: 12, color: c.textSecondary, fontWeight: '600', marginTop: 1 },
   iconBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: '#FFF4EC',
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
 
   stats: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F9FAFB',
-    borderRadius: 14, paddingVertical: 12, marginTop: 14, borderWidth: 1, borderColor: '#F1F1F1',
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
+    borderRadius: 14, paddingVertical: 12, marginTop: 14,
+    borderWidth: 1, borderColor: c.divider,
   },
   statBox: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
-  statLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.8 },
-  statValue: { fontSize: 15, fontWeight: '900', color: DARK, marginTop: 4, letterSpacing: -0.2 },
-  statDivider: { width: 1, height: 26, backgroundColor: '#E5E7EB' },
+  statLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  statValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
+  statDivider: { width: 1, height: 26, backgroundColor: c.border },
 
-  updated: { fontSize: 11, color: GREY, fontWeight: '600', marginTop: 10, textAlign: 'center' },
+  updated: { fontSize: 11, color: c.textSecondary, fontWeight: '600', marginTop: 10, textAlign: 'center' },
 
   timeline: { marginTop: 18, paddingBottom: 8 },
   tlRow: { flexDirection: 'row', alignItems: 'flex-start' },
   tlRail: { width: 22, alignItems: 'center' },
   tlDot: {
-    width: 20, height: 20, borderRadius: 10, backgroundColor: '#E5E7EB',
+    width: 20, height: 20, borderRadius: 10, backgroundColor: c.border,
     alignItems: 'center', justifyContent: 'center', zIndex: 2,
   },
   tlDotOn: { backgroundColor: ORANGE },
-  tlDotCurrent: { borderWidth: 3, borderColor: '#FFE4D2' },
-  tlLine: { width: 2, flex: 1, minHeight: 22, backgroundColor: '#E5E7EB' },
+  tlDotCurrent: { borderWidth: 3, borderColor: isDark ? '#3A2411' : '#FFE4D2' },
+  tlLine: { width: 2, flex: 1, minHeight: 22, backgroundColor: c.border },
   tlLineOn: { backgroundColor: ORANGE },
-  tlLabel: { flex: 1, fontSize: 13, fontWeight: '700', color: '#9CA3AF', paddingTop: 2, marginLeft: 10, paddingBottom: 18 },
-  tlLabelOn: { color: DARK },
+  tlLabel: { flex: 1, fontSize: 13, fontWeight: '700', color: c.textMuted, paddingTop: 2, marginLeft: 10, paddingBottom: 18 },
+  tlLabelOn: { color: c.textPrimary },
 });

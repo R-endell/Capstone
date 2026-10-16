@@ -12,6 +12,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { getMyUserId } from '../../../services/disputeService';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
 const SENDER_NAME = 'Pack-N-Ship';
@@ -67,12 +68,14 @@ type Props = {
 export default function NotificationsList({ embedded = false }: Props) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = makeStyles(colors);
+
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const myId = useRef<number | null>(null);
 
-  // Support thread modal
   const [openTicket, setOpenTicket] = useState<Notif | null>(null);
   const [thread, setThread] = useState<SupportMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -84,9 +87,6 @@ export default function NotificationsList({ embedded = false }: Props) {
   const openTicketRef = useRef<Notif | null>(null);
   useEffect(() => { openTicketRef.current = openTicket; }, [openTicket]);
 
-  // ----------------------------------------------------------
-  // Load list
-  // ----------------------------------------------------------
   const load = useCallback(async () => {
     try {
       myId.current = myId.current ?? (await getMyUserId());
@@ -109,15 +109,10 @@ export default function NotificationsList({ embedded = false }: Props) {
         const t = (n.type || '').toLowerCase();
         let key: string;
 
-        if (t === 'support' || t === 'support_outbound') {
-          key = `support-root-${n.notif_id}`;
-        } else if (t === 'support_reply' || t === 'support_user_reply') {
-          key = `support-root-${n.ref_id ?? n.notif_id}`;
-        } else if (t === 'chat') {
-          key = `chat-room-${n.ref_id ?? n.notif_id}`;
-        } else {
-          key = `other-${n.notif_id}`;
-        }
+        if (t === 'support' || t === 'support_outbound') key = `support-root-${n.notif_id}`;
+        else if (t === 'support_reply' || t === 'support_user_reply') key = `support-root-${n.ref_id ?? n.notif_id}`;
+        else if (t === 'chat') key = `chat-room-${n.ref_id ?? n.notif_id}`;
+        else key = `other-${n.notif_id}`;
 
         if (seen.has(key)) {
           const existing = seen.get(key)!;
@@ -148,9 +143,6 @@ export default function NotificationsList({ embedded = false }: Props) {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // ----------------------------------------------------------
-  // Support thread loading
-  // ----------------------------------------------------------
   const loadThread = useCallback(async (ticketId: number) => {
     setThreadLoading(true);
     setThreadErr(null);
@@ -168,7 +160,6 @@ export default function NotificationsList({ embedded = false }: Props) {
         return t === 'support' || t === 'support_reply' || t === 'support_user_reply';
       });
 
-      // Preserve any optimistic temp messages that haven't been confirmed yet
       setThread(prev => {
         const temps = prev.filter(m => m._temp_id !== undefined);
         return [...conversation, ...temps];
@@ -181,9 +172,6 @@ export default function NotificationsList({ embedded = false }: Props) {
     }
   }, []);
 
-  // ----------------------------------------------------------
-  // Realtime subscription
-  // ----------------------------------------------------------
   const channelIdRef = useRef(
     `notif-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
@@ -191,33 +179,22 @@ export default function NotificationsList({ embedded = false }: Props) {
   useEffect(() => {
     const ch = supabase
       .channel(channelIdRef.current)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notification_log' },
-        () => {
-          load();
-          const current = openTicketRef.current;
-          if (current) {
-            const ticketId = current.type === 'support_reply'
-              ? (current.ref_id ?? current.notif_id)
-              : current.notif_id;
-            loadThread(ticketId);
-          }
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log' }, () => {
+        load();
+        const current = openTicketRef.current;
+        if (current) {
+          const ticketId = current.type === 'support_reply'
+            ? (current.ref_id ?? current.notif_id)
+            : current.notif_id;
+          loadThread(ticketId);
         }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'notification_log' },
-        () => { load(); }
-      )
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log' }, () => { load(); })
       .subscribe();
 
     return () => { supabase.removeChannel(ch); };
   }, [load, loadThread]);
 
-  // ----------------------------------------------------------
-  // Support thread open/close
-  // ----------------------------------------------------------
   const openSupportThread = async (n: Notif) => {
     const ticketId = n.type === 'support_reply' || n.type === 'support_user_reply'
       ? (n.ref_id ?? n.notif_id)
@@ -235,12 +212,8 @@ export default function NotificationsList({ embedded = false }: Props) {
     loadThread(ticketId);
 
     if (!n.is_read) {
-      setItems(prev =>
-        prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i))
-      );
-      supabase.from('notification_log')
-        .update({ is_read: true })
-        .eq('notif_id', n.notif_id)
+      setItems(prev => prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i)));
+      supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id)
         .then(() => {}, (e: any) => console.warn('mark read failed', e));
     }
   };
@@ -253,9 +226,6 @@ export default function NotificationsList({ embedded = false }: Props) {
     setReply('');
   };
 
-  // ----------------------------------------------------------
-  // Send user reply
-  // ----------------------------------------------------------
   const sendSupportReply = async () => {
     const trimmed = reply.trim();
     if (!trimmed || !openTicket || !myId.current) return;
@@ -263,14 +233,9 @@ export default function NotificationsList({ embedded = false }: Props) {
     const ticketId = openTicket.notif_id;
     const tempId = Date.now();
 
-    // Optimistic insert
     const tempMsg: SupportMessage = {
-      notif_id: tempId,
-      body: trimmed,
-      type: 'support_user_reply',
-      created_at: new Date().toISOString(),
-      is_read: false,
-      _temp_id: tempId,
+      notif_id: tempId, body: trimmed, type: 'support_user_reply',
+      created_at: new Date().toISOString(), is_read: false, _temp_id: tempId,
     };
     setThread(prev => [...prev, tempMsg]);
     setReply('');
@@ -281,25 +246,16 @@ export default function NotificationsList({ embedded = false }: Props) {
       const { data, error } = await supabase
         .from('notification_log')
         .insert({
-          user_id: myId.current,
-          title: 'Support request',
-          body: trimmed,
-          type: 'support_user_reply',
-          ref_id: ticketId,
-          is_read: false,
+          user_id: myId.current, title: 'Support request', body: trimmed,
+          type: 'support_user_reply', ref_id: ticketId, is_read: false,
         })
         .select('notif_id, body, type, created_at, is_read')
         .single();
 
       if (error) throw error;
-
-      // Replace temp with real
-      setThread(prev =>
-        prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m))
-      );
+      setThread(prev => prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)));
     } catch (e: any) {
       console.warn('send reply failed', e);
-      // Remove temp on failure and restore input
       setThread(prev => prev.filter(m => m._temp_id !== tempId));
       setReply(trimmed);
       Alert.alert('Could not send', e?.message || 'Please try again.');
@@ -308,84 +264,43 @@ export default function NotificationsList({ embedded = false }: Props) {
     }
   };
 
-  // ----------------------------------------------------------
-  // Non-support routing
-  // ----------------------------------------------------------
   const routeGeneric = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
     const refId = n.ref_id;
 
-    if (type === 'chat') {
-      navigation.navigate('MainTabs', { screen: 'Messages' });
-      return;
-    }
+    if (type === 'chat') { navigation.navigate('MainTabs', { screen: 'Messages' }); return; }
 
     if (type.startsWith('dispute')) {
-      if (refId == null) {
-        navigation.navigate('DisputeCenter');
-        return;
-      }
-      if (typeof refId === 'number') {
-        navigation.navigate('DisputeDetail', { disputeId: refId });
-        return;
-      }
+      if (refId == null) { navigation.navigate('DisputeCenter'); return; }
+      if (typeof refId === 'number') { navigation.navigate('DisputeDetail', { disputeId: refId }); return; }
       try {
-        const { data } = await supabase
-          .from('disputes')
-          .select('dispute_id')
-          .eq('dispute_ref', String(refId))
-          .maybeSingle();
-        if (data?.dispute_id) {
-          navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
-        } else {
-          navigation.navigate('DisputeCenter');
-        }
-      } catch {
-        navigation.navigate('DisputeCenter');
-      }
+        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(refId)).maybeSingle();
+        if (data?.dispute_id) navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
+        else navigation.navigate('DisputeCenter');
+      } catch { navigation.navigate('DisputeCenter'); }
       return;
     }
 
-    if (type.startsWith('delivery')) {
-      navigation.navigate('DeliveryList', { status: 'Accepted' });
-      return;
-    }
-    if (type === 'match') {
-      navigation.navigate('MainTabs', { screen: 'Activity' });
-      return;
-    }
-    if (type === 'payment' || type === 'escrow') {
-      navigation.navigate('MainTabs', { screen: 'Activity' });
-      return;
-    }
+    if (type.startsWith('delivery')) { navigation.navigate('DeliveryList', { status: 'Accepted' }); return; }
+    if (type === 'match') { navigation.navigate('MainTabs', { screen: 'Activity' }); return; }
+    if (type === 'payment' || type === 'escrow') { navigation.navigate('MainTabs', { screen: 'Activity' }); return; }
 
     Alert.alert(n.title || 'Notification', n.body || '');
   };
 
   const open = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
-
-    if (type.startsWith('support')) {
-      await openSupportThread(n);
-      return;
-    }
+    if (type.startsWith('support')) { await openSupportThread(n); return; }
 
     if (!n.is_read) {
-      setItems(prev =>
-        prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i))
-      );
-      supabase.from('notification_log')
-        .update({ is_read: true })
-        .eq('notif_id', n.notif_id)
+      setItems(prev => prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i)));
+      supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id)
         .then(() => {}, (e: any) => console.warn('mark read failed', e));
     }
 
     await routeGeneric(n);
   };
 
-  // ----------------------------------------------------------
-  // List row
-  // ----------------------------------------------------------
   const renderItem = ({ item }: { item: Notif }) => {
     const t = (item.type || '').toLowerCase();
     const isSupport = t.startsWith('support');
@@ -415,36 +330,19 @@ export default function NotificationsList({ embedded = false }: Props) {
           <Text style={styles.body} numberOfLines={3}>{item.body}</Text>
           <Text style={styles.time}>{ago(item.created_at)}</Text>
         </View>
-        <Ionicons
-          name="chevron-forward"
-          size={16}
-          color="#D1D5DB"
-          style={{ alignSelf: 'center' }}
-        />
+        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} style={{ alignSelf: 'center' }} />
       </TouchableOpacity>
     );
   };
 
-  // ----------------------------------------------------------
-  // Support thread modal
-  // ----------------------------------------------------------
   const renderSupportModal = () => {
     if (!openTicket) return null;
 
     return (
-      <Modal
-        visible={!!openTicket}
-        transparent={false}
-        animationType="slide"
-        onRequestClose={closeSupportThread}
-      >
+      <Modal visible={!!openTicket} transparent={false} animationType="slide" onRequestClose={closeSupportThread}>
         <View style={styles.modalRoot}>
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8 }]}>
-            <TouchableOpacity
-              onPress={closeSupportThread}
-              style={styles.modalBackBtn}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity onPress={closeSupportThread} style={styles.modalBackBtn} activeOpacity={0.7}>
               <Ionicons name="chevron-back" size={26} color="#FFFFFF" />
             </TouchableOpacity>
 
@@ -453,12 +351,8 @@ export default function NotificationsList({ embedded = false }: Props) {
             </View>
 
             <View style={{ flex: 1 }}>
-              <Text style={styles.modalHeaderName} numberOfLines={1}>
-                {SENDER_NAME}
-              </Text>
-              <Text style={styles.modalHeaderSub} numberOfLines={1}>
-                {openTicket.title || 'Message'}
-              </Text>
+              <Text style={styles.modalHeaderName} numberOfLines={1}>{SENDER_NAME}</Text>
+              <Text style={styles.modalHeaderSub} numberOfLines={1}>{openTicket.title || 'Message'}</Text>
             </View>
           </View>
 
@@ -467,22 +361,13 @@ export default function NotificationsList({ embedded = false }: Props) {
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 60 : 0}
           >
-            <View style={{ flex: 1, backgroundColor: '#F9FAFB' }}>
+            <View style={{ flex: 1, backgroundColor: colors.background }}>
               {threadLoading && thread.length === 0 ? (
-                <View style={styles.center}>
-                  <ActivityIndicator size="small" color={ORANGE} />
-                </View>
+                <View style={styles.center}><ActivityIndicator size="small" color={ORANGE} /></View>
               ) : threadErr ? (
                 <View style={styles.center}>
-                  <Ionicons name="alert-circle-outline" size={36} color="#EF4444" />
-                  <Text
-                    style={{
-                      color: '#6B7280',
-                      marginTop: 8,
-                      textAlign: 'center',
-                      paddingHorizontal: 40,
-                    }}
-                  >
+                  <Ionicons name="alert-circle-outline" size={36} color={colors.error} />
+                  <Text style={{ color: colors.textSecondary, marginTop: 8, textAlign: 'center', paddingHorizontal: 40 }}>
                     {threadErr}
                   </Text>
                 </View>
@@ -492,19 +377,14 @@ export default function NotificationsList({ embedded = false }: Props) {
                   contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="handled"
-                  onContentSizeChange={() =>
-                    scrollRef.current?.scrollToEnd({ animated: true })
-                  }
+                  onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
                 >
                   {thread.map((m, idx) => {
                     const t = (m.type || '').toLowerCase();
                     const isMe = t === 'support' || t === 'support_user_reply';
 
                     return (
-                      <View
-                        key={`${m.notif_id}-${idx}`}
-                        style={[styles.msgRow, isMe && styles.msgRowMe]}
-                      >
+                      <View key={`${m.notif_id}-${idx}`} style={[styles.msgRow, isMe && styles.msgRowMe]}>
                         {!isMe && (
                           <View style={styles.supportAvatar}>
                             <Ionicons name="cube" size={14} color="#FFFFFF" />
@@ -512,9 +392,7 @@ export default function NotificationsList({ embedded = false }: Props) {
                         )}
 
                         <View style={[styles.msgBubble, isMe && styles.msgBubbleMe]}>
-                          <Text style={[styles.msgText, isMe && styles.msgTextMe]}>
-                            {m.body}
-                          </Text>
+                          <Text style={[styles.msgText, isMe && styles.msgTextMe]}>{m.body}</Text>
                           <Text style={[styles.msgTime, isMe && styles.msgTimeMe]}>
                             {isMe ? 'You' : SENDER_NAME} · {timeOnly(m.created_at)}
                           </Text>
@@ -525,7 +403,7 @@ export default function NotificationsList({ embedded = false }: Props) {
 
                   {thread.length === 0 && (
                     <View style={styles.center}>
-                      <Text style={{ color: '#9CA3AF', fontSize: 13 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 13 }}>
                         No messages in this conversation.
                       </Text>
                     </View>
@@ -534,16 +412,11 @@ export default function NotificationsList({ embedded = false }: Props) {
               )}
             </View>
 
-            <View
-              style={[
-                styles.composer,
-                { paddingBottom: Math.max(insets.bottom, 12) },
-              ]}
-            >
+            <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
               <TextInput
                 style={styles.input}
                 placeholder="Type your reply…"
-                placeholderTextColor="#9CA3AF"
+                placeholderTextColor={colors.textMuted}
                 value={reply}
                 onChangeText={setReply}
                 multiline
@@ -555,11 +428,7 @@ export default function NotificationsList({ embedded = false }: Props) {
                 disabled={!reply.trim() || sending}
                 activeOpacity={0.85}
               >
-                {sending ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Ionicons name="send" size={18} color="#FFFFFF" />
-                )}
+                {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="send" size={18} color="#FFFFFF" />}
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
@@ -568,47 +437,29 @@ export default function NotificationsList({ embedded = false }: Props) {
     );
   };
 
-  // ----------------------------------------------------------
-  // Loading
-  // ----------------------------------------------------------
   if (loading) {
     return (
       <View style={[styles.container, embedded && { backgroundColor: 'transparent' }]}>
         {!embedded && (
           <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-            <TouchableOpacity
-              onPress={() => navigation.goBack()}
-              style={styles.topBarBackBtn}
-              activeOpacity={0.7}
-              hitSlop={10}
-            >
-              <Ionicons name="chevron-back" size={24} color="#111827" />
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.topBarBackBtn} activeOpacity={0.7} hitSlop={10}>
+              <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
             <Text style={styles.topBarTitle}>Notifications</Text>
             <View style={{ width: 32 }} />
           </View>
         )}
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={ORANGE} />
-        </View>
+        <View style={styles.center}><ActivityIndicator size="large" color={ORANGE} /></View>
       </View>
     );
   }
 
-  // ----------------------------------------------------------
-  // Main render
-  // ----------------------------------------------------------
   return (
     <View style={[styles.container, embedded && { backgroundColor: 'transparent' }]}>
       {!embedded && (
         <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.topBarBackBtn}
-            activeOpacity={0.7}
-            hitSlop={10}
-          >
-            <Ionicons name="chevron-back" size={24} color="#111827" />
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.topBarBackBtn} activeOpacity={0.7} hitSlop={10}>
+            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.topBarTitle}>Notifications</Text>
           <View style={{ width: 32 }} />
@@ -617,11 +468,9 @@ export default function NotificationsList({ embedded = false }: Props) {
 
       {items.length === 0 ? (
         <View style={styles.center}>
-          <Ionicons name="notifications-outline" size={48} color="#D1D5DB" />
+          <Ionicons name="notifications-outline" size={48} color={colors.textMuted} />
           <Text style={styles.emptyTitle}>No notifications yet</Text>
-          <Text style={styles.emptySub}>
-            Updates about your reports and disputes will appear here.
-          </Text>
+          <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
         </View>
       ) : (
         <FlatList
@@ -634,11 +483,7 @@ export default function NotificationsList({ embedded = false }: Props) {
           }}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => { setRefreshing(true); load(); }}
-              tintColor={ORANGE}
-            />
+            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={ORANGE} />
           }
           renderItem={renderItem}
         />
@@ -649,123 +494,64 @@ export default function NotificationsList({ embedded = false }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
+const makeStyles = (c: ThemeColors) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
   topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 12,
+    backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   topBarBackBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
   },
-  topBarTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.3,
-  },
+  topBarTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
 
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
-    marginTop: 16,
-  },
-  emptySub: {
-    fontSize: 14,
-    color: '#6B7280',
-    textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 20,
-  },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
+  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16 },
+  emptySub: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
   item: {
-    flexDirection: 'row',
-    gap: 12,
-    backgroundColor: '#FFF',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
+    flexDirection: 'row', gap: 12,
+    backgroundColor: c.card, borderRadius: 14, padding: 14, marginBottom: 10,
+    borderWidth: 1, borderColor: c.divider,
   },
-  itemUnread: { backgroundColor: '#FFF7ED', borderColor: '#FED7AA' },
+  itemUnread: { backgroundColor: c.accentSoft, borderColor: ORANGE },
 
   iconBox: {
     width: 40, height: 40, borderRadius: 20,
-    backgroundColor: '#FFEDD5',
+    backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
 
   row: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  title: { flex: 1, fontSize: 14, fontWeight: '700', color: '#111827' },
-  subTitle: { fontSize: 12, color: '#6B7280', fontWeight: '600', marginTop: 2 },
+  title: { flex: 1, fontSize: 14, fontWeight: '700', color: c.textPrimary },
+  subTitle: { fontSize: 12, color: c.textSecondary, fontWeight: '600', marginTop: 2 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  body: { fontSize: 13, color: '#4B5563', marginTop: 3, lineHeight: 18 },
-  time: { fontSize: 11, color: '#9CA3AF', marginTop: 6 },
+  body: { fontSize: 13, color: c.textSecondary, marginTop: 3, lineHeight: 18 },
+  time: { fontSize: 11, color: c.textMuted, marginTop: 6 },
 
-  /* Support modal */
-  modalRoot: { flex: 1, backgroundColor: '#FFFFFF' },
+  modalRoot: { flex: 1, backgroundColor: c.background },
   modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: ORANGE,
-    paddingHorizontal: 12,
-    paddingBottom: 14,
-    borderBottomLeftRadius: 22,
-    borderBottomRightRadius: 22,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    elevation: 5,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: ORANGE, paddingHorizontal: 12, paddingBottom: 14,
+    borderBottomLeftRadius: 22, borderBottomRightRadius: 22,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2, shadowRadius: 10, elevation: 5,
   },
   modalBackBtn: { padding: 4, marginRight: 4 },
   modalHeaderAvatar: {
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center',
-    marginRight: 10,
+    alignItems: 'center', justifyContent: 'center', marginRight: 10,
   },
-  modalHeaderName: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-  },
-  modalHeaderSub: {
-    color: '#FFE4D2',
-    fontSize: 12,
-    fontWeight: '600',
-    marginTop: 2,
-  },
+  modalHeaderName: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', letterSpacing: -0.2 },
+  modalHeaderSub: { color: '#FFE4D2', fontSize: 12, fontWeight: '600', marginTop: 2 },
 
-  /* Message rows */
-  msgRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    marginBottom: 10,
-  },
-  msgRowMe: {
-    justifyContent: 'flex-end',
-  },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 10 },
+  msgRowMe: { justifyContent: 'flex-end' },
   supportAvatar: {
     width: 26, height: 26, borderRadius: 13,
     backgroundColor: ORANGE,
@@ -774,61 +560,35 @@ const styles = StyleSheet.create({
   },
   msgBubble: {
     maxWidth: '78%',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 18,
-    borderBottomLeftRadius: 6,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 18, borderBottomLeftRadius: 6,
+    backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.divider,
   },
   msgBubbleMe: {
     backgroundColor: ORANGE,
-    borderBottomLeftRadius: 18,
-    borderBottomRightRadius: 6,
+    borderBottomLeftRadius: 18, borderBottomRightRadius: 6,
     borderWidth: 0,
   },
-  msgText: {
-    fontSize: 14,
-    color: '#111827',
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  msgTextMe: {
-    color: '#FFFFFF',
-  },
+  msgText: { fontSize: 14, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
+  msgTextMe: { color: '#FFFFFF' },
   msgTime: {
-    fontSize: 10,
-    color: '#9CA3AF',
-    fontWeight: '600',
-    marginTop: 4,
-    alignSelf: 'flex-end',
+    fontSize: 10, color: c.textMuted, fontWeight: '600',
+    marginTop: 4, alignSelf: 'flex-end',
   },
-  msgTimeMe: {
-    color: 'rgba(255,255,255,0.85)',
-  },
+  msgTimeMe: { color: 'rgba(255,255,255,0.85)' },
 
-  /* Composer */
   composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: 1,
-    borderTopColor: '#F3F4F6',
+    flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+    paddingHorizontal: 16, paddingTop: 10,
+    backgroundColor: c.card,
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
   input: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    minHeight: 42,
-    maxHeight: 120,
-    fontSize: 14,
-    color: '#111827',
+    flex: 1, backgroundColor: c.divider,
+    borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10,
+    minHeight: 42, maxHeight: 120,
+    fontSize: 14, color: c.textPrimary,
   },
   sendBtn: {
     width: 42, height: 42, borderRadius: 21,

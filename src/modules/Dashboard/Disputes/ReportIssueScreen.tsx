@@ -11,11 +11,9 @@ import {
   ISSUE_TYPES, IssueType, ReportableDelivery, createDispute, fetchReportableDeliveries,
   getMyUserId, parseTrackingId, trackingIdFor,
 } from '../../../services/disputeService';
+import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-/** Brand */
 const ORANGE = '#F27024';
-const ORANGE_SOFT = '#FFF4EC';
-const ORANGE_BORDER = '#FFD9B8';
 
 const MIN_DESC = 10;
 const MAX_DESC = 500;
@@ -24,6 +22,8 @@ export default function ReportIssueScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [deliveries, setDeliveries] = useState<ReportableDelivery[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,9 +86,8 @@ export default function ReportIssueScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FAFAFA" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
 
-      {/* HEADER */}
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <TouchableOpacity
           style={styles.backBtn}
@@ -96,7 +95,7 @@ export default function ReportIssueScreen() {
           hitSlop={10}
           activeOpacity={0.8}
         >
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Report an Issue</Text>
         <View style={{ width: 40 }} />
@@ -108,30 +107,27 @@ export default function ReportIssueScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* 1. Tracking ID */}
           <Text style={styles.label}>1. Tracking ID</Text>
           <View
             style={[
               styles.inputWrap,
-              trackingError
-                ? styles.inputError
-                : match && !match.hasOpenDispute
-                ? styles.inputOk
+              trackingError ? styles.inputError
+                : match && !match.hasOpenDispute ? styles.inputOk
                 : null,
             ]}
           >
-            <Ionicons name="barcode-outline" size={20} color="#6B7280" />
+            <Ionicons name="barcode-outline" size={20} color={colors.textSecondary} />
             <TextInput
               style={styles.input}
               value={trackingInput}
               onChangeText={setTrackingInput}
               placeholder="PNS-0000"
-              placeholderTextColor="#9CA3AF"
+              placeholderTextColor={colors.textMuted}
               autoCapitalize="characters"
               autoCorrect={false}
             />
             {match && !match.hasOpenDispute && (
-              <Ionicons name="checkmark-circle" size={20} color="#16A34A" />
+              <Ionicons name="checkmark-circle" size={20} color={colors.success} />
             )}
           </View>
           {trackingError ? <Text style={styles.errorText}>{trackingError}</Text> : null}
@@ -139,7 +135,7 @@ export default function ReportIssueScreen() {
           {match && !match.hasOpenDispute && (
             <View style={styles.matchCard}>
               <View style={styles.matchIconWrap}>
-                <Ionicons name="checkmark-circle" size={18} color="#16A34A" />
+                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.matchRoute} numberOfLines={2}>{match.route}</Text>
@@ -153,11 +149,7 @@ export default function ReportIssueScreen() {
           ) : deliveries.length > 0 ? (
             <>
               <Text style={styles.subLabel}>Or pick a recent delivery</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ gap: 8 }}
-              >
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                 {deliveries.slice(0, 10).map(d => {
                   const active = match?.request_id === d.request_id;
                   return (
@@ -180,7 +172,6 @@ export default function ReportIssueScreen() {
             </Text>
           )}
 
-          {/* 2. Issue type */}
           <Text style={[styles.label, { marginTop: 24 }]}>2. What went wrong?</Text>
           <View style={styles.typeGrid}>
             {ISSUE_TYPES.map(t => {
@@ -209,14 +200,13 @@ export default function ReportIssueScreen() {
             })}
           </View>
 
-          {/* 3. Description */}
           <Text style={[styles.label, { marginTop: 24 }]}>3. Describe what happened</Text>
           <TextInput
             style={styles.textArea}
             value={description}
             onChangeText={t => setDescription(t.slice(0, MAX_DESC))}
             placeholder="Tell us what happened, when you noticed it, and the condition of the item…"
-            placeholderTextColor="#9CA3AF"
+            placeholderTextColor={colors.textMuted}
             multiline
             textAlignVertical="top"
           />
@@ -226,7 +216,7 @@ export default function ReportIssueScreen() {
           </Text>
 
           <View style={styles.note}>
-            <Ionicons name="information-circle-outline" size={18} color="#1D4ED8" />
+            <Ionicons name="information-circle-outline" size={18} color="#3B82F6" />
             <Text style={styles.noteText}>
               The provider will be asked to respond, then an admin reviews both sides. You will get a notification when the review is done.
             </Text>
@@ -253,225 +243,127 @@ export default function ReportIssueScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FAFAFA' },
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
 
-  /* ── Header ─────────────────────────────────────── */
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    gap: 12,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingBottom: 12, gap: 12,
   },
   backBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.06, shadowRadius: 6, elevation: 2,
   },
   headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#111827',
-    letterSpacing: -0.4,
+    flex: 1, textAlign: 'center',
+    fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
   },
 
-  /* ── Content ────────────────────────────────────── */
   content: { padding: 20, paddingBottom: 60 },
 
   label: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#111827',
-    marginBottom: 10,
-    letterSpacing: -0.2,
+    fontSize: 15, fontWeight: '800', color: c.textPrimary,
+    marginBottom: 10, letterSpacing: -0.2,
   },
   subLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#6B7280',
-    marginTop: 14,
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    fontSize: 12, fontWeight: '700', color: c.textSecondary,
+    marginTop: 14, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5,
   },
 
-  /* Tracking input */
   inputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 16,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 16,
     paddingHorizontal: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
   },
-  inputOk: { borderColor: '#16A34A' },
-  inputError: { borderColor: '#EF4444' },
+  inputOk: { borderColor: c.success },
+  inputError: { borderColor: c.error },
   input: {
-    flex: 1,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: '#111827',
-    fontWeight: '700',
-    letterSpacing: 0.5,
+    flex: 1, paddingVertical: 14, fontSize: 16,
+    color: c.textPrimary, fontWeight: '700', letterSpacing: 0.5,
   },
-  errorText: { color: '#DC2626', fontSize: 12, marginTop: 8, fontWeight: '600' },
-  hint: { color: '#6B7280', fontSize: 12, marginTop: 12, lineHeight: 18 },
+  errorText: { color: c.error, fontSize: 12, marginTop: 8, fontWeight: '600' },
+  hint: { color: c.textSecondary, fontSize: 12, marginTop: 12, lineHeight: 18 },
 
-  /* Matched delivery card */
   matchCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#F0FDF4',
-    borderRadius: 16,
-    padding: 14,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.successBg, borderRadius: 16, padding: 14, marginTop: 12,
+    borderWidth: 1, borderColor: c.success,
   },
   matchIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#DCFCE7',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: isDark ? '#0F2A1F' : '#DCFCE7',
+    alignItems: 'center', justifyContent: 'center',
   },
-  matchRoute: { fontSize: 13, fontWeight: '800', color: '#14532D', letterSpacing: -0.2 },
-  matchMeta: { fontSize: 12, color: '#166534', marginTop: 3, fontWeight: '500' },
+  matchRoute: { fontSize: 13, fontWeight: '800', color: c.success, letterSpacing: -0.2 },
+  matchMeta: { fontSize: 12, color: c.success, marginTop: 3, fontWeight: '500', opacity: 0.85 },
 
-  /* Recent chips */
   recent: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    paddingHorizontal: 14, paddingVertical: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 4, elevation: 1,
   },
   recentActive: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    backgroundColor: ORANGE, borderColor: ORANGE,
+    shadowColor: ORANGE, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  recentId: { fontSize: 13, fontWeight: '800', color: '#111827', letterSpacing: 0.3 },
-  recentSub: { fontSize: 11, color: '#6B7280', marginTop: 2, fontWeight: '600' },
+  recentId: { fontSize: 13, fontWeight: '800', color: c.textPrimary, letterSpacing: 0.3 },
+  recentSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '600' },
 
-  /* Issue type cards */
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   typeCard: {
-    width: '48%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1.5,
-    borderColor: '#F3F4F6',
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
+    width: '48%', backgroundColor: c.card, borderRadius: 16, padding: 14,
+    borderWidth: 1.5, borderColor: c.divider, gap: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
   },
   typeCardActive: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOpacity: 0.28,
-    shadowRadius: 10,
-    elevation: 5,
+    backgroundColor: ORANGE, borderColor: ORANGE,
+    shadowColor: ORANGE, shadowOpacity: 0.28, shadowRadius: 10, elevation: 5,
   },
   typeIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: ORANGE_SOFT,
-    borderWidth: 1,
-    borderColor: ORANGE_BORDER,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
+    alignItems: 'center', justifyContent: 'center',
   },
-  typeTitle: { fontSize: 13.5, fontWeight: '800', color: '#111827', letterSpacing: -0.2 },
-  typeHint: { fontSize: 11, color: '#6B7280', lineHeight: 15, fontWeight: '500' },
+  typeTitle: { fontSize: 13.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  typeHint: { fontSize: 11, color: c.textSecondary, lineHeight: 15, fontWeight: '500' },
 
-  /* Description */
   textArea: {
-    minHeight: 130,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#E5E7EB',
-    borderRadius: 16,
-    padding: 16,
-    fontSize: 14,
-    color: '#111827',
-    fontWeight: '500',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
+    minHeight: 130, backgroundColor: c.card,
+    borderWidth: 1.5, borderColor: c.border, borderRadius: 16, padding: 16,
+    fontSize: 14, color: c.textPrimary, fontWeight: '500',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
   },
-  counter: { fontSize: 11, color: '#9CA3AF', textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
 
-  /* Info note */
   note: {
-    flexDirection: 'row',
-    gap: 10,
-    backgroundColor: '#EFF6FF',
-    padding: 14,
-    borderRadius: 14,
-    marginTop: 16,
+    flexDirection: 'row', gap: 10,
+    backgroundColor: isDark ? '#0F2744' : '#EFF6FF',
+    padding: 14, borderRadius: 14, marginTop: 16,
   },
-  noteText: { flex: 1, fontSize: 12, color: '#1E40AF', lineHeight: 18, fontWeight: '500' },
+  noteText: {
+    flex: 1, fontSize: 12,
+    color: isDark ? '#93C5FD' : '#1E40AF',
+    lineHeight: 18, fontWeight: '500',
+  },
 
-  /* Submit */
   submit: {
-    flexDirection: 'row',
-    backgroundColor: ORANGE,
-    paddingVertical: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 22,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28,
-    shadowRadius: 12,
-    elevation: 6,
+    flexDirection: 'row', backgroundColor: ORANGE,
+    paddingVertical: 16, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 22,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28, shadowRadius: 12, elevation: 6,
   },
   submitDisabled: {
-    backgroundColor: '#FDBA74',
-    shadowOpacity: 0,
-    elevation: 0,
+    backgroundColor: isDark ? '#5A3418' : '#FDBA74',
+    shadowOpacity: 0, elevation: 0,
   },
   submitText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
 });
