@@ -1448,17 +1448,6 @@ export default function TaskScreen() {
               </>
             )}
           </TouchableOpacity>
-
-          <TouchableOpacity style={styles.otpResendButton} onPress={handleResendDeliveryOTP} disabled={deliveryOTPResending} activeOpacity={0.85}>
-            {deliveryOTPResending ? (
-              <ActivityIndicator size="small" color={colors.textSecondary} />
-            ) : (
-              <>
-                <Ionicons name="refresh" size={14} color={colors.textSecondary} />
-                <Text style={styles.otpResendText}>Send New OTP</Text>
-              </>
-            )}
-          </TouchableOpacity>
         </View>
       </View>
     </Modal>

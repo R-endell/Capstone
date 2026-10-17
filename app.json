@@ -73,14 +73,12 @@
         "expo-build-properties",
         {
           "android": {
-            "ndkVersion": "25.1.8937393"
           }
         }
       ],
       [
         "expo-gradle-properties",
         {
-          "ndkVersion": "25.1.8937393",
           "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
           "org.gradle.parallel": "false",
           "org.gradle.workers.max": "2",
