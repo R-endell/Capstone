@@ -4,7 +4,7 @@
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/applogo.jpeg",
+    "icon": "./assets/icon.png",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
@@ -73,26 +73,27 @@
         "expo-build-properties",
         {
           "android": {
-            "ndkVersion": "27.0.12077973"
+            "ndkVersion": "25.1.8937393"
           }
         }
       ],
       [
         "expo-gradle-properties",
         {
-          "ndkVersion": "27.0.12077973",
-          "org.gradle.java.home": "C:/Program Files/Microsoft/jdk-17.0.20.101-hotspot",
+          "ndkVersion": "25.1.8937393",
           "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
           "org.gradle.parallel": "false",
           "org.gradle.workers.max": "2",
           "kotlin.daemon.jvmargs": "-Xmx2048m"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {
-        "projectId": "79a1ee4b-01eb-4c8f-a09f-02e141f81249"
+        "projectId": "54ddbcc8-9774-4a60-9f65-1b58fac28b3c"
       }
-    }
+    },
+    "owner": "junjosephp"
   }
 }
