@@ -48,6 +48,38 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
 };
 
 /* ==================================================================== */
+/* Navigation Helper (Google Maps / Apple Maps)                         */
+/* ==================================================================== */
+const openNavigation = (lat: number | null | undefined, lng: number | null | undefined, label: string) => {
+  if (lat == null || lng == null) {
+    Alert.alert('No coordinates', `No location coordinates found for ${label}.`);
+    return;
+  }
+
+  const destination = `${lat},${lng}`;
+  const encodedLabel = encodeURIComponent(label);
+
+  // Google Maps scheme
+  const scheme = Platform.select({
+    ios: `maps:0,0?q=${encodedLabel}@${destination}`,
+    android: `geo:0,0?q=${destination}(${encodedLabel})`,
+  });
+
+  // Web fallback
+  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+
+  if (scheme) {
+    Linking.openURL(scheme).catch(() => {
+      Linking.openURL(webUrl).catch(() => {
+        Alert.alert('Error', 'Could not open maps application.');
+      });
+    });
+  } else {
+    Linking.openURL(webUrl);
+  }
+};
+
+/* ==================================================================== */
 /* TaskRouteMap — unchanged light tiles                                 */
 /* ==================================================================== */
 const TaskRouteMap = ({
@@ -326,6 +358,9 @@ export default function TaskScreen() {
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
+  
+  // Ping state
+  const [pingingId, setPingingId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -412,6 +447,36 @@ export default function TaskScreen() {
       setActiveDeliveries(hydrated.filter((d: any) => !d.completed_at));
       setCompletedDeliveries(hydrated.filter((d: any) => d.completed_at));
     } catch (error) { console.error('Error fetching deliveries:', error); }
+  };
+
+  // --- PING SENDER LOGIC ---
+  const handlePingSender = async (delivery: any) => {
+    const senderId = (delivery.delivery_requests as any)?.sender_id 
+      ?? (delivery.delivery_requests as any)?.sender?.user_id;
+
+    if (!senderId) {
+      Alert.alert('Error', 'Could not find sender information for this delivery.');
+      return;
+    }
+
+    setPingingId(delivery.delivery_id);
+    try {
+      const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
+      
+      await notifyUser(
+        senderId,
+        'Courier is on the way! 🚚',
+        `Your courier is heading to the pickup location for parcel #${code}. Please have the package ready.`,
+        { deliveryId: delivery.delivery_id }
+      );
+
+      Alert.alert('Sender Pinged', 'The sender has been notified that you are on your way to pick up the package.');
+    } catch (error) {
+      console.error('Failed to ping sender:', error);
+      Alert.alert('Error', 'Could not send the notification. Please try again.');
+    } finally {
+      setPingingId(null);
+    }
   };
 
   const openVerifyModal = async (delivery: any) => {
@@ -846,10 +911,27 @@ export default function TaskScreen() {
             <Text style={styles.priceText}>{money(info.earnings)}</Text>
           </View>
           {stage === 'pickup' ? (
-            <TouchableOpacity style={styles.actionBtn} onPress={() => openVerifyModal(d)} activeOpacity={0.9}>
-              <Ionicons name="qr-code-outline" size={15} color="#FFFFFF" />
-              <Text style={styles.actionBtnText}>Verify Pickup</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity 
+                style={[styles.actionBtn, { backgroundColor: colors.accentSoft, shadowColor: 'transparent' }]} 
+                onPress={() => handlePingSender(d)} 
+                disabled={pingingId === d.delivery_id}
+                activeOpacity={0.9}
+              >
+                {pingingId === d.delivery_id ? (
+                  <ActivityIndicator size="small" color={ORANGE} />
+                ) : (
+                  <>
+                    <Ionicons name="notifications" size={15} color={ORANGE} />
+                    <Text style={[styles.actionBtnText, { color: ORANGE }]}>Ping</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.actionBtn} onPress={() => openVerifyModal(d)} activeOpacity={0.9}>
+                <Ionicons name="qr-code-outline" size={15} color="#FFFFFF" />
+                <Text style={styles.actionBtnText}>Verify Pickup</Text>
+              </TouchableOpacity>
+            </View>
           ) : stage === 'transit' ? (
             <TouchableOpacity style={[styles.actionBtn, styles.actionBtnGreen]} onPress={() => openDeliveryOTPModal(d)} activeOpacity={0.9}>
               <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
@@ -979,6 +1061,17 @@ export default function TaskScreen() {
                   <Text style={styles.nextLocLabel}>{stage === 'pickup' ? 'GO TO PICKUP' : 'GO TO DROP-OFF'}</Text>
                   <Text style={styles.nextLocMain} numberOfLines={2}>{target.main}</Text>
                   {!!target.sub && <Text style={styles.nextLocSub} numberOfLines={2}>{target.sub}</Text>}
+                  
+                  {/* NAVIGATE BUTTON */}
+                  <TouchableOpacity
+                    style={styles.navigateBtn}
+                    onPress={() => openNavigation(target.lat, target.lng, target.main)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="navigate" size={16} color={ORANGE} />
+                    <Text style={styles.navigateBtnText}>Navigate with Google Maps</Text>
+                  </TouchableOpacity>
+
                   <View style={styles.nextChipRow}>
                     <View style={styles.nextChip}>
                       <Ionicons name={/door/i.test(info.request?.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#FFFFFF" />
@@ -1017,8 +1110,26 @@ export default function TaskScreen() {
                   ))}
                 </View>
 
+                {stage === 'pickup' && (
+                  <TouchableOpacity
+                    style={[styles.nextPrimaryBtn, { backgroundColor: 'rgba(255,255,255,0.2)', marginTop: 12 }]}
+                    onPress={() => handlePingSender(d)}
+                    disabled={pingingId === d.delivery_id}
+                    activeOpacity={0.9}
+                  >
+                    {pingingId === d.delivery_id ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <>
+                        <Ionicons name="notifications" size={18} color="#FFFFFF" />
+                        <Text style={[styles.nextPrimaryText, { color: '#FFFFFF' }]}>Ping Sender (On my way)</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+
                 <TouchableOpacity
-                  style={styles.nextPrimaryBtn}
+                  style={[styles.nextPrimaryBtn, { marginTop: 10 }]}
                   onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
                   activeOpacity={0.9}
                 >
@@ -1081,6 +1192,16 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>PICKUP</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
                     {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
+                    
+                    {/* NAVIGATE BUTTON — PICKUP */}
+                    <TouchableOpacity
+                      style={styles.inlineNavigateBtn}
+                      onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
+                      <Text style={styles.inlineNavigateText}>Navigate</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
                 <View style={styles.sdRouteRow}>
@@ -1091,6 +1212,16 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>DROP-OFF</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
                     {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
+                    
+                    {/* NAVIGATE BUTTON — DROP-OFF */}
+                    <TouchableOpacity
+                      style={styles.inlineNavigateBtn}
+                      onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
+                      <Text style={styles.inlineNavigateText}>Navigate</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
               </View>
@@ -1360,6 +1491,14 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>PICKUP</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.pickup.main}</Text>
               </View>
+              {/* NAVIGATE BUTTON — PICKUP in Map Modal */}
+              <TouchableOpacity
+                style={styles.mapModalNavigateBtn}
+                onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="navigate" size={18} color="#FFF" />
+              </TouchableOpacity>
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
@@ -1368,6 +1507,14 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
+              {/* NAVIGATE BUTTON — DROP-OFF in Map Modal */}
+              <TouchableOpacity
+                style={styles.mapModalNavigateBtn}
+                onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="navigate" size={18} color="#FFF" />
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -1610,6 +1757,15 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   nextLocLabel: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextLocMain: { fontSize: 16, fontWeight: '900', color: '#FFFFFF', marginTop: 4, letterSpacing: -0.2 },
   nextLocSub: { fontSize: 12, color: '#FFF1E6', marginTop: 2, lineHeight: 17 },
+  
+  // New styles for nextCard navigate button
+  navigateBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, backgroundColor: '#FFFFFF', borderRadius: 12,
+    paddingVertical: 12, marginTop: 12,
+  },
+  navigateBtnText: { color: ORANGE, fontSize: 13, fontWeight: '900' },
+
   nextChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   nextChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.22)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
   nextChipText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
@@ -1653,6 +1809,15 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
   sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
+
+  // New style for inline navigate button
+  inlineNavigateBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+    backgroundColor: c.accentSoft, alignSelf: 'flex-start', marginTop: 8,
+    borderWidth: 1, borderColor: c.border,
+  },
+  inlineNavigateText: { fontSize: 12, fontWeight: '800', color: ORANGE },
 
   sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
   sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
@@ -1725,6 +1890,15 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderTopWidth: 1, borderColor: c.border,
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  
+  // New styles for the map modal navigate buttons
+  mapModalNavigateBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
+  },
+
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {

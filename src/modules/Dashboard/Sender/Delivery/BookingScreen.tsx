@@ -7,6 +7,7 @@ import {
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
@@ -71,11 +72,48 @@ const nowManilaNaive = (): string => {
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
+// Helper to format the departure time nicely
+const formatDepartureTime = (isoString: string | null | undefined) => {
+  if (!isoString) return null;
+  try {
+    const d = new Date(isoString.replace(' ', 'T'));
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return null;
+  }
+};
+
 interface ProviderRating {
   avg: number;
   count: number;
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
+
+/* ==================================================================== */
+/* Local match notification                                            */
+/* ==================================================================== */
+const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '🎉 Provider Matched!',
+        body: `${providerName} accepted your delivery. Vehicle: ${plate}`,
+        data: { type: 'match', deliveryId },
+        sound: true,
+      },
+      trigger: null,
+    });
+  } catch (err) {
+    console.warn('[BookingScreen] local match notif failed:', err);
+  }
+};
 
 export default function BookingScreen({ route, navigation }: any) {
   const { mode: routeMode } = route.params || {};
@@ -90,6 +128,9 @@ export default function BookingScreen({ route, navigation }: any) {
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
+
+  // NEW: store departure time
+  const [departureTime, setDepartureTime] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
 
@@ -325,6 +366,30 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
+  // NEW: fetch departure time from provider's route
+  const loadProviderDeparture = async (routeId: number | null | undefined) => {
+    if (!routeId) {
+      setDepartureTime(null);
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('provider_routes')
+        .select('departure_time')
+        .eq('route_id', routeId)
+        .maybeSingle();
+
+      if (!error && data?.departure_time) {
+        setDepartureTime(data.departure_time);
+      } else {
+        setDepartureTime(null);
+      }
+    } catch (e) {
+      console.warn('[Booking] departure fetch failed', e);
+      setDepartureTime(null);
+    }
+  };
+
   const startMatching = async (opts?: { reuseRequestId?: number | null }) => {
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
@@ -379,6 +444,17 @@ export default function BookingScreen({ route, navigation }: any) {
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
+            // NEW: Load departure time
+            if (delivery.route_id) loadProviderDeparture(delivery.route_id);
+            else setDepartureTime(null);
+
+            // ---- Local match notification ----
+            fireMatchNotification(
+              provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
+              vehicle?.plate_number || '—',
+              delivery.delivery_id,
+            );
+
             setMatchFound(true);
             setBookingState('matched');
             setIsSearching(false);
@@ -424,6 +500,10 @@ export default function BookingScreen({ route, navigation }: any) {
     if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
 
     if (delivery.provider_id) loadProviderRating(delivery.provider_id);
+
+    // NEW: Load departure time
+    if (delivery.route_id) loadProviderDeparture(delivery.route_id);
+    else setDepartureTime(null);
   };
 
   const resumeBooking = async (requestId: number) => {
@@ -504,6 +584,25 @@ export default function BookingScreen({ route, navigation }: any) {
         async (payload) => {
           const delivery = payload.new;
           await loadProviderForDelivery(delivery);
+
+          // ---- Local match notification (resume path) ----
+          const { data: provider } = await supabase
+            .from('users')
+            .select('first_name, last_name')
+            .eq('user_id', delivery.provider_id)
+            .single();
+          const { data: vehicle } = await supabase
+            .from('vehicles')
+            .select('plate_number')
+            .eq('vehicle_id', delivery.vehicle_id)
+            .single();
+
+          fireMatchNotification(
+            provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
+            vehicle?.plate_number || '—',
+            delivery.delivery_id,
+          );
+
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
@@ -1154,6 +1253,15 @@ export default function BookingScreen({ route, navigation }: any) {
                       <Ionicons name="pricetag-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.carText}>{providerData?.plate_number || 'Loading...'}</Text>
                     </View>
+                    {/* NEW: DEPARTURE TIME ROW */}
+                    {departureTime && (
+                      <View style={styles.carDetailRow}>
+                        <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
+                        <Text style={styles.carText}>
+                          Departure: {formatDepartureTime(departureTime)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 </View>
               </View>

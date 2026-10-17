@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';           // NEW
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
@@ -526,6 +527,9 @@ export default function JobsScreen() {
 
   const [fullListOpen, setFullListOpen] = useState(false);
 
+  // ---- Track which request IDs we've already notified for (match push) ----
+  const notifiedMatchIdsRef = useRef<Set<number>>(new Set());
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
@@ -586,11 +590,36 @@ export default function JobsScreen() {
     if (!providerId) return;
     const ch = supabase
       .channel(notifChannelRef.current)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
+        loadNotifs();
+        const row: any = payload.new;
+        const t = (row?.type || '').toLowerCase();
+        if (t === 'match') {
+          // In-app + local device notification for a new match
+          fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
+        }
+      })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [providerId, loadNotifs]);
+
+  // ---- Local device push notification (same device) ----
+  const fireLocalMatchNotification = async (body: string) => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '🎯 New Delivery Match!',
+          body,
+          data: { type: 'match' },
+          sound: true,
+        },
+        trigger: null,
+      });
+    } catch (err) {
+      console.warn('[jobs] local notif failed:', err);
+    }
+  };
 
   const handleOpenNotifs = () => { setNotifModalOpen(true); loadNotifs(); };
 
@@ -860,6 +889,19 @@ export default function JobsScreen() {
         (matches || []).map((m: any) => m?.request?.request_id).filter((id: any) => id != null),
       )) as number[];
       const hydrated = await hydrateRequests(ids);
+
+      // ---- Fire a local notification for any newly seen match ----
+      for (const req of hydrated) {
+        if (!notifiedMatchIdsRef.current.has(req.request_id)) {
+          notifiedMatchIdsRef.current.add(req.request_id);
+          if (isOnline) {
+            fireLocalMatchNotification(
+              `New package from ${req.pickup.main} to ${req.dropoff.main}. Tap to review.`,
+            );
+          }
+        }
+      }
+
       setRequests(hydrated);
 
       if (selectedIdRef.current && !hydrated.some(r => r.request_id === selectedIdRef.current)) {
@@ -1494,7 +1536,6 @@ export default function JobsScreen() {
   const renderBottomPanel = () => {
     const dismissedCount = isOnline ? requests.length - offers.length : 0;
 
-    // Prepare split addresses for the bottom route display
     const startAddr = splitAddress(activeRoute?.start_location?.street_address);
     const endAddr = splitAddress(activeRoute?.end_location?.street_address);
 
@@ -1761,7 +1802,6 @@ export default function JobsScreen() {
                   </TouchableOpacity>
                 )}
 
-                {/* + button → navigate to ManageRoutes screen */}
                 <TouchableOpacity
                   style={styles.addRouteHeaderBtn}
                   onPress={goToManageRoutes}
@@ -1812,8 +1852,6 @@ export default function JobsScreen() {
                 {routes.map((r) => {
                   const isSelected = activeRoute?.route_id === r.route_id;
                   const rDate = parseNaiveIsoString(r.departure_time);
-                  
-                  // Format the addresses beautifully like the screenshot
                   const startAddr = splitAddress(r.start_location?.street_address);
                   const endAddr = splitAddress(r.end_location?.street_address);
 
@@ -1821,15 +1859,12 @@ export default function JobsScreen() {
                     <TouchableOpacity key={r.route_id} style={[styles.routeOption, isSelected && styles.routeOptionSelected]} onPress={() => openConfirmSheet(r)} activeOpacity={0.85}>
                       <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? ORANGE : colors.textMuted }]} />
                       <View style={{ flex: 1 }}>
-                        {/* Main: Street Name -> Street Name */}
                         <Text style={styles.routeOptionTitle} numberOfLines={1}>
                           {startAddr.main} → {endAddr.main}
                         </Text>
-                        {/* Sub: Sub-address -> Sub-address */}
                         <Text style={styles.routeOptionSub} numberOfLines={1}>
                           {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
                         </Text>
-                        {/* Footer: Date / Frequency */}
                         <Text style={styles.routeOptionAddr} numberOfLines={1}>
                           {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
                         </Text>
