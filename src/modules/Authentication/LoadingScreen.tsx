@@ -13,7 +13,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
 import { registerPushToken } from '../../services/pushService';
 /** Brand */
 const ORANGE = '#F27024';
@@ -62,8 +62,9 @@ export default function LoadingScreen() {
         }
 
                 // Restore the mode the user was last in
-                const lastMode = await AsyncStorage.getItem('last_mode');
-                const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+                // Only an approved provider (checked against the database) may
+                // be restored into the Provider interface; everyone else -> Sender.
+                const route = await resolveHomeRoute(session.user.id);
 
                 // Fire-and-forget push token registration (does not block nav)
                 (async () => {
