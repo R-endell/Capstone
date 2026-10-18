@@ -53,10 +53,17 @@ export default function RegisterProviderScreen() {
 
   const [lastScanResult, setLastScanResult] = useState<ScanResult>(null);
 
+  // Controls whether the License NUMBER field can be edited manually.
+  // Starts false — must wait for scanner to fail.
+  const [manualNumberEntryAllowed, setManualNumberEntryAllowed] = useState(false);
+
+  // Tracks whether scanner has completed (success or fail) since last photo change
+  const [scanAttempted, setScanAttempted] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const introAnim = useRef(new Animated.Value(0)).current;
-  const detailsAnim = useRef(new Animated.Value(0)).current;
   const licenseAnim = useRef(new Animated.Value(0)).current;
+  const detailsAnim = useRef(new Animated.Value(0)).current;
   const buttonAnim = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
@@ -71,11 +78,11 @@ export default function RegisterProviderScreen() {
     Animated.parallel([
       animate(headerAnim, 0),
       animate(introAnim, 150),
-      animate(detailsAnim, 300),
-      animate(licenseAnim, 450),
+      animate(licenseAnim, 300),
+      animate(detailsAnim, 450),
       animate(buttonAnim, 600),
     ]).start();
-  }, [headerAnim, introAnim, detailsAnim, licenseAnim, buttonAnim]);
+  }, [headerAnim, introAnim, licenseAnim, detailsAnim, buttonAnim]);
 
   const animatePressIn = () => {
     Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
@@ -198,8 +205,13 @@ export default function RegisterProviderScreen() {
   const applyScanResultToForm = (scan: ScanResult) => {
     if (!scan) return;
 
+    // --- CASE 1: Scanner could not reach / failed ---
     if (scan.decision === 'error') {
-      Alert.alert('Scan Unavailable', 'We could not scan your license automatically. Please enter the details manually.');
+      setManualNumberEntryAllowed(true);
+      Alert.alert(
+        'Scan Unavailable',
+        'We could not scan your license automatically. Please enter your Driver\'s License number manually.',
+      );
       return;
     }
 
@@ -211,8 +223,10 @@ export default function RegisterProviderScreen() {
       dn.includes("driver's license") || dn.includes('drivers license') ||
       dn.includes('driver license') || dn.includes('driver’s license');
 
+    // --- CASE 2: Scanned document is not a driver's license ---
     if (!isDriverLicense) {
       clearLicenseFields();
+      setManualNumberEntryAllowed(true);
       const detected = scan.documentName || scan.documentType || 'an unknown document';
       Alert.alert(
         "Not a Driver's License",
@@ -221,32 +235,60 @@ export default function RegisterProviderScreen() {
       return;
     }
 
+    // --- CASE 3: It IS a driver's license, try to extract fields ---
     const d = scan.data || {};
     const docNum = unwrapField(d.documentNumber || d.licenseNumber);
     const expiry = unwrapField(d.dateOfExpiry || d.expiryDate);
 
-    if (docNum) setLicenseNumber(docNum);
+    let extractedNum = '';
 
+    if (docNum) {
+      extractedNum = docNum;
+      setLicenseNumber(docNum);
+    }
+
+    // Auto-fill expiry as a starting point, but user can override
     if (expiry) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-        setLicenseExpiry(expiry);
-      } else {
+      let formatted = expiry;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
         const m = expiry.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
         if (m) {
           const [, a, b, y] = m;
-          setLicenseExpiry(`${y}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`);
-        } else {
-          setLicenseExpiry(expiry);
+          formatted = `${y}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
         }
       }
+      setLicenseExpiry(formatted);
     }
 
+    // --- CASE 4: Scanned but couldn't extract license number ---
+    if (!extractedNum) {
+      setManualNumberEntryAllowed(true);
+      Alert.alert(
+        'Partial Scan',
+        "We couldn't read the Driver's License number from your license. Please fill it in manually.",
+      );
+      return;
+    }
+
+    // --- CASE 5: Success on license number — keep it locked ---
+    setManualNumberEntryAllowed(false);
+
     if (scan.decision === 'accept') {
-      Alert.alert('License Verified ✓', "Your driver's license was successfully scanned. Please verify the auto-filled details.");
+      Alert.alert(
+        'License Verified ✓',
+        "Your driver's license was successfully scanned. The license number is auto-filled. Please double-check the expiry date and adjust if needed.",
+      );
     } else if (scan.decision === 'review') {
-      Alert.alert('License Scanned', 'Your license was scanned. Please verify the auto-filled details and submit for admin review.');
+      Alert.alert(
+        'License Scanned',
+        'Your license was scanned. The license number is auto-filled. Please confirm the expiry date and submit for admin review.',
+      );
     } else if (scan.decision === 'reject') {
-      Alert.alert('License Not Verified', 'The scan flagged your license. Please retake clearer photos or enter details manually.');
+      setManualNumberEntryAllowed(true);
+      Alert.alert(
+        'License Not Verified',
+        'The scan flagged your license. Please retake clearer photos or enter the license number manually.',
+      );
     }
   };
 
@@ -293,6 +335,11 @@ export default function RegisterProviderScreen() {
   };
 
   const handlePickedImage = async (side: Side, uri: string) => {
+    // Reset license-number lock state; expiry stays user-editable
+    setScanAttempted(false);
+    setManualNumberEntryAllowed(false);
+    setLastScanResult(null);
+
     if (side === 'front') {
       setLicenseFrontUri(uri);
       setLicenseFrontUrl(null);
@@ -322,6 +369,7 @@ export default function RegisterProviderScreen() {
       if (frontUrl && backUrl) {
         const scan = await runIdAnalyzerScan(frontUrl, backUrl);
         setLastScanResult(scan);
+        setScanAttempted(true);
         applyScanResultToForm(scan);
       }
     } catch (error: any) {
@@ -433,6 +481,25 @@ export default function RegisterProviderScreen() {
       }
       if (!userData) throw new Error('Failed to get or create user');
 
+      // Check duplicate license
+      const { data: duplicateLicense, error: dupCheckError } = await supabase
+        .from('provider_verifications')
+        .select('verification_id, provider_id, verification_status')
+        .eq('drivers_license_number', licenseNumber.trim())
+        .maybeSingle();
+
+      if (dupCheckError) {
+        console.warn('Duplicate license check failed:', dupCheckError);
+      } else if (duplicateLicense) {
+        setLoading(false);
+        Alert.alert(
+          'License Already Registered',
+          `This Driver's License number (${licenseNumber.trim()}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
+          [{ text: 'OK' }],
+        );
+        return;
+      }
+
       let { data: providerRole } = await supabase
         .from('roles').select('role_id, role_name').eq('role_name', 'Provider').maybeSingle();
 
@@ -497,6 +564,16 @@ export default function RegisterProviderScreen() {
           .from('user_roles').delete()
           .eq('user_id', userData.user_id).eq('role_id', providerRole.role_id);
 
+        if (verifError.code === '23505') {
+          console.warn('Duplicate license caught by DB constraint:', verifError.message);
+          Alert.alert(
+            'License Already Registered',
+            `This Driver's License number (${licenseNumber.trim()}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
+            [{ text: 'OK' }],
+          );
+          return;
+        }
+
         console.error('Verification insert error:', verifError);
         throw new Error('Failed to submit verification: ' + verifError.message);
       }
@@ -520,7 +597,21 @@ export default function RegisterProviderScreen() {
       );
     } catch (error: any) {
       console.error('=== Registration Error ===', error);
-      Alert.alert('Registration Error', error.message || 'Failed to submit application. Please try again.');
+
+      const isDuplicateLicense =
+        error?.code === '23505' ||
+        (typeof error?.message === 'string' &&
+          error.message.includes('provider_verifications_license_unique'));
+
+      if (isDuplicateLicense) {
+        Alert.alert(
+          'License Already Registered',
+          `This Driver's License number (${licenseNumber.trim()}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
+          [{ text: 'OK' }],
+        );
+      } else {
+        Alert.alert('Registration Error', error.message || 'Failed to submit application. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -531,6 +622,12 @@ export default function RegisterProviderScreen() {
   const licenseComplete =
     !!licenseFrontUri && !!licenseBackUri && !!licenseFrontUrl && !!licenseBackUrl;
   const canSubmit = licenseComplete && detailsFilled;
+
+  // License number locked unless scanner failed to extract it
+  const numberLocked = !manualNumberEntryAllowed;
+
+  const showWaitingHint =
+    licenseComplete && !scanAttempted && !scanningLicense && numberLocked;
 
   return (
     <View style={styles.container}>
@@ -554,25 +651,27 @@ export default function RegisterProviderScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Enter your license details first, then upload the front and back photos of your
-              Philippine Driver's License.
+              Upload the front and back photos of your Philippine Driver's License. We'll
+              auto-scan the license number for you — you'll only enter it manually if the scan
+              fails. You'll always pick the expiry date yourself.
             </Text>
           </View>
         </Animated.View>
 
+        {/* --- Progress Steps --- */}
         <Animated.View style={[styles.progressRow, fadeUp(introAnim, 20)]}>
           <View style={styles.progressStep}>
-            <View style={[styles.progressDot, detailsFilled && styles.progressDotDone]}>
-              {detailsFilled ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>1</Text>}
-            </View>
-            <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>Details</Text>
-          </View>
-          <View style={[styles.progressLine, detailsFilled && styles.progressLineDone]} />
-          <View style={styles.progressStep}>
             <View style={[styles.progressDot, licenseComplete && styles.progressDotDone]}>
-              {licenseComplete ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>2</Text>}
+              {licenseComplete ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>1</Text>}
             </View>
             <Text style={[styles.progressLabel, licenseComplete && styles.progressLabelDone]}>License</Text>
+          </View>
+          <View style={[styles.progressLine, licenseComplete && styles.progressLineDone]} />
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, detailsFilled && styles.progressDotDone]}>
+              {detailsFilled ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>2</Text>}
+            </View>
+            <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>Details</Text>
           </View>
           <View style={[styles.progressLine, canSubmit && styles.progressLineDone]} />
           <View style={styles.progressStep}>
@@ -583,65 +682,12 @@ export default function RegisterProviderScreen() {
           </View>
         </Animated.View>
 
-        <Animated.View style={[styles.detailsSection, fadeUp(detailsAnim, 20)]}>
-          <View style={styles.uploadHeader}>
-            <View style={styles.uploadTitleRow}>
-              <View style={styles.uploadNumberBadge}>
-                <Text style={styles.uploadNumberText}>1</Text>
-              </View>
-              <View>
-                <Text style={styles.uploadTitle}>License Details</Text>
-                <Text style={styles.uploadSubtitle}>Enter the information printed on your license</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Driver's License Number</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="e.g. D06-11-009385"
-              placeholderTextColor={colors.textMuted}
-              value={licenseNumber}
-              onChangeText={setLicenseNumber}
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>License Expiry Date</Text>
-            <TouchableOpacity style={styles.datePickerButton} onPress={() => setShowDatePicker(true)} activeOpacity={0.85}>
-              <Ionicons name="calendar-outline" size={18} color={ORANGE} />
-              <Text style={[styles.datePickerText, !licenseExpiry && styles.datePickerPlaceholder]}>
-                {licenseExpiry || 'Select expiry date'}
-              </Text>
-              <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
-          </View>
-
-          {showDatePicker && (
-            <DateTimePicker
-              value={licenseExpiry ? parseDateFromString(licenseExpiry) : new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={handleDateChange}
-              minimumDate={new Date()}
-            />
-          )}
-
-          {Platform.OS === 'ios' && showDatePicker && (
-            <TouchableOpacity style={styles.iosDoneButton} onPress={() => setShowDatePicker(false)} activeOpacity={0.85}>
-              <Text style={styles.iosDoneText}>Done</Text>
-            </TouchableOpacity>
-          )}
-        </Animated.View>
-
+        {/* --- STEP 1: License Photos --- */}
         <Animated.View style={[styles.uploadSection, fadeUp(licenseAnim, 20)]}>
           <View style={styles.uploadHeader}>
             <View style={styles.uploadTitleRow}>
               <View style={styles.uploadNumberBadge}>
-                <Text style={styles.uploadNumberText}>2</Text>
+                <Text style={styles.uploadNumberText}>1</Text>
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.uploadTitle}>Driver's License Photos</Text>
@@ -764,9 +810,122 @@ export default function RegisterProviderScreen() {
                   ? 'Scanned — pending admin review'
                   : lastScanResult.decision === 'reject'
                   ? 'License rejected by ID Analyzer'
-                  : 'ID Analyzer unavailable — enter details manually'}
+                  : 'ID Analyzer unavailable — enter license number manually below'}
               </Text>
             </View>
+          )}
+        </Animated.View>
+
+        {/* --- STEP 2: License Details --- */}
+        <Animated.View style={[styles.detailsSection, fadeUp(detailsAnim, 20)]}>
+          <View style={styles.uploadHeader}>
+            <View style={styles.uploadTitleRow}>
+              <View style={styles.uploadNumberBadge}>
+                <Text style={styles.uploadNumberText}>2</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.uploadTitle}>License Details</Text>
+                <Text style={styles.uploadSubtitle}>
+                  {numberLocked
+                    ? scanningLicense
+                      ? 'Scanning your license...'
+                      : scanAttempted
+                      ? 'License number auto-filled · pick expiry date'
+                      : 'Waiting for license scan...'
+                    : 'Enter the information printed on your license'}
+                </Text>
+              </View>
+              {numberLocked ? (
+                <View style={styles.lockedBadge}>
+                  <Ionicons name="lock-closed" size={10} color={colors.success} />
+                  <Text style={styles.lockedBadgeText}>AUTO</Text>
+                </View>
+              ) : (
+                <View style={styles.unlockedBadge}>
+                  <Ionicons name="pencil" size={10} color={colors.warning} />
+                  <Text style={styles.unlockedBadgeText}>MANUAL</Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {/* Info banners */}
+          {numberLocked && licenseComplete && scanAttempted && !scanningLicense && (
+            <View style={styles.lockedNote}>
+              <Ionicons name="sparkles" size={14} color={colors.success} />
+              <Text style={styles.lockedNoteText}>
+                License number was auto-filled by the scanner. Please pick the correct expiry
+                date below.
+              </Text>
+            </View>
+          )}
+
+          {showWaitingHint && (
+            <View style={styles.waitingNote}>
+              <Ionicons name="cloud-upload-outline" size={14} color={colors.textSecondary} />
+              <Text style={styles.waitingNoteText}>
+                Waiting for scan. The license number field will unlock automatically if the
+                scan cannot read it.
+              </Text>
+            </View>
+          )}
+
+          {!numberLocked && (
+            <View style={styles.manualNote}>
+              <Ionicons name="pencil-outline" size={14} color={colors.warning} />
+              <Text style={styles.manualNoteText}>
+                The scan could not read your Driver's License number. Please type it manually
+                below.
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Driver's License Number</Text>
+            <TextInput
+              style={[styles.textInput, numberLocked && styles.textInputLocked]}
+              placeholder={numberLocked ? 'Waiting for scan...' : 'e.g. D06-11-009385'}
+              placeholderTextColor={colors.textMuted}
+              value={licenseNumber}
+              onChangeText={setLicenseNumber}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!numberLocked}
+            />
+          </View>
+
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>License Expiry Date</Text>
+            <TouchableOpacity
+              style={styles.datePickerButton}
+              onPress={() => setShowDatePicker(true)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="calendar-outline" size={18} color={ORANGE} />
+              <Text style={[styles.datePickerText, !licenseExpiry && styles.datePickerPlaceholder]}>
+                {licenseExpiry || 'Select expiry date'}
+              </Text>
+              <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+            <Text style={styles.manualDateHint}>
+              Always set the expiry date manually — the scan may misread it.
+            </Text>
+          </View>
+
+          {showDatePicker && (
+            <DateTimePicker
+              value={licenseExpiry ? parseDateFromString(licenseExpiry) : new Date()}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              onChange={handleDateChange}
+              minimumDate={new Date()}
+            />
+          )}
+
+          {Platform.OS === 'ios' && showDatePicker && (
+            <TouchableOpacity style={styles.iosDoneButton} onPress={() => setShowDatePicker(false)} activeOpacity={0.85}>
+              <Text style={styles.iosDoneText}>Done</Text>
+            </TouchableOpacity>
           )}
         </Animated.View>
 
@@ -930,6 +1089,45 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: c.textPrimary, fontWeight: '600',
   },
+  textInputLocked: {
+    backgroundColor: c.divider,
+    color: c.textSecondary,
+    borderColor: c.divider,
+  },
+
+  lockedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    borderWidth: 1, borderColor: c.success,
+  },
+  lockedBadgeText: { fontSize: 9, fontWeight: '900', color: c.success, letterSpacing: 0.6 },
+  unlockedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.warningBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    borderWidth: 1, borderColor: c.warning,
+  },
+  unlockedBadgeText: { fontSize: 9, fontWeight: '900', color: c.warning, letterSpacing: 0.6 },
+
+  lockedNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.successBg, borderRadius: 12, padding: 10, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success,
+  },
+  lockedNoteText: { flex: 1, fontSize: 11, color: c.success, fontWeight: '600', lineHeight: 15 },
+
+  waitingNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.divider, borderRadius: 12, padding: 10, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border,
+  },
+  waitingNoteText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '600', lineHeight: 15 },
+
+  manualNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.warningBg, borderRadius: 12, padding: 10, marginBottom: 14,
+    borderWidth: 1, borderColor: c.warning,
+  },
+  manualNoteText: { flex: 1, fontSize: 11, color: c.warning, fontWeight: '600', lineHeight: 15 },
 
   datePickerButton: {
     backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12,
@@ -938,6 +1136,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   datePickerText: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '600' },
   datePickerPlaceholder: { color: c.textMuted, fontWeight: '500' },
+  manualDateHint: {
+    fontSize: 11, color: c.textMuted, fontWeight: '500', marginTop: 6,
+    fontStyle: 'italic',
+  },
   iosDoneButton: {
     marginTop: 8, alignSelf: 'flex-end',
     paddingVertical: 8, paddingHorizontal: 16,

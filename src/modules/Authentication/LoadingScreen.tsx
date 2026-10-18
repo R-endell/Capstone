@@ -32,12 +32,12 @@ export default function LoadingScreen() {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   /** Animated values */
-  const logoAnim = useRef(new Animated.Value(0)).current; // entrance
-  const pulseAnim = useRef(new Animated.Value(0)).current; // breathing logo
-  const glowAnim = useRef(new Animated.Value(0)).current; // background glow
-  const footerAnim = useRef(new Animated.Value(0)).current; // bottom block
-  const progressAnim = useRef(new Animated.Value(0)).current; // progress bar
-  const statusAnim = useRef(new Animated.Value(1)).current; // status text fade
+  const logoAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
+  const footerAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  const statusAnim = useRef(new Animated.Value(1)).current;
   const dotAnims = useRef(
     [0, 1, 2].map(() => new Animated.Value(0)),
   ).current;
@@ -61,30 +61,89 @@ export default function LoadingScreen() {
           return;
         }
 
-                // Restore the mode the user was last in
-                const lastMode = await AsyncStorage.getItem('last_mode');
-                const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+        // --- Get the user record from our `users` table ---
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('user_id')
+          .eq('auth_id', session.user.id)
+          .maybeSingle();
 
-                // Fire-and-forget push token registration (does not block nav)
-                (async () => {
-                  try {
-                    const { data: userRow } = await supabase
-                      .from('users')
-                      .select('user_id')
-                      .eq('auth_id', session.user.id)
-                      .maybeSingle();
-                    if (userRow?.user_id) {
-                      await registerPushToken(userRow.user_id);
-                    }
-                  } catch (e) {
-                    console.warn('[push] boot registration skipped:', e);
-                  }
-                })();
+        if (!userRow?.user_id) {
+          // No profile row — send to Login (they'll recreate it)
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Login' }],
+          });
+          return;
+        }
 
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: route }],
-                });
+        // --- Verify actual provider status from DB (source of truth) ---
+        let isApprovedProvider = false;
+        let isPendingProvider = false;
+
+        try {
+          const { data: providerRole } = await supabase
+            .from('roles')
+            .select('role_id')
+            .eq('role_name', 'Provider')
+            .maybeSingle();
+
+          if (providerRole?.role_id) {
+            const { data: userRole } = await supabase
+              .from('user_roles')
+              .select('user_id')
+              .eq('user_id', userRow.user_id)
+              .eq('role_id', providerRole.role_id)
+              .maybeSingle();
+
+            const { data: verif } = await supabase
+              .from('provider_verifications')
+              .select('verification_status')
+              .eq('provider_id', userRow.user_id)
+              .maybeSingle();
+
+            isPendingProvider =
+              !!userRole && verif?.verification_status === 'Pending';
+
+            isApprovedProvider =
+              !!userRole && verif?.verification_status === 'Approved';
+          }
+        } catch (e) {
+          console.warn('[loading] provider check failed:', e);
+        }
+
+        // --- If metadata says Provider but DB disagrees, self-heal it ---
+        const metaRole = session.user.user_metadata?.role;
+        if (metaRole === 'Provider' && !isApprovedProvider) {
+          try {
+            await supabase.auth.updateUser({
+              data: { role: isPendingProvider ? 'PendingProvider' : 'Sender' },
+            });
+          } catch { /* ignore */ }
+        }
+
+        // --- Also clean stale `last_mode` so we don't route wrong ---
+        const lastMode = await AsyncStorage.getItem('last_mode');
+        if (lastMode === 'provider' && !isApprovedProvider) {
+          await AsyncStorage.setItem('last_mode', 'sender');
+        }
+
+        // --- Route based on DB truth, not AsyncStorage ---
+        const route = isApprovedProvider ? 'ProviderTabs' : 'MainTabs';
+
+        // Fire-and-forget push token registration
+        (async () => {
+          try {
+            await registerPushToken(userRow.user_id);
+          } catch (e) {
+            console.warn('[push] boot registration skipped:', e);
+          }
+        })();
+
+        navigation.reset({
+          index: 0,
+          routes: [{ name: route }],
+        });
       } catch (error) {
         console.error('Session restore error:', error);
         navigation.reset({
@@ -265,7 +324,6 @@ export default function LoadingScreen() {
   /* ------------------------------------------------------------------ */
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Ambient brand glow */}
       <View style={styles.backgroundLayer} pointerEvents="none">
         <Animated.View
           style={[
@@ -278,7 +336,6 @@ export default function LoadingScreen() {
       </View>
 
       <View style={styles.contentContainer}>
-        {/* Logo block */}
         <Animated.View
           style={[
             styles.logoSection,
@@ -304,7 +361,6 @@ export default function LoadingScreen() {
           <Text style={styles.tagline}>FAST · SECURE · RELIABLE</Text>
         </Animated.View>
 
-        {/* Progress + status */}
         <Animated.View
           style={[
             styles.bottomSection,
