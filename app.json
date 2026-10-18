@@ -4,7 +4,7 @@
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/applogo.jpeg",
+    "icon": "./assets/icon.png",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
@@ -23,6 +23,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
+      "googleServicesFile": "./google-services.json",
       "package": "com.rendelljames.Capstone",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
@@ -43,7 +44,9 @@
         "android.permission.POST_NOTIFICATIONS"
       ]
     },
-    "web": { "favicon": "./assets/favicon.png" },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
     "plugins": [
       "expo-splash-screen",
       "expo-web-browser",
@@ -68,21 +71,27 @@
       "expo-task-manager",
       [
         "expo-build-properties",
-        { "android": { "ndkVersion": "26.3.11579264" } }
+        {
+          "android": {
+          }
+        }
       ],
       [
         "expo-gradle-properties",
         {
-          "ndkVersion": "26.3.11579264",
           "org.gradle.jvmargs": "-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8",
           "org.gradle.parallel": "false",
           "org.gradle.workers.max": "2",
           "kotlin.daemon.jvmargs": "-Xmx2048m"
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
-      "eas": { "projectId": "341c2e19-38c9-4bbf-aa65-419406bc1150" }
-    }
+      "eas": {
+        "projectId": "54ddbcc8-9774-4a60-9f65-1b58fac28b3c"
+      }
+    },
+    "owner": "junjosephp"
   }
 }

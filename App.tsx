@@ -310,7 +310,6 @@ function MainTabs() {
         <Tab.Screen name="Account" component={AccountScreen} />
       </Tab.Navigator>
 
-      {/* Floating customer support bubble (sender) */}
       <SupportFab role="sender" bottomOffset={78} />
     </View>
   );
@@ -373,17 +372,143 @@ function ProviderTabs() {
         <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
       </ProviderTab.Navigator>
 
-      {/* Floating customer support bubble (provider) */}
       <SupportFab role="provider" bottomOffset={78} />
     </View>
   );
 }
 
-// ---------- Inner App (needs to be inside ThemeProvider so it can use useTheme) ----------
+// ---------- ROLE GUARD ----------
+/**
+ * Listens to navigation state changes and ensures the current user is
+ * actually allowed to be on ProviderTabs. If not, force-navigates back
+ * to MainTabs. This is the safety net that prevents the "stuck on provider"
+ * bug when the app is killed mid-registration.
+ */
+function useRoleGuard(navigationRef: React.RefObject<any>) {
+  const validatingRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+
+  const validateCurrentRoute = async () => {
+    if (!navigationRef.current?.isReady?.()) return;
+    if (validatingRef.current) return;
+
+    const state = navigationRef.current.getRootState?.();
+    if (!state) return;
+
+    // Find the deepest active route name
+    const findActiveRoute = (navState: any): string | null => {
+      if (!navState) return null;
+      const idx = navState.index ?? 0;
+      const route = navState.routes?.[idx];
+      if (!route) return null;
+      if (route.state) return findActiveRoute(route.state);
+      return route.name ?? null;
+    };
+
+    const activeRoute = findActiveRoute(state);
+    if (!activeRoute) return;
+
+    // Only validate when user is on provider screens
+    if (activeRoute !== 'ProviderTabs') return;
+
+    validatingRef.current = true;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'Login' }],
+        });
+        return;
+      }
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!userRow?.user_id) {
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+        return;
+      }
+
+      // Check both role + verification status
+      const { data: providerRole } = await supabase
+        .from('roles')
+        .select('role_id')
+        .eq('role_name', 'Provider')
+        .maybeSingle();
+
+      const { data: userRole } = providerRole?.role_id
+        ? await supabase
+            .from('user_roles')
+            .select('user_id')
+            .eq('user_id', userRow.user_id)
+            .eq('role_id', providerRole.role_id)
+            .maybeSingle()
+        : { data: null };
+
+      const { data: verif } = await supabase
+        .from('provider_verifications')
+        .select('verification_status')
+        .eq('provider_id', userRow.user_id)
+        .maybeSingle();
+
+      const isApprovedProvider =
+        !!userRole && verif?.verification_status === 'Approved';
+
+      if (!isApprovedProvider) {
+        console.warn(
+          '⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
+        );
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      }
+    } catch (err) {
+      console.warn('Role guard error:', err);
+    } finally {
+      validatingRef.current = false;
+    }
+  };
+
+  // Validate on route change
+  useEffect(() => {
+    const unsub = navigationRef.current?.addListener?.('state', () => {
+      validateCurrentRoute();
+    });
+    return () => {
+      unsub?.();
+    };
+  }, [navigationRef.current]);
+
+  // Validate when app comes back from background
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const wasBackground =
+        appStateRef.current.match(/inactive|background/);
+      if (wasBackground && next === 'active') {
+        validateCurrentRoute();
+      }
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, []);
+}
+
+// ---------- Inner App ----------
 function AppInner() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const appStateRef = useRef(AppState.currentState);
   const matcherStartedRef = useRef(false);
+
+  // Attach the role guard
+  useRoleGuard(navigationRef as any);
 
   useEffect(() => {
     let cancelled = false;
@@ -407,6 +532,36 @@ function AppInner() {
         .maybeSingle();
 
       if (!userRow?.user_id) return;
+
+      // Only start matcher if user is an APPROVED provider
+      const { data: providerRole } = await supabase
+        .from('roles')
+        .select('role_id')
+        .eq('role_name', 'Provider')
+        .maybeSingle();
+
+      const { data: userRole } = providerRole?.role_id
+        ? await supabase
+            .from('user_roles')
+            .select('user_id')
+            .eq('user_id', userRow.user_id)
+            .eq('role_id', providerRole.role_id)
+            .maybeSingle()
+        : { data: null };
+
+      const { data: verif } = await supabase
+        .from('provider_verifications')
+        .select('verification_status')
+        .eq('provider_id', userRow.user_id)
+        .maybeSingle();
+
+      if (!userRole || verif?.verification_status !== 'Approved') {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
 
       const { data: routeRow } = await supabase
         .from('provider_routes')
@@ -488,11 +643,25 @@ function AppInner() {
 
     bootstrap();
 
-    // Notification tap → open LiveTracking if the payload has a deliveryId
     notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const payload = response.notification.request.content.data as any;
+
+      if (
+        payload?.type === 'chat' &&
+        payload.roomId &&
+        navigationRef.isReady?.()
+      ) {
+        navigationRef.navigate('MainTabs', {
+          screen: 'Messages',
+          params: { openRoomId: payload.roomId },
+        });
+        return;
+      }
+
       if (payload?.deliveryId && navigationRef.isReady?.()) {
-        navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
+        navigationRef.navigate('LiveTracking', {
+          deliveryId: Number(payload.deliveryId),
+        });
       }
     });
 

@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
+import { notifyUser } from '../../../services/pushService';   // NEW
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
@@ -124,6 +125,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = useRef<number | null>(null);
+  const currentUserName = useRef<string>('');   // NEW — cache sender's name for push
   const subscription = useRef<any>(null);
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
@@ -212,7 +214,16 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-    const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
+
+    const { data: userRecord } = await supabase
+      .from('users')
+      .select('user_id, first_name, last_name')
+      .eq('auth_id', user.id)
+      .single();
+
+    if (userRecord) {
+      currentUserName.current = [userRecord.first_name, userRecord.last_name].filter(Boolean).join(' ') || 'Someone';
+    }
     return userRecord?.user_id || null;
   };
 
@@ -557,6 +568,23 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           )
         )
       );
+
+      // ---- NEW: send push notification to the other party ----
+      // Skip for support chat (they may not have a phone-notif for support)
+      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
+        const senderLabel = currentUserName.current || 'Someone';
+        const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
+        try {
+          await notifyUser(
+            selectedRoom.other.user_id,
+            `💬 New message from ${senderLabel}`,
+            preview,
+            { type: 'chat', roomId, senderId: currentUserId.current },
+          );
+        } catch (notifErr) {
+          console.warn('[Chat] push notify failed:', notifErr);
+        }
+      }
     } catch (error: any) {
       console.error('Send error:', error);
       Alert.alert('Error', 'Unable to send message.');

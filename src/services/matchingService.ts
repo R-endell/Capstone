@@ -133,15 +133,58 @@ function isAlongRouteInOrder(
   return true;
 }
 
-function isTimeWithinWindow(
-  time1: string,
-  time2: string,
-  windowMinutes: number = 1440,
+/* ------------------------------------------------------------------ */
+/* Time helpers (Manila, UTC+8)                                        */
+/* ------------------------------------------------------------------ */
+/**
+ * Returns "YYYY-MM-DD" for the given date in Manila time.
+ * Used for calendar-day comparison.
+ */
+const getManilaDateString = (input: string | Date): string => {
+  let d: Date;
+  if (input instanceof Date) {
+    d = input;
+  } else {
+    const normalized = String(input).replace(' ', 'T');
+    d = new Date(normalized);
+  }
+  if (isNaN(d.getTime())) return '';
+  const manila = new Date(d.getTime() + 8 * 60 * 60 * 1000);
+  return manila.toISOString().slice(0, 10);
+};
+
+/**
+ * Strict same calendar-day (Manila) check.
+ */
+function isSameDay(time1: string | null | undefined, time2: string | null | undefined): boolean {
+  if (!time1 || !time2) return false;
+  const d1 = getManilaDateString(time1);
+  const d2 = getManilaDateString(time2);
+  return !!d1 && !!d2 && d1 === d2;
+}
+
+/**
+ * Time-window check.
+ * - If allowPast is true → compares absolute difference (both past & future allowed).
+ * - If allowPast is false → only future window (route must be after request but within window).
+ */
+function isWithinMinutes(
+  requestTime: string,
+  routeTime: string,
+  windowMinutes: number,
+  allowPast: boolean = true,
 ): boolean {
-  const diffMinutes = Math.abs(
-    (new Date(time1).getTime() - new Date(time2).getTime()) / 60000,
-  );
-  return diffMinutes <= windowMinutes;
+  const t1 = new Date(String(requestTime).replace(' ', 'T')).getTime();
+  const t2 = new Date(String(routeTime).replace(' ', 'T')).getTime();
+  if (isNaN(t1) || isNaN(t2)) return false;
+
+  if (allowPast) {
+    return Math.abs(t1 - t2) / 60000 <= windowMinutes;
+  } else {
+    // Future-only: route must be after request, and within window
+    const diffMinutes = (t2 - t1) / 60000;
+    return diffMinutes >= 0 && diffMinutes <= windowMinutes;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -163,6 +206,7 @@ export async function getPendingRequests(): Promise<any[]> {
 }
 
 async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
+  // Look back 24h so we don't hide recently active routes that are still in progress.
   const pastDay = new Date();
   pastDay.setHours(pastDay.getHours() - 24);
 
@@ -183,7 +227,22 @@ async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
 
 /* ------------------------------------------------------------------ */
 /* findMatches — read-only match query                                 */
+/*                                                                     */
+/* Rules:                                                              */
+/*   • Route must be active (provider.is_active = true)                */
+/*   • Pickup & dropoff must lie along the route polyline (±2 km)      */
+/*   • Pickup must come before dropoff along the route                 */
+/*   • Send Now:                                                       */
+/*       - Request time is "now" (Manila)                              */
+/*       - Route departure_time MUST be in the FUTURE (>= now)         */
+/*       - Route departure_time MUST be within 3 hours of "now"        */
+/*   • Scheduled:                                                      */
+/*       - Must be same calendar day (Manila)                          */
+/*       - Within ±4 hours of the route departure_time                 */
 /* ------------------------------------------------------------------ */
+const SEND_NOW_MAX_LOOKAHEAD_MINUTES = 180; // 3 hours
+const SCHEDULED_WINDOW_MINUTES = 240;       // 4 hours
+
 export async function findMatches(
   routeId?: number | null,
 ): Promise<MatchResult[]> {
@@ -206,11 +265,18 @@ export async function findMatches(
     );
   }
 
+  const nowIso = new Date().toISOString();
+
   for (const request of pendingRequests) {
     if (!request.pickup_location || !request.dropoff_location) continue;
 
+    // "Send Now" requests have scheduled_time = null.
+    const isSendNow = !request.scheduled_time;
+    const effectiveRequestTime: string = request.scheduled_time || nowIso;
+
     for (const route of routesToCheck) {
       const roadPoints = routePolylines.get(route.route_id) || [];
+
       if (
         !isAlongRouteInOrder(
           request.pickup_location,
@@ -221,17 +287,39 @@ export async function findMatches(
       )
         continue;
 
-      const isTimeMatch = request.scheduled_time
-        ? isTimeWithinWindow(
-            request.scheduled_time,
-            route.departure_time,
-            1440,
-          )
-        : true;
-
-      if (isTimeMatch) {
-        matches.push({ request, route, matchScore: 100 });
+      // ---- Same-day (Manila) restriction ----
+      if (!isSameDay(effectiveRequestTime, route.departure_time)) {
+        continue;
       }
+
+      // ---- Time-window restriction ----
+      if (isSendNow) {
+        // Send Now: route MUST be in the future, within 3 hours.
+        if (
+          !isWithinMinutes(
+            effectiveRequestTime,
+            route.departure_time,
+            SEND_NOW_MAX_LOOKAHEAD_MINUTES,
+            false, // allowPast = false
+          )
+        ) {
+          continue;
+        }
+      } else {
+        // Scheduled: ±4h window.
+        if (
+          !isWithinMinutes(
+            request.scheduled_time!,
+            route.departure_time,
+            SCHEDULED_WINDOW_MINUTES,
+            true, // allowPast = true
+          )
+        ) {
+          continue;
+        }
+      }
+
+      matches.push({ request, route, matchScore: 100 });
     }
   }
   return matches;

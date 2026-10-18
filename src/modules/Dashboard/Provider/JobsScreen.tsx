@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';           // NEW
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
@@ -526,6 +527,9 @@ export default function JobsScreen() {
 
   const [fullListOpen, setFullListOpen] = useState(false);
 
+  // ---- Track which request IDs we've already notified for (match push) ----
+  const notifiedMatchIdsRef = useRef<Set<number>>(new Set());
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
@@ -586,11 +590,36 @@ export default function JobsScreen() {
     if (!providerId) return;
     const ch = supabase
       .channel(notifChannelRef.current)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
+        loadNotifs();
+        const row: any = payload.new;
+        const t = (row?.type || '').toLowerCase();
+        if (t === 'match') {
+          // In-app + local device notification for a new match
+          fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
+        }
+      })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [providerId, loadNotifs]);
+
+  // ---- Local device push notification (same device) ----
+  const fireLocalMatchNotification = async (body: string) => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: '🎯 New Delivery Match!',
+          body,
+          data: { type: 'match' },
+          sound: true,
+        },
+        trigger: null,
+      });
+    } catch (err) {
+      console.warn('[jobs] local notif failed:', err);
+    }
+  };
 
   const handleOpenNotifs = () => { setNotifModalOpen(true); loadNotifs(); };
 
@@ -637,50 +666,111 @@ export default function JobsScreen() {
     } catch { return null; }
   };
 
+  const goToManageRoutes = () => {
+    setRoutePickerVisible(false);
+    navigation.navigate('ManageRoutes');
+  };
+
   const createQuickRoute = async (pid: number) => {
     try {
       setLoading(true);
-      let vehicleId: number | null = null;
-      const { data: vehData } = await supabase.from('vehicles').select('vehicle_id').eq('provider_id', pid).limit(1).maybeSingle();
 
-      if (vehData) { vehicleId = vehData.vehicle_id; }
-      else {
-        const { data: newVeh, error: vehErr } = await supabase.from('vehicles').insert({
-          provider_id: pid, vehicle_type: 'Motorcycle / Van', plate_number: 'PNS-999',
-          max_volume_liters: 500, max_weight_kg: 100,
-          cargo_length_cm: 100, cargo_width_cm: 100, cargo_height_cm: 100,
-          verification_status: 'Verified',
-        }).select('*').single();
+      let vehicleId: number | null = null;
+      const { data: vehData } = await supabase
+        .from('vehicles')
+        .select('vehicle_id, vehicle_type, plate_number')
+        .eq('provider_id', pid)
+        .limit(1)
+        .maybeSingle();
+
+      let resolvedVehicle: any = vehData;
+      if (vehData) {
+        vehicleId = vehData.vehicle_id;
+      } else {
+        const { data: newVeh, error: vehErr } = await supabase
+          .from('vehicles')
+          .insert({
+            provider_id: pid,
+            vehicle_type: 'Motorcycle / Van',
+            plate_number: 'PNS-999',
+            max_volume_liters: 500,
+            max_weight_kg: 100,
+            cargo_length_cm: 100,
+            cargo_width_cm: 100,
+            cargo_height_cm: 100,
+            verification_status: 'Verified',
+          })
+          .select('*')
+          .single();
         if (vehErr) throw vehErr;
         vehicleId = newVeh.vehicle_id;
+        resolvedVehicle = newVeh;
       }
 
       const curLat = myLoc?.lat ?? 10.3157;
       const curLng = myLoc?.lng ?? 123.8854;
 
-      const { data: startLoc, error: sErr } = await supabase.from('locations').insert({
-        street_address: 'Current Location', barangay: 'Lahug', city: 'Cebu City', province: 'Cebu',
-        zip_code: '6000', latitude: curLat, longitude: curLng,
-      }).select('*').single();
-      if (sErr) throw sErr;
+      const resolveLocation = async (lat: number, lng: number, fallbackLabel: string) => {
+        const { data: existing } = await supabase
+          .from('locations')
+          .select('*')
+          .eq('latitude', lat)
+          .eq('longitude', lng)
+          .limit(1);
 
-      const { data: endLoc, error: eErr } = await supabase.from('locations').insert({
-        street_address: 'Cebu Metro Destination', barangay: 'Centro', city: 'Mandaue City', province: 'Cebu',
-        zip_code: '6014', latitude: curLat + 0.03, longitude: curLng + 0.03,
-      }).select('*').single();
-      if (eErr) throw eErr;
+        if (existing && existing.length > 0) return existing[0];
+
+        const { data: created, error } = await supabase
+          .from('locations')
+          .insert({
+            street_address: fallbackLabel,
+            barangay: 'Unknown',
+            city: 'Unknown',
+            province: 'Unknown',
+            zip_code: '0000',
+            latitude: lat,
+            longitude: lng,
+          })
+          .select('*')
+          .single();
+        if (error) throw error;
+        return created;
+      };
+
+      const startLoc = await resolveLocation(
+        curLat,
+        curLng,
+        `Current Location (${curLat.toFixed(4)}, ${curLng.toFixed(4)})`,
+      );
+
+      const endLat = curLat + 0.03;
+      const endLng = curLng + 0.03;
+      const endLoc = await resolveLocation(
+        endLat,
+        endLng,
+        `Destination (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`,
+      );
 
       const nowIso = toNaiveIsoString(new Date());
-      const { data: simpleRoute, error: simpleErr } = await supabase.from('provider_routes').insert({
-        provider_id: pid, vehicle_id: vehicleId,
-        start_location_id: startLoc.location_id, end_location_id: endLoc.location_id,
-        departure_time: nowIso, route_frequency: 'On-Demand',
-      }).select('*').single();
+      const { data: simpleRoute, error: simpleErr } = await supabase
+        .from('provider_routes')
+        .insert({
+          provider_id: pid,
+          vehicle_id: vehicleId,
+          start_location_id: startLoc.location_id,
+          end_location_id: endLoc.location_id,
+          departure_time: nowIso,
+          route_frequency: 'On-Demand',
+        })
+        .select('*')
+        .single();
       if (simpleErr) throw simpleErr;
 
       const builtRoute: Route = {
-        ...simpleRoute, start_location: startLoc, end_location: endLoc,
-        vehicle: vehData || { vehicle_id: vehicleId, vehicle_type: 'Motorcycle / Van', plate_number: 'PNS-999' } as any,
+        ...simpleRoute,
+        start_location: startLoc,
+        end_location: endLoc,
+        vehicle: resolvedVehicle,
       };
 
       setActiveRoute(builtRoute);
@@ -691,7 +781,9 @@ export default function JobsScreen() {
       console.error('Failed to create quick route:', err);
       Alert.alert('Error', err?.message || 'Could not create active route.');
       return null;
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const fetchRoutes = async (pid: number) => {
@@ -797,6 +889,19 @@ export default function JobsScreen() {
         (matches || []).map((m: any) => m?.request?.request_id).filter((id: any) => id != null),
       )) as number[];
       const hydrated = await hydrateRequests(ids);
+
+      // ---- Fire a local notification for any newly seen match ----
+      for (const req of hydrated) {
+        if (!notifiedMatchIdsRef.current.has(req.request_id)) {
+          notifiedMatchIdsRef.current.add(req.request_id);
+          if (isOnline) {
+            fireLocalMatchNotification(
+              `New package from ${req.pickup.main} to ${req.dropoff.main}. Tap to review.`,
+            );
+          }
+        }
+      }
+
       setRequests(hydrated);
 
       if (selectedIdRef.current && !hydrated.some(r => r.request_id === selectedIdRef.current)) {
@@ -1431,6 +1536,9 @@ export default function JobsScreen() {
   const renderBottomPanel = () => {
     const dismissedCount = isOnline ? requests.length - offers.length : 0;
 
+    const startAddr = splitAddress(activeRoute?.start_location?.street_address);
+    const endAddr = splitAddress(activeRoute?.end_location?.street_address);
+
     return (
       <View style={styles.bottomPanel}>
         <View style={styles.onlineToggleRow}>
@@ -1466,11 +1574,28 @@ export default function JobsScreen() {
             <Text style={styles.vehicleNameText}>
               {activeRoute?.vehicle?.vehicle_type || (activeRoute ? 'Active Route' : 'No Active Route')}
             </Text>
-            <Text style={styles.vehiclePlateText} numberOfLines={1}>
-              {activeRoute
-                ? `${activeRoute.start_location?.city || activeRoute.start_location?.street_address || 'Start'} → ${activeRoute.end_location?.city || activeRoute.end_location?.street_address || 'End'}`
-                : 'Tap to select or create a route'}
-            </Text>
+            {activeRoute ? (
+              <>
+                <Text style={styles.vehiclePlateText} numberOfLines={1}>
+                  <Text style={{ fontWeight: '800', color: colors.textPrimary }}>
+                    {startAddr.main}
+                  </Text>
+                  {' → '}
+                  <Text style={{ fontWeight: '800', color: colors.textPrimary }}>
+                    {endAddr.main}
+                  </Text>
+                </Text>
+                {startAddr.sub && (
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }} numberOfLines={1}>
+                    {startAddr.sub}
+                  </Text>
+                )}
+              </>
+            ) : (
+              <Text style={styles.vehiclePlateText} numberOfLines={1}>
+                Tap to select or create a route
+              </Text>
+            )}
           </View>
           <TouchableOpacity style={styles.changeBtn} onPress={() => setRoutePickerVisible(true)} activeOpacity={0.85}>
             <Text style={styles.changeBtnText}>{activeRoute ? 'Change' : 'Select route'}</Text>
@@ -1662,17 +1787,31 @@ export default function JobsScreen() {
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
               <Text style={styles.routePickerTitle}>Select a Route</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {providerId && (
-                  <TouchableOpacity style={styles.quickRouteHeaderBtn} onPress={async () => {
-                    const newR = await createQuickRoute(providerId);
-                    if (newR) setRoutePickerVisible(false);
-                  }}>
-                    <Ionicons name="add-circle" size={16} color={ORANGE} />
-                    <Text style={styles.quickRouteHeaderBtnText}>+ Quick Route</Text>
+                  <TouchableOpacity
+                    style={styles.quickRouteHeaderBtn}
+                    onPress={async () => {
+                      const newR = await createQuickRoute(providerId);
+                      if (newR) setRoutePickerVisible(false);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="flash" size={16} color={ORANGE} />
+                    <Text style={styles.quickRouteHeaderBtnText}>Quick</Text>
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity onPress={() => setRoutePickerVisible(false)}>
+
+                <TouchableOpacity
+                  style={styles.addRouteHeaderBtn}
+                  onPress={goToManageRoutes}
+                  activeOpacity={0.85}
+                  hitSlop={8}
+                >
+                  <Ionicons name="add" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={() => setRoutePickerVisible(false)} hitSlop={8}>
                   <Ionicons name="close" size={22} color={colors.textPrimary} />
                 </TouchableOpacity>
               </View>
@@ -1682,15 +1821,30 @@ export default function JobsScreen() {
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
                 <Text style={styles.routePickerEmptyTitle}>No routes created yet</Text>
-                <Text style={styles.routePickerEmptySub}>Create an on-demand route now to start accepting nearby deliveries right away.</Text>
-                <TouchableOpacity style={styles.createQuickRouteBtn} onPress={async () => {
-                  if (providerId) {
-                    const newR = await createQuickRoute(providerId);
-                    if (newR) setRoutePickerVisible(false);
-                  }
-                }} activeOpacity={0.85}>
+                <Text style={styles.routePickerEmptySub}>
+                  Create an on-demand route now, or set up a scheduled route in Manage Routes.
+                </Text>
+                <TouchableOpacity
+                  style={styles.createQuickRouteBtn}
+                  onPress={async () => {
+                    if (providerId) {
+                      const newR = await createQuickRoute(providerId);
+                      if (newR) setRoutePickerVisible(false);
+                    }
+                  }}
+                  activeOpacity={0.85}
+                >
                   <Ionicons name="flash" size={16} color="#FFFFFF" />
                   <Text style={styles.createQuickRouteBtnText}>Create Quick Route</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.emptyManageRouteBtn}
+                  onPress={goToManageRoutes}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="map-outline" size={16} color={ORANGE} />
+                  <Text style={styles.emptyManageRouteText}>Manage Routes</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -1698,18 +1852,21 @@ export default function JobsScreen() {
                 {routes.map((r) => {
                   const isSelected = activeRoute?.route_id === r.route_id;
                   const rDate = parseNaiveIsoString(r.departure_time);
+                  const startAddr = splitAddress(r.start_location?.street_address);
+                  const endAddr = splitAddress(r.end_location?.street_address);
+
                   return (
                     <TouchableOpacity key={r.route_id} style={[styles.routeOption, isSelected && styles.routeOptionSelected]} onPress={() => openConfirmSheet(r)} activeOpacity={0.85}>
                       <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? ORANGE : colors.textMuted }]} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.routeOptionTitle} numberOfLines={1}>
-                          {r.start_location?.city || 'Start'} → {r.end_location?.city || 'End'}
+                          {startAddr.main} → {endAddr.main}
                         </Text>
                         <Text style={styles.routeOptionSub} numberOfLines={1}>
-                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
+                          {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
                         </Text>
                         <Text style={styles.routeOptionAddr} numberOfLines={1}>
-                          {r.start_location?.street_address} → {r.end_location?.street_address}
+                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
                         </Text>
                       </View>
                       {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
@@ -2095,6 +2252,18 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routePickerEmptySub: { fontSize: 12, color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
   quickRouteHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: c.accentSoft },
   quickRouteHeaderBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  addRouteHeaderBtn: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: ORANGE,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+  },
+  emptyManageRouteBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: c.accentSoft, marginTop: 6,
+  },
+  emptyManageRouteText: { fontSize: 13, fontWeight: '800', color: ORANGE },
   createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
   createQuickRouteBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
 

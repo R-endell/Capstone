@@ -6,7 +6,6 @@ const XENDIT_WEBHOOK_TOKEN = Deno.env.get('XENDIT_WEBHOOK_TOKEN')!
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-/** Map Xendit channel codes → our internal provider names */
 const mapProvider = (code?: string | null): string | null => {
   if (!code) return null
   const c = String(code).toUpperCase()
@@ -17,7 +16,6 @@ const mapProvider = (code?: string | null): string | null => {
 
 serve(async (req) => {
   try {
-    // 1. Verify webhook authenticity
     const callbackToken = req.headers.get('x-callback-token')
     if (callbackToken !== XENDIT_WEBHOOK_TOKEN) {
       console.error('[AUTH] Token mismatch')
@@ -31,7 +29,7 @@ serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
     // ==================================================================
-    // PAYMENT TOKEN ACTIVATION (linking GCash / Maya)
+    // PAYMENT TOKEN ACTIVATION
     // ==================================================================
     if (event === 'payment_token.activation') {
       const { payment_token_id, customer_id, channel_code } = body.data
@@ -42,7 +40,6 @@ serve(async (req) => {
       } else if (channel_code === 'PAYMAYA') {
         provider = 'maya'
       } else {
-        console.log(`[ACTIVATION] Unhandled channel: ${channel_code}`)
         return new Response('OK', { status: 200 })
       }
 
@@ -52,10 +49,7 @@ serve(async (req) => {
         .eq('xendit_customer_id', customer_id)
         .single()
 
-      if (userError || !user) {
-        console.error('[ACTIVATION] User lookup failed:', userError)
-        return new Response('OK', { status: 200 })
-      }
+      if (userError || !user) return new Response('OK', { status: 200 })
 
       const { data: existing } = await supabase
         .from('user_payment_methods')
@@ -72,14 +66,10 @@ serve(async (req) => {
       }
       if (isFirstMethod) upsertPayload.is_default = true
 
-      const { error: upsertError } = await supabase
+      await supabase
         .from('user_payment_methods')
         .upsert(upsertPayload, { onConflict: 'user_id,provider' })
 
-      if (upsertError) {
-        console.error('[ACTIVATION] Upsert failed:', upsertError)
-        return new Response('OK', { status: 200 })
-      }
       return new Response('OK', { status: 200 })
     }
 
@@ -91,11 +81,13 @@ serve(async (req) => {
       const referenceId = data.reference_id
       const requestIdRaw = data.metadata?.request_id
       const requestId = requestIdRaw ? Number(requestIdRaw) : null
-      // Best-effort — the actual payment id we can refund against
+
       const paymentId =
         data.payment_id ||
         data.payment_request_id ||
-        data.payment_session_id
+        data.payment_session_id ||
+        null
+
       const amount = Number(data.amount || 0)
       const status = String(data.status || '').toUpperCase()
       const channelCode =
@@ -106,36 +98,40 @@ serve(async (req) => {
 
       console.log('[SESSION.COMPLETED]', { paymentId, referenceId, requestId, amount, status })
 
-      if (status !== 'COMPLETED') {
-        console.log('[SESSION.COMPLETED] Status not COMPLETED, ignoring')
-        return new Response('OK', { status: 200 })
-      }
+      if (status !== 'COMPLETED') return new Response('OK', { status: 200 })
       if (!referenceId?.startsWith('delivery_') || !requestId) {
-        console.log('[SESSION.COMPLETED] Not a delivery payment, ignoring')
         return new Response('OK', { status: 200 })
       }
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status')
+        .select('payment_status, payment_reference')
         .eq('request_id', requestId)
         .maybeSingle()
 
-      if (reqRow?.payment_status === 'held' || reqRow?.payment_status === 'released') {
-        console.log('[SESSION.COMPLETED] Already processed, skipping')
+      // Only skip if BOTH status is set AND reference is set
+      if (
+        (reqRow?.payment_status === 'held' || reqRow?.payment_status === 'released') &&
+        reqRow?.payment_reference
+      ) {
+        console.log('[SESSION.COMPLETED] Already has reference, skipping')
         return new Response('OK', { status: 200 })
       }
 
+      const updatePayload: Record<string, unknown> = {
+        payment_status: 'held',
+        escrow_status: 'held',
+        paid_at: new Date().toISOString(),
+        payment_provider: mapProvider(channelCode),
+      }
+      // Only overwrite payment_reference if we have one
+      if (paymentId) updatePayload.payment_reference = paymentId
+
+      console.log('[SESSION.COMPLETED] Writing', updatePayload)
+
       const { error: updErr } = await supabase
         .from('delivery_requests')
-        .update({
-          payment_status: 'held',
-          escrow_status: 'held',
-          paid_at: new Date().toISOString(),
-          // ⭐ needed for refunds
-          payment_reference: paymentId ?? null,
-          payment_provider: mapProvider(channelCode),
-        })
+        .update(updatePayload)
         .eq('request_id', requestId)
 
       if (updErr) {
@@ -143,19 +139,21 @@ serve(async (req) => {
         return new Response('OK', { status: 200 })
       }
 
-      await supabase.from('escrow_transactions').insert({
-        request_id: requestId,
-        event: 'payment_succeeded',
-        amount,
-        xendit_reference: paymentId,
-        notes: 'Session API payment completed, held in escrow',
-      })
+      if (paymentId) {
+        await supabase.from('escrow_transactions').insert({
+          request_id: requestId,
+          event: 'payment_succeeded',
+          amount,
+          xendit_reference: paymentId,
+          notes: 'Session API payment completed, held in escrow',
+        })
+      }
 
       return new Response('OK', { status: 200 })
     }
 
     // ==================================================================
-    // DELIVERY PAYMENT SUCCESS (Payments API)
+    // PAYMENT SUCCESS / CAPTURE — backfill if session didn't set reference
     // ==================================================================
     if (event === 'payment.succeeded' || event === 'payment.capture') {
       const data = body.data
@@ -170,40 +168,60 @@ serve(async (req) => {
         data?.payment_method?.type ||
         null
 
+      console.log('[PAYMENT.SUCCESS/CAPTURE]', { paymentId, referenceId, requestId, amount })
+
       if (!referenceId?.startsWith('delivery_') || !requestId) {
-        console.log('[PAYMENT.SUCCESS] Not a delivery payment, ignoring')
         return new Response('OK', { status: 200 })
       }
+
+      const { data: reqRow } = await supabase
+        .from('delivery_requests')
+        .select('payment_status, payment_reference')
+        .eq('request_id', requestId)
+        .maybeSingle()
+
+      const updatePayload: Record<string, unknown> = {
+        payment_status: 'held',
+        escrow_status: 'held',
+        payment_provider: mapProvider(channelCode),
+      }
+      // Only set paid_at if not already set
+      if (!reqRow?.payment_reference) {
+        updatePayload.paid_at = new Date().toISOString()
+      }
+      // Only overwrite reference if we don't have one yet
+      if (!reqRow?.payment_reference && paymentId) {
+        updatePayload.payment_reference = paymentId
+      }
+
+      console.log('[PAYMENT.SUCCESS/CAPTURE] Writing', updatePayload)
 
       const { error: updErr } = await supabase
         .from('delivery_requests')
-        .update({
-          payment_status: 'held',
-          escrow_status: 'held',
-          paid_at: new Date().toISOString(),
-          payment_reference: paymentId ?? null,
-          payment_provider: mapProvider(channelCode),
-        })
+        .update(updatePayload)
         .eq('request_id', requestId)
 
       if (updErr) {
-        console.error('[PAYMENT.SUCCESS] Update failed:', updErr)
+        console.error('[PAYMENT.SUCCESS/CAPTURE] Update failed:', updErr)
         return new Response('OK', { status: 200 })
       }
 
-      await supabase.from('escrow_transactions').insert({
-        request_id: requestId,
-        event: 'payment_succeeded',
-        amount,
-        xendit_reference: paymentId,
-        notes: 'Funds received, held in escrow',
-      })
+      // Only insert audit if this is the first time we see this payment
+      if (!reqRow?.payment_reference && paymentId) {
+        await supabase.from('escrow_transactions').insert({
+          request_id: requestId,
+          event: 'payment_succeeded',
+          amount,
+          xendit_reference: paymentId,
+          notes: 'Funds received, held in escrow',
+        })
+      }
 
       return new Response('OK', { status: 200 })
     }
 
     // ==================================================================
-    // DELIVERY PAYMENT FAILED
+    // PAYMENT FAILED
     // ==================================================================
     if (event === 'payment.failed') {
       const data = body.data
@@ -214,7 +232,6 @@ serve(async (req) => {
         data.failure_reason || data.failure_code || data.description || 'Unknown'
 
       if (!referenceId?.startsWith('delivery_') || !requestId) {
-        console.log('[PAYMENT.FAILED] Not a delivery payment, ignoring')
         return new Response('OK', { status: 200 })
       }
 
@@ -235,7 +252,7 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // REFUND SUCCEEDED — money is back with the sender
+    // REFUND SUCCEEDED
     // ==================================================================
     if (event === 'refund.succeeded') {
       const refund = body.data ?? body
@@ -245,11 +262,8 @@ serve(async (req) => {
 
       console.log('[REFUND.SUCCEEDED]', { refundId, paymentId, amount })
 
-      if (!refundId && !paymentId) {
-        return new Response('OK', { status: 200 })
-      }
+      if (!refundId && !paymentId) return new Response('OK', { status: 200 })
 
-      // Find the matching request — prefer refund_id, fall back to payment_reference
       let requestId: number | null = null
       if (refundId) {
         const { data: r1 } = await supabase
@@ -269,7 +283,7 @@ serve(async (req) => {
       }
 
       if (!requestId) {
-        console.warn('[REFUND.SUCCEEDED] No matching request for refund', refundId)
+        console.warn('[REFUND.SUCCEEDED] No matching request', refundId)
         return new Response('OK', { status: 200 })
       }
 
@@ -295,7 +309,7 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // REFUND FAILED — money stays held, admin must intervene
+    // REFUND FAILED
     // ==================================================================
     if (event === 'refund.failed') {
       const refund = body.data ?? body
