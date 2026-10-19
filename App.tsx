@@ -1,17 +1,17 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, LogBox, Platform, View } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  useNavigation,
+  useNavigationContainerRef,
+} from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from './src/utils/supabase';
-import { ThemeProvider } from './src/utils/themeContext';
-import { UserProvider } from './src/utils/userContext';
-import { useTheme } from './src/utils/themeContext';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
-import { useNavigation } from '@react-navigation/native';
 
 /* ------------------------------------------------------------------ */
 /* Silence noisy library warnings                                     */
@@ -48,11 +48,11 @@ import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProvi
 // Settings Screens
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
-import SupportScreen from './src/modules/Settings/SupportScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
 import PolicyDetailScreen from './src/modules/Settings/PolicyDetailScreen';
+import SupportScreen from './src/modules/Settings/SupportScreen';
 
-// Dispute Center (report an issue / provider response)
+// Dispute Center
 import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
 import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailScreen';
 
@@ -76,11 +76,30 @@ import BookingScreen from './src/modules/Dashboard/Sender/Delivery/BookingScreen
 import DeliveryListScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryListScreen';
 import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen';
 
-// Import matching service
-import { startBackgroundMatcher } from './src/services/matchingService';
+// Notifications Section
+import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
+
+// Canonical background matcher
+import {
+  startBackgroundMatcher,
+  stopBackgroundMatcher,
+} from './src/services/backgroundMatcher';
+import { setActiveRouteId } from './src/services/activeRouteStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
+
+import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen';
+
+import { UserProvider } from './src/utils/userContext';
+import { ThemeProvider, useTheme } from './src/utils/themeContext';
+
+import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
+
+import './src/services/backgroundLocationTask';
+
+import * as Notifications from 'expo-notifications';
+import { registerPushToken } from './src/services/pushService';
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -89,8 +108,8 @@ export type RootStackParamList = {
   PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
-  MainTabs: { screen?: keyof MainTabParamList };
-  ProviderTabs: { screen?: keyof ProviderTabParamList };
+  MainTabs: { screen?: keyof MainTabParamList; params?: any };
+  ProviderTabs: { screen?: keyof ProviderTabParamList; params?: any };
   Account: undefined;
   EditProfile: undefined;
   Settings: undefined;
@@ -98,8 +117,8 @@ export type RootStackParamList = {
   Support: { role?: 'sender' | 'provider' } | undefined;
   ReportIssue: { requestId?: number } | undefined;
   DisputeDetail: { disputeId: number };
-  PolicyDetail: { policyId: string };
   LegalPolicies: undefined;
+  PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
@@ -114,14 +133,17 @@ export type RootStackParamList = {
   ReceiverPicker: { selectedReceiverId?: number | null };
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
+  DeliveryPayment: { requestId: number; amount: number };
+  LiveTracking: { deliveryId: number };
+  NotificationsList: undefined;
 };
 
-export type MainTabParamList = { 
-  Home: undefined; 
-  Activity: undefined; 
-  Explore: undefined; 
-  Messages: undefined; 
-  Account: undefined; 
+export type MainTabParamList = {
+  Home: undefined;
+  Activity: undefined;
+  Explore: undefined;
+  Messages: undefined;
+  Account: undefined;
 };
 
 export type ProviderTabParamList = {
@@ -402,132 +424,398 @@ function ProviderTabsInner() {
   );
 }
 
-// ---------- App ----------
-export default function App() {
+// ---------- ROLE GUARD ----------
+/**
+ * Listens to navigation state changes and ensures the current user is
+ * actually allowed to be on ProviderTabs. If not, force-navigates back
+ * to MainTabs. This is the safety net that prevents the "stuck on provider"
+ * bug when the app is killed mid-registration.
+ */
+function useRoleGuard(navigationRef: React.RefObject<any>) {
+  const validatingRef = useRef(false);
   const appStateRef = useRef(AppState.currentState);
-  const matcherCleanupRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
+  const validateCurrentRoute = async () => {
+    if (!navigationRef.current?.isReady?.()) return;
+    if (validatingRef.current) return;
+
+    const state = navigationRef.current.getRootState?.();
+    if (!state) return;
+
+    // Find the deepest active route name
+    const findActiveRoute = (navState: any): string | null => {
+      if (!navState) return null;
+      const idx = navState.index ?? 0;
+      const route = navState.routes?.[idx];
+      if (!route) return null;
+      if (route.state) return findActiveRoute(route.state);
+      return route.name ?? null;
+    };
+
+    const activeRoute = findActiveRoute(state);
+    if (!activeRoute) return;
+
+    // Only validate when user is on provider screens
+    if (activeRoute !== 'ProviderTabs') return;
+
+    validatingRef.current = true;
     try {
-      matcherCleanupRef.current = startBackgroundMatcher();
-    } catch (error) {
-      console.error('❌ Failed to start background matcher:', error);
-    }
-
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        nextAppState === 'active'
-      ) {
-        if (matcherCleanupRef.current) {
-          try {
-            matcherCleanupRef.current();
-          } catch (error) {}
-          matcherCleanupRef.current = null;
-        }
-
-        try {
-          matcherCleanupRef.current = startBackgroundMatcher();
-        } catch (error) {}
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'Login' }],
+        });
+        return;
       }
 
-      appStateRef.current = nextAppState;
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!userRow?.user_id) {
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+        return;
+      }
+
+      // Check both role + verification status
+      const { data: providerRole } = await supabase
+        .from('roles')
+        .select('role_id')
+        .eq('role_name', 'Provider')
+        .maybeSingle();
+
+      const { data: userRole } = providerRole?.role_id
+        ? await supabase
+            .from('user_roles')
+            .select('user_id')
+            .eq('user_id', userRow.user_id)
+            .eq('role_id', providerRole.role_id)
+            .maybeSingle()
+        : { data: null };
+
+      const { data: verif } = await supabase
+        .from('provider_verifications')
+        .select('verification_status')
+        .eq('provider_id', userRow.user_id)
+        .maybeSingle();
+
+      const isApprovedProvider =
+        !!userRole && verif?.verification_status === 'Approved';
+
+      if (!isApprovedProvider) {
+        console.warn(
+          'ΓÜá∩╕Å Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
+        );
+        navigationRef.current?.reset({
+          index: 0,
+          routes: [{ name: 'MainTabs' }],
+        });
+      }
+    } catch (err) {
+      console.warn('Role guard error:', err);
+    } finally {
+      validatingRef.current = false;
+    }
+  };
+
+  // Validate on route change
+  useEffect(() => {
+    const unsub = navigationRef.current?.addListener?.('state', () => {
+      validateCurrentRoute();
+    });
+    return () => {
+      unsub?.();
+    };
+  }, [navigationRef.current]);
+
+  // Validate when app comes back from background
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const wasBackground =
+        appStateRef.current.match(/inactive|background/);
+      if (wasBackground && next === 'active') {
+        validateCurrentRoute();
+      }
+      appStateRef.current = next;
+    });
+    return () => sub.remove();
+  }, []);
+}
+
+// ---------- Inner App ----------
+function AppInner() {
+  const navigationRef = useNavigationContainerRef<RootStackParamList>();
+  const appStateRef = useRef(AppState.currentState);
+  const matcherStartedRef = useRef(false);
+
+  // Attach the role guard
+  useRoleGuard(navigationRef as any);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootMatcher = async () => {
+      if (cancelled) return;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!userRow?.user_id) return;
+
+      // Only start matcher if user is an APPROVED provider
+      const { data: providerRole } = await supabase
+        .from('roles')
+        .select('role_id')
+        .eq('role_name', 'Provider')
+        .maybeSingle();
+
+      const { data: userRole } = providerRole?.role_id
+        ? await supabase
+            .from('user_roles')
+            .select('user_id')
+            .eq('user_id', userRow.user_id)
+            .eq('role_id', providerRole.role_id)
+            .maybeSingle()
+        : { data: null };
+
+      const { data: verif } = await supabase
+        .from('provider_verifications')
+        .select('verification_status')
+        .eq('provider_id', userRow.user_id)
+        .maybeSingle();
+
+      if (!userRole || verif?.verification_status !== 'Approved') {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      const { data: routeRow } = await supabase
+        .from('provider_routes')
+        .select('route_id')
+        .eq('provider_id', userRow.user_id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!routeRow?.route_id) return;
+
+      await setActiveRouteId(routeRow.route_id);
+
+      if (!matcherStartedRef.current) {
+        try {
+          startBackgroundMatcher();
+          matcherStartedRef.current = true;
+          console.log('Γ£à Background matcher started for route', routeRow.route_id);
+        } catch (error) {
+          console.error('Γ¥î Failed to start background matcher:', error);
+        }
+      }
+    };
+
+    bootMatcher();
+
+    const { data: authSub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (cancelled) return;
+
+      if (!session?.user) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
+
+      await bootMatcher();
+    });
+
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        next === 'active'
+      ) {
+        bootMatcher();
+      }
+      appStateRef.current = next;
     });
 
     return () => {
-      if (matcherCleanupRef.current) {
-        try {
-          matcherCleanupRef.current();
-        } catch (error) {}
+      cancelled = true;
+      authSub.subscription.unsubscribe();
+      appStateSub.remove();
+      if (matcherStartedRef.current) {
+        stopBackgroundMatcher();
+        matcherStartedRef.current = false;
+      }
+    };
+  }, []);
 
-        matcherCleanupRef.current = null;
+  useEffect(() => {
+    let cancelled = false;
+    let notifSub: any = null;
+
+    const bootstrap = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+      if (!userRow?.user_id) return;
+
+      await registerPushToken(userRow.user_id);
+    };
+
+    bootstrap();
+
+    notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const payload = response.notification.request.content.data as any;
+
+      if (
+        payload?.type === 'chat' &&
+        payload.roomId &&
+        navigationRef.isReady?.()
+      ) {
+        navigationRef.navigate('MainTabs', {
+          screen: 'Messages',
+          params: { openRoomId: payload.roomId },
+        });
+        return;
       }
 
-      subscription.remove();
+      if (payload?.deliveryId && navigationRef.isReady?.()) {
+        navigationRef.navigate('LiveTracking', {
+          deliveryId: Number(payload.deliveryId),
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (notifSub) notifSub.remove();
     };
   }, []);
 
   return (
+    <NavigationContainer ref={navigationRef}>
+      <Stack.Navigator
+        initialRouteName="Loading"
+        screenOptions={{ headerShown: false }}
+      >
+        <Stack.Screen name="Loading" component={LoadingScreen} />
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="Register" component={RegisterScreen} />
+        <Stack.Screen
+          name="PermissionsPrompt"
+          component={PermissionsPromptScreen}
+        />
+        <Stack.Screen
+          name="IdentityVerification"
+          component={IdentityVerificationScreen}
+        />
+        <Stack.Screen
+          name="TwoFactorAuth"
+          component={TwoFactorAuthScreen}
+        />
+        <Stack.Screen name="MainTabs" component={MainTabs} />
+        <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
+        <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+        <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen
+          name="DisputeCenter"
+          component={DisputeCenterScreen}
+        />
+        <Stack.Screen name="Support" component={SupportScreen} />
+        <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+        <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
+        <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+        <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
+        <Stack.Screen
+          name="RegisterProvider"
+          component={RegisterProviderScreen}
+        />
+        <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+        <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+        <Stack.Screen name="AddItem" component={AddItemScreen} />
+        <Stack.Screen
+          name="ScheduleCalendar"
+          component={ScheduleCalendarScreen}
+        />
+        <Stack.Screen
+          name="PickupLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen
+          name="DropoffLocation"
+          component={LocationSelectScreen}
+        />
+        <Stack.Screen name="Booking" component={BookingScreen} />
+        <Stack.Screen
+          name="DeliveryPayment"
+          component={DeliveryPaymentScreen}
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="LiveTracking"
+          component={LiveTrackingScreen}
+          options={{ animation: 'slide_from_right' }}
+        />
+        <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+        <Stack.Screen
+          name="ManageVehicle"
+          component={ManageVehicleScreen}
+        />
+        <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+        <Stack.Screen
+          name="ReceiverPicker"
+          component={ReceiverPickerScreen}
+          options={{
+            presentation: 'modal',
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+        <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+        <Stack.Screen name="NotificationsList" component={NotificationsList} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+// ---------- App ----------
+export default function App() {
+  return (
     <SafeAreaProvider>
-    <ThemeProvider>
-    <UserProvider>
-    <NavigationBarSync />
-    <ScheduleProvider>
-      <NavigationContainer>
-        <Stack.Navigator
-          initialRouteName="Loading"
-          screenOptions={{ headerShown: false }}
-        >
-          <Stack.Screen name="Loading" component={LoadingScreen} />
-          <Stack.Screen name="Login" component={LoginScreen} />
-          <Stack.Screen name="Register" component={RegisterScreen} />
-          {/* Permission prompt route */}
-          <Stack.Screen
-            name="PermissionsPrompt"
-            component={PermissionsPromptScreen}
-          />
-          <Stack.Screen
-            name="IdentityVerification"
-            component={IdentityVerificationScreen}
-          />
-          <Stack.Screen
-            name="TwoFactorAuth"
-            component={TwoFactorAuthScreen}
-          />
-          <Stack.Screen name="MainTabs" component={MainTabs} />
-          <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
-          <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-          <Stack.Screen name="Settings" component={SettingsScreen} />
-          <Stack.Screen
-            name="DisputeCenter"
-            component={DisputeCenterScreen}
-          />
-          <Stack.Screen name="Support" component={SupportScreen} />
-          <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
-          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
-          <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-          <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
-          <Stack.Screen
-            name="RegisterProvider"
-            component={RegisterProviderScreen}
-          />
-          <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
-          <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
-          <Stack.Screen name="AddItem" component={AddItemScreen} />
-          <Stack.Screen
-            name="ScheduleCalendar"
-            component={ScheduleCalendarScreen}
-          />
-          <Stack.Screen
-            name="PickupLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen
-            name="DropoffLocation"
-            component={LocationSelectScreen}
-          />
-          <Stack.Screen name="Booking" component={BookingScreen} />
-          <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-          <Stack.Screen
-            name="ManageVehicle"
-            component={ManageVehicleScreen}
-          />
-          <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-          <Stack.Screen
-            name="ReceiverPicker"
-            component={ReceiverPickerScreen}
-            options={{
-              presentation: 'modal',
-              animation: 'slide_from_bottom',
-            }}
-          />
-          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
-          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
-        </Stack.Navigator>
-      </NavigationContainer>
-    </ScheduleProvider>
-    </UserProvider>
-    </ThemeProvider>
+      <ThemeProvider>
+        <NavigationBarSync />
+        <ScheduleProvider>
+          <UserProvider>
+            <AppInner />
+          </UserProvider>
+        </ScheduleProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

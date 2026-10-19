@@ -32,12 +32,12 @@ export default function LoadingScreen() {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   /** Animated values */
-  const logoAnim = useRef(new Animated.Value(0)).current; // entrance
-  const pulseAnim = useRef(new Animated.Value(0)).current; // breathing logo
-  const glowAnim = useRef(new Animated.Value(0)).current; // background glow
-  const footerAnim = useRef(new Animated.Value(0)).current; // bottom block
-  const progressAnim = useRef(new Animated.Value(0)).current; // progress bar
-  const statusAnim = useRef(new Animated.Value(1)).current; // status text fade
+  const logoAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
+  const footerAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  const statusAnim = useRef(new Animated.Value(1)).current;
   const dotAnims = useRef(
     [0, 1, 2].map(() => new Animated.Value(0)),
   ).current;
@@ -266,7 +266,6 @@ export default function LoadingScreen() {
   /* ------------------------------------------------------------------ */
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Ambient brand glow */}
       <View style={styles.backgroundLayer} pointerEvents="none">
         <Animated.View
           style={[
@@ -279,7 +278,6 @@ export default function LoadingScreen() {
       </View>
 
       <View style={styles.contentContainer}>
-        {/* Logo block */}
         <Animated.View
           style={[
             styles.logoSection,
@@ -305,7 +303,6 @@ export default function LoadingScreen() {
           <Text style={styles.tagline}>FAST · SECURE · RELIABLE</Text>
         </Animated.View>
 
-        {/* Progress + status */}
         <Animated.View
           style={[
             styles.bottomSection,
