@@ -1,4 +1,4 @@
-// src/modules/Dashboard/Sender/Settings_Sender/LegalPoliciesScreen.tsx
+// src/modules/Settings/LegalPoliciesScreen.tsx
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar,
@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { POLICIES } from './policyContent';
 
 const ORANGE = '#FA7A25';
 
@@ -18,15 +19,13 @@ export default function LegalPoliciesScreen() {
 
   const [activeItem, setActiveItem] = useState('Terms of Service');
 
-  const policies = [
-    { id: '1', title: 'Terms of Service', icon: 'document-text-outline' as const },
-    { id: '2', title: 'Privacy Policy', icon: 'shield-checkmark-outline' as const },
-    { id: '3', title: 'Provider Agreement', icon: 'briefcase-outline' as const },
-    { id: '4', title: 'Community Guidelines', icon: 'people-outline' as const },
-    { id: '5', title: 'Cookie Policy', icon: 'globe-outline' as const },
-  ];
+  // Policy list comes from policyContent.ts so Register and Settings stay in sync.
+  const policies = POLICIES;
 
-  const handlePress = (title: string) => setActiveItem(title);
+  const handlePress = (policy: { id: string; title: string }) => {
+    setActiveItem(policy.title);
+    navigation.navigate('PolicyDetail', { policyId: policy.id });
+  };
 
   return (
     <View style={styles.container}>
@@ -41,7 +40,7 @@ export default function LegalPoliciesScreen() {
         <View style={{ width: 42 }} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, { paddingBottom: 40 + insets.bottom }]}>
         {policies.map((policy) => {
           const isActive = activeItem === policy.title;
           return (
@@ -49,7 +48,7 @@ export default function LegalPoliciesScreen() {
               <View style={[styles.sideIndicator, isActive ? styles.activeIndicator : styles.inactiveIndicator]} />
               <TouchableOpacity
                 style={[styles.card, isActive ? styles.activeCard : styles.inactiveCard]}
-                onPress={() => handlePress(policy.title)}
+                onPress={() => handlePress(policy)}
                 activeOpacity={0.8}
               >
                 <View style={styles.cardLeft}>

@@ -49,6 +49,11 @@ export default function RegisterProviderScreen() {
   const [licenseBackUrl, setLicenseBackUrl] = useState<string | null>(null);
 
   const [uploadingLicense, setUploadingLicense] = useState(false);
+
+  // Live selfie (camera only, front camera). Stored separately from the license photos.
+  const [selfieUri, setSelfieUri] = useState<string | null>(null);
+  const [selfieUrl, setSelfieUrl] = useState<string | null>(null);
+  const [uploadingSelfie, setUploadingSelfie] = useState(false);
   const [scanningLicense, setScanningLicense] = useState(false);
 
   const [lastScanResult, setLastScanResult] = useState<ScanResult>(null);
@@ -387,6 +392,43 @@ export default function RegisterProviderScreen() {
     }
   };
 
+  // Live selfie: camera only (no gallery), front camera, so the admin can compare
+  // the person with the license photo. This is a live capture, not automated
+  // liveness detection; the admin reviews it (manuscript: "Review Selfie Verification").
+  const handleTakeSelfie = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant camera permission to take your selfie.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        cameraType: ImagePicker.CameraType.front,
+        allowsEditing: false,
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets || result.assets.length === 0) return;
+
+      const uri = result.assets[0].uri;
+      setSelfieUri(uri);
+      setSelfieUrl(null);
+      setUploadingSelfie(true);
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('No user found');
+      const url = await uploadFile(uri, user.id, 'live_selfie');
+      setSelfieUrl(url);
+    } catch (error: any) {
+      console.error('Selfie error:', error);
+      Alert.alert('Selfie Error', error?.message || 'Could not capture or upload your selfie. Please try again.');
+      setSelfieUri(null);
+      setSelfieUrl(null);
+    } finally {
+      setUploadingSelfie(false);
+    }
+  };
+
   const uploadFile = async (uri: string, userId: string, prefix: string): Promise<string> => {
     const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
     const fileExt = ['jpg', 'jpeg', 'png'].includes(rawExt) ? rawExt : 'jpg';
@@ -429,6 +471,15 @@ export default function RegisterProviderScreen() {
     }
     if (!licenseFrontUrl || !licenseBackUrl) {
       Alert.alert('Please Wait', 'Your license images are still uploading. Please try again in a moment.');
+      return;
+    }
+
+    if (!selfieUri) {
+      Alert.alert('Required', 'Please take a live selfie. It is used to confirm you match your license.');
+      return;
+    }
+    if (!selfieUrl) {
+      Alert.alert('Please Wait', 'Your selfie is still uploading. Please try again in a moment.');
       return;
     }
 
@@ -549,6 +600,7 @@ export default function RegisterProviderScreen() {
           license_expiry_date: licenseExpiry.trim(),
           selfie_photo: licenseFrontUrl,
           selfie_photo_back: licenseBackUrl,
+          live_selfie_photo: selfieUrl,
           verification_status: 'Pending',
           ...(lastScanResult
             ? {
@@ -621,7 +673,8 @@ export default function RegisterProviderScreen() {
     licenseNumber.trim().length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry.trim());
   const licenseComplete =
     !!licenseFrontUri && !!licenseBackUri && !!licenseFrontUrl && !!licenseBackUrl;
-  const canSubmit = licenseComplete && detailsFilled;
+  const selfieComplete = !!selfieUri && !!selfieUrl;
+  const canSubmit = licenseComplete && detailsFilled && selfieComplete;
 
   // License number locked unless scanner failed to extract it
   const numberLocked = !manualNumberEntryAllowed;
@@ -673,10 +726,17 @@ export default function RegisterProviderScreen() {
             </View>
             <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>Details</Text>
           </View>
+          <View style={[styles.progressLine, selfieComplete && styles.progressLineDone]} />
+          <View style={styles.progressStep}>
+            <View style={[styles.progressDot, selfieComplete && styles.progressDotDone]}>
+              {selfieComplete ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>3</Text>}
+            </View>
+            <Text style={[styles.progressLabel, selfieComplete && styles.progressLabelDone]}>Selfie</Text>
+          </View>
           <View style={[styles.progressLine, canSubmit && styles.progressLineDone]} />
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, canSubmit && styles.progressDotDone]}>
-              {canSubmit ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>3</Text>}
+              {canSubmit ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>4</Text>}
             </View>
             <Text style={[styles.progressLabel, canSubmit && styles.progressLabelDone]}>Ready</Text>
           </View>
@@ -929,6 +989,56 @@ export default function RegisterProviderScreen() {
           )}
         </Animated.View>
 
+        <Animated.View style={[styles.uploadSection, fadeUp(licenseAnim, 20)]}>
+          <View style={styles.uploadHeader}>
+            <View style={styles.uploadTitleRow}>
+              <View style={styles.uploadNumberBadge}>
+                <Text style={styles.uploadNumberText}>3</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.uploadTitle}>Live Selfie</Text>
+                <Text style={styles.uploadSubtitle}>Take a photo now, face clearly visible</Text>
+              </View>
+            </View>
+            {selfieComplete && (
+              <View style={styles.completedBadge}>
+                <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+                <Text style={styles.completedBadgeText}>Uploaded</Text>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.tile, styles.selfieTile, selfieUri && styles.tileFilled]}
+            onPress={handleTakeSelfie}
+            disabled={uploadingSelfie}
+            activeOpacity={0.85}
+          >
+            {selfieUri ? (
+              <>
+                <Image source={{ uri: selfieUri }} style={styles.tileImage} />
+                <View style={styles.tileLabelBadge}>
+                  <Text style={styles.tileLabelText}>SELFIE · TAP TO RETAKE</Text>
+                </View>
+                {!selfieUrl && uploadingSelfie && (
+                  <View style={styles.tileOverlay}>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  </View>
+                )}
+              </>
+            ) : (
+              <View style={styles.tileEmpty}>
+                <Ionicons name="camera-outline" size={30} color={ORANGE} />
+                <Text style={styles.tileEmptyText}>Take selfie</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <Text style={styles.uploadHint}>
+            Use good lighting, no filters, no sunglasses or mask. An admin compares it with your license.
+          </Text>
+        </Animated.View>
+
         <Animated.View style={[styles.infoNote, fadeUp(buttonAnim, 20)]}>
           <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#3B82F6'} />
           <Text style={styles.infoNoteText}>
@@ -1045,6 +1155,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 2, borderStyle: 'dashed', borderColor: c.border,
     backgroundColor: c.background, overflow: 'hidden', position: 'relative',
   },
+  selfieTile: { flex: 0, width: '100%', height: 200 },
   tileFilled: { borderStyle: 'solid', borderColor: ORANGE, backgroundColor: c.accentSoft },
   tileEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
   tileEmptyText: { fontSize: 12, fontWeight: '700', color: c.textSecondary, letterSpacing: 0.2 },
@@ -1056,7 +1167,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   tileLabelText: { fontSize: 10, color: '#FFFFFF', fontWeight: '800', letterSpacing: 0.5 },
   tileOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center', justifyContent: 'center',
   },
