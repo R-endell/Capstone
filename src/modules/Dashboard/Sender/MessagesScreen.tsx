@@ -577,7 +577,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         try {
           await notifyUser(
             selectedRoom.other.user_id,
-            `💬 New message from ${senderLabel}`,
+            `💬 ${senderLabel}`,
             preview,
             { type: 'chat', roomId, senderId: currentUserId.current },
           );
