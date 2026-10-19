@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
-  Alert, Easing, ScrollView, Dimensions, ActivityIndicator,
+  Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -106,9 +106,16 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
         title: '🎉 Provider Matched!',
         body: `${providerName} accepted your delivery. Vehicle: ${plate}`,
         data: { type: 'match', deliveryId },
-        sound: true,
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
       },
-      trigger: null,
+      // In recent Expo SDKs, trigger: null sometimes drops the notification.
+      // A 1-second delay trigger forces the OS to process it reliably.
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: 1,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
     });
   } catch (err) {
     console.warn('[BookingScreen] local match notif failed:', err);
@@ -248,10 +255,6 @@ export default function BookingScreen({ route, navigation }: any) {
   }, []);
 
   // Re-enable the Proceed button ONLY when the user comes back to this screen
-  // from DeliveryPayment (or after cancelling a flow). This prevents:
-  //   - Double-taps racing the network insert.
-  //   - Re-entering Payment after a failed navigation from producing
-  //     a second delivery_requests row.
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
       if (proceedReturnToRef.current !== null) {

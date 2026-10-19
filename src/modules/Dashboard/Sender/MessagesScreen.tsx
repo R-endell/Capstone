@@ -56,8 +56,6 @@ type ChatMessage = {
   _temp_id?: number;
 };
 
-type DeliveryStage = 'none' | 'assigned' | 'pickup_verified' | 'completed';
-
 // --- Image marker helpers ---
 const isImageMessage = (text: string) =>
   typeof text === 'string' &&
@@ -125,73 +123,6 @@ const previewText = (raw: string | null) => {
   return raw;
 };
 
-// ---------------- Quick messages by delivery stage ----------------
-type QuickMsg = { text: string; icon: string };
-
-const getQuickMessages = (
-  stage: DeliveryStage,
-  myRole: 'sender' | 'provider' | 'support',
-): QuickMsg[] => {
-  if (myRole === 'support') {
-    return [
-      { text: 'Hi! How can I help?', icon: 'chatbubble-ellipses-outline' },
-      { text: 'Thanks for reaching out.', icon: 'thumbs-up-outline' },
-    ];
-  }
-
-  if (stage === 'assigned') {
-    if (myRole === 'provider') {
-      return [
-        { text: "On my way to pickup now 🚗", icon: 'navigate-outline' },
-        { text: "ETA 5–10 mins.", icon: 'time-outline' },
-        { text: "Please have the package ready.", icon: 'cube-outline' },
-        { text: "I've arrived at the pickup point.", icon: 'location-outline' },
-      ];
-    }
-    return [
-      { text: "I'll be there in a minute.", icon: 'time-outline' },
-      { text: "Please call when you arrive.", icon: 'call-outline' },
-      { text: "Fragile item — handle with care.", icon: 'warning-outline' },
-    ];
-  }
-
-  if (stage === 'pickup_verified') {
-    if (myRole === 'provider') {
-      return [
-        { text: "Package picked up ✓ On my way to drop-off.", icon: 'checkmark-circle-outline' },
-        { text: "ETA 10–15 mins to drop-off.", icon: 'time-outline' },
-        { text: "Almost there, arriving soon.", icon: 'navigate-outline' },
-        { text: "Package delivered — please confirm.", icon: 'shield-checkmark-outline' },
-      ];
-    }
-    return [
-      { text: "Please bring it to the door.", icon: 'home-outline' },
-      { text: "Leave it at the lobby, thanks!", icon: 'business-outline' },
-      { text: "Thanks for the update!", icon: 'thumbs-up-outline' },
-    ];
-  }
-
-  if (stage === 'completed') {
-    if (myRole === 'provider') {
-      return [
-        { text: "Thanks for choosing Pack-N-Ship! ⭐", icon: 'star-outline' },
-        { text: "It was a pleasure delivering for you.", icon: 'heart-outline' },
-      ];
-    }
-    return [
-      { text: "Received the package, thank you!", icon: 'checkmark-circle-outline' },
-      { text: "Great service — left you a review ⭐", icon: 'star-outline' },
-    ];
-  }
-
-  // No active delivery
-  return [
-    { text: 'Hi! 👋', icon: 'hand-left-outline' },
-    { text: 'Thanks!', icon: 'thumbs-up-outline' },
-    { text: 'Got it, thanks.', icon: 'checkmark-outline' },
-  ];
-};
-
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -216,14 +147,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const [loadMore, setLoadMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  // NEW
+  // Attachment state
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-
-  // NEW: delivery stage for quick messages
-  const [deliveryStage, setDeliveryStage] = useState<DeliveryStage>('none');
-  const [quickMsgsOpen, setQuickMsgsOpen] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = useRef<number | null>(null);
@@ -253,7 +180,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const backAction = () => {
       if (previewImage) { setPreviewImage(null); return true; }
       if (attachSheetOpen) { setAttachSheetOpen(false); return true; }
-      if (quickMsgsOpen) { setQuickMsgsOpen(false); return true; }
       if (selectedRoom) {
         closeConversation();
         return true;
@@ -262,7 +188,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedRoom, attachSheetOpen, previewImage, quickMsgsOpen]);
+  }, [selectedRoom, attachSheetOpen, previewImage]);
 
   useFocusEffect(
     useCallback(() => {
@@ -330,51 +256,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       currentUserName.current = [userRecord.first_name, userRecord.last_name].filter(Boolean).join(' ') || 'Someone';
     }
     return userRecord?.user_id || null;
-  };
-
-  // NEW: load the delivery stage for the current room
-  const loadDeliveryStage = async (room: ChatRoom) => {
-    if (room.is_support || !room.delivery_id) {
-      setDeliveryStage('none');
-      return;
-    }
-    try {
-      const { data: delivery } = await supabase
-        .from('deliveries')
-        .select('delivery_id, completed_at, request_id, delivery_requests:request_id ( delivery_status )')
-        .eq('delivery_id', room.delivery_id)
-        .maybeSingle();
-
-      if (!delivery) { setDeliveryStage('none'); return; }
-
-      if (delivery.completed_at) { setDeliveryStage('completed'); return; }
-
-      const req = Array.isArray(delivery.delivery_requests)
-        ? delivery.delivery_requests[0]
-        : delivery.delivery_requests;
-
-      if (req?.delivery_status === 'Completed') {
-        setDeliveryStage('completed');
-        return;
-      }
-
-      const { data: qr } = await supabase
-        .from('qr_verifications')
-        .select('pickup_verified')
-        .eq('delivery_id', room.delivery_id)
-        .maybeSingle();
-
-      if (qr?.pickup_verified) {
-        setDeliveryStage('pickup_verified');
-      } else if (req?.delivery_status === 'Accepted' || req?.delivery_status === 'In Transit' || !req?.delivery_status) {
-        setDeliveryStage('assigned');
-      } else {
-        setDeliveryStage('assigned');
-      }
-    } catch (e) {
-      console.warn('[Chat] loadDeliveryStage failed', e);
-      setDeliveryStage('none');
-    }
   };
 
   const fetchConversations = async () => {
@@ -620,10 +501,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     loadingOlder.current = false;
     setChatLoading(true);
     setSelectedRoom(room);
-    setQuickMsgsOpen(false);
 
     subscribeToRoom(room.all_room_ids);
-    loadDeliveryStage(room);
 
     const latest = await fetchMessages(room.all_room_ids);
     if (token !== openToken.current) return;
@@ -655,8 +534,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setChatLoading(false);
     setNewMessage('');
     setAttachSheetOpen(false);
-    setQuickMsgsOpen(false);
-    setDeliveryStage('none');
   };
 
   const loadOlderMessages = async () => {
@@ -743,69 +620,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       Alert.alert('Error', 'Unable to send message.');
       setMessages(prev => prev.filter(m => m._temp_id !== tempId));
       setNewMessage(trimmed);
-    }
-  };
-
-  // NEW: send a quick message
-  const sendQuickMessage = async (text: string) => {
-    if (!selectedRoom || !currentUserId.current) return;
-    setQuickMsgsOpen(false);
-    const roomId = selectedRoom.room_id;
-    const allRoomIds = selectedRoom.all_room_ids;
-    const tempId = Date.now();
-    const tempMsg: ChatMessage = {
-      message_id: tempId, room_id: roomId, message: text, sent_at: new Date().toISOString(),
-      sender_id: currentUserId.current, is_read: false, _temp_id: tempId,
-    };
-    setMessages(prev => [...prev, tempMsg]);
-    setTimeout(() => scrollToLatest(true), 50);
-
-    try {
-      const { data, error } = await supabase.from('chat_messages').insert({
-        message: text, room_id: roomId, sender_id: currentUserId.current,
-      }).select('*').single();
-      if (error) throw error;
-
-      if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(
-          allRoomIds.map(id => ({
-            room_id: id,
-            user_id: currentUserId.current,
-            is_archived: false,
-            is_deleted: false,
-          }))
-        );
-      }
-
-      setMessages(prev => prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)));
-      setConversations(prev =>
-        sortByLatest(
-          prev.map(c =>
-            c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
-              : c
-          )
-        )
-      );
-
-      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
-        const senderLabel = currentUserName.current || 'Someone';
-        const preview = text.length > 60 ? `${text.slice(0, 60)}...` : text;
-        try {
-          await notifyUser(
-            selectedRoom.other.user_id,
-            `💬 ${senderLabel}`,
-            preview,
-            { type: 'chat', roomId, senderId: currentUserId.current },
-          );
-        } catch (notifErr) {
-          console.warn('[Chat] quick push failed:', notifErr);
-        }
-      }
-    } catch (error: any) {
-      console.error('Quick send error:', error);
-      Alert.alert('Error', 'Unable to send message.');
-      setMessages(prev => prev.filter(m => m._temp_id !== tempId));
     }
   };
 
@@ -1331,67 +1145,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     </Modal>
   );
 
-  // NEW: quick messages sheet
-  const myRole: 'sender' | 'provider' | 'support' =
-    selectedRoom?.is_support ? 'support' : (selectedRoom?.role || 'sender');
-  const quickMessages = getQuickMessages(deliveryStage, myRole);
-
-  const renderQuickMessagesSheet = () => (
-    <Modal
-      visible={quickMsgsOpen}
-      transparent
-      animationType="slide"
-      onRequestClose={() => setQuickMsgsOpen(false)}
-    >
-      <Pressable style={styles.attachBackdrop} onPress={() => setQuickMsgsOpen(false)}>
-        <Pressable style={styles.quickSheet} onPress={() => {}}>
-          <View style={styles.attachHandle} />
-          <View style={styles.quickHeader}>
-            <View>
-              <Text style={styles.attachTitle}>Quick Messages</Text>
-              <Text style={styles.quickSub}>
-                {deliveryStage === 'pickup_verified'
-                  ? 'In transit — heading to drop-off'
-                  : deliveryStage === 'assigned'
-                  ? 'Heading to pickup'
-                  : deliveryStage === 'completed'
-                  ? 'Delivery complete'
-                  : 'Say something fast'}
-              </Text>
-            </View>
-            <TouchableOpacity onPress={() => setQuickMsgsOpen(false)} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView
-            style={{ maxHeight: 340 }}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
-          >
-            {quickMessages.map((qm, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={styles.quickItem}
-                onPress={() => sendQuickMessage(qm.text)}
-                activeOpacity={0.85}
-              >
-                <View style={styles.quickItemIcon}>
-                  <Ionicons name={qm.icon as any} size={18} color={ORANGE} />
-                </View>
-                <Text style={styles.quickItemText} numberOfLines={2}>{qm.text}</Text>
-                <Ionicons name="send" size={16} color={ORANGE} />
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-
   if (selectedRoom) {
-    const hasQuick = quickMessages.length > 0;
-
     return (
       <View style={styles.detailContainer}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
@@ -1412,9 +1166,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                   : selectedRoom.role === 'sender'
                   ? 'Provider'
                   : 'Sender'}
-                {deliveryStage === 'pickup_verified' && ' · In transit'}
-                {deliveryStage === 'assigned' && ' · En route to pickup'}
-                {deliveryStage === 'completed' && ' · Completed'}
               </Text>
             </View>
 
@@ -1467,39 +1218,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
           )}
 
-          {/* NEW: Quick messages chip row above the input */}
-          {hasQuick && (
-            <View style={styles.quickBarWrapper}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.quickBarContent}
-                keyboardShouldPersistTaps="handled"
-              >
-                <TouchableOpacity
-                  style={[styles.quickChip, styles.quickChipPrimary]}
-                  onPress={() => setQuickMsgsOpen(true)}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="flash" size={14} color="#FFFFFF" />
-                  <Text style={styles.quickChipTextPrimary}>Quick replies</Text>
-                </TouchableOpacity>
-                {quickMessages.slice(0, 2).map((qm, idx) => (
-                  <TouchableOpacity
-                    key={`preview-${idx}`}
-                    style={styles.quickChip}
-                    onPress={() => sendQuickMessage(qm.text)}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.quickChipText} numberOfLines={1}>
-                      {qm.text}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
             <TouchableOpacity
               style={styles.attachBtnFlat}
@@ -1536,7 +1254,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
         {renderAttachmentSheet()}
         {renderPreviewModal()}
-        {renderQuickMessagesSheet()}
       </View>
     );
   }
@@ -1712,62 +1429,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderTopWidth: 1, borderTopColor: c.border,
   },
   uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
-
-  // NEW: quick bar styles
-  quickBarWrapper: {
-    backgroundColor: c.card,
-    borderTopWidth: 1,
-    borderTopColor: c.border,
-    paddingVertical: 8,
-  },
-  quickBarContent: {
-    paddingHorizontal: 10,
-    gap: 8,
-  },
-  quickChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 12, paddingVertical: 8,
-    borderRadius: 18, borderWidth: 1, borderColor: c.border,
-    backgroundColor: c.background,
-    maxWidth: 240,
-  },
-  quickChipPrimary: {
-    backgroundColor: ORANGE, borderColor: ORANGE,
-  },
-  quickChipText: {
-    fontSize: 12.5, fontWeight: '600', color: c.textPrimary,
-  },
-  quickChipTextPrimary: {
-    fontSize: 12.5, fontWeight: '800', color: '#FFFFFF',
-  },
-
-  // Quick messages modal
-  quickSheet: {
-    backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
-  },
-  quickHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'flex-start', marginBottom: 12,
-  },
-  quickSub: {
-    fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500',
-  },
-  quickItem: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 12, paddingHorizontal: 12,
-    borderRadius: 14, borderWidth: 1, borderColor: c.border,
-    backgroundColor: c.background,
-  },
-  quickItemIcon: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: c.accentSoft,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  quickItemText: {
-    flex: 1, fontSize: 13.5, fontWeight: '600', color: c.textPrimary,
-  },
 
   // Attachment sheet
   attachBackdrop: {
