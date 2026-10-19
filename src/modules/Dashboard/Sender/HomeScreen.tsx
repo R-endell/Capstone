@@ -25,18 +25,11 @@ import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
 const ORANGE = '#F27024';
 
-type Notif = {
-  notif_id: number;
-  title: string;
-  body: string;
-  type: string;
-  is_read: boolean;
-  created_at: string;
-  ref_id: number | null;
-};
+type Notif = NotifRow;
 
 const ago = (iso: string) => {
   const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
@@ -211,36 +204,23 @@ export default function HomeScreen() {
     }
   };
 
+  // ---- NEW: shared routing ----
   const handleNotifPress = async (n: Notif) => {
     await markRead(n);
     setNotifModalOpen(false);
 
     const type = (n.type || '').toLowerCase();
 
-    if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
+    // Support notifications only live in the Notifications list
+    if (type.startsWith('support')) {
       setFullListOpen(true);
       return;
     }
-    if (type === 'match' || type.startsWith('delivery')) {
-      navigation.navigate('MainTabs', { screen: 'Activity' });
-      return;
+
+    const handled = await routeNotification(navigation as any, n, { role: 'sender' });
+    if (!handled) {
+      Alert.alert(n.title || 'Notification', n.body || '');
     }
-    if (type === 'payment' || type === 'escrow') {
-      navigation.navigate('MainTabs', { screen: 'Activity' });
-      return;
-    }
-    if (type.startsWith('dispute')) {
-      const refId = n.ref_id;
-      if (refId == null) { navigation.navigate('DisputeCenter' as any); return; }
-      if (typeof refId === 'number') { navigation.navigate('DisputeDetail' as any, { disputeId: refId }); return; }
-      try {
-        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(refId)).maybeSingle();
-        if (data?.dispute_id) navigation.navigate('DisputeDetail' as any, { disputeId: data.dispute_id });
-        else navigation.navigate('DisputeCenter' as any);
-      } catch { navigation.navigate('DisputeCenter' as any); }
-      return;
-    }
-    Alert.alert(n.title || 'Notification', n.body || '');
   };
 
   const handleContentTap = (title: string) => {
@@ -346,7 +326,7 @@ export default function HomeScreen() {
         </View>
 
         <View style={{ flex: 1 }}>
-          <NotificationsList embedded />
+          <NotificationsList embedded role="sender" />
         </View>
       </View>
     </Modal>

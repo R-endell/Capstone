@@ -13,19 +13,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { getMyUserId } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
 const ORANGE = '#FF751F';
 const SENDER_NAME = 'Pack-N-Ship';
 
-type Notif = {
-  notif_id: number;
-  title: string;
-  body: string;
-  type: string;
-  is_read: boolean;
-  created_at: string;
-  ref_id: number | null;
-};
+type Notif = NotifRow;
 
 type SupportMessage = {
   notif_id: number;
@@ -63,9 +56,10 @@ const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
 
 type Props = {
   embedded?: boolean;
+  role?: 'sender' | 'provider';
 };
 
-export default function NotificationsList({ embedded = false }: Props) {
+export default function NotificationsList({ embedded = false, role = 'sender' }: Props) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
@@ -74,6 +68,7 @@ export default function NotificationsList({ embedded = false }: Props) {
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [markingAll, setMarkingAll] = useState(false);
   const myId = useRef<number | null>(null);
 
   const [openTicket, setOpenTicket] = useState<Notif | null>(null);
@@ -264,41 +259,73 @@ export default function NotificationsList({ embedded = false }: Props) {
     }
   };
 
-  const routeGeneric = async (n: Notif) => {
-    const type = (n.type || '').toLowerCase();
-    const refId = n.ref_id;
-
-    if (type === 'chat') { navigation.navigate('MainTabs', { screen: 'Messages' }); return; }
-
-    if (type.startsWith('dispute')) {
-      if (refId == null) { navigation.navigate('DisputeCenter'); return; }
-      if (typeof refId === 'number') { navigation.navigate('DisputeDetail', { disputeId: refId }); return; }
-      try {
-        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(refId)).maybeSingle();
-        if (data?.dispute_id) navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
-        else navigation.navigate('DisputeCenter');
-      } catch { navigation.navigate('DisputeCenter'); }
-      return;
+  const markOneRead = async (n: Notif) => {
+    if (n.is_read) return;
+    setItems(prev => prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i)));
+    try {
+      await supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id);
+    } catch (e) {
+      console.warn('mark read failed', e);
     }
+  };
 
-    if (type.startsWith('delivery')) { navigation.navigate('DeliveryList', { status: 'Accepted' }); return; }
-    if (type === 'match') { navigation.navigate('MainTabs', { screen: 'Activity' }); return; }
-    if (type === 'payment' || type === 'escrow') { navigation.navigate('MainTabs', { screen: 'Activity' }); return; }
+  // ---- NEW: mark all as read ----
+  const markAllAsRead = () => {
+    if (!myId.current) return;
+    const unread = items.filter(i => !i.is_read);
+    if (unread.length === 0) return;
 
-    Alert.alert(n.title || 'Notification', n.body || '');
+    Alert.alert(
+      'Mark all as read?',
+      `This will mark ${unread.length} notification${unread.length === 1 ? '' : 's'} as read.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Mark all read',
+          onPress: async () => {
+            setMarkingAll(true);
+            try {
+              // Optimistic
+              setItems(prev => prev.map(i => ({ ...i, is_read: true })));
+
+              const { error } = await supabase
+                .from('notification_log')
+                .update({ is_read: true })
+                .eq('user_id', myId.current)
+                .eq('is_read', false);
+
+              if (error) throw error;
+            } catch (e: any) {
+              console.warn('mark all read failed', e);
+              Alert.alert('Could not mark all as read', e?.message || 'Please try again.');
+              // Re-sync
+              load();
+            } finally {
+              setMarkingAll(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const open = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
-    if (type.startsWith('support')) { await openSupportThread(n); return; }
 
-    if (!n.is_read) {
-      setItems(prev => prev.map(i => (i.notif_id === n.notif_id ? { ...i, is_read: true } : i)));
-      supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id)
-        .then(() => {}, (e: any) => console.warn('mark read failed', e));
+    // Support → open in-app thread modal
+    if (type.startsWith('support')) {
+      await openSupportThread(n);
+      return;
     }
 
-    await routeGeneric(n);
+    // Mark single as read (non-support)
+    await markOneRead(n);
+
+    // Route to the correct screen
+    const handled = await routeNotification(navigation, n, { role });
+    if (!handled) {
+      Alert.alert(n.title || 'Notification', n.body || '');
+    }
   };
 
   const renderItem = ({ item }: { item: Notif }) => {
@@ -437,6 +464,8 @@ export default function NotificationsList({ embedded = false }: Props) {
     );
   };
 
+  const unreadCount = items.filter(i => !i.is_read).length;
+
   if (loading) {
     return (
       <View style={[styles.container, embedded && { backgroundColor: 'transparent' }]}>
@@ -462,7 +491,53 @@ export default function NotificationsList({ embedded = false }: Props) {
             <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.topBarTitle}>Notifications</Text>
-          <View style={{ width: 32 }} />
+
+          {/* NEW: Mark all as read */}
+          {unreadCount > 0 ? (
+            <TouchableOpacity
+              onPress={markAllAsRead}
+              style={styles.markAllBtn}
+              activeOpacity={0.75}
+              disabled={markingAll}
+            >
+              {markingAll ? (
+                <ActivityIndicator size="small" color={ORANGE} />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-done" size={16} color={ORANGE} />
+                  <Text style={styles.markAllText}>Mark all</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          ) : (
+            <View style={{ width: 32 }} />
+          )}
+        </View>
+      )}
+
+      {/* Embedded header row with the mark-all action */}
+      {embedded && unreadCount > 0 && (
+        <View style={styles.embeddedHeaderRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.embeddedHeaderCount}>
+              {unreadCount} unread
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={markAllAsRead}
+            style={styles.markAllBtnSmall}
+            activeOpacity={0.75}
+            disabled={markingAll}
+          >
+            {markingAll ? (
+              <ActivityIndicator size="small" color={ORANGE} />
+            ) : (
+              <>
+                <Ionicons name="checkmark-done" size={14} color={ORANGE} />
+                <Text style={styles.markAllTextSmall}>Mark all read</Text>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
       )}
 
@@ -483,7 +558,11 @@ export default function NotificationsList({ embedded = false }: Props) {
           }}
           showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={ORANGE} />
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => { setRefreshing(true); load(); }}
+              tintColor={ORANGE}
+            />
           }
           renderItem={renderItem}
         />
@@ -507,7 +586,30 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
   },
-  topBarTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  topBarTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3, flex: 1, textAlign: 'center' },
+
+  // Mark all
+  markAllBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 10, backgroundColor: c.accentSoft,
+    minWidth: 32,
+  },
+  markAllText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+
+  embeddedHeaderRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 20, paddingTop: 8, paddingBottom: 4,
+  },
+  embeddedHeaderCount: {
+    fontSize: 12, fontWeight: '700', color: c.textSecondary,
+  },
+  markAllBtnSmall: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 10, backgroundColor: c.accentSoft,
+  },
+  markAllTextSmall: { fontSize: 11, fontWeight: '800', color: ORANGE },
 
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16 },

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
-  Alert, Easing, ScrollView, Dimensions,
+  Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -106,9 +106,16 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
         title: '🎉 Provider Matched!',
         body: `${providerName} accepted your delivery. Vehicle: ${plate}`,
         data: { type: 'match', deliveryId },
-        sound: true,
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
       },
-      trigger: null,
+      // In recent Expo SDKs, trigger: null sometimes drops the notification.
+      // A 1-second delay trigger forces the OS to process it reliably.
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: 1,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
     });
   } catch (err) {
     console.warn('[BookingScreen] local match notif failed:', err);
@@ -129,7 +136,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
-  // NEW: store departure time
+  // departure time
   const [departureTime, setDepartureTime] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
@@ -162,7 +169,11 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ---- DOUBLE-TAP GUARD ----
   const proceedingRef = useRef(false);
+  const proceedReturnToRef = useRef<number | null>(null);
+  const [savingBooking, setSavingBooking] = useState(false);
+
   const cancellingRef = useRef(false);
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
@@ -243,6 +254,18 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, []);
 
+  // Re-enable the Proceed button ONLY when the user comes back to this screen
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', () => {
+      if (proceedReturnToRef.current !== null) {
+        proceedingRef.current = false;
+        proceedReturnToRef.current = null;
+        setSavingBooking(false);
+      }
+    });
+    return unsub;
+  }, [navigation]);
+
   useEffect(() => {
     if (bookingState === 'finding') {
       setIsSearching(true);
@@ -250,7 +273,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const startedAt = searchStartRef.current ?? Date.now();
       searchStartRef.current = startedAt;
       const elapsed = Math.max(0, Date.now() - startedAt);
-      const remaining = Math.max(SEARCH_DURATION_MS - elapsed, 0);
+      const remaining = Math.max(0, SEARCH_DURATION_MS - elapsed);
       progressAnim.setValue(Math.min(elapsed / SEARCH_DURATION_MS, 1));
       setLongSearch(remaining === 0);
       let longSearchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -366,7 +389,6 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  // NEW: fetch departure time from provider's route
   const loadProviderDeparture = async (routeId: number | null | undefined) => {
     if (!routeId) {
       setDepartureTime(null);
@@ -444,11 +466,9 @@ export default function BookingScreen({ route, navigation }: any) {
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
-            // NEW: Load departure time
             if (delivery.route_id) loadProviderDeparture(delivery.route_id);
             else setDepartureTime(null);
 
-            // ---- Local match notification ----
             fireMatchNotification(
               provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
               vehicle?.plate_number || '—',
@@ -501,7 +521,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
     if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
-    // NEW: Load departure time
     if (delivery.route_id) loadProviderDeparture(delivery.route_id);
     else setDepartureTime(null);
   };
@@ -585,7 +604,6 @@ export default function BookingScreen({ route, navigation }: any) {
           const delivery = payload.new;
           await loadProviderForDelivery(delivery);
 
-          // ---- Local match notification (resume path) ----
           const { data: provider } = await supabase
             .from('users')
             .select('first_name, last_name')
@@ -631,13 +649,18 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
+  // ---- DOUBLE-TAP SAFE ----
   const handleProceedToPayment = async () => {
+    // Hard synchronous guard: no awaits before this check
     if (proceedingRef.current) return;
     proceedingRef.current = true;
+    setSavingBooking(true);
 
     try {
       if (!receiver?.receiver_id && !receiver?.receiver_phone) {
         Alert.alert('Receiver Required', 'Please select who will receive this package.');
+        proceedingRef.current = false;
+        setSavingBooking(false);
         return;
       }
 
@@ -651,6 +674,8 @@ export default function BookingScreen({ route, navigation }: any) {
               'Schedule Too Far',
               `Send Now requests must be within ${SEND_NOW_WINDOW_MINUTES} minutes.`,
             );
+            proceedingRef.current = false;
+            setSavingBooking(false);
             return;
           }
         }
@@ -667,14 +692,19 @@ export default function BookingScreen({ route, navigation }: any) {
         requestId = savedRequest.request_id;
       }
 
+      proceedReturnToRef.current = requestId;
       setSavedRequestId(requestId);
       const amount = pricing?.total ?? state.estimatedCost ?? 0;
 
       navigation.navigate('DeliveryPayment', { requestId, amount });
+      // NOTE: Do NOT clear proceedingRef here. It stays true until the
+      // user returns to this screen (handled by the focus listener above).
+      // setSavingBooking(false) will also happen on focus return.
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
-    } finally {
-      setTimeout(() => { proceedingRef.current = false; }, 800);
+      proceedingRef.current = false;
+      proceedReturnToRef.current = null;
+      setSavingBooking(false);
     }
   };
 
@@ -782,6 +812,9 @@ export default function BookingScreen({ route, navigation }: any) {
       searchTimeoutRef.current = null;
     }
     setIsSearching(false);
+    proceedingRef.current = false;
+    proceedReturnToRef.current = null;
+    setSavingBooking(false);
     dispatch({ type: 'RESET' });
     navigation.navigate('MainTabs');
   };
@@ -794,6 +827,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const handleConfirmAction = () => {
     dispatch({ type: 'RESET' });
+    proceedingRef.current = false;
+    proceedReturnToRef.current = null;
+    setSavingBooking(false);
     navigation.navigate('MainTabs');
   };
 
@@ -986,7 +1022,12 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
             </View>
 
-            <TouchableOpacity style={[styles.receiverCard, !receiver && styles.receiverCardEmpty]} onPress={handleSelectReceiver} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={[styles.receiverCard, !receiver && styles.receiverCardEmpty]}
+              onPress={handleSelectReceiver}
+              activeOpacity={0.85}
+              disabled={savingBooking}
+            >
               <View style={[styles.receiverIconBox, receiver ? styles.receiverIconBoxFilled : styles.receiverIconBoxEmpty]}>
                 <Ionicons name={receiver ? 'person' : 'person-add-outline'} size={18} color={receiver ? '#FFFFFF' : ORANGE} />
               </View>
@@ -1073,17 +1114,26 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
 
             <TouchableOpacity
-              style={[styles.primaryButton, (!receiver || !pricing) && styles.primaryButtonDisabled]}
+              style={[
+                styles.primaryButton,
+                ((!receiver || !pricing) || savingBooking) && styles.primaryButtonDisabled,
+              ]}
               onPress={handleProceedToPayment}
-              disabled={!receiver || !pricing}
+              disabled={!receiver || !pricing || savingBooking}
               activeOpacity={0.9}
             >
-              <Ionicons name="card-outline" size={16} color="#FFFFFF" />
-              <Text style={styles.primaryButtonText}>
-                {pricing
-                  ? `Proceed to Payment · ₱${pricing.total.toFixed(2)}${refiningDistance ? ' ⏳' : ''}`
-                  : 'Calculating fare…'}
-              </Text>
+              {savingBooking ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="card-outline" size={16} color="#FFFFFF" />
+                  <Text style={styles.primaryButtonText}>
+                    {pricing
+                      ? `Proceed to Payment · ₱${pricing.total.toFixed(2)}${refiningDistance ? ' ⏳' : ''}`
+                      : 'Calculating fare…'}
+                  </Text>
+                </>
+              )}
             </TouchableOpacity>
 
             {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable payment</Text>}
@@ -1253,7 +1303,6 @@ export default function BookingScreen({ route, navigation }: any) {
                       <Ionicons name="pricetag-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.carText}>{providerData?.plate_number || 'Loading...'}</Text>
                     </View>
-                    {/* NEW: DEPARTURE TIME ROW */}
                     {departureTime && (
                       <View style={styles.carDetailRow}>
                         <Ionicons name="time-outline" size={12} color={colors.textSecondary} />

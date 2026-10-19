@@ -10,13 +10,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
-import * as Notifications from 'expo-notifications';           // NEW
+import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
 import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
@@ -87,15 +88,7 @@ interface JobRequest {
   receiverName: string | null;
 }
 
-type Notif = {
-  notif_id: number;
-  title: string;
-  body: string;
-  type: string;
-  is_read: boolean;
-  created_at: string;
-  ref_id: number | null;
-};
+type Notif = NotifRow;
 
 const toNaiveIsoString = (date: Date): string => {
   const y = date.getFullYear();
@@ -527,7 +520,6 @@ export default function JobsScreen() {
 
   const [fullListOpen, setFullListOpen] = useState(false);
 
-  // ---- Track which request IDs we've already notified for (match push) ----
   const notifiedMatchIdsRef = useRef<Set<number>>(new Set());
 
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -595,7 +587,6 @@ export default function JobsScreen() {
         const row: any = payload.new;
         const t = (row?.type || '').toLowerCase();
         if (t === 'match') {
-          // In-app + local device notification for a new match
           fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
         }
       })
@@ -604,7 +595,6 @@ export default function JobsScreen() {
     return () => { supabase.removeChannel(ch); };
   }, [providerId, loadNotifs]);
 
-  // ---- Local device push notification (same device) ----
   const fireLocalMatchNotification = async (body: string) => {
     try {
       await Notifications.scheduleNotificationAsync({
@@ -631,27 +621,22 @@ export default function JobsScreen() {
     catch (e) { console.warn('mark read failed', e); }
   };
 
+  // ---- NEW: shared routing ----
   const handleNotifPress = async (n: Notif) => {
     await markNotifRead(n);
     setNotifModalOpen(false);
+
     const type = (n.type || '').toLowerCase();
-    if (type.startsWith('support') || type.startsWith('message') || type.startsWith('chat')) {
-      setFullListOpen(true); return;
-    }
-    if (type.startsWith('dispute')) {
-      if (n.ref_id == null) { navigation.navigate('DisputeCenter'); return; }
-      if (typeof n.ref_id === 'number') { navigation.navigate('DisputeDetail', { disputeId: n.ref_id }); return; }
-      try {
-        const { data } = await supabase.from('disputes').select('dispute_id').eq('dispute_ref', String(n.ref_id)).maybeSingle();
-        if (data?.dispute_id) navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
-        else navigation.navigate('DisputeCenter');
-      } catch { navigation.navigate('DisputeCenter'); }
+
+    if (type.startsWith('support')) {
+      setFullListOpen(true);
       return;
     }
-    if (type.startsWith('delivery') || type === 'match' || type === 'payment' || type === 'escrow') {
-      refreshMatches(); return;
+
+    const handled = await routeNotification(navigation, n, { role: 'provider' });
+    if (!handled) {
+      Alert.alert(n.title || 'Notification', n.body || '');
     }
-    Alert.alert(n.title || 'Notification', n.body || '');
   };
 
   const getProviderData = async () => {
@@ -890,7 +875,6 @@ export default function JobsScreen() {
       )) as number[];
       const hydrated = await hydrateRequests(ids);
 
-      // ---- Fire a local notification for any newly seen match ----
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
           notifiedMatchIdsRef.current.add(req.request_id);
@@ -1757,7 +1741,8 @@ export default function JobsScreen() {
           <View style={{ width: 32 }} />
         </View>
         <View style={{ flex: 1 }}>
-          <NotificationsList embedded />
+          {/* NEW: role="provider" so routing works consistently */}
+          <NotificationsList embedded role="provider" />
         </View>
       </View>
     </Modal>

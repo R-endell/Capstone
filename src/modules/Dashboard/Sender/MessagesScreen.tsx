@@ -6,24 +6,31 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   Platform, ActivityIndicator, Alert, Image, RefreshControl,
   Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView, BackHandler,
+  Modal, Pressable, Linking, ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
-import { notifyUser } from '../../../services/pushService';   // NEW
+import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
 const PAGE_SIZE = 30;
+const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
+const IMG_MARKER_START = '[img]';
+const IMG_MARKER_END = '[/img]';
 
 type Party = {
   user_id: number;
   first_name: string;
   last_name: string;
   profile_photo: string | null;
+  phone_number?: string | null;
 };
 
 type ChatRoom = {
@@ -48,6 +55,17 @@ type ChatMessage = {
   is_read: boolean;
   _temp_id?: number;
 };
+
+// --- Image marker helpers ---
+const isImageMessage = (text: string) =>
+  typeof text === 'string' &&
+  text.startsWith(IMG_MARKER_START) &&
+  text.endsWith(IMG_MARKER_END);
+
+const extractImageUrl = (text: string) =>
+  text.slice(IMG_MARKER_START.length, text.length - IMG_MARKER_END.length);
+
+const buildImageMessage = (url: string) => `${IMG_MARKER_START}${url}${IMG_MARKER_END}`;
 
 const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
@@ -99,6 +117,12 @@ const mergeMessages = (a: ChatMessage[], b: ChatMessage[]) => {
   );
 };
 
+const previewText = (raw: string | null) => {
+  if (!raw) return null;
+  if (isImageMessage(raw)) return '📷 Photo';
+  return raw;
+};
+
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -123,9 +147,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const [loadMore, setLoadMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
+  // Attachment state
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const [sendingImage, setSendingImage] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = useRef<number | null>(null);
-  const currentUserName = useRef<string>('');   // NEW — cache sender's name for push
+  const currentUserName = useRef<string>('');
   const subscription = useRef<any>(null);
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
@@ -146,9 +175,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-  // Android hardware back: close the chat first
+  // Back handler
   useEffect(() => {
     const backAction = () => {
+      if (previewImage) { setPreviewImage(null); return true; }
+      if (attachSheetOpen) { setAttachSheetOpen(false); return true; }
       if (selectedRoom) {
         closeConversation();
         return true;
@@ -157,7 +188,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedRoom]);
+  }, [selectedRoom, attachSheetOpen, previewImage]);
 
   useFocusEffect(
     useCallback(() => {
@@ -271,10 +302,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             .from('deliveries')
             .select(`
               delivery_id, provider_id, request_id,
-              provider:provider_id ( user_id, first_name, last_name, profile_photo ),
+              provider:provider_id ( user_id, first_name, last_name, profile_photo, phone_number ),
               delivery_requests:request_id (
                 sender_id,
-                sender:sender_id ( user_id, first_name, last_name, profile_photo )
+                sender:sender_id ( user_id, first_name, last_name, profile_photo, phone_number )
               )
             `)
             .in('delivery_id', roomDeliveryIds);
@@ -502,6 +533,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setMessages([]);
     setChatLoading(false);
     setNewMessage('');
+    setAttachSheetOpen(false);
   };
 
   const loadOlderMessages = async () => {
@@ -569,15 +601,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         )
       );
 
-      // ---- NEW: send push notification to the other party ----
-      // Skip for support chat (they may not have a phone-notif for support)
       if (!selectedRoom.is_support && selectedRoom.other.user_id) {
         const senderLabel = currentUserName.current || 'Someone';
         const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
         try {
           await notifyUser(
             selectedRoom.other.user_id,
-            `💬 New message from ${senderLabel}`,
+            `💬 ${senderLabel}`,
             preview,
             { type: 'chat', roomId, senderId: currentUserId.current },
           );
@@ -591,6 +621,188 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       setMessages(prev => prev.filter(m => m._temp_id !== tempId));
       setNewMessage(trimmed);
     }
+  };
+
+  // ---------------- Image upload ----------------
+  const uploadChatImage = async (uri: string): Promise<string> => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('No user');
+
+    const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const fileExt = ['jpg', 'jpeg', 'png', 'webp'].includes(rawExt) ? rawExt : 'jpg';
+    const contentType = `image/${fileExt}`;
+    const fileName = `${user.id}/chat_${Date.now()}.${fileExt}`;
+
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    const { error: uploadError } = await supabase.storage
+      .from(CHAT_ATTACHMENT_BUCKET)
+      .upload(fileName, bytes, { contentType, upsert: true });
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data: urlData } = supabase.storage
+      .from(CHAT_ATTACHMENT_BUCKET)
+      .getPublicUrl(fileName);
+    if (!urlData?.publicUrl) throw new Error('No public URL');
+    return urlData.publicUrl;
+  };
+
+  const sendImage = async (uri: string) => {
+    if (!selectedRoom || !currentUserId.current) return;
+
+    const roomId = selectedRoom.room_id;
+    const allRoomIds = selectedRoom.all_room_ids;
+    const tempId = Date.now();
+    const optimistic: ChatMessage = {
+      message_id: tempId,
+      room_id: roomId,
+      message: buildImageMessage(uri),
+      sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current,
+      is_read: false,
+      _temp_id: tempId,
+    };
+
+    setMessages(prev => [...prev, optimistic]);
+    setSendingImage(true);
+    setTimeout(() => scrollToLatest(true), 50);
+
+    try {
+      const remoteUrl = await uploadChatImage(uri);
+      const text = buildImageMessage(remoteUrl);
+
+      const { data, error } = await supabase.from('chat_messages').insert({
+        message: text,
+        room_id: roomId,
+        sender_id: currentUserId.current,
+      }).select('*').single();
+      if (error) throw error;
+
+      if (!selectedRoom.is_support) {
+        await supabase.from('chat_room_states').upsert(
+          allRoomIds.map(id => ({
+            room_id: id,
+            user_id: currentUserId.current,
+            is_archived: false,
+            is_deleted: false,
+          }))
+        );
+      }
+
+      setMessages(prev => {
+        const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
+        if (hasReal) return prev.filter(m => m._temp_id !== tempId);
+        return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
+      });
+      setConversations(prev =>
+        sortByLatest(
+          prev.map(c =>
+            c.all_room_ids.includes(roomId)
+              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
+              : c
+          )
+        )
+      );
+
+      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
+        const senderLabel = currentUserName.current || 'Someone';
+        try {
+          await notifyUser(
+            selectedRoom.other.user_id,
+            `💬 ${senderLabel}`,
+            '📷 Photo',
+            { type: 'chat', roomId, senderId: currentUserId.current },
+          );
+        } catch (notifErr) {
+          console.warn('[Chat] image push notify failed:', notifErr);
+        }
+      }
+    } catch (e: any) {
+      console.error('Send image error:', e);
+      Alert.alert('Upload Failed', e?.message || 'Could not send the photo. Please try again.');
+      setMessages(prev => prev.filter(m => m._temp_id !== tempId));
+    } finally {
+      setSendingImage(false);
+    }
+  };
+
+  const openAttachmentSheet = () => {
+    if (!selectedRoom) return;
+    setAttachSheetOpen(true);
+  };
+
+  const pickFromLibrary = async () => {
+    setAttachSheetOpen(false);
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow photo access to send photos.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        await sendImage(result.assets[0].uri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to open library.');
+    }
+  };
+
+  const pickFromCamera = async () => {
+    setAttachSheetOpen(false);
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow camera access to take a photo.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        await sendImage(result.assets[0].uri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to open camera.');
+    }
+  };
+
+  const handleCallPress = () => {
+    if (!selectedRoom) return;
+    const number = selectedRoom.other?.phone_number?.trim();
+    if (!number) {
+      Alert.alert(
+        'Number unavailable',
+        selectedRoom.is_support
+          ? 'Support does not accept phone calls. Use the chat instead.'
+          : 'This user has not provided a contact number yet.',
+      );
+      return;
+    }
+    Alert.alert('Call', `Do you want to call ${number}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Call',
+        onPress: () => {
+          Linking.openURL(`tel:${number}`).catch(() => {
+            Alert.alert('Call failed', 'Unable to open the dialer on this device.');
+          });
+        },
+      },
+    ]);
   };
 
   const openChatOptions = (room: ChatRoom) => {
@@ -708,6 +920,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const renderConversationItem = ({ item }: { item: ChatRoom }) => {
     const isUnread = item.unread_count > 0;
     const isSupport = !!item.is_support;
+    const preview = previewText(item.latest_message) || 'Say hi 👋';
 
     return (
       <View style={styles.chatRowWrapper}>
@@ -741,7 +954,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.supportTag}><Text style={styles.supportTagText}>SUPPORT</Text></View>
               )}
               <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
-                {item.latest_message || 'Say hi 👋'}
+                {preview}
               </Text>
               {isUnread && (
                 <View style={styles.unreadBadge}><Text style={styles.unreadBadgeText}>{item.unread_count}</Text></View>
@@ -763,6 +976,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const showDateSeparator = shouldShowDateSeparator(item, older);
     const olderSameSender = older && older.sender_id === item.sender_id;
     const showAvatar = !isMe && !olderSameSender;
+
+    const isImage = isImageMessage(item.message);
+    const imageUrl = isImage ? extractImageUrl(item.message) : null;
 
     return (
       <View>
@@ -789,19 +1005,38 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
           )}
 
-          <View style={[styles.msgBubble, isMe ? styles.myMsg : styles.theirMsg]}>
-            <Text style={[styles.msgText, isMe && styles.myMsgText]}>{item.message}</Text>
-            <View style={styles.msgMeta}>
-              <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
-              {isMe && (
-                <Ionicons
-                  name={item.is_read ? 'checkmark-done' : 'checkmark'}
-                  size={12}
-                  color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
-                  style={{ marginLeft: 4 }}
-                />
-              )}
-            </View>
+          <View style={[styles.msgBubble, isImage && styles.imageBubble, isMe ? styles.myMsg : styles.theirMsg]}>
+            {isImage && imageUrl ? (
+              <TouchableOpacity activeOpacity={0.9} onPress={() => setPreviewImage(imageUrl)}>
+                <Image source={{ uri: imageUrl }} style={styles.chatImage} resizeMode="cover" />
+                <View style={styles.msgMeta}>
+                  <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
+                  {isMe && (
+                    <Ionicons
+                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                      size={12}
+                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      style={{ marginLeft: 4 }}
+                    />
+                  )}
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <Text style={[styles.msgText, isMe && styles.myMsgText]}>{item.message}</Text>
+                <View style={styles.msgMeta}>
+                  <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
+                  {isMe && (
+                    <Ionicons
+                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                      size={12}
+                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      style={{ marginLeft: 4 }}
+                    />
+                  )}
+                </View>
+              </>
+            )}
           </View>
         </View>
       </View>
@@ -847,6 +1082,69 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     </View>
   );
 
+  const renderAttachmentSheet = () => (
+    <Modal
+      visible={attachSheetOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setAttachSheetOpen(false)}
+    >
+      <Pressable style={styles.attachBackdrop} onPress={() => setAttachSheetOpen(false)}>
+        <Pressable style={styles.attachSheet} onPress={() => {}}>
+          <View style={styles.attachHandle} />
+          <Text style={styles.attachTitle}>Send a photo</Text>
+
+          <TouchableOpacity style={styles.attachRow} onPress={pickFromCamera} activeOpacity={0.8}>
+            <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
+              <Ionicons name="camera" size={20} color={ORANGE} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attachRowTitle}>Take a photo</Text>
+              <Text style={styles.attachRowSub}>Open camera and capture</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
+            <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
+              <Ionicons name="images" size={20} color={ORANGE} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attachRowTitle}>Choose from gallery</Text>
+              <Text style={styles.attachRowSub}>Pick an existing image</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.attachCancel}
+            onPress={() => setAttachSheetOpen(false)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.attachCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
+  const renderPreviewModal = () => (
+    <Modal visible={!!previewImage} transparent animationType="fade" onRequestClose={() => setPreviewImage(null)}>
+      <View style={styles.previewOverlay}>
+        {previewImage && (
+          <Image source={{ uri: previewImage }} style={styles.previewImage} resizeMode="contain" />
+        )}
+        <TouchableOpacity
+          style={[styles.previewClose, { top: insets.top + 12 }]}
+          onPress={() => setPreviewImage(null)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="close" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </Modal>
+  );
+
   if (selectedRoom) {
     return (
       <View style={styles.detailContainer}>
@@ -863,11 +1161,19 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 {selectedRoom.is_support ? 'Pack-N-Ship Support' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
-                {selectedRoom.is_support ? 'Official support channel' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
+                {selectedRoom.is_support
+                  ? 'Official support channel'
+                  : selectedRoom.role === 'sender'
+                  ? 'Provider'
+                  : 'Sender'}
               </Text>
             </View>
 
-            <TouchableOpacity style={styles.callBtnFlat} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.callBtnFlat}
+              activeOpacity={0.7}
+              onPress={handleCallPress}
+            >
               <Ionicons name="call" size={22} color={ORANGE} />
             </TouchableOpacity>
           </Animated.View>
@@ -905,8 +1211,20 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             )}
           </Animated.View>
 
+          {sendingImage && (
+            <View style={styles.uploadingBanner}>
+              <ActivityIndicator size="small" color={ORANGE} />
+              <Text style={styles.uploadingText}>Sending photo…</Text>
+            </View>
+          )}
+
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
-            <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.attachBtnFlat}
+              activeOpacity={0.7}
+              onPress={openAttachmentSheet}
+              disabled={sendingImage}
+            >
               <Ionicons name="add-circle" size={32} color={colors.textMuted} />
             </TouchableOpacity>
 
@@ -933,6 +1251,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
+
+        {renderAttachmentSheet()}
+        {renderPreviewModal()}
       </View>
     );
   }
@@ -1073,11 +1394,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
   msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  imageBubble: { padding: 4, overflow: 'hidden' },
   myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
   theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.divider, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.05 : 0.35, shadowRadius: 4, elevation: 1 },
   msgText: { fontSize: 14.5, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
   myMsgText: { color: '#FFFFFF' },
-  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4 },
+  chatImage: { width: 220, height: 220, borderRadius: 16 },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4, paddingHorizontal: 4 },
   msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
   myMsgTime: { color: 'rgba(255,255,255,0.85)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
@@ -1099,4 +1422,56 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingBottom: Platform.OS === 'ios' ? 10 : 8,
   },
   sendBtnFlat: { paddingBottom: 10, paddingLeft: 12, paddingRight: 4 },
+
+  uploadingBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 8, backgroundColor: c.accentSoft,
+    borderTopWidth: 1, borderTopColor: c.border,
+  },
+  uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
+
+  // Attachment sheet
+  attachBackdrop: {
+    flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
+    justifyContent: 'flex-end',
+  },
+  attachSheet: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+  },
+  attachHandle: {
+    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
+    backgroundColor: c.border, marginBottom: 12,
+  },
+  attachTitle: {
+    fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 12,
+  },
+  attachRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, borderRadius: 14,
+  },
+  attachIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  attachRowTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  attachRowSub: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  attachCancel: {
+    marginTop: 8, paddingVertical: 14, borderRadius: 14,
+    alignItems: 'center', backgroundColor: c.divider,
+  },
+  attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
+
+  // Image preview
+  previewOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  previewImage: { width: '100%', height: '80%' },
+  previewClose: {
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
 });
