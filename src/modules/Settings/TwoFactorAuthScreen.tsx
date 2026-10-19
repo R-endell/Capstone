@@ -1,7 +1,7 @@
-// src/modules/Authentication/TwoFactorAuthScreen.tsx
-import React, { useState, useMemo } from 'react';
+// src/modules/Settings/TwoFactorAuthScreen.tsx
+import React, { useMemo } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, TextInput, StatusBar, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -15,8 +15,6 @@ export default function TwoFactorAuthScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
-
-  const [code, setCode] = useState(['4', '3', '1', '1', '0', '1']);
 
   return (
     <View style={styles.container}>
@@ -33,39 +31,21 @@ export default function TwoFactorAuthScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.card}>
           <View style={styles.iconContainer}>
-            <Ionicons name="shield-checkmark" size={56} color={colors.success} />
+            <Ionicons name="shield-checkmark-outline" size={56} color={ORANGE} />
           </View>
+
+          <Text style={styles.statusPill}>COMING SOON</Text>
 
           <Text style={styles.instructionText}>
-            A 6-digit verification code{'\n'}has been sent to your{'\n'}registered phone number
+            Two-factor authentication is not available yet.
           </Text>
-          <Text style={styles.phoneNumber}>+63 9*********</Text>
-
-          <View style={styles.codeContainer}>
-            {code.map((digit, index) => (
-              <TextInput
-                key={index}
-                style={styles.codeInput}
-                value={digit}
-                keyboardType="numeric"
-                maxLength={1}
-                editable={false}
-              />
-            ))}
-          </View>
-
-          <Text style={styles.timerText}>Code Expires in 4:32</Text>
-
-          <TouchableOpacity style={styles.resendButton} activeOpacity={0.8}>
-            <Text style={styles.resendButtonText}>Resend Code</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.verifyButton} activeOpacity={0.8}>
-            <Text style={styles.verifyButtonText}>Verify Code</Text>
-          </TouchableOpacity>
-
           <Text style={styles.footerText}>
-            This extra layer of security helps protect your{'\n'}account and deliveries
+            When it is released, you will be able to protect your account with a code from an
+            authenticator app, in addition to your password. Provider and admin accounts, which
+            handle identity documents and payouts, will be asked to use it first.
+          </Text>
+          <Text style={[styles.footerText, { marginTop: 12 }]}>
+            Until then, use a strong, unique password and never share it.
           </Text>
         </View>
       </ScrollView>
@@ -99,7 +79,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowOpacity: isDark ? 0.3 : 0.1, shadowRadius: 4, elevation: 3,
   },
 
-  iconContainer: { marginBottom: 20 },
+  iconContainer: { marginBottom: 16 },
+  statusPill: {
+    fontSize: 11, fontWeight: '800', letterSpacing: 1, color: ORANGE,
+    backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: 999, overflow: 'hidden', marginBottom: 14,
+  },
 
   instructionText: {
     fontSize: 16, color: c.textSecondary, textAlign: 'center',

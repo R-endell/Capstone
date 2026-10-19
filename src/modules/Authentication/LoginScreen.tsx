@@ -10,11 +10,11 @@ import { useNavigation } from '@react-navigation/native';
 import * as WebBrowser from 'expo-web-browser';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { registerPushToken } from '../../services/pushService';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { resolveHomeRoute, clearLastMode } from '../../utils/resolveHomeRoute';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -97,14 +97,16 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) {
         Alert.alert('Login Failed', getFriendlyErrorMessage(error));
         return;
       }
 
-      const lastMode = await AsyncStorage.getItem('last_mode');
-      const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+      // A fresh login never inherits another session's mode; Provider is only
+      // restored for an approved provider whose own last mode was "provider".
+      const loggedInId = signInData?.user?.id;
+      const route = loggedInId ? await resolveHomeRoute(loggedInId) : (await clearLastMode(), 'MainTabs' as const);
 
       (async () => {
         try {
@@ -152,8 +154,7 @@ export default function LoginScreen() {
         if (exchangeError) throw exchangeError;
 
         if (exchangeData?.session) {
-          const lastMode = await AsyncStorage.getItem('last_mode');
-          const route = lastMode === 'provider' ? 'ProviderTabs' : 'MainTabs';
+          const route = await resolveHomeRoute(exchangeData.session.user.id);
 
           (async () => {
             try {
@@ -344,7 +345,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     elevation: 3,
   },
 
-  backgroundLayer: { ...StyleSheet.absoluteFillObject, overflow: 'hidden' },
+  backgroundLayer: { ...StyleSheet.absoluteFill, overflow: 'hidden' },
   glow: { position: 'absolute', borderRadius: 999, backgroundColor: ORANGE },
   glowTop: { width: 360, height: 360, top: -160, right: -140 },
   glowBottom: { width: 300, height: 300, bottom: -140, left: -120, opacity: 0.05 },

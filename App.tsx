@@ -1,14 +1,17 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, LogBox, View } from 'react-native';
+import { AppState, LogBox, Platform, View } from 'react-native';
 import {
   NavigationContainer,
+  useNavigation,
   useNavigationContainerRef,
 } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from './src/utils/supabase';
+import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
 /* ------------------------------------------------------------------ */
 /* Silence noisy library warnings                                     */
@@ -46,6 +49,8 @@ import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProvi
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
 import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
+import PolicyDetailScreen from './src/modules/Settings/PolicyDetailScreen';
+import SupportScreen from './src/modules/Settings/SupportScreen';
 
 // Dispute Center
 import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
@@ -73,9 +78,6 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
-
-// Support FAB
-import SupportFab from './src/components/SupportFab';
 
 // Canonical background matcher
 import {
@@ -106,15 +108,17 @@ export type RootStackParamList = {
   PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
-  MainTabs: { screen?: keyof MainTabParamList };
-  ProviderTabs: { screen?: keyof ProviderTabParamList };
+  MainTabs: { screen?: keyof MainTabParamList; params?: any };
+  ProviderTabs: { screen?: keyof ProviderTabParamList; params?: any };
   Account: undefined;
   EditProfile: undefined;
   Settings: undefined;
   DisputeCenter: { mode?: 'provider' } | undefined;
+  Support: { role?: 'sender' | 'provider' } | undefined;
   ReportIssue: { requestId?: number } | undefined;
   DisputeDetail: { disputeId: number };
   LegalPolicies: undefined;
+  PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
@@ -264,116 +268,159 @@ function useUnreadMessages() {
   return unreadCount;
 }
 
+// Keeps the Android system navigation bar (Back / Home buttons) in step with the
+// app theme. It uses the same colour as the tab bar so the two read as one strip.
+// Loaded lazily so the app still runs on a build made before expo-navigation-bar.
+function NavigationBarSync() {
+  const { colors, isDark } = useTheme();
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    try {
+      const NavigationBar = require('expo-navigation-bar');
+      // Ignored (harmlessly) on edge-to-edge builds, where the tab bar paints this area.
+      NavigationBar.setBackgroundColorAsync?.(colors.card).catch?.(() => {});
+      NavigationBar.setButtonStyleAsync?.(isDark ? 'light' : 'dark').catch?.(() => {});
+      NavigationBar.setBorderColorAsync?.(colors.border).catch?.(() => {});
+    } catch {}
+  }, [colors.card, colors.border, isDark]);
+  return null;
+}
+
+// Tab bar that adapts to the device: with 3-button navigation (or a gesture bar)
+// the system inset is added below the tabs; with no inset it stays the same size.
+function useTabBarStyle() {
+  const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const bottom = insets.bottom;
+  return {
+    backgroundColor: colors.card,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    height: 60 + bottom,
+    paddingBottom: 8 + bottom,
+    paddingTop: 2,
+  } as const;
+}
+
 // ---------- Sender Tab Navigator ----------
 function MainTabs() {
   const unreadCount = useUnreadMessages();
-  const { colors, isDark } = useTheme();
+  const tabBarStyle = useTabBarStyle();
+  const { colors } = useTheme();
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <Tab.Navigator
-        screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color, size }) => {
-            let iconName: any;
-            if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-            else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
-            else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
-            else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-            else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-            return <Ionicons name={iconName} size={size} color={color} />;
-          },
-          tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
-          tabBarStyle: {
-            backgroundColor: colors.card,
-            borderTopWidth: 1,
-            borderTopColor: colors.border,
-            height: 60,
-            paddingBottom: 8,
-            paddingTop: 2,
-          },
-          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
-          headerShown: false,
-        })}
-      >
-        <Tab.Screen name="Home" component={HomeScreen} />
-        <Tab.Screen name="Activity" component={ActivityScreen} />
-        <Tab.Screen name="Explore" component={ExploreScreen} />
-        <Tab.Screen
-          name="Messages"
-          component={MessagesScreen}
-          options={{
-            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-          }}
-        />
-        <Tab.Screen name="Account" component={AccountScreen} />
-      </Tab.Navigator>
-
-      <SupportFab role="sender" bottomOffset={78} />
-    </View>
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName: any;
+          if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
+          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
+          else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
+          else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+          else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+          return <Ionicons name={iconName} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: '#F27024',
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarStyle,
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+        headerShown: false,
+      })}
+    >
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Activity" component={ActivityScreen} />
+      <Tab.Screen name="Explore" component={ExploreScreen} />
+      <Tab.Screen 
+        name="Messages" 
+        component={MessagesScreen} 
+        options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
+      />
+      <Tab.Screen name="Account" component={AccountScreen} />
+    </Tab.Navigator>
   );
 }
 
-// ---------- Provider Tab Navigator ----------
+// Role guard: the Provider interface only renders for an approved provider.
+// Anyone else (e.g. a Sender who reached it through stale state or Back
+// navigation) is sent to the Sender interface. While the check runs we render
+// nothing, so the Provider UI never flashes for the wrong user.
 function ProviderTabs() {
+  const navigation = useNavigation<any>();
+  const [allowed, setAllowed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        if (!cancelled) navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        return;
+      }
+      const ok = await isApprovedProvider(session.user.id);
+      if (cancelled) return;
+      if (ok === false) {
+        await clearLastMode();
+        navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
+        return;
+      }
+      setAllowed(true); // true, or unknown (offline) -> don't lock out a real provider
+    })();
+    return () => { cancelled = true; };
+  }, [navigation]);
+
+  if (!allowed) return <View style={{ flex: 1, backgroundColor: '#FFFFFF' }} />;
+  return <ProviderTabsInner />;
+}
+
+// ---------- Provider Tab Navigator ----------
+function ProviderTabsInner() {
   const unreadCount = useUnreadMessages();
-  const { colors, isDark } = useTheme();
+  const tabBarStyle = useTabBarStyle();
+  const { colors } = useTheme();
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <ProviderTab.Navigator
-        screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color, size }) => {
-            let iconName: any;
+    <ProviderTab.Navigator
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName: any;
 
-            if (route.name === 'Task') {
-              iconName = focused ? 'clipboard' : 'clipboard-outline';
-            } else if (route.name === 'Earnings') {
-              iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-            } else if (route.name === 'Jobs') {
-              iconName = focused ? 'map' : 'map-outline';
-            } else if (route.name === 'Messages') {
-              iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-            } else if (route.name === 'Account') {
-              iconName = focused ? 'person' : 'person-outline';
-            }
+          if (route.name === 'Task') {
+            iconName = focused ? 'clipboard' : 'clipboard-outline';
+          } else if (route.name === 'Earnings') {
+            iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+          } else if (route.name === 'Jobs') {
+            iconName = focused ? 'map' : 'map-outline';
+          } else if (route.name === 'Messages') {
+            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+          } else if (route.name === 'Account') {
+            iconName = focused ? 'person' : 'person-outline';
+          }
 
-            return <Ionicons name={iconName} size={size} color={color} />;
-          },
-          tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: isDark ? '#6B7280' : '#6B7280',
-          tabBarStyle: {
-            backgroundColor: colors.card,
-            borderTopWidth: 1,
-            borderTopColor: colors.border,
-            height: 60,
-            paddingBottom: 8,
-            paddingTop: 2,
-          },
-          tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '500',
-          },
-          headerShown: false,
-        })}
-      >
-        <ProviderTab.Screen name="Task" component={TaskScreen} />
-        <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
-        <ProviderTab.Screen
-          name="Messages"
-          component={ProviderMessagesScreen}
-          options={{
-            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-          }}
-        />
-        <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
-      </ProviderTab.Navigator>
-
-      <SupportFab role="provider" bottomOffset={78} />
-    </View>
+          return <Ionicons name={iconName} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: '#F27024',
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarStyle,
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '500',
+        },
+        headerShown: false,
+      })}
+    >
+      <ProviderTab.Screen name="Task" component={TaskScreen} />
+      <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
+      <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+      <ProviderTab.Screen
+        name="Messages"
+        component={ProviderMessagesScreen}
+        options={{
+          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+          tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+        }}
+      />
+      <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
+    </ProviderTab.Navigator>
   );
 }
 
@@ -463,7 +510,7 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
 
       if (!isApprovedProvider) {
         console.warn(
-          '⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
+          'ΓÜá∩╕Å Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
         );
         navigationRef.current?.reset({
           index: 0,
@@ -579,9 +626,9 @@ function AppInner() {
         try {
           startBackgroundMatcher();
           matcherStartedRef.current = true;
-          console.log('✅ Background matcher started for route', routeRow.route_id);
+          console.log('Γ£à Background matcher started for route', routeRow.route_id);
         } catch (error) {
-          console.error('❌ Failed to start background matcher:', error);
+          console.error('Γ¥î Failed to start background matcher:', error);
         }
       }
     };
@@ -700,9 +747,11 @@ function AppInner() {
           name="DisputeCenter"
           component={DisputeCenterScreen}
         />
+        <Stack.Screen name="Support" component={SupportScreen} />
         <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
         <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+        <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
         <Stack.Screen
           name="RegisterProvider"
           component={RegisterProviderScreen}
@@ -758,12 +807,15 @@ function AppInner() {
 // ---------- App ----------
 export default function App() {
   return (
-    <ThemeProvider>
-      <ScheduleProvider>
-        <UserProvider>
-          <AppInner />
-        </UserProvider>
-      </ScheduleProvider>
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <ThemeProvider>
+        <NavigationBarSync />
+        <ScheduleProvider>
+          <UserProvider>
+            <AppInner />
+          </UserProvider>
+        </ScheduleProvider>
+      </ThemeProvider>
+    </SafeAreaProvider>
   );
 }

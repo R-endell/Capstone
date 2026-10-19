@@ -11,7 +11,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import { countAwaitingMyResponse } from '../../../services/disputeService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FA7A25';
@@ -205,8 +205,9 @@ export default function ProviderAccountScreen() {
   );
 
   const handleSwitchToSender = async () => {
-    await AsyncStorage.setItem('last_mode', 'sender');
-    navigation.navigate('MainTabs' as any);
+    await setLastMode('sender');
+    // reset (not navigate) so Back can't return to the Provider interface
+    navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] } as any);
   };
 
   const handleLogoutConfirm = () => {
@@ -215,7 +216,7 @@ export default function ProviderAccountScreen() {
       {
         text: 'Log Out', style: 'destructive',
         onPress: async () => {
-          await AsyncStorage.removeItem('last_mode');
+          await clearLastMode();
           await supabase.auth.signOut();
           navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
         },
@@ -321,7 +322,7 @@ export default function ProviderAccountScreen() {
                   <View style={styles.cardContextRow}>
                     <View style={styles.contextDateBox}>
                       <Ionicons name="calendar-outline" size={13} color={colors.textSecondary} />
-                      <Text style={styles.contextText}>{item.date} • {item.time}</Text>
+                      <Text style={styles.contextText}>{item.date} ΓÇó {item.time}</Text>
                     </View>
                     {item.sender !== 'Unknown Sender' && (
                       <View style={styles.contextProviderPill}>
@@ -336,7 +337,7 @@ export default function ProviderAccountScreen() {
                       <Ionicons name="barcode-outline" size={13} color={colors.textSecondary} />
                       <Text style={styles.hTracking}>{item.tracking}</Text>
                     </View>
-                    <Text style={styles.priceText}>₱{item.price}</Text>
+                    <Text style={styles.priceText}>Γé▒{item.price}</Text>
                   </View>
                 </View>
               ))
@@ -488,6 +489,21 @@ export default function ProviderAccountScreen() {
               )}
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
+
+            <View style={styles.menuDivider} />
+
+            <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'provider' })} activeOpacity={0.7}>
+              <View style={styles.menuItemLeft}>
+                <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
+                  <Ionicons name="headset-outline" size={19} color={ORANGE} />
+                </View>
+                <View style={styles.menuTextWrapper}>
+                  <Text style={styles.menuText}>Customer Service</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
+                </View>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
           </View>
 
           <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Preferences & System</Text>
@@ -508,7 +524,7 @@ export default function ProviderAccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            {/* 🌙 Dark Mode toggle — directly below Settings */}
+            {/* ≡ƒîÖ Dark Mode toggle ΓÇö directly below Settings */}
             <View style={styles.menuItem}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
@@ -546,7 +562,7 @@ export default function ProviderAccountScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.versionText}>Pack-N-Ship Provider · v1.0.0</Text>
+          <Text style={styles.versionText}>Pack-N-Ship Provider ┬╖ v1.0.0</Text>
         </Animated.View>
       </ScrollView>
     </View>
@@ -554,7 +570,7 @@ export default function ProviderAccountScreen() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Styles — generated from the current theme                           */
+/* Styles ΓÇö generated from the current theme                           */
 /* ------------------------------------------------------------------ */
 const makeStyles = (c: ThemeColors) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },

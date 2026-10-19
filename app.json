@@ -23,7 +23,6 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "googleServicesFile": "./google-services.json",
       "package": "com.rendelljames.Capstone",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
@@ -89,9 +88,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "54ddbcc8-9774-4a60-9f65-1b58fac28b3c"
+        "projectId": "c20eee31-affa-428f-aef1-efe3b47fce69"
       }
     },
-    "owner": "junjosephp"
+    "owner": "kenzozxc"
   }
 }
