@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, ScrollView,
   Pressable, ActivityIndicator, Alert, TextInput, Platform,
-  Animated, Easing, Keyboard, KeyboardEvent,
+  Animated, Easing, Keyboard, KeyboardEvent, PanResponder, Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -11,6 +11,13 @@ import { supabase } from '../utils/supabase';
 import { useTheme, ThemeColors } from '../utils/themeContext';
 
 const ORANGE = '#FF751F';
+const FAB_SIZE = 54;
+const EDGE_PADDING = 10;
+const TOP_SAFE = 80;
+const BOTTOM_SAFE = 100;
+const DRAG_THRESHOLD = 6;
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
 type SupportCase = {
   kind: 'dispute' | 'issue' | 'delivery';
@@ -25,14 +32,76 @@ type SupportCase = {
 
 type Props = {
   role: 'sender' | 'provider';
-  bottomOffset?: number;
 };
 
-export default function SupportFab({ role, bottomOffset = 90 }: Props) {
+export default function SupportFab({ role }: Props) {
   const navigation = useNavigation<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
+  // ---------- Drag / Move ----------
+  const pan = useRef(new Animated.ValueXY({
+    x: SCREEN_W - FAB_SIZE - EDGE_PADDING,
+    y: SCREEN_H - FAB_SIZE - BOTTOM_SAFE,
+  })).current;
+
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+
+  // PanResponder built once — moves the FAB while dragging,
+  // and snaps to the closest side (left/right) on release.
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gesture) =>
+        Math.abs(gesture.dx) > DRAG_THRESHOLD ||
+        Math.abs(gesture.dy) > DRAG_THRESHOLD,
+      onPanResponderGrant: () => {
+        setIsDragging(true);
+        const flat = (pan as any).__getValue?.() || { x: 0, y: 0 };
+        dragStart.current = { x: flat.x, y: flat.y };
+        pan.setOffset({ x: flat.x, y: flat.y });
+        pan.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: Animated.event(
+        [null, { dx: pan.x, dy: pan.y }],
+        { useNativeDriver: false },
+      ),
+      onPanResponderRelease: (_evt, gesture) => {
+        pan.flattenOffset();
+        const finalX = dragStart.current.x + gesture.dx;
+        const finalY = dragStart.current.y + gesture.dy;
+
+        // Snap to nearest edge (left or right)
+        const centerX = finalX + FAB_SIZE / 2;
+        const snapToRight = centerX > SCREEN_W / 2;
+        const targetX = snapToRight
+          ? SCREEN_W - FAB_SIZE - EDGE_PADDING
+          : EDGE_PADDING;
+
+        // Clamp Y within safe area
+        const clampedY = Math.max(
+          TOP_SAFE,
+          Math.min(finalY, SCREEN_H - FAB_SIZE - BOTTOM_SAFE),
+        );
+
+        Animated.spring(pan, {
+          toValue: { x: targetX, y: clampedY },
+          useNativeDriver: false,
+          friction: 7,
+          tension: 60,
+        }).start(() => {
+          setIsDragging(false);
+        });
+      },
+      onPanResponderTerminate: () => {
+        pan.flattenOffset();
+        setIsDragging(false);
+      },
+    }),
+  ).current;
+
+  // ---------- Modal state ----------
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [me, setMe] = useState<number | null>(null);
@@ -74,8 +143,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
     return () => loop.stop();
   }, [pulse]);
 
-  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] });
-  const glow = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.7] });
+  const glowOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.7] });
 
   useEffect(() => {
     (async () => {
@@ -190,6 +258,7 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
   }, [me, role, colors.error, colors.warning]);
 
   const openModal = () => {
+    if (isDragging) return;
     setOpen(true);
     if (me) loadCases();
   };
@@ -248,11 +317,17 @@ export default function SupportFab({ role, bottomOffset = 90 }: Props) {
 
   return (
     <>
+      {/* Draggable FAB */}
       <Animated.View
-        pointerEvents="box-none"
-        style={[styles.fabWrap, { bottom: bottomOffset, transform: [{ scale }] }]}
+        style={[
+          styles.fabWrap,
+          {
+            transform: pan.getTranslateTransform(),
+          },
+        ]}
+        {...panResponder.panHandlers}
       >
-        <Animated.View style={[styles.fabGlow, { opacity: glow }]} pointerEvents="none" />
+        <Animated.View style={[styles.fabGlow, { opacity: glowOpacity }]} pointerEvents="none" />
         <TouchableOpacity
           style={styles.fab}
           onPress={openModal}
@@ -423,15 +498,21 @@ const QuickAction = ({ icon, label, onPress, styles, colors }: any) => (
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   fabWrap: {
-    position: 'absolute', right: 18, zIndex: 999,
-    alignItems: 'center', justifyContent: 'center',
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    zIndex: 999,
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   fabGlow: {
     position: 'absolute', width: 62, height: 62, borderRadius: 31,
     backgroundColor: 'rgba(255,117,31,0.35)',
   },
   fab: {
-    width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE,
+    width: FAB_SIZE, height: FAB_SIZE, borderRadius: FAB_SIZE / 2, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4, shadowRadius: 14, elevation: 8,

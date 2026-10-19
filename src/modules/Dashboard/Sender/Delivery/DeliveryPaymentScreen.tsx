@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen.tsx
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
@@ -26,8 +27,11 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const [selected, setSelected] = useState<PaymentProvider | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ---- DOUBLE-TAP GUARDS ----
   const payingRef = useRef(false);
+  const navigatedRef = useRef(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -56,12 +60,36 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       }
     })();
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, []);
 
+  // Navigate back to Booking at most once, no matter how many code paths trigger it
+  const goBackToBooking = (rid: number) => {
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+
+    payingRef.current = false;
+    setPaying(false);
+
+    navigation.navigate('Booking', {
+      paymentJustCompleted: true,
+      requestId: rid,
+    });
+  };
+
   const handlePay = async () => {
     if (!selected) return;
+
+    // Synchronous guard — no awaits before this check
     if (payingRef.current) return;
     payingRef.current = true;
     setPaying(true);
@@ -70,7 +98,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       const res = await chargeDelivery(requestId, selected);
 
       if (res.status === 'held') {
-        navigation.navigate('Booking', { paymentJustCompleted: true, requestId });
+        goBackToBooking(requestId);
         return;
       }
 
@@ -81,20 +109,26 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
       });
 
+      // Clear any existing poll before starting a new one
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+
       let attempts = 0;
       pollRef.current = setInterval(async () => {
         attempts++;
         try {
           const status = await getDeliveryPaymentStatus(requestId);
           if (status.payment_status === 'held' || status.payment_status === 'released') {
-            if (pollRef.current) clearInterval(pollRef.current);
-            payingRef.current = false;
-            setPaying(false);
-            navigation.navigate('Booking', { paymentJustCompleted: true, requestId });
+            goBackToBooking(requestId);
             return;
           }
           if (status.payment_status === 'failed') {
-            if (pollRef.current) clearInterval(pollRef.current);
+            if (pollRef.current) {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+            }
             payingRef.current = false;
             setPaying(false);
             Alert.alert('Payment Failed', 'Your payment was declined. Please try another method.');
@@ -103,8 +137,12 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         } catch (e) {
           console.warn('Poll error', e);
         }
+
         if (attempts >= 30) {
-          if (pollRef.current) clearInterval(pollRef.current);
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
           payingRef.current = false;
           setPaying(false);
           Alert.alert(
@@ -134,7 +172,12 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
 
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} disabled={paying}>
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={styles.backBtn}
+          disabled={paying}
+          activeOpacity={0.85}
+        >
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Payment</Text>

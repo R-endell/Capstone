@@ -6,24 +6,31 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   Platform, ActivityIndicator, Alert, Image, RefreshControl,
   Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView, BackHandler,
+  Modal, Pressable, Linking, ScrollView,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
-import { notifyUser } from '../../../services/pushService';   // NEW
+import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
 const PAGE_SIZE = 30;
+const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
+const IMG_MARKER_START = '[img]';
+const IMG_MARKER_END = '[/img]';
 
 type Party = {
   user_id: number;
   first_name: string;
   last_name: string;
   profile_photo: string | null;
+  phone_number?: string | null;
 };
 
 type ChatRoom = {
@@ -48,6 +55,19 @@ type ChatMessage = {
   is_read: boolean;
   _temp_id?: number;
 };
+
+type DeliveryStage = 'none' | 'assigned' | 'pickup_verified' | 'completed';
+
+// --- Image marker helpers ---
+const isImageMessage = (text: string) =>
+  typeof text === 'string' &&
+  text.startsWith(IMG_MARKER_START) &&
+  text.endsWith(IMG_MARKER_END);
+
+const extractImageUrl = (text: string) =>
+  text.slice(IMG_MARKER_START.length, text.length - IMG_MARKER_END.length);
+
+const buildImageMessage = (url: string) => `${IMG_MARKER_START}${url}${IMG_MARKER_END}`;
 
 const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
@@ -99,6 +119,79 @@ const mergeMessages = (a: ChatMessage[], b: ChatMessage[]) => {
   );
 };
 
+const previewText = (raw: string | null) => {
+  if (!raw) return null;
+  if (isImageMessage(raw)) return '📷 Photo';
+  return raw;
+};
+
+// ---------------- Quick messages by delivery stage ----------------
+type QuickMsg = { text: string; icon: string };
+
+const getQuickMessages = (
+  stage: DeliveryStage,
+  myRole: 'sender' | 'provider' | 'support',
+): QuickMsg[] => {
+  if (myRole === 'support') {
+    return [
+      { text: 'Hi! How can I help?', icon: 'chatbubble-ellipses-outline' },
+      { text: 'Thanks for reaching out.', icon: 'thumbs-up-outline' },
+    ];
+  }
+
+  if (stage === 'assigned') {
+    if (myRole === 'provider') {
+      return [
+        { text: "On my way to pickup now 🚗", icon: 'navigate-outline' },
+        { text: "ETA 5–10 mins.", icon: 'time-outline' },
+        { text: "Please have the package ready.", icon: 'cube-outline' },
+        { text: "I've arrived at the pickup point.", icon: 'location-outline' },
+      ];
+    }
+    return [
+      { text: "I'll be there in a minute.", icon: 'time-outline' },
+      { text: "Please call when you arrive.", icon: 'call-outline' },
+      { text: "Fragile item — handle with care.", icon: 'warning-outline' },
+    ];
+  }
+
+  if (stage === 'pickup_verified') {
+    if (myRole === 'provider') {
+      return [
+        { text: "Package picked up ✓ On my way to drop-off.", icon: 'checkmark-circle-outline' },
+        { text: "ETA 10–15 mins to drop-off.", icon: 'time-outline' },
+        { text: "Almost there, arriving soon.", icon: 'navigate-outline' },
+        { text: "Package delivered — please confirm.", icon: 'shield-checkmark-outline' },
+      ];
+    }
+    return [
+      { text: "Please bring it to the door.", icon: 'home-outline' },
+      { text: "Leave it at the lobby, thanks!", icon: 'business-outline' },
+      { text: "Thanks for the update!", icon: 'thumbs-up-outline' },
+    ];
+  }
+
+  if (stage === 'completed') {
+    if (myRole === 'provider') {
+      return [
+        { text: "Thanks for choosing Pack-N-Ship! ⭐", icon: 'star-outline' },
+        { text: "It was a pleasure delivering for you.", icon: 'heart-outline' },
+      ];
+    }
+    return [
+      { text: "Received the package, thank you!", icon: 'checkmark-circle-outline' },
+      { text: "Great service — left you a review ⭐", icon: 'star-outline' },
+    ];
+  }
+
+  // No active delivery
+  return [
+    { text: 'Hi! 👋', icon: 'hand-left-outline' },
+    { text: 'Thanks!', icon: 'thumbs-up-outline' },
+    { text: 'Got it, thanks.', icon: 'checkmark-outline' },
+  ];
+};
+
 export default function MessagesScreen({ route: propsRoute }: any) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -123,9 +216,18 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const [loadMore, setLoadMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
+  // NEW
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
+  const [sendingImage, setSendingImage] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  // NEW: delivery stage for quick messages
+  const [deliveryStage, setDeliveryStage] = useState<DeliveryStage>('none');
+  const [quickMsgsOpen, setQuickMsgsOpen] = useState(false);
+
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = useRef<number | null>(null);
-  const currentUserName = useRef<string>('');   // NEW — cache sender's name for push
+  const currentUserName = useRef<string>('');
   const subscription = useRef<any>(null);
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
@@ -146,9 +248,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-  // Android hardware back: close the chat first
+  // Back handler
   useEffect(() => {
     const backAction = () => {
+      if (previewImage) { setPreviewImage(null); return true; }
+      if (attachSheetOpen) { setAttachSheetOpen(false); return true; }
+      if (quickMsgsOpen) { setQuickMsgsOpen(false); return true; }
       if (selectedRoom) {
         closeConversation();
         return true;
@@ -157,7 +262,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedRoom]);
+  }, [selectedRoom, attachSheetOpen, previewImage, quickMsgsOpen]);
 
   useFocusEffect(
     useCallback(() => {
@@ -227,6 +332,51 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return userRecord?.user_id || null;
   };
 
+  // NEW: load the delivery stage for the current room
+  const loadDeliveryStage = async (room: ChatRoom) => {
+    if (room.is_support || !room.delivery_id) {
+      setDeliveryStage('none');
+      return;
+    }
+    try {
+      const { data: delivery } = await supabase
+        .from('deliveries')
+        .select('delivery_id, completed_at, request_id, delivery_requests:request_id ( delivery_status )')
+        .eq('delivery_id', room.delivery_id)
+        .maybeSingle();
+
+      if (!delivery) { setDeliveryStage('none'); return; }
+
+      if (delivery.completed_at) { setDeliveryStage('completed'); return; }
+
+      const req = Array.isArray(delivery.delivery_requests)
+        ? delivery.delivery_requests[0]
+        : delivery.delivery_requests;
+
+      if (req?.delivery_status === 'Completed') {
+        setDeliveryStage('completed');
+        return;
+      }
+
+      const { data: qr } = await supabase
+        .from('qr_verifications')
+        .select('pickup_verified')
+        .eq('delivery_id', room.delivery_id)
+        .maybeSingle();
+
+      if (qr?.pickup_verified) {
+        setDeliveryStage('pickup_verified');
+      } else if (req?.delivery_status === 'Accepted' || req?.delivery_status === 'In Transit' || !req?.delivery_status) {
+        setDeliveryStage('assigned');
+      } else {
+        setDeliveryStage('assigned');
+      }
+    } catch (e) {
+      console.warn('[Chat] loadDeliveryStage failed', e);
+      setDeliveryStage('none');
+    }
+  };
+
   const fetchConversations = async () => {
     const userId = currentUserId.current || (await getCurrentUserId());
     if (!userId) { setLoading(false); setRefreshing(false); return; }
@@ -271,10 +421,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             .from('deliveries')
             .select(`
               delivery_id, provider_id, request_id,
-              provider:provider_id ( user_id, first_name, last_name, profile_photo ),
+              provider:provider_id ( user_id, first_name, last_name, profile_photo, phone_number ),
               delivery_requests:request_id (
                 sender_id,
-                sender:sender_id ( user_id, first_name, last_name, profile_photo )
+                sender:sender_id ( user_id, first_name, last_name, profile_photo, phone_number )
               )
             `)
             .in('delivery_id', roomDeliveryIds);
@@ -470,8 +620,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     loadingOlder.current = false;
     setChatLoading(true);
     setSelectedRoom(room);
+    setQuickMsgsOpen(false);
 
     subscribeToRoom(room.all_room_ids);
+    loadDeliveryStage(room);
 
     const latest = await fetchMessages(room.all_room_ids);
     if (token !== openToken.current) return;
@@ -502,6 +654,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setMessages([]);
     setChatLoading(false);
     setNewMessage('');
+    setAttachSheetOpen(false);
+    setQuickMsgsOpen(false);
+    setDeliveryStage('none');
   };
 
   const loadOlderMessages = async () => {
@@ -569,8 +724,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         )
       );
 
-      // ---- NEW: send push notification to the other party ----
-      // Skip for support chat (they may not have a phone-notif for support)
       if (!selectedRoom.is_support && selectedRoom.other.user_id) {
         const senderLabel = currentUserName.current || 'Someone';
         const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
@@ -591,6 +744,251 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       setMessages(prev => prev.filter(m => m._temp_id !== tempId));
       setNewMessage(trimmed);
     }
+  };
+
+  // NEW: send a quick message
+  const sendQuickMessage = async (text: string) => {
+    if (!selectedRoom || !currentUserId.current) return;
+    setQuickMsgsOpen(false);
+    const roomId = selectedRoom.room_id;
+    const allRoomIds = selectedRoom.all_room_ids;
+    const tempId = Date.now();
+    const tempMsg: ChatMessage = {
+      message_id: tempId, room_id: roomId, message: text, sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current, is_read: false, _temp_id: tempId,
+    };
+    setMessages(prev => [...prev, tempMsg]);
+    setTimeout(() => scrollToLatest(true), 50);
+
+    try {
+      const { data, error } = await supabase.from('chat_messages').insert({
+        message: text, room_id: roomId, sender_id: currentUserId.current,
+      }).select('*').single();
+      if (error) throw error;
+
+      if (!selectedRoom.is_support) {
+        await supabase.from('chat_room_states').upsert(
+          allRoomIds.map(id => ({
+            room_id: id,
+            user_id: currentUserId.current,
+            is_archived: false,
+            is_deleted: false,
+          }))
+        );
+      }
+
+      setMessages(prev => prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m)));
+      setConversations(prev =>
+        sortByLatest(
+          prev.map(c =>
+            c.all_room_ids.includes(roomId)
+              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
+              : c
+          )
+        )
+      );
+
+      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
+        const senderLabel = currentUserName.current || 'Someone';
+        const preview = text.length > 60 ? `${text.slice(0, 60)}...` : text;
+        try {
+          await notifyUser(
+            selectedRoom.other.user_id,
+            `💬 ${senderLabel}`,
+            preview,
+            { type: 'chat', roomId, senderId: currentUserId.current },
+          );
+        } catch (notifErr) {
+          console.warn('[Chat] quick push failed:', notifErr);
+        }
+      }
+    } catch (error: any) {
+      console.error('Quick send error:', error);
+      Alert.alert('Error', 'Unable to send message.');
+      setMessages(prev => prev.filter(m => m._temp_id !== tempId));
+    }
+  };
+
+  // ---------------- Image upload ----------------
+  const uploadChatImage = async (uri: string): Promise<string> => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('No user');
+
+    const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const fileExt = ['jpg', 'jpeg', 'png', 'webp'].includes(rawExt) ? rawExt : 'jpg';
+    const contentType = `image/${fileExt}`;
+    const fileName = `${user.id}/chat_${Date.now()}.${fileExt}`;
+
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+
+    const { error: uploadError } = await supabase.storage
+      .from(CHAT_ATTACHMENT_BUCKET)
+      .upload(fileName, bytes, { contentType, upsert: true });
+    if (uploadError) throw new Error(uploadError.message);
+
+    const { data: urlData } = supabase.storage
+      .from(CHAT_ATTACHMENT_BUCKET)
+      .getPublicUrl(fileName);
+    if (!urlData?.publicUrl) throw new Error('No public URL');
+    return urlData.publicUrl;
+  };
+
+  const sendImage = async (uri: string) => {
+    if (!selectedRoom || !currentUserId.current) return;
+
+    const roomId = selectedRoom.room_id;
+    const allRoomIds = selectedRoom.all_room_ids;
+    const tempId = Date.now();
+    const optimistic: ChatMessage = {
+      message_id: tempId,
+      room_id: roomId,
+      message: buildImageMessage(uri),
+      sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current,
+      is_read: false,
+      _temp_id: tempId,
+    };
+
+    setMessages(prev => [...prev, optimistic]);
+    setSendingImage(true);
+    setTimeout(() => scrollToLatest(true), 50);
+
+    try {
+      const remoteUrl = await uploadChatImage(uri);
+      const text = buildImageMessage(remoteUrl);
+
+      const { data, error } = await supabase.from('chat_messages').insert({
+        message: text,
+        room_id: roomId,
+        sender_id: currentUserId.current,
+      }).select('*').single();
+      if (error) throw error;
+
+      if (!selectedRoom.is_support) {
+        await supabase.from('chat_room_states').upsert(
+          allRoomIds.map(id => ({
+            room_id: id,
+            user_id: currentUserId.current,
+            is_archived: false,
+            is_deleted: false,
+          }))
+        );
+      }
+
+      setMessages(prev => {
+        const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
+        if (hasReal) return prev.filter(m => m._temp_id !== tempId);
+        return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
+      });
+      setConversations(prev =>
+        sortByLatest(
+          prev.map(c =>
+            c.all_room_ids.includes(roomId)
+              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
+              : c
+          )
+        )
+      );
+
+      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
+        const senderLabel = currentUserName.current || 'Someone';
+        try {
+          await notifyUser(
+            selectedRoom.other.user_id,
+            `💬 ${senderLabel}`,
+            '📷 Photo',
+            { type: 'chat', roomId, senderId: currentUserId.current },
+          );
+        } catch (notifErr) {
+          console.warn('[Chat] image push notify failed:', notifErr);
+        }
+      }
+    } catch (e: any) {
+      console.error('Send image error:', e);
+      Alert.alert('Upload Failed', e?.message || 'Could not send the photo. Please try again.');
+      setMessages(prev => prev.filter(m => m._temp_id !== tempId));
+    } finally {
+      setSendingImage(false);
+    }
+  };
+
+  const openAttachmentSheet = () => {
+    if (!selectedRoom) return;
+    setAttachSheetOpen(true);
+  };
+
+  const pickFromLibrary = async () => {
+    setAttachSheetOpen(false);
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow photo access to send photos.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        await sendImage(result.assets[0].uri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to open library.');
+    }
+  };
+
+  const pickFromCamera = async () => {
+    setAttachSheetOpen(false);
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please allow camera access to take a photo.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        await sendImage(result.assets[0].uri);
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to open camera.');
+    }
+  };
+
+  const handleCallPress = () => {
+    if (!selectedRoom) return;
+    const number = selectedRoom.other?.phone_number?.trim();
+    if (!number) {
+      Alert.alert(
+        'Number unavailable',
+        selectedRoom.is_support
+          ? 'Support does not accept phone calls. Use the chat instead.'
+          : 'This user has not provided a contact number yet.',
+      );
+      return;
+    }
+    Alert.alert('Call', `Do you want to call ${number}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Call',
+        onPress: () => {
+          Linking.openURL(`tel:${number}`).catch(() => {
+            Alert.alert('Call failed', 'Unable to open the dialer on this device.');
+          });
+        },
+      },
+    ]);
   };
 
   const openChatOptions = (room: ChatRoom) => {
@@ -708,6 +1106,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const renderConversationItem = ({ item }: { item: ChatRoom }) => {
     const isUnread = item.unread_count > 0;
     const isSupport = !!item.is_support;
+    const preview = previewText(item.latest_message) || 'Say hi 👋';
 
     return (
       <View style={styles.chatRowWrapper}>
@@ -741,7 +1140,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.supportTag}><Text style={styles.supportTagText}>SUPPORT</Text></View>
               )}
               <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
-                {item.latest_message || 'Say hi 👋'}
+                {preview}
               </Text>
               {isUnread && (
                 <View style={styles.unreadBadge}><Text style={styles.unreadBadgeText}>{item.unread_count}</Text></View>
@@ -763,6 +1162,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const showDateSeparator = shouldShowDateSeparator(item, older);
     const olderSameSender = older && older.sender_id === item.sender_id;
     const showAvatar = !isMe && !olderSameSender;
+
+    const isImage = isImageMessage(item.message);
+    const imageUrl = isImage ? extractImageUrl(item.message) : null;
 
     return (
       <View>
@@ -789,19 +1191,38 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
           )}
 
-          <View style={[styles.msgBubble, isMe ? styles.myMsg : styles.theirMsg]}>
-            <Text style={[styles.msgText, isMe && styles.myMsgText]}>{item.message}</Text>
-            <View style={styles.msgMeta}>
-              <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
-              {isMe && (
-                <Ionicons
-                  name={item.is_read ? 'checkmark-done' : 'checkmark'}
-                  size={12}
-                  color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
-                  style={{ marginLeft: 4 }}
-                />
-              )}
-            </View>
+          <View style={[styles.msgBubble, isImage && styles.imageBubble, isMe ? styles.myMsg : styles.theirMsg]}>
+            {isImage && imageUrl ? (
+              <TouchableOpacity activeOpacity={0.9} onPress={() => setPreviewImage(imageUrl)}>
+                <Image source={{ uri: imageUrl }} style={styles.chatImage} resizeMode="cover" />
+                <View style={styles.msgMeta}>
+                  <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
+                  {isMe && (
+                    <Ionicons
+                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                      size={12}
+                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      style={{ marginLeft: 4 }}
+                    />
+                  )}
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <>
+                <Text style={[styles.msgText, isMe && styles.myMsgText]}>{item.message}</Text>
+                <View style={styles.msgMeta}>
+                  <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
+                  {isMe && (
+                    <Ionicons
+                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                      size={12}
+                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      style={{ marginLeft: 4 }}
+                    />
+                  )}
+                </View>
+              </>
+            )}
           </View>
         </View>
       </View>
@@ -847,7 +1268,130 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     </View>
   );
 
+  const renderAttachmentSheet = () => (
+    <Modal
+      visible={attachSheetOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setAttachSheetOpen(false)}
+    >
+      <Pressable style={styles.attachBackdrop} onPress={() => setAttachSheetOpen(false)}>
+        <Pressable style={styles.attachSheet} onPress={() => {}}>
+          <View style={styles.attachHandle} />
+          <Text style={styles.attachTitle}>Send a photo</Text>
+
+          <TouchableOpacity style={styles.attachRow} onPress={pickFromCamera} activeOpacity={0.8}>
+            <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
+              <Ionicons name="camera" size={20} color={ORANGE} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attachRowTitle}>Take a photo</Text>
+              <Text style={styles.attachRowSub}>Open camera and capture</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
+            <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
+              <Ionicons name="images" size={20} color={ORANGE} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.attachRowTitle}>Choose from gallery</Text>
+              <Text style={styles.attachRowSub}>Pick an existing image</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.attachCancel}
+            onPress={() => setAttachSheetOpen(false)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.attachCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
+  const renderPreviewModal = () => (
+    <Modal visible={!!previewImage} transparent animationType="fade" onRequestClose={() => setPreviewImage(null)}>
+      <View style={styles.previewOverlay}>
+        {previewImage && (
+          <Image source={{ uri: previewImage }} style={styles.previewImage} resizeMode="contain" />
+        )}
+        <TouchableOpacity
+          style={[styles.previewClose, { top: insets.top + 12 }]}
+          onPress={() => setPreviewImage(null)}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="close" size={24} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </Modal>
+  );
+
+  // NEW: quick messages sheet
+  const myRole: 'sender' | 'provider' | 'support' =
+    selectedRoom?.is_support ? 'support' : (selectedRoom?.role || 'sender');
+  const quickMessages = getQuickMessages(deliveryStage, myRole);
+
+  const renderQuickMessagesSheet = () => (
+    <Modal
+      visible={quickMsgsOpen}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setQuickMsgsOpen(false)}
+    >
+      <Pressable style={styles.attachBackdrop} onPress={() => setQuickMsgsOpen(false)}>
+        <Pressable style={styles.quickSheet} onPress={() => {}}>
+          <View style={styles.attachHandle} />
+          <View style={styles.quickHeader}>
+            <View>
+              <Text style={styles.attachTitle}>Quick Messages</Text>
+              <Text style={styles.quickSub}>
+                {deliveryStage === 'pickup_verified'
+                  ? 'In transit — heading to drop-off'
+                  : deliveryStage === 'assigned'
+                  ? 'Heading to pickup'
+                  : deliveryStage === 'completed'
+                  ? 'Delivery complete'
+                  : 'Say something fast'}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setQuickMsgsOpen(false)} hitSlop={10}>
+              <Ionicons name="close" size={22} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            style={{ maxHeight: 340 }}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
+          >
+            {quickMessages.map((qm, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={styles.quickItem}
+                onPress={() => sendQuickMessage(qm.text)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.quickItemIcon}>
+                  <Ionicons name={qm.icon as any} size={18} color={ORANGE} />
+                </View>
+                <Text style={styles.quickItemText} numberOfLines={2}>{qm.text}</Text>
+                <Ionicons name="send" size={16} color={ORANGE} />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+
   if (selectedRoom) {
+    const hasQuick = quickMessages.length > 0;
+
     return (
       <View style={styles.detailContainer}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
@@ -863,11 +1407,22 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 {selectedRoom.is_support ? 'Pack-N-Ship Support' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
-                {selectedRoom.is_support ? 'Official support channel' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
+                {selectedRoom.is_support
+                  ? 'Official support channel'
+                  : selectedRoom.role === 'sender'
+                  ? 'Provider'
+                  : 'Sender'}
+                {deliveryStage === 'pickup_verified' && ' · In transit'}
+                {deliveryStage === 'assigned' && ' · En route to pickup'}
+                {deliveryStage === 'completed' && ' · Completed'}
               </Text>
             </View>
 
-            <TouchableOpacity style={styles.callBtnFlat} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.callBtnFlat}
+              activeOpacity={0.7}
+              onPress={handleCallPress}
+            >
               <Ionicons name="call" size={22} color={ORANGE} />
             </TouchableOpacity>
           </Animated.View>
@@ -905,8 +1460,53 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             )}
           </Animated.View>
 
+          {sendingImage && (
+            <View style={styles.uploadingBanner}>
+              <ActivityIndicator size="small" color={ORANGE} />
+              <Text style={styles.uploadingText}>Sending photo…</Text>
+            </View>
+          )}
+
+          {/* NEW: Quick messages chip row above the input */}
+          {hasQuick && (
+            <View style={styles.quickBarWrapper}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.quickBarContent}
+                keyboardShouldPersistTaps="handled"
+              >
+                <TouchableOpacity
+                  style={[styles.quickChip, styles.quickChipPrimary]}
+                  onPress={() => setQuickMsgsOpen(true)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="flash" size={14} color="#FFFFFF" />
+                  <Text style={styles.quickChipTextPrimary}>Quick replies</Text>
+                </TouchableOpacity>
+                {quickMessages.slice(0, 2).map((qm, idx) => (
+                  <TouchableOpacity
+                    key={`preview-${idx}`}
+                    style={styles.quickChip}
+                    onPress={() => sendQuickMessage(qm.text)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.quickChipText} numberOfLines={1}>
+                      {qm.text}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
-            <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7}>
+            <TouchableOpacity
+              style={styles.attachBtnFlat}
+              activeOpacity={0.7}
+              onPress={openAttachmentSheet}
+              disabled={sendingImage}
+            >
               <Ionicons name="add-circle" size={32} color={colors.textMuted} />
             </TouchableOpacity>
 
@@ -933,6 +1533,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
+
+        {renderAttachmentSheet()}
+        {renderPreviewModal()}
+        {renderQuickMessagesSheet()}
       </View>
     );
   }
@@ -1073,11 +1677,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
   msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  imageBubble: { padding: 4, overflow: 'hidden' },
   myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
   theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.divider, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.05 : 0.35, shadowRadius: 4, elevation: 1 },
   msgText: { fontSize: 14.5, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
   myMsgText: { color: '#FFFFFF' },
-  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4 },
+  chatImage: { width: 220, height: 220, borderRadius: 16 },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4, paddingHorizontal: 4 },
   msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
   myMsgTime: { color: 'rgba(255,255,255,0.85)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
@@ -1099,4 +1705,112 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingBottom: Platform.OS === 'ios' ? 10 : 8,
   },
   sendBtnFlat: { paddingBottom: 10, paddingLeft: 12, paddingRight: 4 },
+
+  uploadingBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 8, backgroundColor: c.accentSoft,
+    borderTopWidth: 1, borderTopColor: c.border,
+  },
+  uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
+
+  // NEW: quick bar styles
+  quickBarWrapper: {
+    backgroundColor: c.card,
+    borderTopWidth: 1,
+    borderTopColor: c.border,
+    paddingVertical: 8,
+  },
+  quickBarContent: {
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  quickChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 18, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background,
+    maxWidth: 240,
+  },
+  quickChipPrimary: {
+    backgroundColor: ORANGE, borderColor: ORANGE,
+  },
+  quickChipText: {
+    fontSize: 12.5, fontWeight: '600', color: c.textPrimary,
+  },
+  quickChipTextPrimary: {
+    fontSize: 12.5, fontWeight: '800', color: '#FFFFFF',
+  },
+
+  // Quick messages modal
+  quickSheet: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+  },
+  quickHeader: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'flex-start', marginBottom: 12,
+  },
+  quickSub: {
+    fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500',
+  },
+  quickItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderRadius: 14, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background,
+  },
+  quickItemIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: c.accentSoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  quickItemText: {
+    flex: 1, fontSize: 13.5, fontWeight: '600', color: c.textPrimary,
+  },
+
+  // Attachment sheet
+  attachBackdrop: {
+    flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
+    justifyContent: 'flex-end',
+  },
+  attachSheet: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+  },
+  attachHandle: {
+    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
+    backgroundColor: c.border, marginBottom: 12,
+  },
+  attachTitle: {
+    fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 12,
+  },
+  attachRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 14, borderRadius: 14,
+  },
+  attachIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  attachRowTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  attachRowSub: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  attachCancel: {
+    marginTop: 8, paddingVertical: 14, borderRadius: 14,
+    alignItems: 'center', backgroundColor: c.divider,
+  },
+  attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
+
+  // Image preview
+  previewOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  previewImage: { width: '100%', height: '80%' },
+  previewClose: {
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
 });

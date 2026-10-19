@@ -79,6 +79,9 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
+// Support FAB  ← RE-ADDED
+import SupportFab from './src/components/SupportFab';
+
 // Canonical background matcher
 import {
   startBackgroundMatcher,
@@ -268,16 +271,13 @@ function useUnreadMessages() {
   return unreadCount;
 }
 
-// Keeps the Android system navigation bar (Back / Home buttons) in step with the
-// app theme. It uses the same colour as the tab bar so the two read as one strip.
-// Loaded lazily so the app still runs on a build made before expo-navigation-bar.
+// Keeps the Android system navigation bar in step with the app theme.
 function NavigationBarSync() {
   const { colors, isDark } = useTheme();
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     try {
       const NavigationBar = require('expo-navigation-bar');
-      // Ignored (harmlessly) on edge-to-edge builds, where the tab bar paints this area.
       NavigationBar.setBackgroundColorAsync?.(colors.card).catch?.(() => {});
       NavigationBar.setButtonStyleAsync?.(isDark ? 'light' : 'dark').catch?.(() => {});
       NavigationBar.setBorderColorAsync?.(colors.border).catch?.(() => {});
@@ -286,8 +286,6 @@ function NavigationBarSync() {
   return null;
 }
 
-// Tab bar that adapts to the device: with 3-button navigation (or a gesture bar)
-// the system inset is added below the tabs; with no inset it stays the same size.
 function useTabBarStyle() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -309,41 +307,43 @@ function MainTabs() {
   const { colors } = useTheme();
 
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
-          if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-          else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
-          else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
-          else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: colors.textSecondary,
-        tabBarStyle,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
-        headerShown: false,
-      })}
-    >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Activity" component={ActivityScreen} />
-      <Tab.Screen name="Explore" component={ExploreScreen} />
-      <Tab.Screen 
-        name="Messages" 
-        component={MessagesScreen} 
-        options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
-      />
-      <Tab.Screen name="Account" component={AccountScreen} />
-    </Tab.Navigator>
+    <View style={{ flex: 1 }}>
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
+            if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
+            else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
+            else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
+            else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: colors.textSecondary,
+          tabBarStyle,
+          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+          headerShown: false,
+        })}
+      >
+        <Tab.Screen name="Home" component={HomeScreen} />
+        <Tab.Screen name="Activity" component={ActivityScreen} />
+        <Tab.Screen name="Explore" component={ExploreScreen} />
+        <Tab.Screen
+          name="Messages"
+          component={MessagesScreen}
+          options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
+        />
+        <Tab.Screen name="Account" component={AccountScreen} />
+      </Tab.Navigator>
+
+      {/* Floating customer support bubble (sender) */}
+      <SupportFab role="sender" />
+    </View>
   );
 }
 
-// Role guard: the Provider interface only renders for an approved provider.
-// Anyone else (e.g. a Sender who reached it through stale state or Back
-// navigation) is sent to the Sender interface. While the check runs we render
-// nothing, so the Provider UI never flashes for the wrong user.
+// Role guard wrapper for provider
 function ProviderTabs() {
   const navigation = useNavigation<any>();
   const [allowed, setAllowed] = useState(false);
@@ -363,7 +363,7 @@ function ProviderTabs() {
         navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
         return;
       }
-      setAllowed(true); // true, or unknown (offline) -> don't lock out a real provider
+      setAllowed(true);
     })();
     return () => { cancelled = true; };
   }, [navigation]);
@@ -379,58 +379,57 @@ function ProviderTabsInner() {
   const { colors } = useTheme();
 
   return (
-    <ProviderTab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName: any;
+    <View style={{ flex: 1 }}>
+      <ProviderTab.Navigator
+        screenOptions={({ route }) => ({
+          tabBarIcon: ({ focused, color, size }) => {
+            let iconName: any;
 
-          if (route.name === 'Task') {
-            iconName = focused ? 'clipboard' : 'clipboard-outline';
-          } else if (route.name === 'Earnings') {
-            iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-          } else if (route.name === 'Jobs') {
-            iconName = focused ? 'map' : 'map-outline';
-          } else if (route.name === 'Messages') {
-            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-          } else if (route.name === 'Account') {
-            iconName = focused ? 'person' : 'person-outline';
-          }
+            if (route.name === 'Task') {
+              iconName = focused ? 'clipboard' : 'clipboard-outline';
+            } else if (route.name === 'Earnings') {
+              iconName = focused ? 'bar-chart' : 'bar-chart-outline';
+            } else if (route.name === 'Jobs') {
+              iconName = focused ? 'map' : 'map-outline';
+            } else if (route.name === 'Messages') {
+              iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
+            } else if (route.name === 'Account') {
+              iconName = focused ? 'person' : 'person-outline';
+            }
 
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#F27024',
-        tabBarInactiveTintColor: colors.textSecondary,
-        tabBarStyle,
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '500',
-        },
-        headerShown: false,
-      })}
-    >
-      <ProviderTab.Screen name="Task" component={TaskScreen} />
-      <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-      <ProviderTab.Screen name="Jobs" component={JobsScreen} />
-      <ProviderTab.Screen
-        name="Messages"
-        component={ProviderMessagesScreen}
-        options={{
-          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-          tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-        }}
-      />
-      <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
-    </ProviderTab.Navigator>
+            return <Ionicons name={iconName} size={size} color={color} />;
+          },
+          tabBarActiveTintColor: '#F27024',
+          tabBarInactiveTintColor: colors.textSecondary,
+          tabBarStyle,
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '500',
+          },
+          headerShown: false,
+        })}
+      >
+        <ProviderTab.Screen name="Task" component={TaskScreen} />
+        <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
+        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+        <ProviderTab.Screen
+          name="Messages"
+          component={ProviderMessagesScreen}
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
+          }}
+        />
+        <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
+      </ProviderTab.Navigator>
+
+      {/* Floating customer support bubble (provider) */}
+      <SupportFab role="provider" />
+    </View>
   );
 }
 
 // ---------- ROLE GUARD ----------
-/**
- * Listens to navigation state changes and ensures the current user is
- * actually allowed to be on ProviderTabs. If not, force-navigates back
- * to MainTabs. This is the safety net that prevents the "stuck on provider"
- * bug when the app is killed mid-registration.
- */
 function useRoleGuard(navigationRef: React.RefObject<any>) {
   const validatingRef = useRef(false);
   const appStateRef = useRef(AppState.currentState);
@@ -442,7 +441,6 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
     const state = navigationRef.current.getRootState?.();
     if (!state) return;
 
-    // Find the deepest active route name
     const findActiveRoute = (navState: any): string | null => {
       if (!navState) return null;
       const idx = navState.index ?? 0;
@@ -455,7 +453,6 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
     const activeRoute = findActiveRoute(state);
     if (!activeRoute) return;
 
-    // Only validate when user is on provider screens
     if (activeRoute !== 'ProviderTabs') return;
 
     validatingRef.current = true;
@@ -483,7 +480,6 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
         return;
       }
 
-      // Check both role + verification status
       const { data: providerRole } = await supabase
         .from('roles')
         .select('role_id')
@@ -510,7 +506,7 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
 
       if (!isApprovedProvider) {
         console.warn(
-          'ΓÜá∩╕Å Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
+          '⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
         );
         navigationRef.current?.reset({
           index: 0,
@@ -524,7 +520,6 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
     }
   };
 
-  // Validate on route change
   useEffect(() => {
     const unsub = navigationRef.current?.addListener?.('state', () => {
       validateCurrentRoute();
@@ -534,7 +529,6 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
     };
   }, [navigationRef.current]);
 
-  // Validate when app comes back from background
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       const wasBackground =
@@ -554,7 +548,6 @@ function AppInner() {
   const appStateRef = useRef(AppState.currentState);
   const matcherStartedRef = useRef(false);
 
-  // Attach the role guard
   useRoleGuard(navigationRef as any);
 
   useEffect(() => {
@@ -580,7 +573,6 @@ function AppInner() {
 
       if (!userRow?.user_id) return;
 
-      // Only start matcher if user is an APPROVED provider
       const { data: providerRole } = await supabase
         .from('roles')
         .select('role_id')
@@ -626,9 +618,9 @@ function AppInner() {
         try {
           startBackgroundMatcher();
           matcherStartedRef.current = true;
-          console.log('Γ£à Background matcher started for route', routeRow.route_id);
+          console.log('✅ Background matcher started for route', routeRow.route_id);
         } catch (error) {
-          console.error('Γ¥î Failed to start background matcher:', error);
+          console.error('❌ Failed to start background matcher:', error);
         }
       }
     };
@@ -727,50 +719,26 @@ function AppInner() {
         <Stack.Screen name="Loading" component={LoadingScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Register" component={RegisterScreen} />
-        <Stack.Screen
-          name="PermissionsPrompt"
-          component={PermissionsPromptScreen}
-        />
-        <Stack.Screen
-          name="IdentityVerification"
-          component={IdentityVerificationScreen}
-        />
-        <Stack.Screen
-          name="TwoFactorAuth"
-          component={TwoFactorAuthScreen}
-        />
+        <Stack.Screen name="PermissionsPrompt" component={PermissionsPromptScreen} />
+        <Stack.Screen name="IdentityVerification" component={IdentityVerificationScreen} />
+        <Stack.Screen name="TwoFactorAuth" component={TwoFactorAuthScreen} />
         <Stack.Screen name="MainTabs" component={MainTabs} />
         <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
         <Stack.Screen name="EditProfile" component={EditProfileScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen
-          name="DisputeCenter"
-          component={DisputeCenterScreen}
-        />
+        <Stack.Screen name="DisputeCenter" component={DisputeCenterScreen} />
         <Stack.Screen name="Support" component={SupportScreen} />
         <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
         <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
-        <Stack.Screen
-          name="RegisterProvider"
-          component={RegisterProviderScreen}
-        />
+        <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
         <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
         <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
         <Stack.Screen name="AddItem" component={AddItemScreen} />
-        <Stack.Screen
-          name="ScheduleCalendar"
-          component={ScheduleCalendarScreen}
-        />
-        <Stack.Screen
-          name="PickupLocation"
-          component={LocationSelectScreen}
-        />
-        <Stack.Screen
-          name="DropoffLocation"
-          component={LocationSelectScreen}
-        />
+        <Stack.Screen name="ScheduleCalendar" component={ScheduleCalendarScreen} />
+        <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
+        <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
         <Stack.Screen name="Booking" component={BookingScreen} />
         <Stack.Screen
           name="DeliveryPayment"
@@ -783,10 +751,7 @@ function AppInner() {
           options={{ animation: 'slide_from_right' }}
         />
         <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-        <Stack.Screen
-          name="ManageVehicle"
-          component={ManageVehicleScreen}
-        />
+        <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
         <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
         <Stack.Screen
           name="ReceiverPicker"
