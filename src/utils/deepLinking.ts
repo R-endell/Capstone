@@ -45,6 +45,23 @@ export const handleDeepLink = (url: string): DeepLinkResult => {
     };
   }
 
+  // ---- EMAIL VERIFICATION (NEW) ----
+  if (isMatch('auth/confirm')) {
+    const token_hash =
+      typeof queryParams.token_hash === 'string' ? queryParams.token_hash : undefined;
+    const type = typeof queryParams.type === 'string' ? queryParams.type : 'signup';
+
+    if (!token_hash) {
+      console.warn('[DeepLink] auth/confirm missing token_hash');
+      return null;
+    }
+
+    return {
+      route: 'VerifyEmail',
+      params: { token_hash, type },
+    };
+  }
+
   return null;
 };
 
