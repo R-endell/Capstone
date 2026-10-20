@@ -19,7 +19,7 @@ export const handleDeepLink = (url: string): DeepLinkResult => {
 
   const isMatch = (target: string) => rawPath === target || fullPath === target;
 
-  // ---- Payment callback (preserved from original) ----
+  // ---- Payment callback ----
   if (isMatch('payment/callback')) {
     const { payment_method_id, status } = queryParams;
     return {
@@ -45,20 +45,34 @@ export const handleDeepLink = (url: string): DeepLinkResult => {
     };
   }
 
-  // ---- EMAIL VERIFICATION (NEW) ----
+  // ---- EMAIL VERIFICATION ----
   if (isMatch('auth/confirm')) {
-    const token_hash =
-      typeof queryParams.token_hash === 'string' ? queryParams.token_hash : undefined;
-    const type = typeof queryParams.type === 'string' ? queryParams.type : 'signup';
+    // 1. Check for PKCE flow (code param)
+    const code = typeof queryParams.code === 'string' ? queryParams.code : undefined;
+    if (code) {
+      return { route: 'VerifyEmail', params: { code } };
+    }
 
-    if (!token_hash) {
-      console.warn('[DeepLink] auth/confirm missing token_hash');
+    // 2. Check for Implicit flow (access_token in hash fragment)
+    // Example: packnship://auth/confirm#access_token=xxx&refresh_token=yyy
+    let access_token = typeof queryParams.access_token === 'string' ? queryParams.access_token : undefined;
+    let refresh_token = typeof queryParams.refresh_token === 'string' ? queryParams.refresh_token : undefined;
+
+    if (!access_token && url.includes('#')) {
+      const hash = url.split('#')[1];
+      const hashParams = new URLSearchParams(hash);
+      access_token = hashParams.get('access_token') || undefined;
+      refresh_token = hashParams.get('refresh_token') || undefined;
+    }
+
+    if (!access_token) {
+      console.warn('[DeepLink] auth/confirm missing access_token or code');
       return null;
     }
 
     return {
       route: 'VerifyEmail',
-      params: { token_hash, type },
+      params: { access_token, refresh_token },
     };
   }
 
@@ -66,9 +80,7 @@ export const handleDeepLink = (url: string): DeepLinkResult => {
 };
 
 /**
- * Listens for deep links (cold + warm start). Uses `reset` so the deep link
- * fully takes over the stack — this is what prevents the Loading screen's
- * timer from kicking the user back to Login during the reset flow.
+ * Listens for deep links (cold + warm start).
  */
 export const useDeepLink = (navigationRef: React.RefObject<any>) => {
   useEffect(() => {

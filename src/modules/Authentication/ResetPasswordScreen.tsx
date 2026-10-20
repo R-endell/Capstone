@@ -1,19 +1,9 @@
 // src/modules/Authentication/ResetPasswordScreen.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  TouchableWithoutFeedback,
-  Keyboard,
-  ScrollView,
-  ActivityIndicator,
-  Animated,
-  Easing,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView,
+  Platform, TouchableWithoutFeedback, Keyboard, ScrollView, ActivityIndicator,
+  Animated, Easing,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -31,10 +21,12 @@ import {
 
 const ORANGE = '#F27024';
 
+// 1. Make the params optional to prevent crashes if navigated without them
 type ResetRouteParamList = {
   ResetPassword: {
-    token_hash: string;
-    type: string;
+    token_hash?: string;
+    type?: string;
+    skipVerify?: boolean;
   };
 };
 type ResetRoute = RouteProp<ResetRouteParamList, 'ResetPassword'>;
@@ -49,10 +41,13 @@ export default function ResetPasswordScreen() {
   const { colors, isDark, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const { token_hash, type } = route.params;
+  // 2. Safely destructure params with a fallback empty object
+  const { token_hash, type, skipVerify } = route.params || {};
 
   // 'verifying' | 'error' | 'form' | 'success'
-  const [phase, setPhase] = useState<'verifying' | 'error' | 'form' | 'success'>('verifying');
+  const [phase, setPhase] = useState<'verifying' | 'error' | 'form' | 'success'>(
+    skipVerify ? 'form' : 'verifying'
+  );
   const [verifyErrorMsg, setVerifyErrorMsg] = useState('');
 
   const [password, setPassword] = useState('');
@@ -83,6 +78,16 @@ export default function ResetPasswordScreen() {
   }, [fadeAnim, glowAnim]);
 
   useEffect(() => {
+    // If we skipped verification (came from OTP flow), don't verify again.
+    if (skipVerify) return;
+
+    // 3. Safety check: if somehow a user lands here without a token and without skipVerify
+    if (!token_hash) {
+      setVerifyErrorMsg('This password reset link is invalid. Please request a new one.');
+      setPhase('error');
+      return;
+    }
+
     let cancelled = false;
     (async () => {
       try {
@@ -113,7 +118,7 @@ export default function ResetPasswordScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [token_hash, type]);
+  }, [token_hash, type, skipVerify]);
 
   const handlePasswordChange = (t: string) => {
     setPassword(t);
@@ -149,7 +154,6 @@ export default function ResetPasswordScreen() {
         return;
       }
 
-      // Session is now valid. Show success briefly, then route to home.
       setPhase('success');
 
       setTimeout(async () => {
@@ -176,8 +180,6 @@ export default function ResetPasswordScreen() {
   };
 
   const handleBackToLogin = async () => {
-    // If verify succeeded but user abandoned, sign out so they don't
-    // accidentally get routed into the app with a "half-reset" state.
     try { await supabase.auth.signOut(); } catch {}
     navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
   };
@@ -192,7 +194,6 @@ export default function ResetPasswordScreen() {
   const strength = checkPasswordStrength(password);
   const showStrength = password.length > 0;
 
-  // ---------- RENDER ----------
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <TouchableOpacity
@@ -263,11 +264,7 @@ export default function ResetPasswordScreen() {
                   </View>
 
                   <View style={styles.formContainer}>
-                    <View style={[
-                      styles.inputWrapper,
-                      focusedInput === 'password' && styles.inputFocused,
-                      passwordError && styles.inputError,
-                    ]}>
+                    <View style={[styles.inputWrapper, focusedInput === 'password' && styles.inputFocused, passwordError && styles.inputError]}>
                       <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'password' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                       <TextInput
                         style={styles.input}
@@ -296,11 +293,7 @@ export default function ResetPasswordScreen() {
                       </View>
                     )}
 
-                    <View style={[
-                      styles.inputWrapper,
-                      focusedInput === 'confirm' && styles.inputFocused,
-                      confirmPasswordError && styles.inputError,
-                    ]}>
+                    <View style={[styles.inputWrapper, focusedInput === 'confirm' && styles.inputFocused, confirmPasswordError && styles.inputError]}>
                       <Ionicons name="lock-closed-outline" size={20} color={focusedInput === 'confirm' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                       <TextInput
                         style={styles.input}
@@ -326,11 +319,7 @@ export default function ResetPasswordScreen() {
                     disabled={submitting}
                     activeOpacity={0.8}
                   >
-                    {submitting ? (
-                      <ActivityIndicator color="#FFFFFF" size="small" />
-                    ) : (
-                      <Text style={styles.primaryButtonText}>Update Password</Text>
-                    )}
+                    {submitting ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.primaryButtonText}>Update Password</Text>}
                   </TouchableOpacity>
 
                   <TouchableOpacity style={styles.linkContainer} onPress={handleBackToLogin} disabled={submitting}>
@@ -349,11 +338,7 @@ export default function ResetPasswordScreen() {
 function StrengthRow({ label, ok, c }: { label: string; ok: boolean; c: ThemeColors }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
-      <Ionicons
-        name={ok ? 'checkmark-circle' : 'ellipse-outline'}
-        size={14}
-        color={ok ? '#10B981' : c.textMuted}
-      />
+      <Ionicons name={ok ? 'checkmark-circle' : 'ellipse-outline'} size={14} color={ok ? '#10B981' : c.textMuted} />
       <Text style={{ marginLeft: 6, fontSize: 12, color: ok ? c.textPrimary : c.textMuted }}>
         {label}
       </Text>
@@ -364,57 +349,33 @@ function StrengthRow({ label, ok, c }: { label: string; ok: boolean; c: ThemeCol
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   keyboardAvoid: { flex: 1 },
-
-  themeToggle: {
-    position: 'absolute', right: 20, zIndex: 20,
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3,
-  },
-
+  themeToggle: { position: 'absolute', right: 20, zIndex: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.border, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3 },
   backgroundLayer: { ...StyleSheet.absoluteFill, overflow: 'hidden' },
   glow: { position: 'absolute', borderRadius: 999, backgroundColor: ORANGE },
   glowTop: { width: 360, height: 360, top: -160, right: -140 },
   glowBottom: { width: 300, height: 300, bottom: -140, left: -120, opacity: 0.05 },
-
   innerContainer: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' },
   contentWrapper: { flex: 1, justifyContent: 'center' },
-
   centerBlock: { alignItems: 'center', justifyContent: 'center' },
   verifyText: { marginTop: 16, fontSize: 15, color: c.textSecondary, fontWeight: '500' },
-
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { marginBottom: 16 },
   header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
   subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
-
   errorIconWrap: { alignItems: 'center', marginBottom: 24 },
-
   formContainer: { marginBottom: 16 },
-  inputWrapper: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
-    borderRadius: 12, marginBottom: 12, height: 52,
-  },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12, marginBottom: 12, height: 52 },
   inputIcon: { paddingLeft: 16, paddingRight: 8 },
   input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary },
   inputFocused: { borderColor: ORANGE },
   inputError: { borderColor: c.error, backgroundColor: c.errorBg },
   eyeButton: { paddingHorizontal: 16, height: '100%', justifyContent: 'center' },
   errorText: { color: c.error, fontSize: 12, fontWeight: '500', marginTop: -8, marginBottom: 10, marginLeft: 4 },
-
   strengthList: { marginTop: -4, marginBottom: 12, paddingLeft: 4 },
-
-  primaryButton: {
-    backgroundColor: ORANGE, height: 54, borderRadius: 12,
-    alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20,
-  },
+  primaryButton: { backgroundColor: ORANGE, height: 54, borderRadius: 12, alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20 },
   buttonDisabled: { opacity: 0.6 },
   primaryButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
-
-  linkContainer: { alignItems: 'center', paddingVertical: 8 },
+  linkContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
   link: { color: c.textSecondary, fontSize: 14 },
   linkBold: { color: ORANGE, fontWeight: '600' },
 });
