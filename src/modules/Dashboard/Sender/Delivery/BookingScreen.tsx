@@ -712,6 +712,10 @@ export default function BookingScreen({ route, navigation }: any) {
     if (cancellingRef.current) return;
     cancellingRef.current = true;
 
+    // Captured before the try block so the tail of this function knows
+    // whether the flow should end (paid → refund) or return to review (unpaid).
+    let wasPaid = false;
+
     try {
       if (matchChannelRef.current) {
         supabase.removeChannel(matchChannelRef.current);
@@ -732,36 +736,47 @@ export default function BookingScreen({ route, navigation }: any) {
         const wasHeld =
           reqRow?.payment_status === 'held' ||
           reqRow?.escrow_status === 'held';
+        wasPaid = wasHeld;
 
         if (wasHeld) {
           try {
             const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
               'xendit-refund',
-              { body: { request_id: savedRequestId, reason: 'USER_CANCELLED' } },
+              { body: { request_id: savedRequestId, reason: 'REQUESTED_BY_CUSTOMER' } },
             );
 
-            if (refundErr || !refundResult?.success) {
+            const ok = !refundErr && refundResult?.success;
+
+            if (!ok) {
               const msg =
                 refundResult?.error ||
                 refundErr?.message ||
-                'Refund could not be initiated.';
+                'Refund could not be started.';
+              const needsManual = refundResult?.needs_manual === true;
 
               await supabase
                 .from('delivery_requests')
-                .update({ delivery_status: 'Cancelled' })
+                .update({
+                  delivery_status: 'Cancelled',
+                  refund_status: needsManual ? 'manual_required' : 'failed',
+                })
                 .eq('request_id', savedRequestId);
 
               await supabase.from('escrow_transactions').insert({
                 request_id: savedRequestId,
-                event: 'refund_initiated_manual',
+                event: 'refund_auto_failed',
                 amount: Number(reqRow?.estimated_cost) || 0,
                 provider: reqRow?.payment_provider ?? null,
-                notes: `Auto-refund failed (${msg}). Manual review required.`,
+                notes: `Auto-refund failed: ${msg}`,
               });
 
               Alert.alert(
-                'Booking cancelled',
-                `Your booking was cancelled, but the automatic refund could not be started (${msg}). Our team will process your refund manually within 3–5 business days.`,
+                'Booking Cancelled',
+                `Your booking has been cancelled.\n\n` +
+                  `The automatic refund could not be started:\n${msg}\n\n` +
+                  `Your funds are still held in escrow. Please contact support with ` +
+                  `tracking ID PNS-${String(savedRequestId).padStart(4, '0')} so we can process your refund manually.`,
+                [{ text: 'OK' }],
               );
             } else {
               await supabase
@@ -770,25 +785,40 @@ export default function BookingScreen({ route, navigation }: any) {
                 .eq('request_id', savedRequestId);
 
               Alert.alert(
-                'Refund initiated',
-                'Your refund is being processed. It should arrive in 3–5 business days.',
+                'Booking Cancelled',
+                'Your refund has been initiated.\n\n' +
+                  'Most GCash/Maya refunds arrive within a few minutes, but may take ' +
+                  'up to 3–5 business days depending on your wallet provider.',
               );
             }
           } catch (e: any) {
             await supabase
               .from('delivery_requests')
-              .update({ delivery_status: 'Cancelled' })
+              .update({ delivery_status: 'Cancelled', refund_status: 'failed' })
               .eq('request_id', savedRequestId);
 
             Alert.alert(
-              'Booking cancelled',
-              'Your booking was cancelled, but we could not reach the payment service. Our team will process your refund manually.',
+              'Booking Cancelled',
+              `Your booking was cancelled, but we could not reach the payment service ` +
+                `(${e?.message || 'network error'}). Your funds are still held in escrow — ` +
+                `please contact support with tracking ID PNS-${String(savedRequestId).padStart(4, '0')}.`,
             );
           }
         } else {
+          // Unpaid booking — safe to hard-delete the request. Also delete
+          // the cargo_profile so we don't accumulate orphan cargo rows.
+          const { data: cargoRow } = await supabase
+            .from('delivery_requests')
+            .select('cargo_id')
+            .eq('request_id', savedRequestId)
+            .maybeSingle();
           await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
+          if (cargoRow?.cargo_id) {
+            await supabase.from('cargo_profiles').delete().eq('cargo_id', cargoRow.cargo_id);
+          }
         }
       }
+
       setResumeSubId(null);
 
       if (isResumedSession.current) {
@@ -796,6 +826,21 @@ export default function BookingScreen({ route, navigation }: any) {
         navigation.goBack();
         return;
       }
+
+      // ---------- THE FIX ----------
+      // A paid cancellation ends the flow. Do NOT return to 'review' with a
+      // live Proceed button — that's what was causing the duplicate row.
+      if (wasPaid) {
+        dispatch({ type: 'RESET' });
+        setSavedRequestId(null);
+        proceedingRef.current = false;
+        proceedReturnToRef.current = null;
+        setSavingBooking(false);
+        navigation.navigate('MainTabs');
+        return;
+      }
+      // -----------------------------
+
       setBookingState('review');
     } finally {
       cancellingRef.current = false;

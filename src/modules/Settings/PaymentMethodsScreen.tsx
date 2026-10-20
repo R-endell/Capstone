@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   ActivityIndicator, Alert, StatusBar,
@@ -6,7 +6,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { supabase } from '../../utils/supabase';
 import {
   fetchPaymentMethods,
@@ -20,7 +19,7 @@ import { useTheme, ThemeColors } from '../../utils/themeContext';
 const ORANGE = '#FF751F';
 
 export default function PaymentMethodsScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<any>>();
+  const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
@@ -43,34 +42,28 @@ export default function PaymentMethodsScreen() {
     setMethods(data);
   }, []);
 
+  // Load on focus
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      const timers: ReturnType<typeof setTimeout>[] = [];
-
-      const refresh = async () => {
-        if (cancelled) return;
-        try {
-          await loadMethods();
-        } catch (e) {
-          console.error(e);
-        }
-      };
-
       setLoading(true);
-      refresh().finally(() => setLoading(false));
-
-      // Webhook lag — poll a few times after focus so newly linked methods appear
-      timers.push(setTimeout(refresh, 3000));
-      timers.push(setTimeout(refresh, 6000));
-      timers.push(setTimeout(refresh, 10000));
-
-      return () => {
-        cancelled = true;
-        timers.forEach(clearTimeout);
-      };
+      loadMethods().finally(() => setLoading(false));
     }, [loadMethods])
   );
+
+  // REALTIME: Automatically update if webhook fires while on this screen
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel(`payment-methods-${userId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'user_payment_methods', filter: `user_id=eq.${userId}` },
+        () => loadMethods()
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [userId, loadMethods]);
 
   const handleSetDefault = async (provider: 'gcash' | 'maya') => {
     if (!userId) return;

@@ -82,11 +82,13 @@ serve(async (req) => {
       const requestIdRaw = data.metadata?.request_id
       const requestId = requestIdRaw ? Number(requestIdRaw) : null
 
-      const paymentId =
-        data.payment_id ||
+      const paymentId = data.payment_id || null
+      const paymentRequestId =
         data.payment_request_id ||
-        data.payment_session_id ||
+        data.payment_request?.id ||
+        data.payment_method?.payment_request_id ||
         null
+      const paymentSessionId = data.payment_session_id || data.id || null
 
       const amount = Number(data.amount || 0)
       const status = String(data.status || '').toUpperCase()
@@ -96,7 +98,9 @@ serve(async (req) => {
         data?.payment_method?.type ||
         null
 
-      console.log('[SESSION.COMPLETED]', { paymentId, referenceId, requestId, amount, status })
+      console.log('[SESSION.COMPLETED]', {
+        paymentId, paymentRequestId, paymentSessionId, requestId, amount, status,
+      })
 
       if (status !== 'COMPLETED') return new Response('OK', { status: 200 })
       if (!referenceId?.startsWith('delivery_') || !requestId) {
@@ -105,16 +109,16 @@ serve(async (req) => {
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status, payment_reference')
+        .select('payment_status, payment_reference, payment_request_id')
         .eq('request_id', requestId)
         .maybeSingle()
 
-      // Only skip if BOTH status is set AND reference is set
       if (
         (reqRow?.payment_status === 'held' || reqRow?.payment_status === 'released') &&
-        reqRow?.payment_reference
+        reqRow?.payment_reference &&
+        reqRow?.payment_request_id
       ) {
-        console.log('[SESSION.COMPLETED] Already has reference, skipping')
+        console.log('[SESSION.COMPLETED] Already complete, skipping')
         return new Response('OK', { status: 200 })
       }
 
@@ -124,8 +128,11 @@ serve(async (req) => {
         paid_at: new Date().toISOString(),
         payment_provider: mapProvider(channelCode),
       }
-      // Only overwrite payment_reference if we have one
       if (paymentId) updatePayload.payment_reference = paymentId
+      if (paymentRequestId) updatePayload.payment_request_id = paymentRequestId
+      if (paymentSessionId && !reqRow?.payment_reference) {
+        updatePayload.payment_reference = paymentSessionId
+      }
 
       console.log('[SESSION.COMPLETED] Writing', updatePayload)
 
@@ -139,15 +146,81 @@ serve(async (req) => {
         return new Response('OK', { status: 200 })
       }
 
-      if (paymentId) {
+      if (paymentId || paymentRequestId) {
         await supabase.from('escrow_transactions').insert({
           request_id: requestId,
           event: 'payment_succeeded',
           amount,
-          xendit_reference: paymentId,
-          notes: 'Session API payment completed, held in escrow',
+          xendit_reference: paymentId || paymentRequestId,
+          notes: `Session API payment completed. pr=${paymentRequestId ?? 'n/a'}, py=${paymentId ?? 'n/a'}`,
         })
       }
+
+      return new Response('OK', { status: 200 })
+    }
+
+    // ==================================================================
+    // PAYMENT SESSION EXPIRED — NEW HANDLER (Fix #2)
+    // Fires when a payment session is abandoned and Xendit's 30-min TTL
+    // expires. Marks the row failed so it doesn't linger in 'processing'.
+    // ==================================================================
+    if (event === 'payment_session.expired') {
+      const data = body.data ?? body
+      const sessionId = data.payment_session_id || data.id || null
+      const requestIdRaw = data.metadata?.request_id
+      const requestId = requestIdRaw ? Number(requestIdRaw) : null
+
+      console.log('[SESSION.EXPIRED]', { sessionId, requestId })
+
+      if (!sessionId || !requestId) {
+        console.log('[SESSION.EXPIRED] missing sessionId or requestId, skipping')
+        return new Response('OK', { status: 200 })
+      }
+
+      const { data: reqRow } = await supabase
+        .from('delivery_requests')
+        .select('payment_status, payment_reference, delivery_status')
+        .eq('request_id', requestId)
+        .maybeSingle()
+
+      if (!reqRow) {
+        console.log('[SESSION.EXPIRED] row not found, skipping')
+        return new Response('OK', { status: 200 })
+      }
+
+      // Only mark as failed if:
+      //   - Row is still 'processing' (payment never landed)
+      //   - Row's payment_reference matches THIS session (same one that expired)
+      const shouldMark =
+        reqRow.payment_status === 'processing' &&
+        reqRow.payment_reference === sessionId
+
+      if (!shouldMark) {
+        console.log('[SESSION.EXPIRED] row already moved on, skipping', {
+          current_status: reqRow.payment_status,
+          current_ref: reqRow.payment_reference,
+        })
+        return new Response('OK', { status: 200 })
+      }
+
+      // Defensive: update only if still processing and same session
+      await supabase
+        .from('delivery_requests')
+        .update({
+          payment_status: 'failed',
+          delivery_status: 'Cancelled',
+        })
+        .eq('request_id', requestId)
+        .eq('payment_status', 'processing')
+        .eq('payment_reference', sessionId)
+
+      await supabase.from('escrow_transactions').insert({
+        request_id: requestId,
+        event: 'payment_session_expired',
+        amount: 0,
+        xendit_reference: sessionId,
+        notes: 'Xendit payment session expired without payment',
+      })
 
       return new Response('OK', { status: 200 })
     }
@@ -157,7 +230,13 @@ serve(async (req) => {
     // ==================================================================
     if (event === 'payment.succeeded' || event === 'payment.capture') {
       const data = body.data
-      const paymentId = data.id
+
+      // Fix #3: read payment ID from multiple possible fields
+      const paymentId = data.id || data.payment_id || data.capture_id || null
+      const paymentRequestId =
+        data.payment_request_id ||
+        data.payment_request?.id ||
+        null
       const referenceId = data.reference_id
       const requestIdRaw = data.metadata?.request_id
       const requestId = requestIdRaw ? Number(requestIdRaw) : null
@@ -168,7 +247,15 @@ serve(async (req) => {
         data?.payment_method?.type ||
         null
 
-      console.log('[PAYMENT.SUCCESS/CAPTURE]', { paymentId, referenceId, requestId, amount })
+      console.log('[PAYMENT.SUCCESS/CAPTURE]', {
+        paymentId, paymentRequestId, referenceId, requestId, amount,
+      })
+
+      // Skip if we truly have no way to identify this transaction
+      if (!paymentId && !paymentRequestId) {
+        console.log('[PAYMENT.SUCCESS/CAPTURE] no identifiers in payload, skipping')
+        return new Response('OK', { status: 200 })
+      }
 
       if (!referenceId?.startsWith('delivery_') || !requestId) {
         return new Response('OK', { status: 200 })
@@ -176,7 +263,7 @@ serve(async (req) => {
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status, payment_reference')
+        .select('payment_status, payment_reference, payment_request_id')
         .eq('request_id', requestId)
         .maybeSingle()
 
@@ -185,13 +272,12 @@ serve(async (req) => {
         escrow_status: 'held',
         payment_provider: mapProvider(channelCode),
       }
-      // Only set paid_at if not already set
-      if (!reqRow?.payment_reference) {
-        updatePayload.paid_at = new Date().toISOString()
-      }
-      // Only overwrite reference if we don't have one yet
       if (!reqRow?.payment_reference && paymentId) {
         updatePayload.payment_reference = paymentId
+        updatePayload.paid_at = new Date().toISOString()
+      }
+      if (!reqRow?.payment_request_id && paymentRequestId) {
+        updatePayload.payment_request_id = paymentRequestId
       }
 
       console.log('[PAYMENT.SUCCESS/CAPTURE] Writing', updatePayload)
@@ -206,14 +292,13 @@ serve(async (req) => {
         return new Response('OK', { status: 200 })
       }
 
-      // Only insert audit if this is the first time we see this payment
       if (!reqRow?.payment_reference && paymentId) {
         await supabase.from('escrow_transactions').insert({
           request_id: requestId,
           event: 'payment_succeeded',
           amount,
           xendit_reference: paymentId,
-          notes: 'Funds received, held in escrow',
+          notes: `Funds received. pr=${paymentRequestId ?? 'n/a'}`,
         })
       }
 
@@ -252,7 +337,7 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // REFUND SUCCEEDED
+    // REFUND SUCCEEDED — Fix #1: now backfills refund_id on the row
     // ==================================================================
     if (event === 'refund.succeeded') {
       const refund = body.data ?? body
@@ -294,6 +379,8 @@ serve(async (req) => {
           escrow_status: 'refunded',
           escrow_refunded_at: new Date().toISOString(),
           refund_status: 'succeeded',
+          // Fix #1: backfill the refund ID onto the row (was missing)
+          refund_id: refundId,
         })
         .eq('request_id', requestId)
 

@@ -7,10 +7,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
-import { createLinkSession } from '../../services/paymentService';
+import { createLinkSession, fetchPaymentMethods } from '../../services/paymentService';
 import type { PaymentProvider } from '../../types/payment';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
@@ -20,7 +18,7 @@ const MAYA_LOGO = require('../../../assets/maya.jpeg');
 const ORANGE = '#FF751F';
 
 export default function AddPaymentMethodScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
@@ -36,10 +34,33 @@ export default function AddPaymentMethodScreen() {
       if (!userData) throw new Error('User not found');
 
       const url = await createLinkSession(userData.user_id, provider);
+      
       await WebBrowser.openBrowserAsync(url, {
         dismissButtonStyle: 'close',
         presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
       });
+      
+      // Browser closed. Wait for the Xendit webhook to hit our DB.
+      // Poll every 1 second for up to 15 seconds.
+      let linked = false;
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const methods = await fetchPaymentMethods(userData.user_id);
+        if (methods.some((m: any) => m.provider === provider)) {
+          linked = true;
+          break;
+        }
+      }
+      
+      if (linked) {
+        Alert.alert('Success', `${provider === 'gcash' ? 'GCash' : 'Maya'} linked successfully!`);
+      } else {
+        Alert.alert(
+          'Pending', 
+          'The link is taking a bit longer to process. Please check your payment methods in a few moments.'
+        );
+      }
+      
       navigation.goBack();
     } catch (err: any) {
       Alert.alert('Linking Failed', err.message || 'Something went wrong.');
