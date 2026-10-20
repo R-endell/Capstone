@@ -10,9 +10,11 @@ import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/n
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import QRCode from 'react-native-qrcode-svg';
+import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { notifyUser } from '../../../services/pushService';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF751F';
@@ -51,7 +53,77 @@ const getTabNavigations = (nav: any): any[] => {
 };
 
 /* ==================================================================== */
-/* LeafletMap — unchanged light tiles                                   */
+/* Local notification helper — cancellation / refund confirmation      */
+/* ==================================================================== */
+const fireCancelNotification = async (opts: {
+  requestId: number;
+  amount?: number | null;
+  refunded: boolean;
+  refundFailed?: boolean;
+}) => {
+  const { requestId, amount, refunded, refundFailed } = opts;
+  const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
+
+  let body: string;
+  if (refunded) {
+    const amtText = typeof amount === 'number' && amount > 0 ? ` of ₱${amount.toFixed(2)}` : '';
+    body = `Booking #${trackingId} was cancelled. A refund${amtText} has been initiated and should arrive within a few minutes to 3–5 business days.`;
+  } else if (refundFailed) {
+    body = `Booking #${trackingId} was cancelled, but the automatic refund could not be started. Your funds are still held in escrow — please contact support with this tracking ID.`;
+  } else {
+    body = `Booking #${trackingId} was cancelled. No payment was taken.`;
+  }
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '❌ Booking Cancelled',
+        body,
+        data: {
+          type: 'cancellation',
+          requestId,
+          refunded: !!refunded,
+          refundFailed: !!refundFailed,
+        },
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: 1,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn('[ActivityScreen] local cancel notif failed:', err);
+  }
+};
+
+const notifyProviderOfCancellation = async (opts: {
+  providerId: number | null | undefined;
+  requestId: number;
+  amount?: number | null;
+}) => {
+  const { providerId, requestId, amount } = opts;
+  if (!providerId) return;
+
+  const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
+  try {
+    await notifyUser(
+      providerId,
+      '🚫 Delivery Cancelled',
+      `Booking #${trackingId} was cancelled by the sender before pickup. No action needed on your end.${
+        typeof amount === 'number' && amount > 0 ? ` The sender's ₱${amount.toFixed(2)} escrow is being refunded.` : ''
+      }`,
+      { type: 'cancellation', requestId, role: 'provider' },
+    );
+  } catch (err) {
+    console.warn('[ActivityScreen] provider cancel push failed:', err);
+  }
+};
+
+/* ==================================================================== */
+/* LeafletMap                                                           */
 /* ==================================================================== */
 const LeafletMap = ({
   pickupLat, pickupLng, dropoffLat, dropoffLng, interactive = false,
@@ -417,7 +489,9 @@ export default function ActivityScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'all' | 'completed' | 'pending' | 'active'>('all');
+  
+  // Added 'cancelled' to the tabs
+  const [activeTab, setActiveTab] = useState<'all' | 'active' | 'pending' | 'completed' | 'cancelled'>('all');
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -595,6 +669,7 @@ export default function ActivityScreen() {
         else if (status === 'Accepted') statusDisplay = 'In Progress';
         else if (status === 'In Transit') statusDisplay = 'In Transit';
         else if (status === 'Completed') statusDisplay = 'Completed';
+        else if (status === 'Cancelled') statusDisplay = 'Cancelled';
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
         const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
@@ -699,7 +774,7 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     const pending = deliveries.filter(
-      (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp,
+      (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp && d.status !== 'Cancelled',
     );
 
     pending.forEach(async (d) => {
@@ -847,24 +922,79 @@ export default function ActivityScreen() {
     navigation.navigate('ScheduleDelivery', { editData: rawData, mode: rawData.scheduled_time ? 'schedule' : 'sendNow' });
   };
 
-  const handleDelete = (rawData: any) => {
+  // New Cancel Logic: Updates status instead of deleting
+  const handleCancelDelivery = (rawData: any) => {
     if (!rawData) return;
-    Alert.alert('Cancel Delivery', 'Are you sure you want to cancel and delete this delivery?', [
+    Alert.alert('Cancel Delivery', 'Are you sure you want to cancel this delivery?', [
       { text: 'Keep Delivery', style: 'cancel' },
       {
         text: 'Yes, Cancel', style: 'destructive', onPress: async () => {
+          const reqId: number = rawData.request_id;
+          const providerId: number | null = selectedDelivery?.provider_id ?? null;
+          const amount: number = Number(selectedDelivery?.price) || 0;
+
+          let wasPaid = false;
+          let refundSucceeded = false;
+          let refundFailed = false;
+
           try {
-            const deliveryId = selectedDelivery?.deliveryData?.delivery_id;
-            if (deliveryId) {
-              await supabase.from('delivery_confirmations').delete().eq('delivery_id', deliveryId);
-              await supabase.from('qr_verifications').delete().eq('delivery_id', deliveryId);
-              await supabase.from('escrow_payments').delete().eq('delivery_id', deliveryId);
-              await supabase.from('deliveries').delete().eq('delivery_id', deliveryId);
+            const { data: reqRow } = await supabase
+              .from('delivery_requests')
+              .select('payment_status, escrow_status')
+              .eq('request_id', reqId)
+              .maybeSingle();
+
+            const wasHeld =
+              reqRow?.payment_status === 'held' ||
+              reqRow?.escrow_status === 'held';
+            wasPaid = wasHeld;
+
+            // Do NOT delete the row; just update the status
+            const updateData: any = { delivery_status: 'Cancelled' };
+
+            if (wasHeld) {
+              try {
+                const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
+                  'xendit-refund',
+                  { body: { request_id: reqId, reason: 'REQUESTED_BY_CUSTOMER' } },
+                );
+                const ok = !refundErr && refundResult?.success;
+                if (ok) {
+                  refundSucceeded = true;
+                } else {
+                  refundFailed = true;
+                  updateData.refund_status = refundResult?.needs_manual ? 'manual_required' : 'failed';
+                }
+              } catch {
+                refundFailed = true;
+                updateData.refund_status = 'failed';
+              }
             }
-            await supabase.from('delivery_requests').delete().eq('request_id', rawData.request_id);
+
+            await supabase.from('delivery_requests').update(updateData).eq('request_id', reqId);
+
             setSelectedDelivery(null);
             fetchData();
-          } catch { Alert.alert('Error', 'Could not delete delivery.'); }
+
+            // Local confirmation notification on the sender's phone.
+            fireCancelNotification({
+              requestId: reqId,
+              amount,
+              refunded: refundSucceeded,
+              refundFailed,
+            });
+
+            // Push notification to the assigned provider (if any).
+            if (providerId) {
+              notifyProviderOfCancellation({
+                providerId,
+                requestId: reqId,
+                amount,
+              });
+            }
+          } catch (e) {
+            Alert.alert('Error', 'Could not cancel the delivery.');
+          }
         }
       }
     ]);
@@ -893,6 +1023,7 @@ export default function ActivityScreen() {
     if (activeTab === 'pending' && item.status !== 'Waiting for Provider') return false;
     if (activeTab === 'active' && item.status !== 'In Progress' && item.status !== 'Matched' && item.status !== 'In Transit') return false;
     if (activeTab === 'completed' && item.status !== 'Completed') return false;
+    if (activeTab === 'cancelled' && item.status !== 'Cancelled') return false;
     return true;
   });
 
@@ -903,6 +1034,7 @@ export default function ActivityScreen() {
       case 'In Progress': return '#7C3AED';
       case 'In Transit': return '#0284C7';
       case 'Completed': return colors.success;
+      case 'Cancelled': return colors.error;
       default: return colors.textSecondary;
     }
   };
@@ -914,6 +1046,7 @@ export default function ActivityScreen() {
       case 'In Progress': return isDark ? '#231542' : '#F3E8FF';
       case 'In Transit': return isDark ? '#0C2130' : '#E0F2FE';
       case 'Completed': return colors.successBg;
+      case 'Cancelled': return isDark ? '#451A1A' : '#FEE2E2';
       default: return colors.divider;
     }
   };
@@ -925,6 +1058,7 @@ export default function ActivityScreen() {
       case 'In Progress': return 'car-sport-outline';
       case 'In Transit': return 'cube-outline';
       case 'Completed': return 'checkmark-done-circle';
+      case 'Cancelled': return 'close-circle';
       default: return 'ellipse-outline';
     }
   };
@@ -934,12 +1068,13 @@ export default function ActivityScreen() {
     if (tab === 'pending') return deliveries.filter(d => d.status === 'Waiting for Provider').length;
     if (tab === 'active') return deliveries.filter(d => d.status === 'In Progress' || d.status === 'Matched' || d.status === 'In Transit').length;
     if (tab === 'completed') return deliveries.filter(d => d.status === 'Completed').length;
+    if (tab === 'cancelled') return deliveries.filter(d => d.status === 'Cancelled').length;
     return 0;
   };
 
   const renderTabBar = () => (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-      {(['all', 'active', 'pending', 'completed'] as const).map((tab) => {
+      {(['all', 'active', 'pending', 'completed', 'cancelled'] as const).map((tab) => {
         const isActive = activeTab === tab;
         const count = getTabCount(tab);
         return (
@@ -1010,12 +1145,13 @@ export default function ActivityScreen() {
               </View>
               <Text style={styles.noResultsText}>No deliveries found</Text>
               <Text style={styles.noResultsSubtext}>
-                {deliveries.length === 0 ? 'Your scheduled shipments will appear here' : 'No deliveries in this tab yet'}
+                {deliveries.length === 0 ? 'Your scheduled shipments will appear here' : `No deliveries in this ${activeTab} tab yet`}
               </Text>
             </View>
           ) : (
             filteredDeliveries.map((item, index) => {
               const isCompletedItem = item.status === 'Completed';
+              const isCancelledItem = item.status === 'Cancelled';
 
               const statusLabel =
                 item.status === 'Waiting for Provider' ? 'Waiting'
@@ -1023,12 +1159,13 @@ export default function ActivityScreen() {
                 : item.status === 'In Transit' ? 'In Transit'
                 : item.status === 'Matched' ? 'Matched'
                 : item.status === 'Completed' ? 'Delivered'
+                : item.status === 'Cancelled' ? 'Cancelled'
                 : item.status;
 
               return (
                 <TouchableOpacity
                   key={item.request_id || index}
-                  style={[styles.card, isCompletedItem && styles.completedCard]}
+                  style={[styles.card, (isCompletedItem || isCancelledItem) && styles.completedCard]}
                   onPress={() => setSelectedDelivery(item)}
                   activeOpacity={0.9}
                 >
@@ -1039,7 +1176,7 @@ export default function ActivityScreen() {
                           {item.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}
                         </Text>
                       </View>
-                      {!isCompletedItem && (
+                      {(!isCompletedItem) && (
                         <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
                           <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
                           <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
@@ -1113,6 +1250,11 @@ export default function ActivityScreen() {
                       <View style={styles.actionBadgeComplete}>
                         <Ionicons name="checkmark-circle" size={14} color={colors.success} />
                         <Text style={styles.actionBadgeCompleteText}>Delivered</Text>
+                      </View>
+                    ) : isCancelledItem ? (
+                      <View style={[styles.actionBadgeComplete, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+                        <Ionicons name="close-circle" size={14} color={colors.error} />
+                        <Text style={[styles.actionBadgeCompleteText, { color: colors.error }]}>Cancelled</Text>
                       </View>
                     ) : item.isMatched ? (
                       <TouchableOpacity
@@ -1250,8 +1392,9 @@ export default function ActivityScreen() {
     const d = selectedDelivery;
     const pickupVerified = d?.qr?.pickup_verified === true;
     const isCompleted = !!d?.deliveryData?.completed_at;
+    const isCancelled = d?.status === 'Cancelled';
 
-    const showPickupQRButton = !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted;
+    const showPickupQRButton = !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted && !isCancelled;
     const hasConfirmation = !!d?.confirmation;
 
     const receiverDisplayName = d?.receiver?.receiver_name?.trim() || d?.receiver?.receiver_phone || 'Receiver';
@@ -1275,7 +1418,9 @@ export default function ActivityScreen() {
     const ratingLabels = ['Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
     const shownRating = ratingSaved ? ratingSaved.rating : ratingValue;
 
-    const escrowStatusText = isCompleted
+    const escrowStatusText = isCancelled 
+      ? 'Refunded / Cancelled'
+      : isCompleted
       ? 'Released to courier'
       : escrowRow?.status
         ? String(escrowRow.status).charAt(0).toUpperCase() + String(escrowRow.status).slice(1)
@@ -1449,7 +1594,7 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           )}
 
-          {pickupVerified && !isCompleted && (
+          {pickupVerified && !isCompleted && !isCancelled && (
             <TouchableOpacity style={styles.pickupQRCard} onPress={() => setShowDeliveryOTP(true)} activeOpacity={0.9}>
               <View style={styles.pickupQRIconBox}>
                 <Ionicons name="key" size={20} color="#FFF" />
@@ -1730,14 +1875,15 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {!isCompleted && (
+          {/* HIDE BUTTONS IF CANCELLED OR COMPLETED */}
+          {!isCompleted && !isCancelled && (
             <View style={styles.detailActionsRow}>
               {!d?.isMatched && (
                 <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(d?.rawData)} activeOpacity={0.9}>
                   <Text style={styles.editBtnText}>Edit Details</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={styles.sdCancelBtn} onPress={() => handleDelete(d?.rawData)} activeOpacity={0.9}>
+              <TouchableOpacity style={styles.sdCancelBtn} onPress={() => handleCancelDelivery(d?.rawData)} activeOpacity={0.9}>
                 <Text style={styles.sdCancelBtnText}>Cancel Booking</Text>
               </TouchableOpacity>
             </View>
@@ -1778,9 +1924,11 @@ export default function ActivityScreen() {
                 <Text style={styles.etaPayValue} numberOfLines={1}>
                   {selectedDelivery.deliveryData?.completed_at
                     ? 'Delivered'
-                    : selectedDelivery.isMatched
-                      ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
-                      : 'Awaiting provider'}
+                    : selectedDelivery.status === 'Cancelled'
+                      ? 'Cancelled'
+                      : selectedDelivery.isMatched
+                        ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
+                        : 'Awaiting provider'}
                 </Text>
               </View>
               <View style={styles.etaPayBox}>
@@ -1855,18 +2003,20 @@ export default function ActivityScreen() {
               )}
             </View>
 
-            <View style={styles.trackerPlaceholder}>
-              <View style={styles.trackerIconBox}>
-                <Ionicons name="radio-outline" size={18} color="#7C3AED" />
+            {selectedDelivery.status !== 'Cancelled' && (
+              <View style={styles.trackerPlaceholder}>
+                <View style={styles.trackerIconBox}>
+                  <Ionicons name="radio-outline" size={18} color="#7C3AED" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.trackerTitle}>Live Courier Tracking</Text>
+                  <Text style={styles.trackerSub}>Real-time location is coming soon. Route shown is a preview.</Text>
+                </View>
+                <View style={styles.soonBadge}>
+                  <Text style={styles.soonBadgeText}>SOON</Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.trackerTitle}>Live Courier Tracking</Text>
-                <Text style={styles.trackerSub}>Real-time location is coming soon. Route shown is a preview.</Text>
-              </View>
-              <View style={styles.soonBadge}>
-                <Text style={styles.soonBadgeText}>SOON</Text>
-              </View>
-            </View>
+            )}
           </ScrollView>
         </View>
       )}
