@@ -107,6 +107,7 @@ import './src/services/backgroundLocationTask';
 
 import * as Notifications from 'expo-notifications';
 import { registerPushToken } from './src/services/pushService';
+import VerifyEmailScreen from './src/modules/Authentication/VerifyEmailScreen';
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -145,6 +146,7 @@ export type RootStackParamList = {
   DeliveryPayment: { requestId: number; amount: number };
   LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
+  VerifyEmail: { token_hash: string; type: string };
 };
 
 export type MainTabParamList = {
@@ -769,6 +771,11 @@ function AppInner() {
             presentation: 'modal',
             animation: 'slide_from_bottom',
           }}
+        />
+        <Stack.Screen 
+          name="VerifyEmail" 
+          component={VerifyEmailScreen} 
+          options={{ headerShown: false }} 
         />
         <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
