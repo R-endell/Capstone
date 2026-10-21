@@ -13,6 +13,7 @@ import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
 import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown } from '../../../../services/routeService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { notifyUser } from '../../../../services/pushService';
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
@@ -119,6 +120,81 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
     });
   } catch (err) {
     console.warn('[BookingScreen] local match notif failed:', err);
+  }
+};
+
+/* ==================================================================== */
+/* Local cancellation / refund notification                            */
+/* ==================================================================== */
+const fireCancelNotification = async (opts: {
+  requestId: number;
+  amount?: number | null;
+  refunded: boolean;
+  refundFailed?: boolean;
+}) => {
+  const { requestId, amount, refunded, refundFailed } = opts;
+  const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
+
+  let title = '❌ Booking Cancelled';
+  let body: string;
+
+  if (refunded) {
+    const amtText = typeof amount === 'number' && amount > 0 ? ` of ₱${amount.toFixed(2)}` : '';
+    body = `Booking #${trackingId} was cancelled. A refund${amtText} has been initiated and should arrive within a few minutes to 3–5 business days.`;
+  } else if (refundFailed) {
+    body = `Booking #${trackingId} was cancelled, but the automatic refund could not be started. Your funds are still held in escrow — please contact support with this tracking ID.`;
+  } else {
+    body = `Booking #${trackingId} was cancelled. No payment was taken.`;
+  }
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data: {
+          type: 'cancellation',
+          requestId,
+          refunded: !!refunded,
+          refundFailed: !!refundFailed,
+        },
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: 1,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn('[BookingScreen] local cancel notif failed:', err);
+  }
+};
+
+/* ==================================================================== */
+/* Push notification to the assigned provider on cancellation          */
+/* ==================================================================== */
+const notifyProviderOfCancellation = async (opts: {
+  providerId: number | null | undefined;
+  requestId: number;
+  amount?: number | null;
+}) => {
+  const { providerId, requestId, amount } = opts;
+  if (!providerId) return;
+
+  const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
+  try {
+    await notifyUser(
+      providerId,
+      '🚫 Delivery Cancelled',
+      `Booking #${trackingId} was cancelled by the sender before pickup. No action needed on your end.${
+        typeof amount === 'number' && amount > 0 ? ` The sender's ₱${amount.toFixed(2)} escrow is being refunded.` : ''
+      }`,
+      { type: 'cancellation', requestId, role: 'provider' },
+    );
+  } catch (err) {
+    console.warn('[BookingScreen] provider cancel push failed:', err);
   }
 };
 
@@ -715,6 +791,11 @@ export default function BookingScreen({ route, navigation }: any) {
     // Captured before the try block so the tail of this function knows
     // whether the flow should end (paid → refund) or return to review (unpaid).
     let wasPaid = false;
+    let refundSucceeded = false;
+    let refundFailed = false;
+    let cancelledAmount: number | null = null;
+    let cancelledProviderId: number | null = null;
+    let cancelledRequestId: number | null = null;
 
     try {
       if (matchChannelRef.current) {
@@ -727,11 +808,26 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       if (savedRequestId) {
+        cancelledRequestId = savedRequestId;
+
         const { data: reqRow } = await supabase
           .from('delivery_requests')
           .select('payment_status, escrow_status, estimated_cost, payment_provider, refund_status')
           .eq('request_id', savedRequestId)
           .maybeSingle();
+
+        cancelledAmount = Number(reqRow?.estimated_cost) || 0;
+
+        // Look up the assigned provider (if any) so we can push them
+        // a cancellation notice.
+        const { data: deliveryRow } = await supabase
+          .from('deliveries')
+          .select('delivery_id, provider_id')
+          .eq('request_id', savedRequestId)
+          .order('accepted_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        cancelledProviderId = deliveryRow?.provider_id ?? null;
 
         const wasHeld =
           reqRow?.payment_status === 'held' ||
@@ -748,6 +844,8 @@ export default function BookingScreen({ route, navigation }: any) {
             const ok = !refundErr && refundResult?.success;
 
             if (!ok) {
+              refundFailed = true;
+
               const msg =
                 refundResult?.error ||
                 refundErr?.message ||
@@ -779,6 +877,8 @@ export default function BookingScreen({ route, navigation }: any) {
                 [{ text: 'OK' }],
               );
             } else {
+              refundSucceeded = true;
+
               await supabase
                 .from('delivery_requests')
                 .update({ delivery_status: 'Cancelled' })
@@ -792,6 +892,8 @@ export default function BookingScreen({ route, navigation }: any) {
               );
             }
           } catch (e: any) {
+            refundFailed = true;
+
             await supabase
               .from('delivery_requests')
               .update({ delivery_status: 'Cancelled', refund_status: 'failed' })
@@ -820,6 +922,28 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       setResumeSubId(null);
+
+      // Fire the local notification on the sender's own phone so they
+      // have a persistent record of the cancellation/refund, even if
+      // they dismiss the Alert.
+      if (cancelledRequestId != null) {
+        fireCancelNotification({
+          requestId: cancelledRequestId,
+          amount: cancelledAmount,
+          refunded: refundSucceeded,
+          refundFailed,
+        });
+      }
+
+      // Notify the provider (if one was assigned) that the sender
+      // cancelled — they may be en route to the pickup.
+      if (cancelledProviderId && cancelledRequestId != null) {
+        notifyProviderOfCancellation({
+          providerId: cancelledProviderId,
+          requestId: cancelledRequestId,
+          amount: cancelledAmount,
+        });
+      }
 
       if (isResumedSession.current) {
         isResumedSession.current = false;
