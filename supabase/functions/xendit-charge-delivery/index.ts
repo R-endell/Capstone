@@ -28,12 +28,24 @@ Deno.serve(async (req) => {
 
     if (reqErr || !reqRow) throw new Error('Delivery request not found')
 
-    // Idempotency: already paid or already has a live session
+    // Idempotency: already paid
     if (reqRow.payment_status === 'held' || reqRow.payment_status === 'released') {
       return new Response(JSON.stringify({ status: 'held', message: 'Already paid' }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
+    }
+
+    // Idempotency: a session already exists for this request
+    if (reqRow.payment_reference && reqRow.payment_status === 'processing') {
+      return new Response(
+        JSON.stringify({
+          status: 'processing',
+          message: 'A payment session is already active for this request.',
+          payment_reference: reqRow.payment_reference,
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
     }
 
     // 2. Load user's Xendit customer
@@ -69,10 +81,10 @@ Deno.serve(async (req) => {
         request_id: String(requestId),
         user_id: String(reqRow.sender_id),
         kind: 'delivery_payment',
-        },
+      },
     }
 
-    console.log('[CHARGE]', { requestId, provider, amount, channelCode })
+    console.log('[CHARGE] Creating session', { requestId, provider, amount, channelCode })
 
     const sessionResponse = await fetch('https://api.xendit.co/sessions', {
       method: 'POST',
@@ -90,16 +102,45 @@ Deno.serve(async (req) => {
     }
 
     const sessionData = await sessionResponse.json()
+    const sessionRef =
+      sessionData.payment_session_id ||
+      sessionData.session_id ||
+      sessionData.id ||
+      null
 
-    // 4. Update request
-    await supabase
+    if (!sessionRef) {
+      // We created a live Xendit session but have no local ID for it.
+      // DO NOT write to delivery_requests — leaving it as 'unpaid' means
+      // the client's back-out cleanup can still safely delete it later.
+      // The webhook will backfill payment_reference on completion.
+      console.error(
+        '[CHARGE] No session ID found in Xendit response. ' +
+          'Row left as unpaid; webhook will reconcile on completion.',
+        sessionData,
+      )
+      return new Response(
+        JSON.stringify({
+          status: 'processing',
+          payment_url: sessionData.payment_link_url,
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // 4. Update request with the real session reference
+    const { error: updErr } = await supabase
       .from('delivery_requests')
       .update({
         payment_status: 'processing',
         payment_provider: provider,
-        payment_reference: sessionData.id,
+        payment_reference: sessionRef,
       })
       .eq('request_id', requestId)
+
+    if (updErr) {
+      console.error('[CHARGE] DB update failed:', updErr)
+      // Don't throw — user can still pay; webhook will retry the update
+    }
 
     // 5. Audit
     await supabase.from('escrow_transactions').insert({
@@ -107,7 +148,7 @@ Deno.serve(async (req) => {
       event: 'payment_initiated',
       amount,
       provider,
-      xendit_reference: sessionData.id,
+      xendit_reference: sessionRef,
     })
 
     return new Response(

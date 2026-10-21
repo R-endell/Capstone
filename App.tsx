@@ -36,6 +36,10 @@ import PermissionsPromptScreen from './src/modules/Authentication/PermissionsPro
 import IdentityVerificationScreen from './src/modules/Settings/IdentityVerificationScreen';
 import TwoFactorAuthScreen from './src/modules/Settings/TwoFactorAuthScreen';
 
+import ForgotPasswordScreen from './src/modules/Authentication/ForgotPasswordScreen';
+import ResetPasswordScreen from './src/modules/Authentication/ResetPasswordScreen';
+import { useDeepLink } from './src/utils/deepLinking';
+
 // Sender Screens
 import HomeScreen from './src/modules/Dashboard/Sender/HomeScreen';
 import AccountScreen from './src/modules/Dashboard/Sender/AccountScreen';
@@ -103,11 +107,14 @@ import './src/services/backgroundLocationTask';
 
 import * as Notifications from 'expo-notifications';
 import { registerPushToken } from './src/services/pushService';
+import VerifyEmailScreen from './src/modules/Authentication/VerifyEmailScreen';
 
 export type RootStackParamList = {
   Loading: undefined;
   Login: undefined;
   Register: undefined;
+  ForgotPassword: undefined;
+  ResetPassword: { token_hash: string; type: string };
   PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
@@ -139,6 +146,7 @@ export type RootStackParamList = {
   DeliveryPayment: { requestId: number; amount: number };
   LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
+  VerifyEmail: { token_hash: string; type: string };
 };
 
 export type MainTabParamList = {
@@ -549,6 +557,7 @@ function AppInner() {
   const matcherStartedRef = useRef(false);
 
   useRoleGuard(navigationRef as any);
+    useDeepLink(navigationRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -719,6 +728,8 @@ function AppInner() {
         <Stack.Screen name="Loading" component={LoadingScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Register" component={RegisterScreen} />
+        <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+        <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
         <Stack.Screen name="PermissionsPrompt" component={PermissionsPromptScreen} />
         <Stack.Screen name="IdentityVerification" component={IdentityVerificationScreen} />
         <Stack.Screen name="TwoFactorAuth" component={TwoFactorAuthScreen} />
@@ -760,6 +771,11 @@ function AppInner() {
             presentation: 'modal',
             animation: 'slide_from_bottom',
           }}
+        />
+        <Stack.Screen 
+          name="VerifyEmail" 
+          component={VerifyEmailScreen} 
+          options={{ headerShown: false }} 
         />
         <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
