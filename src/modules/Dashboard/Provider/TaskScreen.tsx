@@ -59,13 +59,11 @@ const openNavigation = (lat: number | null | undefined, lng: number | null | und
   const destination = `${lat},${lng}`;
   const encodedLabel = encodeURIComponent(label);
 
-  // Google Maps scheme
   const scheme = Platform.select({
     ios: `maps:0,0?q=${encodedLabel}@${destination}`,
     android: `geo:0,0?q=${destination}(${encodedLabel})`,
   });
 
-  // Web fallback
   const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
 
   if (scheme) {
@@ -311,6 +309,29 @@ const enrichDeliveries = async (list: any[]) => {
 };
 
 /* ==================================================================== */
+/* Cancellation detection                                               */
+/* ==================================================================== */
+// Treat a delivery as cancelled when the request status is Cancelled,
+// OR when escrow / payment has been refunded (defensive — covers older rows).
+const isCancelledDelivery = (d: any): boolean => {
+  if (!d) return false;
+  const req = d.delivery_requests || {};
+  const status = String(req.delivery_status || '').toLowerCase();
+  if (status === 'cancelled' || status === 'canceled') return true;
+
+  const escrowStatus = String(d.escrow?.escrow_status || '').toLowerCase();
+  if (escrowStatus === 'refunded' || escrowStatus === 'cancelled' || escrowStatus === 'canceled') return true;
+
+  const paymentStatus = String(req.payment_status || '').toLowerCase();
+  if (paymentStatus === 'refunded') return true;
+
+  const refundStatus = String(req.refund_status || '').toLowerCase();
+  if (refundStatus === 'succeeded' || refundStatus === 'completed' || refundStatus === 'refunded') return true;
+
+  return false;
+};
+
+/* ==================================================================== */
 /* Payment method badge                                                 */
 /* ==================================================================== */
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
@@ -357,8 +378,9 @@ export default function TaskScreen() {
   const [providerId, setProviderId] = useState<number | null>(null);
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
+  const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
-  
+
   // Ping state
   const [pingingId, setPingingId] = useState<number | null>(null);
 
@@ -370,7 +392,7 @@ export default function TaskScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'all'>('active');
+  const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'cancelled' | 'all'>('active');
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mapModalVisible, setMapModalVisible] = useState(false);
@@ -444,14 +466,19 @@ export default function TaskScreen() {
 
       const hydrated = await enrichDeliveries(await hydrateQr(uniqueDeliveries));
 
-      setActiveDeliveries(hydrated.filter((d: any) => !d.completed_at));
-      setCompletedDeliveries(hydrated.filter((d: any) => d.completed_at));
+      const cancelled = hydrated.filter(isCancelledDelivery);
+      const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
+      const active    = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
+
+      setActiveDeliveries(active);
+      setCompletedDeliveries(completed);
+      setCancelledDeliveries(cancelled);
     } catch (error) { console.error('Error fetching deliveries:', error); }
   };
 
   // --- PING SENDER LOGIC ---
   const handlePingSender = async (delivery: any) => {
-    const senderId = (delivery.delivery_requests as any)?.sender_id 
+    const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
 
     if (!senderId) {
@@ -462,7 +489,7 @@ export default function TaskScreen() {
     setPingingId(delivery.delivery_id);
     try {
       const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
-      
+
       await notifyUser(
         senderId,
         'Courier is on the way! 🚚',
@@ -757,6 +784,20 @@ export default function TaskScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
+  // If the currently selected task becomes cancelled (or leaves the list),
+  // close any open task-scoped modals so we don't leave stale UI behind.
+  useEffect(() => {
+    if (selectedId == null) return;
+    const stillActive = activeDeliveries.some(d => d.delivery_id === selectedId);
+    const stillCompleted = completedDeliveries.some(d => d.delivery_id === selectedId);
+    const stillCancelled = cancelledDeliveries.some(d => d.delivery_id === selectedId);
+    if (!stillActive && !stillCompleted && !stillCancelled) {
+      setSelectedId(null);
+      closeVerifyModal();
+      closeDeliveryOTPModal();
+    }
+  }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
+
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
@@ -774,15 +815,25 @@ export default function TaskScreen() {
     return status === 'In Transit' || status === 'Completed';
   };
 
-  const stageOf = (d: any): 'pickup' | 'transit' | 'done' =>
-    d?.completed_at ? 'done' : isPickupVerified(d) ? 'transit' : 'pickup';
+  const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
+    if (isCancelledDelivery(d)) return 'cancelled';
+    if (d?.completed_at) return 'done';
+    return isPickupVerified(d) ? 'transit' : 'pickup';
+  };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done') =>
-    stage === 'done'
-      ? { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' }
-      : stage === 'transit'
-        ? { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' }
-        : { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
+    switch (stage) {
+      case 'done':
+        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
+      case 'transit':
+        return { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' };
+      case 'cancelled':
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
+      case 'pickup':
+      default:
+        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+    }
+  };
 
   const dateLabel = (request: any) => {
     try { return formatDate(request?.scheduled_time || request?.created_at, 'MMM d, yyyy'); }
@@ -820,12 +871,19 @@ export default function TaskScreen() {
     } finally { setOpeningChat(false); }
   };
 
-  const allTasks = [...activeDeliveries, ...completedDeliveries];
+  const allTasks = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries];
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
-  const tabCount = (t: 'active' | 'completed' | 'all') =>
-    t === 'active' ? activeDeliveries.length : t === 'completed' ? completedDeliveries.length : allTasks.length;
+  const tabCount = (t: 'active' | 'completed' | 'cancelled' | 'all') =>
+    t === 'active' ? activeDeliveries.length
+      : t === 'completed' ? completedDeliveries.length
+      : t === 'cancelled' ? cancelledDeliveries.length
+      : allTasks.length;
 
-  const filteredTasks = activeTab === 'active' ? activeDeliveries : activeTab === 'completed' ? completedDeliveries : allTasks;
+  const filteredTasks =
+    activeTab === 'active' ? activeDeliveries
+      : activeTab === 'completed' ? completedDeliveries
+      : activeTab === 'cancelled' ? cancelledDeliveries
+      : allTasks;
 
   /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
@@ -834,11 +892,12 @@ export default function TaskScreen() {
     const stage = stageOf(d);
     const meta = statusMeta(stage);
     const target = stage === 'pickup' ? info.pickup : info.dropoff;
+    const isCancelled = stage === 'cancelled';
 
     return (
       <TouchableOpacity
         key={d.delivery_id}
-        style={[styles.card, stage === 'done' && styles.cardDone]}
+        style={[styles.card, stage === 'done' && styles.cardDone, isCancelled && styles.cardCancelled]}
         onPress={() => setSelectedId(d.delivery_id)}
         activeOpacity={0.9}
       >
@@ -872,7 +931,7 @@ export default function TaskScreen() {
           </View>
         </View>
 
-        {stage !== 'done' && (
+        {stage !== 'done' && !isCancelled && (
           <View style={styles.nextStopRow}>
             <View style={styles.nextStopIcon}>
               <Ionicons name={stage === 'pickup' ? 'arrow-up-circle' : 'flag'} size={15} color={ORANGE} />
@@ -881,6 +940,13 @@ export default function TaskScreen() {
               <Text style={styles.nextStopEyebrow}>NEXT · {stage === 'pickup' ? 'GO TO PICKUP' : 'GO TO DROP-OFF'}</Text>
               <Text style={styles.nextStopMain} numberOfLines={1}>{target.main}</Text>
             </View>
+          </View>
+        )}
+
+        {isCancelled && (
+          <View style={styles.cancelledNotice}>
+            <Ionicons name="information-circle-outline" size={15} color={colors.error} />
+            <Text style={styles.cancelledNoticeText}>This booking was cancelled by the sender.</Text>
           </View>
         )}
 
@@ -908,13 +974,15 @@ export default function TaskScreen() {
         <View style={styles.cardFooter}>
           <View>
             <Text style={styles.footerLabel}>YOU EARN</Text>
-            <Text style={styles.priceText}>{money(info.earnings)}</Text>
+            <Text style={[styles.priceText, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
+              {money(info.earnings)}
+            </Text>
           </View>
           {stage === 'pickup' ? (
             <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity 
-                style={[styles.actionBtn, { backgroundColor: colors.accentSoft, shadowColor: 'transparent' }]} 
-                onPress={() => handlePingSender(d)} 
+              <TouchableOpacity
+                style={[styles.actionBtn, { backgroundColor: colors.accentSoft, shadowColor: 'transparent' }]}
+                onPress={() => handlePingSender(d)}
                 disabled={pingingId === d.delivery_id}
                 activeOpacity={0.9}
               >
@@ -937,10 +1005,15 @@ export default function TaskScreen() {
               <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
               <Text style={styles.actionBtnText}>Complete</Text>
             </TouchableOpacity>
-          ) : (
+          ) : stage === 'done' ? (
             <View style={styles.doneBadge}>
               <Ionicons name="checkmark-circle" size={14} color={colors.success} />
               <Text style={styles.doneBadgeText}>Delivered</Text>
+            </View>
+          ) : (
+            <View style={styles.cancelledBadge}>
+              <Ionicons name="close-circle" size={14} color={colors.error} />
+              <Text style={styles.cancelledBadgeText}>Cancelled</Text>
             </View>
           )}
         </View>
@@ -954,12 +1027,14 @@ export default function TaskScreen() {
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'completed', 'all'] as const).map(t => {
+          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             return (
               <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
-                <Text style={[styles.tabText, on && styles.tabTextActive]}>{t.charAt(0).toUpperCase() + t.slice(1)}</Text>
+                <Text style={[styles.tabText, on && styles.tabTextActive]}>
+                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                </Text>
                 {count > 0 && (
                   <View style={[styles.tabCountBadge, on && styles.tabCountBadgeActive]}>
                     <Text style={[styles.tabCountText, on && styles.tabCountTextActive]}>{count}</Text>
@@ -981,15 +1056,27 @@ export default function TaskScreen() {
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
-                <Ionicons name={allTasks.length === 0 ? 'briefcase-outline' : 'search-outline'} size={30} color={ORANGE} />
+                <Ionicons
+                  name={
+                    activeTab === 'cancelled' ? 'close-circle-outline'
+                      : allTasks.length === 0 ? 'briefcase-outline'
+                      : 'search-outline'
+                  }
+                  size={30}
+                  color={ORANGE}
+                />
               </View>
               <Text style={styles.emptyTitle}>
-                {allTasks.length === 0 ? 'No tasks yet' : 'No active deliveries'}
+                {activeTab === 'cancelled'
+                  ? 'No cancelled bookings'
+                  : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
-                {allTasks.length === 0
-                  ? 'Deliveries you accept appear here. Review matched requests in the Jobs tab.'
-                  : 'Try another tab to view history.'}
+                {activeTab === 'cancelled'
+                  ? 'Bookings cancelled by the sender will appear here.'
+                  : allTasks.length === 0
+                    ? 'Deliveries you accept appear here. Review matched requests in the Jobs tab.'
+                    : 'Try another tab to view history.'}
               </Text>
             </View>
           ) : filteredTasks.map(renderTaskCard)}
@@ -1031,7 +1118,10 @@ export default function TaskScreen() {
     const target = stage === 'pickup' ? info.pickup : info.dropoff;
     const escrowStatus = String(d.escrow?.escrow_status || '');
     const released = stage === 'done' || /complet|releas/i.test(escrowStatus);
-    const paymentLabel = released ? 'Released to your wallet' : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
+    const paymentLabel = released
+      ? 'Released to your wallet'
+      : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
+    const isCancelled = stage === 'cancelled';
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -1045,7 +1135,19 @@ export default function TaskScreen() {
 
         <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
           <Animated.View style={{ opacity: detailAnim }}>
-            {stage !== 'done' ? (
+            {isCancelled ? (
+              <View style={styles.cancelBanner}>
+                <View style={styles.cancelBannerIcon}>
+                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
+                  <Text style={styles.cancelBannerSub}>
+                    The sender cancelled this booking. Any escrow amount is being refunded to them.
+                  </Text>
+                </View>
+              </View>
+            ) : stage !== 'done' ? (
               <View style={styles.nextCard}>
                 <View style={styles.nextTop}>
                   <View style={styles.nextIcon}>
@@ -1061,8 +1163,7 @@ export default function TaskScreen() {
                   <Text style={styles.nextLocLabel}>{stage === 'pickup' ? 'GO TO PICKUP' : 'GO TO DROP-OFF'}</Text>
                   <Text style={styles.nextLocMain} numberOfLines={2}>{target.main}</Text>
                   {!!target.sub && <Text style={styles.nextLocSub} numberOfLines={2}>{target.sub}</Text>}
-                  
-                  {/* NAVIGATE BUTTON */}
+
                   <TouchableOpacity
                     style={styles.navigateBtn}
                     onPress={() => openNavigation(target.lat, target.lng, target.main)}
@@ -1192,8 +1293,7 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>PICKUP</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
                     {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
-                    
-                    {/* NAVIGATE BUTTON — PICKUP */}
+
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
                       onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
@@ -1212,8 +1312,7 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>DROP-OFF</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
                     {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
-                    
-                    {/* NAVIGATE BUTTON — DROP-OFF */}
+
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
                       onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
@@ -1339,20 +1438,34 @@ export default function TaskScreen() {
                 </View>
               </View>
               <View style={styles.tlRow}>
-                <Ionicons name={stage !== 'pickup' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage !== 'pickup' ? ORANGE : colors.border} />
+                <Ionicons
+                  name={stage !== 'pickup' && !isCancelled ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={20}
+                  color={stage !== 'pickup' && !isCancelled ? ORANGE : colors.border}
+                />
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, stage === 'pickup' && { color: colors.textMuted }]}>Package picked up</Text>
-                  <Text style={styles.tlSub}>{stage !== 'pickup' ? 'Verified with sender QR / PIN' : 'Waiting for pickup verification'}</Text>
+                  <Text style={[styles.tlTitle, (stage === 'pickup' || isCancelled) && { color: colors.textMuted }]}>Package picked up</Text>
+                  <Text style={styles.tlSub}>
+                    {isCancelled ? 'Booking cancelled before pickup' : stage !== 'pickup' ? 'Verified with sender QR / PIN' : 'Waiting for pickup verification'}
+                  </Text>
                 </View>
               </View>
               <View style={styles.tlRow}>
-                <Ionicons name={stage === 'done' ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={stage === 'done' ? ORANGE : colors.border} />
+                <Ionicons
+                  name={stage === 'done' ? 'checkmark-circle' : isCancelled ? 'close-circle' : 'ellipse-outline'}
+                  size={20}
+                  color={stage === 'done' ? ORANGE : isCancelled ? colors.error : colors.border}
+                />
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, stage !== 'done' && { color: colors.textMuted }]}>Delivered</Text>
+                  <Text style={[styles.tlTitle, stage !== 'done' && { color: isCancelled ? colors.error : colors.textMuted }]}>
+                    {isCancelled ? 'Cancelled' : 'Delivered'}
+                  </Text>
                   <Text style={styles.tlSub}>
-                    {stage === 'done' && d.completed_at
-                      ? formatDateTime(d.completed_at)
-                      : d.estimated_eta ? `Estimated arrival ${formatDateTime(d.estimated_eta)}` : 'Awaiting delivery'}
+                    {isCancelled
+                      ? 'The sender cancelled this booking.'
+                      : stage === 'done' && d.completed_at
+                        ? formatDateTime(d.completed_at)
+                        : d.estimated_eta ? `Estimated arrival ${formatDateTime(d.estimated_eta)}` : 'Awaiting delivery'}
                   </Text>
                 </View>
               </View>
@@ -1378,13 +1491,17 @@ export default function TaskScreen() {
 
               <View style={styles.payRow}>
                 <Text style={styles.payLabel}>Payment status</Text>
-                <View style={[styles.payChip, released && styles.payChipDone]}>
-                  <Text style={[styles.payChipText, released && styles.payChipTextDone]}>{paymentLabel}</Text>
+                <View style={[styles.payChip, released && styles.payChipDone, isCancelled && styles.payChipCancelled]}>
+                  <Text style={[styles.payChipText, released && styles.payChipTextDone, isCancelled && styles.payChipTextCancelled]}>
+                    {isCancelled ? 'Refunded to sender' : paymentLabel}
+                  </Text>
                 </View>
               </View>
-              <View style={styles.sdTotalBox}>
-                <Text style={styles.sdTotalLabel}>You earn</Text>
-                <Text style={styles.sdTotalValue}>{money(info.earnings)}</Text>
+              <View style={[styles.sdTotalBox, isCancelled && { backgroundColor: colors.textMuted }]}>
+                <Text style={styles.sdTotalLabel}>{isCancelled ? 'Earnings' : 'You earn'}</Text>
+                <Text style={[styles.sdTotalValue, isCancelled && { textDecorationLine: 'line-through' }]}>
+                  {money(info.earnings)}
+                </Text>
               </View>
             </View>
           </Animated.View>
@@ -1491,7 +1608,6 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>PICKUP</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.pickup.main}</Text>
               </View>
-              {/* NAVIGATE BUTTON — PICKUP in Map Modal */}
               <TouchableOpacity
                 style={styles.mapModalNavigateBtn}
                 onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
@@ -1507,7 +1623,6 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
-              {/* NAVIGATE BUTTON — DROP-OFF in Map Modal */}
               <TouchableOpacity
                 style={styles.mapModalNavigateBtn}
                 onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
@@ -1672,6 +1787,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderWidth: 1, borderColor: c.border,
   },
   cardDone: { backgroundColor: c.background, opacity: 0.95 },
+  cardCancelled: { backgroundColor: c.background, opacity: 0.9, borderColor: c.error },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8, flexWrap: 'wrap' },
   serviceBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
@@ -1697,6 +1813,14 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   nextStopIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   nextStopEyebrow: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
   nextStopMain: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginTop: 1 },
+
+  cancelledNotice: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 10,
+  },
+  cancelledNoticeText: { flex: 1, fontSize: 12, fontWeight: '700', color: c.error },
+
   cardChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   infoChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.background,
@@ -1720,6 +1844,12 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderRadius: 12, gap: 5, borderWidth: 1, borderColor: c.success,
   },
   doneBadgeText: { fontSize: 13, fontWeight: '700', color: c.success },
+  cancelledBadge: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.errorBg, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 12, gap: 5, borderWidth: 1, borderColor: c.error,
+  },
+  cancelledBadgeText: { fontSize: 13, fontWeight: '700', color: c.error },
 
   detailContainer: { paddingHorizontal: 20, paddingBottom: 60, paddingTop: 16 },
   detailHeader: {
@@ -1745,6 +1875,18 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
   sdTrackRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
 
+  cancelBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
+    borderRadius: 20, padding: 16, marginBottom: 14,
+  },
+  cancelBannerIcon: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  cancelBannerTitle: { fontSize: 15, fontWeight: '800', color: c.error },
+  cancelBannerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+
   nextCard: {
     backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14,
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 14, elevation: 6,
@@ -1757,8 +1899,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   nextLocLabel: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextLocMain: { fontSize: 16, fontWeight: '900', color: '#FFFFFF', marginTop: 4, letterSpacing: -0.2 },
   nextLocSub: { fontSize: 12, color: '#FFF1E6', marginTop: 2, lineHeight: 17 },
-  
-  // New styles for nextCard navigate button
+
   navigateBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, backgroundColor: '#FFFFFF', borderRadius: 12,
@@ -1810,7 +1951,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
   sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
 
-  // New style for inline navigate button
   inlineNavigateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
@@ -1864,8 +2004,10 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   payValue: { fontSize: 13, color: c.textPrimary, fontWeight: '800' },
   payChip: { backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   payChipDone: { backgroundColor: c.successBg },
+  payChipCancelled: { backgroundColor: c.errorBg },
   payChipText: { fontSize: 12, fontWeight: '800', color: ORANGE },
   payChipTextDone: { color: c.success },
+  payChipTextCancelled: { color: c.error },
   sdTotalBox: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: ORANGE, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 16, marginTop: 14,
@@ -1890,8 +2032,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderTopWidth: 1, borderColor: c.border,
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  
-  // New styles for the map modal navigate buttons
+
   mapModalNavigateBtn: {
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
