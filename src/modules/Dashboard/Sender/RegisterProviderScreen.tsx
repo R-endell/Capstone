@@ -27,6 +27,7 @@ type ScanResult = {
   confidence: number | null;
   documentType: string | null;
   documentName: string | null;
+  documentNumber: string | null;
   data: any;
   raw: any;
 } | null;
@@ -146,6 +147,78 @@ export default function RegisterProviderScreen() {
     return null;
   };
 
+  /**
+   * Extracts a numeric confidence score from ID Analyzer's raw payload.
+   * Since ID Analyzer quickscan often returns root confidence = 0, 
+   * we calculate the average of all individual field confidences.
+   */
+  const extractConfidenceFromRaw = (rawResult: any): number | null => {
+    if (!rawResult || typeof rawResult !== 'object') return null;
+
+    // 1. If root confidence exists AND is greater than 0, use it.
+    if (typeof rawResult.confidence === 'number' && rawResult.confidence > 0) {
+      const percentage = rawResult.confidence <= 1 ? rawResult.confidence * 100 : rawResult.confidence;
+      return Number(percentage.toFixed(1));
+    }
+
+    // 2. Otherwise, calculate the average of all field confidences in `data`
+    const dataObj = rawResult.data;
+    if (dataObj && typeof dataObj === 'object') {
+      const allScores: number[] = [];
+
+      for (const key of Object.keys(dataObj)) {
+        const fieldArray = dataObj[key];
+        if (Array.isArray(fieldArray) && fieldArray.length > 0) {
+          const field = fieldArray[0];
+          if (typeof field.confidence === 'number' && field.confidence > 0) {
+            allScores.push(field.confidence);
+          }
+        }
+      }
+
+      if (allScores.length > 0) {
+        // Calculate average
+        const avg = allScores.reduce((acc, v) => acc + v, 0) / allScores.length;
+        // Convert to percentage (e.g. 0.992 -> 99.2)
+        const percentage = avg <= 1 ? avg * 100 : avg;
+        return Number(percentage.toFixed(1));
+      }
+    }
+
+    // 3. Fallback if no data found
+    return null;
+  };
+
+  const resolveValidIdTypeFromScan = (scan: ScanResult): string => {
+    const rawData = scan?.raw?.data || scan?.data || {};
+    const rawDocName = unwrapField(rawData.documentName) || scan?.documentName || '';
+    const rawDocType = (unwrapField(rawData.documentType) || scan?.documentType || '').toUpperCase();
+
+    if (
+      rawDocType === 'D' ||
+      rawDocType === 'DL' ||
+      rawDocType === 'DRIVER_LICENSE' ||
+      rawDocType === 'DRIVERS_LICENSE' ||
+      rawDocName.toLowerCase().includes('driver')
+    ) {
+      return "Driver's License";
+    }
+    if (rawDocName) return rawDocName;
+    if (rawDocType) return rawDocType;
+    return "Driver's License";
+  };
+
+  const resolveValidIdNumberFromScan = (scan: ScanResult, fallbackLicenseNumber: string): string => {
+    const rawData = scan?.raw?.data || scan?.data || {};
+    const fromRaw =
+      unwrapField(rawData.documentNumber) ||
+      unwrapField(rawData.licenseNumber) ||
+      unwrapField(rawData.idNumber) ||
+      scan?.documentNumber ||
+      null;
+    return (fromRaw || fallbackLicenseNumber).trim();
+  };
+
   const runIdAnalyzerScan = async (
     frontSource: string,
     backSource?: string | null,
@@ -173,29 +246,49 @@ export default function RegisterProviderScreen() {
         const msg = result.error?.message || `Scan failed (${response.status})`;
         console.warn('ID Analyzer error:', msg);
         return {
-          decision: 'error', confidence: null, documentType: null,
-          documentName: null, data: {}, raw: { error: msg },
+          decision: 'error',
+          confidence: null,
+          documentType: null,
+          documentName: null,
+          documentNumber: null,
+          data: {},
+          raw: { error: msg, confidence: null },
         };
       }
 
       const rawDocType = result.data?.documentType || result.documentType || result.data?.document_type || null;
-      const rawDocName = result.data?.documentName || null;
+      const rawDocName = result.data?.documentName || result.documentName || null;
+      const rawDocNumber = result.data?.documentNumber || result.data?.licenseNumber || null;
+
       const docType = unwrapField(rawDocType);
       const docName = unwrapField(rawDocName);
+      const docNumber = unwrapField(rawDocNumber);
+
+      const computedConfidence = extractConfidenceFromRaw(result);
+      const enrichedRaw = {
+        ...result,
+        confidence: computedConfidence,
+      };
 
       return {
         decision: result.decision || 'review',
-        confidence: result.confidence ?? null,
+        confidence: computedConfidence,
         documentType: docType ? docType.toUpperCase() : null,
         documentName: docName,
+        documentNumber: docNumber,
         data: result.data || {},
-        raw: result,
+        raw: enrichedRaw,
       };
     } catch (err: any) {
       console.error('ID Analyzer fetch error:', err);
       return {
-        decision: 'error', confidence: null, documentType: null,
-        documentName: null, data: {}, raw: { error: err.message },
+        decision: 'error',
+        confidence: null,
+        documentType: null,
+        documentName: null,
+        documentNumber: null,
+        data: {},
+        raw: { error: err.message, confidence: null },
       };
     } finally {
       setScanningLicense(false);
@@ -210,12 +303,11 @@ export default function RegisterProviderScreen() {
   const applyScanResultToForm = (scan: ScanResult) => {
     if (!scan) return;
 
-    // --- CASE 1: Scanner could not reach / failed ---
     if (scan.decision === 'error') {
       setManualNumberEntryAllowed(true);
       Alert.alert(
         'Scan Unavailable',
-        'We could not scan your license automatically. Please enter your Driver\'s License number manually.',
+        "We could not scan your license automatically. Please enter your Driver's License number manually.",
       );
       return;
     }
@@ -228,7 +320,6 @@ export default function RegisterProviderScreen() {
       dn.includes("driver's license") || dn.includes('drivers license') ||
       dn.includes('driver license') || dn.includes('driver’s license');
 
-    // --- CASE 2: Scanned document is not a driver's license ---
     if (!isDriverLicense) {
       clearLicenseFields();
       setManualNumberEntryAllowed(true);
@@ -240,7 +331,6 @@ export default function RegisterProviderScreen() {
       return;
     }
 
-    // --- CASE 3: It IS a driver's license, try to extract fields ---
     const d = scan.data || {};
     const docNum = unwrapField(d.documentNumber || d.licenseNumber);
     const expiry = unwrapField(d.dateOfExpiry || d.expiryDate);
@@ -252,7 +342,6 @@ export default function RegisterProviderScreen() {
       setLicenseNumber(docNum);
     }
 
-    // Auto-fill expiry as a starting point, but user can override
     if (expiry) {
       let formatted = expiry;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
@@ -265,7 +354,6 @@ export default function RegisterProviderScreen() {
       setLicenseExpiry(formatted);
     }
 
-    // --- CASE 4: Scanned but couldn't extract license number ---
     if (!extractedNum) {
       setManualNumberEntryAllowed(true);
       Alert.alert(
@@ -275,7 +363,6 @@ export default function RegisterProviderScreen() {
       return;
     }
 
-    // --- CASE 5: Success on license number — keep it locked ---
     setManualNumberEntryAllowed(false);
 
     if (scan.decision === 'accept') {
@@ -340,7 +427,6 @@ export default function RegisterProviderScreen() {
   };
 
   const handlePickedImage = async (side: Side, uri: string) => {
-    // Reset license-number lock state; expiry stays user-editable
     setScanAttempted(false);
     setManualNumberEntryAllowed(false);
     setLastScanResult(null);
@@ -392,9 +478,6 @@ export default function RegisterProviderScreen() {
     }
   };
 
-  // Live selfie: camera only (no gallery), front camera, so the admin can compare
-  // the person with the license photo. This is a live capture, not automated
-  // liveness detection; the admin reviews it (manuscript: "Review Selfie Verification").
   const handleTakeSelfie = async () => {
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -507,6 +590,19 @@ export default function RegisterProviderScreen() {
       if (authError) throw new Error('Authentication error: ' + authError.message);
       if (!user) throw new Error('No user logged in');
 
+      const resolvedIdType = resolveValidIdTypeFromScan(lastScanResult);
+      const resolvedIdNumber = resolveValidIdNumberFromScan(lastScanResult, licenseNumber.trim());
+      
+      const resolvedConfidence =
+        lastScanResult?.confidence ?? extractConfidenceFromRaw(lastScanResult?.raw);
+        
+      const resolvedRaw = lastScanResult?.raw
+        ? {
+            ...lastScanResult.raw,
+            confidence_percentage: resolvedConfidence,
+          }
+        : null;
+
       let { data: userData } = await supabase
         .from('users')
         .select('user_id, first_name, last_name, email')
@@ -521,6 +617,9 @@ export default function RegisterProviderScreen() {
             first_name: user.user_metadata?.first_name || 'User',
             last_name: user.user_metadata?.last_name || '',
             email: user.email || '',
+            id_photo: licenseFrontUrl,
+            valid_id_type: resolvedIdType,
+            valid_id_number: resolvedIdNumber,
             is_verified: false,
             is_active: true,
           })
@@ -532,11 +631,10 @@ export default function RegisterProviderScreen() {
       }
       if (!userData) throw new Error('Failed to get or create user');
 
-      // Check duplicate license
       const { data: duplicateLicense, error: dupCheckError } = await supabase
         .from('provider_verifications')
         .select('verification_id, provider_id, verification_status')
-        .eq('drivers_license_number', licenseNumber.trim())
+        .eq('drivers_license_number', resolvedIdNumber)
         .maybeSingle();
 
       if (dupCheckError) {
@@ -545,7 +643,7 @@ export default function RegisterProviderScreen() {
         setLoading(false);
         Alert.alert(
           'License Already Registered',
-          `This Driver's License number (${licenseNumber.trim()}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
+          `This Driver's License number (${resolvedIdNumber}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
           [{ text: 'OK' }],
         );
         return;
@@ -596,19 +694,15 @@ export default function RegisterProviderScreen() {
         .from('provider_verifications')
         .insert({
           provider_id: userData.user_id,
-          drivers_license_number: licenseNumber.trim(),
+          drivers_license_number: resolvedIdNumber,
           license_expiry_date: licenseExpiry.trim(),
           selfie_photo: licenseFrontUrl,
           selfie_photo_back: licenseBackUrl,
           live_selfie_photo: selfieUrl,
           verification_status: 'Pending',
-          ...(lastScanResult
-            ? {
-                id_analyzer_decision: lastScanResult.decision || null,
-                id_analyzer_confidence: lastScanResult.confidence ?? null,
-                id_analyzer_raw: lastScanResult.raw || null,
-              }
-            : {}),
+          id_analyzer_decision: lastScanResult?.decision || null,
+          id_analyzer_confidence: resolvedConfidence,
+          id_analyzer_raw: resolvedRaw,
         });
 
       if (verifError) {
@@ -620,7 +714,7 @@ export default function RegisterProviderScreen() {
           console.warn('Duplicate license caught by DB constraint:', verifError.message);
           Alert.alert(
             'License Already Registered',
-            `This Driver's License number (${licenseNumber.trim()}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
+            `This Driver's License number (${resolvedIdNumber}) is already registered to another provider account. If this is your license and you believe this is a mistake, please contact support.`,
             [{ text: 'OK' }],
           );
           return;
@@ -630,13 +724,28 @@ export default function RegisterProviderScreen() {
         throw new Error('Failed to submit verification: ' + verifError.message);
       }
 
+      const { error: updateUserError } = await supabase
+        .from('users')
+        .update({
+          id_photo: licenseFrontUrl,
+          valid_id_type: resolvedIdType,
+          valid_id_number: resolvedIdNumber,
+        })
+        .eq('user_id', userData.user_id);
+
+      if (updateUserError) {
+        console.warn('Failed to update user ID fields on public.users:', updateUserError.message);
+      }
+
       await supabase.auth.updateUser({
         data: {
           role: 'Provider',
           provider_documents: {
             drivers_license_front: licenseFrontUrl,
             drivers_license_back: licenseBackUrl,
-            license_number: licenseNumber.trim(),
+            license_number: resolvedIdNumber,
+            valid_id_type: resolvedIdType,
+            id_analyzer_confidence: resolvedConfidence,
             registered_at: new Date().toISOString(),
           },
         },
@@ -676,7 +785,6 @@ export default function RegisterProviderScreen() {
   const selfieComplete = !!selfieUri && !!selfieUrl;
   const canSubmit = licenseComplete && detailsFilled && selfieComplete;
 
-  // License number locked unless scanner failed to extract it
   const numberLocked = !manualNumberEntryAllowed;
 
   const showWaitingHint =
@@ -711,7 +819,6 @@ export default function RegisterProviderScreen() {
           </View>
         </Animated.View>
 
-        {/* --- Progress Steps --- */}
         <Animated.View style={[styles.progressRow, fadeUp(introAnim, 20)]}>
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, licenseComplete && styles.progressDotDone]}>
@@ -742,7 +849,6 @@ export default function RegisterProviderScreen() {
           </View>
         </Animated.View>
 
-        {/* --- STEP 1: License Photos --- */}
         <Animated.View style={[styles.uploadSection, fadeUp(licenseAnim, 20)]}>
           <View style={styles.uploadHeader}>
             <View style={styles.uploadTitleRow}>
@@ -865,9 +971,9 @@ export default function RegisterProviderScreen() {
                 ]}
               >
                 {lastScanResult.decision === 'accept'
-                  ? 'License verified by ID Analyzer'
+                  ? `License verified by ID Analyzer${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`
                   : lastScanResult.decision === 'review'
-                  ? 'Scanned — pending admin review'
+                  ? `Scanned — pending admin review${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`
                   : lastScanResult.decision === 'reject'
                   ? 'License rejected by ID Analyzer'
                   : 'ID Analyzer unavailable — enter license number manually below'}
@@ -876,7 +982,6 @@ export default function RegisterProviderScreen() {
           )}
         </Animated.View>
 
-        {/* --- STEP 2: License Details --- */}
         <Animated.View style={[styles.detailsSection, fadeUp(detailsAnim, 20)]}>
           <View style={styles.uploadHeader}>
             <View style={styles.uploadTitleRow}>
@@ -909,7 +1014,6 @@ export default function RegisterProviderScreen() {
             </View>
           </View>
 
-          {/* Info banners */}
           {numberLocked && licenseComplete && scanAttempted && !scanningLicense && (
             <View style={styles.lockedNote}>
               <Ionicons name="sparkles" size={14} color={colors.success} />

@@ -82,6 +82,15 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const [locating, setLocating] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
 
+  // Structured address state to prevent null columns in the database
+  const [structuredAddress, setStructuredAddress] = useState({
+    street_address: '',
+    barangay: '',
+    city: '',
+    province: '',
+    zip_code: '',
+  });
+
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -130,6 +139,38 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   });
 
   const reverseGeocode = async (coords: { latitude: number; longitude: number }) => {
+    // 1. Try Nominatim FIRST for better granular data in the Philippines (barangays)
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&addressdetails=1`,
+        { headers: { 'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)' } }
+      );
+      const json = await response.json();
+      
+      if (json && json.address) {
+        const a = json.address;
+        const streetParts = [a.house_number, a.road].filter(Boolean);
+        const street = streetParts.length > 0 ? streetParts.join(' ') : (json.display_name ? json.display_name.split(',')[0] : 'Selected Location');
+        
+        const subParts = [a.suburb || a.neighbourhood, a.city || a.town || a.municipality, a.state].filter(Boolean).join(', ');
+
+        setAddressName(street);
+        setAddressSub(subParts || json.display_name || '');
+        
+        setStructuredAddress({
+          street_address: street,
+          barangay: a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown',
+          city: a.city || a.town || a.municipality || 'Unknown',
+          province: a.state || a.state_district || a.county || a.province || a.region || 'Unknown',
+          zip_code: (a.postcode && a.postcode.length === 4) ? a.postcode : '0000',
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn('Nominatim reverse geocode failed, falling back to expo-location', err);
+    }
+
+    // 2. Fallback to expo-location if Nominatim fails
     try {
       const [addr] = await Location.reverseGeocodeAsync(coords);
       if (addr) {
@@ -142,14 +183,22 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
         setAddressName(mainName);
         setAddressSub(subParts || `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`);
-      } else {
-        setAddressName('Selected Location');
-        setAddressSub(`${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`);
+        
+        setStructuredAddress({
+          street_address: mainName,
+          barangay: addr.district || addr.subregion || 'Unknown',
+          city: addr.city || addr.subregion || 'Unknown',
+          province: addr.region || 'Unknown',
+          zip_code: addr.postalCode || '0000',
+        });
+        return;
       }
-    } catch {
-      setAddressName('Unknown Location');
-      setAddressSub('Unable to fetch address details');
+    } catch (err) {
+      // Ignore
     }
+    
+    setAddressName('Unknown Location');
+    setAddressSub('Unable to fetch address details');
   };
 
   useEffect(() => {
@@ -207,6 +256,13 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     setMarkerCoord(newCoords);
     setAddressName(spot.name);
     setAddressSub('Cebu City, Cebu, Philippines');
+    setStructuredAddress({
+      street_address: spot.name,
+      barangay: 'Unknown',
+      city: 'Cebu City',
+      province: 'Cebu',
+      zip_code: '6000',
+    });
     if (webViewRef.current) {
       webViewRef.current.injectJavaScript(`
         if (window.map) {
@@ -251,8 +307,23 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     const newCoords = { latitude: lat, longitude: lon };
 
     setMarkerCoord(newCoords);
-    setAddressName(item.display_name ? item.display_name.split(',')[0] : 'Selected Location');
+    
+    const mainName = item.display_name ? item.display_name.split(',')[0] : 'Selected Location';
+    setAddressName(mainName);
     setAddressSub(item.display_name || '');
+    
+    const a = item.address || {};
+    const streetParts = [a.house_number, a.road].filter(Boolean);
+    const street = streetParts.length > 0 ? streetParts.join(' ') : mainName;
+    
+    setStructuredAddress({
+      street_address: street,
+      barangay: a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown',
+      city: a.city || a.town || a.municipality || 'Unknown',
+      province: a.state || a.state_district || a.county || a.province || a.region || 'Unknown',
+      zip_code: (a.postcode && a.postcode.length === 4) ? a.postcode : '0000',
+    });
+
     setIsSearching(false);
     setSearchQuery('');
     setSearchResults([]);
@@ -271,9 +342,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const confirmLocation = () => {
     const fullAddress = `${addressName}, ${addressSub}`;
     const locationInfo = {
-      address: fullAddress,
+      address: fullAddress, // Kept for backwards compatibility
       latitude: markerCoord.latitude,
       longitude: markerCoord.longitude,
+      ...structuredAddress, // Spread the new structured fields
     };
 
     if (route.params?.fromExplore) {

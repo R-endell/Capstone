@@ -134,25 +134,36 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
   // Upload photos first: if this fails nothing has been written yet
   const itemsPayload = await buildItemsPayload(state.items);
 
-  // Insert locations
+  // Read the structured location data from state
+  const pickup = state.pickupLocation as any;
+  const dropoff = state.dropoffLocation as any;
+
+  // Insert pickup location with all fields populated
   const { data: pickupLoc } = await supabase
     .from('locations')
     .insert({
-      street_address: state.pickupLocation!.address,
-      barangay: '', city: '', province: '', zip_code: '',
-      latitude: state.pickupLocation!.latitude,
-      longitude: state.pickupLocation!.longitude,
+      street_address: pickup?.street_address || pickup?.address || 'Unknown',
+      barangay: pickup?.barangay || 'Unknown',
+      city: pickup?.city || 'Unknown',
+      province: pickup?.province || 'Unknown',
+      zip_code: pickup?.zip_code || '0000',
+      latitude: pickup?.latitude,
+      longitude: pickup?.longitude,
     })
     .select()
     .single();
 
+  // Insert dropoff location with all fields populated
   const { data: dropoffLoc } = await supabase
     .from('locations')
     .insert({
-      street_address: state.dropoffLocation!.address,
-      barangay: '', city: '', province: '', zip_code: '',
-      latitude: state.dropoffLocation!.latitude,
-      longitude: state.dropoffLocation!.longitude,
+      street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
+      barangay: dropoff?.barangay || 'Unknown',
+      city: dropoff?.city || 'Unknown',
+      province: dropoff?.province || 'Unknown',
+      zip_code: dropoff?.zip_code || '0000',
+      latitude: dropoff?.latitude,
+      longitude: dropoff?.longitude,
     })
     .select()
     .single();
@@ -199,12 +210,6 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
   // Status depends on mode
   const deliveryStatus = 'Pending';
 
-  /* ============================================================
-   * ✅ FIX: Read receiver from state — do NOT hardcode phone.
-   *    Prefer receiver_id + receiver_phone from the picked receiver.
-   *    Fall back to state.receiver's phone_number if needed.
-   * ============================================================ */
-  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =
@@ -251,22 +256,34 @@ export async function updateScheduleInDB(
   // Upload photos first: if this fails nothing has been changed yet
   const itemsPayload = await buildItemsPayload(state.items);
 
-  // Update pickup location
+  const pickup = state.pickupLocation as any;
+  const dropoff = state.dropoffLocation as any;
+
+  // Update pickup location with all fields
   await supabase
     .from('locations')
     .update({
-      street_address: state.pickupLocation!.address,
-      latitude: state.pickupLocation!.latitude,
-      longitude: state.pickupLocation!.longitude,
+      street_address: pickup?.street_address || pickup?.address || 'Unknown',
+      barangay: pickup?.barangay || 'Unknown',
+      city: pickup?.city || 'Unknown',
+      province: pickup?.province || 'Unknown',
+      zip_code: pickup?.zip_code || '0000',
+      latitude: pickup?.latitude,
+      longitude: pickup?.longitude,
     })
     .eq('location_id', existingIds.pickupLocId);
 
+  // Update dropoff location with all fields
   await supabase
     .from('locations')
     .update({
-      street_address: state.dropoffLocation!.address,
-      latitude: state.dropoffLocation!.latitude,
-      longitude: state.dropoffLocation!.longitude,
+      street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
+      barangay: dropoff?.barangay || 'Unknown',
+      city: dropoff?.city || 'Unknown',
+      province: dropoff?.province || 'Unknown',
+      zip_code: dropoff?.zip_code || '0000',
+      latitude: dropoff?.latitude,
+      longitude: dropoff?.longitude,
     })
     .eq('location_id', existingIds.dropoffLocId);
 
@@ -298,10 +315,6 @@ export async function updateScheduleInDB(
     await supabase.from('cargo_profiles').update(cargoUpdate).eq('cargo_id', existingIds.cargoId);
   }
 
-  /* ============================================================
-   * ✅ FIX: Keep receiver in sync on edit.
-   * ============================================================ */
-  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =

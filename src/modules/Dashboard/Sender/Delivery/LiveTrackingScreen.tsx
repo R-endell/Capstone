@@ -50,13 +50,14 @@ function formatLastSeen(iso: string | null | undefined): string {
 }
 
 /* ================================================================== */
-/* Leaflet HTML builder — unchanged, always light tiles              */
+/* Leaflet HTML builder                                               */
 /* ================================================================== */
 function buildMapHtml(
   pickup: LatLng,
   dropoff: LatLng,
   initialCourier: LatLng | null,
   targetIsDropoff: boolean,
+  bottomInsetPx: number,
 ): string {
   return `
 <!DOCTYPE html>
@@ -81,6 +82,7 @@ function buildMapHtml(
       var DROPOFF = [${dropoff.latitude}, ${dropoff.longitude}];
       var COURIER = ${initialCourier ? `[${initialCourier.latitude}, ${initialCourier.longitude}]` : 'null'};
       var TARGET_IS_DROPOFF = ${targetIsDropoff ? 'true' : 'false'};
+      var BOTTOM_INSET = ${Math.max(0, Math.round(bottomInsetPx))};
 
       var map = L.map('map', { zoomControl:false, attributionControl:false }).setView(PICKUP, 13);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
@@ -94,15 +96,40 @@ function buildMapHtml(
 
       var courierMarker = null;
       var routeLine     = null;
+      var _courierLatLng = null;
 
-      function currentTarget() {
-        return TARGET_IS_DROPOFF ? DROPOFF : PICKUP;
+      function currentTarget() { return TARGET_IS_DROPOFF ? DROPOFF : PICKUP; }
+
+      function withVerticalOffset(latlng, zoom) {
+        var shiftPx = BOTTOM_INSET / 2;
+        if (shiftPx <= 0) return latlng;
+        var p = map.project(latlng, zoom);
+        p.y += shiftPx;
+        return map.unproject(p, zoom);
       }
 
       function fitAll() {
         var pts = [PICKUP, DROPOFF];
         if (courierMarker) pts.push(courierMarker.getLatLng());
-        map.fitBounds(L.latLngBounds(pts), { padding:[60, 60] });
+        map.fitBounds(L.latLngBounds(pts), {
+          paddingTopLeft: [60, 60],
+          paddingBottomRight: [60, 60 + BOTTOM_INSET],
+        });
+      }
+
+      function centerOnCourier(zoom) {
+        var z = typeof zoom === 'number' ? zoom : 17;
+        var target = _courierLatLng || (courierMarker ? courierMarker.getLatLng() : null);
+        if (!target) return; // nothing to center on yet
+
+        var center = withVerticalOffset(target, z);
+        map.setView(center, z, { animate: false });
+        setTimeout(function() {
+          if (_courierLatLng) {
+            var c2 = withVerticalOffset(_courierLatLng, z);
+            map.setView(c2, z, { animate: false });
+          }
+        }, 250);
       }
 
       function post(msg) {
@@ -134,6 +161,7 @@ function buildMapHtml(
       window.updateCourier = function(lat, lng, targetIsDropoff) {
         TARGET_IS_DROPOFF = !!targetIsDropoff;
         var here = [lat, lng];
+        _courierLatLng = L.latLng(here);
         if (!courierMarker) {
           courierMarker = L.marker(here, { icon: courierIcon }).addTo(map);
         } else {
@@ -142,17 +170,21 @@ function buildMapHtml(
         refreshRoute(lat, lng);
       };
 
-      window.recenter = function() { fitAll(); };
+      window.setBottomInset = function(px) { BOTTOM_INSET = Math.max(0, px | 0); };
+
+      window.recenter = function() { centerOnCourier(17); };
 
       if (COURIER) {
+        _courierLatLng = L.latLng(COURIER);
         courierMarker = L.marker(COURIER, { icon: courierIcon }).addTo(map);
         refreshRoute(COURIER[0], COURIER[1]);
+        centerOnCourier(17);
       } else {
         routeLine = L.polyline([PICKUP, DROPOFF], {
           color:'#FF751F', weight:4, opacity:0.7, dashArray:'8,8'
         }).addTo(map);
+        fitAll();
       }
-      fitAll();
 
       true;
     </script>
@@ -174,7 +206,6 @@ export default function LiveTrackingScreen() {
 
   const webRef = useRef<WebView>(null);
   const lastSentFixRef = useRef<string>('');
-  const lastTargetRef = useRef<boolean>(false);
 
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<RouteData | null>(null);
@@ -183,6 +214,7 @@ export default function LiveTrackingScreen() {
   const [fix, setFix] = useState<ProviderFix | null>(null);
   const [distanceKm, setDistanceKm] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
+  const [sheetHeight, setSheetHeight] = useState(340);
   const [stageBanner, setStageBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
   const lastStageRef = useRef<number>(-1);
@@ -304,6 +336,13 @@ export default function LiveTrackingScreen() {
     webRef.current.injectJavaScript(js);
   }, [fix, data, targetIsDropoff]);
 
+  // Push sheet-height changes without reloading the page
+  useEffect(() => {
+    webRef.current?.injectJavaScript(
+      `window.setBottomInset(${sheetHeight + insets.bottom}); true;`
+    );
+  }, [sheetHeight, insets.bottom]);
+
   const stage = timelineStage(data);
   useEffect(() => {
     if (stage === lastStageRef.current) return;
@@ -343,6 +382,24 @@ export default function LiveTrackingScreen() {
     : 'Courier';
   const initials = providerName.split(' ').filter(Boolean).slice(0, 2).map(s => s[0]?.toUpperCase()).join('') || 'C';
 
+  // Rebuild HTML only on structural changes (not on every GPS tick)
+  const html = useMemo(
+    () =>
+      data
+        ? buildMapHtml(
+            data.pickup,
+            data.dropoff,
+            fix ? { latitude: fix.latitude, longitude: fix.longitude } : null,
+            targetIsDropoff,
+            sheetHeight + insets.bottom,
+          )
+        : '',
+    // Only pickup/dropoff/stage/sheet size. NOT fix — otherwise the WebView
+    // remounts on every GPS tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, targetIsDropoff, sheetHeight, insets.bottom],
+  );
+
   if (loading || !data) {
     return (
       <SafeAreaView style={styles.container}>
@@ -354,13 +411,6 @@ export default function LiveTrackingScreen() {
       </SafeAreaView>
     );
   }
-
-  const html = buildMapHtml(
-    data.pickup,
-    data.dropoff,
-    fix ? { latitude: fix.latitude, longitude: fix.longitude } : null,
-    targetIsDropoff,
-  );
 
   const timeline = [
     { label: 'Accepted', key: 0 },
@@ -407,7 +457,7 @@ export default function LiveTrackingScreen() {
 
       {/* Recenter FAB */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: 340 + insets.bottom }]}
+        style={[styles.fab, { bottom: sheetHeight + insets.bottom + 12 }]}
         onPress={recenter}
         activeOpacity={0.85}
       >
@@ -434,7 +484,10 @@ export default function LiveTrackingScreen() {
       )}
 
       {/* Bottom sheet */}
-      <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+      <View
+        style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
+        onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+      >
         <View style={styles.grabber} />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
 
