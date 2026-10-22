@@ -73,7 +73,7 @@ export const verifyDeliveryOTP = async (
       return { success: false, message: 'Too many attempts.' };
     }
 
-    if (String(confirmation.receiver_otp) !== String(otp).trim()) {
+    if (String(confirmation.system_otp) !== String(otp).trim()) {
       await supabase
         .from('delivery_confirmations')
         .update({ attempts: confirmation.attempts + 1 })
@@ -106,7 +106,7 @@ export const regenerateDeliveryOTP = async (
     const { error } = await supabase
       .from('delivery_confirmations')
       .update({
-        receiver_otp: newOTP,
+        system_otp: newOTP,
         otp_expires_at: expiresAt.toISOString(),
         attempts: 0,
         otp_verified: false,

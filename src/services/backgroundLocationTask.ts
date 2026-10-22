@@ -2,7 +2,7 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import { supabase } from '../utils/supabase';
-import { getBroadcastTarget } from './locationBroadcastStore';
+import { getBroadcastTarget, setBroadcastTarget } from './locationBroadcastStore';
 
 export const BACKGROUND_LOCATION_TASK = 'packnship-background-location';
 
@@ -20,10 +20,6 @@ type FixPayload = {
 const isFiniteNum = (n: any): n is number =>
   typeof n === 'number' && Number.isFinite(n);
 
-/**
- * Returns true iff the OS location service (GPS toggle) is ON.
- * NEVER throws — returns false on any error.
- */
 async function servicesOn(): Promise<boolean> {
   try {
     return await Location.hasServicesEnabledAsync();
@@ -33,10 +29,20 @@ async function servicesOn(): Promise<boolean> {
   }
 }
 
+async function shutdownStaleBroadcast(): Promise<void> {
+  try {
+    await setBroadcastTarget(null);
+  } catch {}
+  try {
+    const running = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    if (running) {
+      await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+    }
+  } catch {}
+}
+
 // =====================================================================
 // Task definition — MUST NEVER REJECT.
-// TaskManager on Android converts a rejected task promise into
-// "Uncaught in promise id 0" and can kill the JS context.
 // =====================================================================
 if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
   TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) => {
@@ -49,9 +55,7 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
         return;
       }
 
-      // GPS hardware guard — kills the crash at the source
       if (!(await servicesOn())) {
-        console.warn('[bg-location] services OFF, skipping tick');
         return;
       }
 
@@ -62,7 +66,12 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
         console.warn('[bg-location] getBroadcastTarget threw:', e);
         return;
       }
-      if (!target?.deliveryId || !target?.providerId) return;
+
+      // If no active target is set, stop the OS background service immediately
+      if (!target?.deliveryId || !target?.providerId) {
+        await shutdownStaleBroadcast();
+        return;
+      }
 
       const locations: FixPayload[] = data.locations;
       const last = locations[locations.length - 1];
@@ -70,7 +79,6 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
 
       const { latitude, longitude } = last.coords;
       if (!isFiniteNum(latitude) || !isFiniteNum(longitude)) {
-        console.warn('[bg-location] non-finite coords, skipping');
         return;
       }
 
@@ -89,12 +97,24 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
         const { error: dbErr } = await supabase
           .from('delivery_locations')
           .upsert(payload, { onConflict: 'delivery_id' });
-        if (dbErr) console.warn('[bg-location] upsert failed:', dbErr.message);
+
+        if (dbErr) {
+          // If the delivery_id or provider_id no longer exists (FK violation 23503),
+          // clear the stale target and stop the background task so it stops spamming.
+          if (
+            dbErr.code === '23503' ||
+            String(dbErr.message || '').includes('foreign key constraint')
+          ) {
+            console.log('[bg-location] Stale delivery target detected; stopping background location task.');
+            await shutdownStaleBroadcast();
+            return;
+          }
+          console.warn('[bg-location] upsert failed:', dbErr.message);
+        }
       } catch (e) {
         console.warn('[bg-location] upsert threw:', e);
       }
     } catch (outer) {
-      // Belt-and-suspenders: if anything above slips, swallow so the task never rejects.
       console.warn('[bg-location] unhandled task exception (swallowed):', outer);
     }
   });
@@ -106,7 +126,6 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
 export async function startBackgroundLocationUpdates(): Promise<boolean> {
   try {
     if (!(await servicesOn())) {
-      console.warn('[bg-location] start skipped: location services OFF');
       return false;
     }
 
@@ -129,7 +148,6 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
       return false;
     }
     if (bgStatus !== 'granted') {
-      console.warn('[bg-location] background permission not granted');
       return false;
     }
 
@@ -157,7 +175,6 @@ export async function startBackgroundLocationUpdates(): Promise<boolean> {
       });
       return true;
     } catch (e) {
-      // This is the exact throw site of "location services unavailable"
       console.warn('[bg-location] startLocationUpdatesAsync threw:', e);
       return false;
     }
@@ -176,7 +193,6 @@ export async function stopBackgroundLocationUpdates(): Promise<void> {
     try {
       running = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
     } catch (e) {
-      console.warn('[bg-location] stop: hasStartedLocationUpdatesAsync threw:', e);
       return;
     }
     if (!running) return;

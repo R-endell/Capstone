@@ -7,7 +7,6 @@ import { supabase } from '../utils/supabase';
 // Foreground handler — show the notification even if the app is open
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
     shouldShowBanner: true,
