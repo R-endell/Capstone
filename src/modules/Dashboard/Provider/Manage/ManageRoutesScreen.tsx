@@ -10,11 +10,12 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import * as Location from 'expo-location';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const ORANGE = '#FA7A25';
 
-interface Location {
+interface LocationType {
   location_id: number;
   street_address: string;
   barangay: string;
@@ -34,8 +35,8 @@ interface Route {
   end_location_id: number;
   provider_id: number;
   vehicle_id: number;
-  start_location?: Location;
-  end_location?: Location;
+  start_location?: LocationType;
+  end_location?: LocationType;
   vehicle?: Vehicle;
 }
 
@@ -73,7 +74,74 @@ const nextWeekday = (weekday: number, from = new Date()): Date => {
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /* ==================================================================== */
-/* InteractiveMap — plain OSM light tiles (unchanged)                    */
+/* Reverse Geocode Helper                                                */
+/* ==================================================================== */
+const reverseGeocodeCoordinates = async (lat: number, lng: number) => {
+  let result = {
+    street_address: `Location at ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+    barangay: 'Unknown',
+    city: 'Unknown',
+    province: 'Unknown',
+    zip_code: '0000',
+  };
+
+  try {
+    // First attempt: expo-location
+    const [addr] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+    if (addr) {
+      const streetParts = [addr.name, addr.street].filter(Boolean);
+      result.street_address = streetParts.length > 0
+        ? Array.from(new Set(streetParts)).join(', ')
+        : `Location at ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      
+      result.barangay = addr.district || addr.subregion || addr.name || 'Unknown';
+      result.city = addr.city || addr.subregion || 'Unknown';
+      result.province = addr.region || 'Unknown';
+      result.zip_code = addr.postalCode || '0000';
+
+      // If street address is still generic, try Nominatim as a fallback for better PH data
+      if (result.barangay === 'Unknown' || result.city === 'Unknown') {
+        throw new Error('Fallback to Nominatim');
+      }
+      return result;
+    }
+  } catch (err) {
+    // Silently fall through to Nominatim
+  }
+
+  try {
+    // Second attempt: Nominatim (better for PH barangays)
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`,
+      {
+        headers: {
+          'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)',
+          'Accept': 'application/json',
+        },
+      }
+    );
+    const json = await response.json();
+    if (json && json.address) {
+      const a = json.address;
+      const streetParts = [a.house_number, a.road].filter(Boolean);
+      result.street_address = streetParts.length > 0 
+        ? streetParts.join(' ') 
+        : (json.display_name ? json.display_name.split(',')[0] : result.street_address);
+      
+      result.barangay = a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown';
+      result.city = a.city || a.town || a.municipality || 'Unknown';
+      result.province = a.state || a.province || 'Unknown';
+      result.zip_code = a.postcode || '0000';
+    }
+  } catch (err) {
+    console.warn('Nominatim reverse geocode failed:', err);
+  }
+
+  return result;
+};
+
+/* ==================================================================== */
+/* InteractiveMap — plain OSM light tiles                                */
 /* ==================================================================== */
 const InteractiveMap = ({
   onLocationSelect,
@@ -211,8 +279,8 @@ export default function ManageRoutesScreen() {
   const [departureTime, setDepartureTime] = useState(new Date());
   const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
-  const [startLocation, setStartLocation] = useState<Location | null>(null);
-  const [endLocation, setEndLocation] = useState<Location | null>(null);
+  const [startLocation, setStartLocation] = useState<LocationType | null>(null);
+  const [endLocation, setEndLocation] = useState<LocationType | null>(null);
   const [mapMode, setMapMode] = useState<'view' | 'select_start' | 'select_end'>('view');
 
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -285,14 +353,23 @@ export default function ManageRoutesScreen() {
         .eq('latitude', lat)
         .eq('longitude', lng)
         .limit(1);
+      
       let location = existing && existing.length > 0 ? existing[0] : null;
 
       if (!location) {
+        // Reverse geocode to get full address details
+        const geoData = await reverseGeocodeCoordinates(lat, lng);
+
         const { data: newLoc, error } = await supabase.from('locations').insert({
-          street_address: `Location at ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-          barangay: 'Unknown', city: 'Unknown', province: 'Unknown', zip_code: '0000',
-          latitude: lat, longitude: lng,
+          street_address: geoData.street_address,
+          barangay: geoData.barangay,
+          city: geoData.city,
+          province: geoData.province,
+          zip_code: geoData.zip_code,
+          latitude: lat,
+          longitude: lng,
         }).select('*').single();
+        
         if (error) throw error;
         location = newLoc;
       }
@@ -306,7 +383,8 @@ export default function ManageRoutesScreen() {
         setMapMode('view');
         setIsMapFullscreen(false);
       }
-    } catch {
+    } catch (err) {
+      console.error('handleLocationSelect error:', err);
       Alert.alert('Error', 'Failed to save location.');
     }
   };
