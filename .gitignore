@@ -63,3 +63,6 @@ supabase/.branches/
 hs_err_pid*.log
 replay_pid*.log
 google-services.json
+
+*.sql
+capstone-backup-*.sql
