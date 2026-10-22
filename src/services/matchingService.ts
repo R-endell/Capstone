@@ -407,10 +407,145 @@ export function subscribeToDeliveryUpdates(
     .subscribe();
 }
 
-// --- Re-export so existing imports from matchingService keep working ---
-export {
-  startBackgroundMatcher,
-  stopBackgroundMatcher,
-  updateProviderStatus,
-  getMatchingStats,
-} from './backgroundMatcher';
+import { Alert } from 'react-native';
+import { setActiveRouteId } from './activeRouteStore';
+
+let globalMatchChannel: any = null;
+
+export function stopBackgroundMatcher() {
+  if (globalMatchChannel) {
+    supabase.removeChannel(globalMatchChannel);
+    globalMatchChannel = null;
+  }
+}
+
+export function startBackgroundMatcher() {
+  stopBackgroundMatcher();
+
+  (async () => {
+    const routeId = await getActiveRouteId();
+    if (!routeId) return;
+    try {
+      // Verify route still exists and belongs to the currently authenticated user
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return;
+
+      const { data: routeRow } = await supabase
+        .from('provider_routes')
+        .select('route_id, provider_id, provider:users!provider_id(auth_id, is_active)')
+        .eq('route_id', routeId)
+        .maybeSingle();
+
+      const providerInfo: any = Array.isArray(routeRow?.provider) ? routeRow.provider[0] : routeRow?.provider;
+      if (!routeRow || providerInfo?.auth_id !== authUser.id) {
+        // Stale route from an old session or before DB reset — clear it
+        await setActiveRouteId(null);
+        return;
+      }
+
+      const proposals = await autoMatchAndCreateDeliveries(routeId);
+      console.log(`📊 Initial matching proposed ${proposals.length} requests for route ${routeId}`);
+    } catch (err) {
+      console.error('❌ Initial match error:', err);
+    }
+  })();
+
+  const handleIncoming = async (row: any) => {
+    if (row.delivery_status !== 'Pending') return;
+    if (row.payment_status !== 'held') return;
+
+    const routeId = await getActiveRouteId();
+    if (!routeId) return;
+
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return;
+
+      const { data: route } = await supabase
+        .from('provider_routes')
+        .select('provider_id, provider:users!provider_id(auth_id, is_active)')
+        .eq('route_id', routeId)
+        .maybeSingle();
+
+      const providerInfo: any = Array.isArray(route?.provider) ? route.provider[0] : route?.provider;
+      if (!route || providerInfo?.auth_id !== authUser.id || !providerInfo?.is_active) {
+        return;
+      }
+
+      const proposals = await autoMatchAndCreateDeliveries(routeId);
+      const matchesThisRequest = proposals.some(
+        (d: any) => d.request_id === row.request_id,
+      );
+
+      if (matchesThisRequest) {
+        Alert.alert(
+          '🎯 New Delivery Match!',
+          'A new sender request matches your route. Open the Jobs tab to review and accept it.',
+          [{ text: 'Got it', style: 'default' }],
+        );
+      }
+    } catch (err) {
+      console.error('❌ Global match check error:', err);
+    }
+  };
+
+  globalMatchChannel = supabase
+    .channel('realtime-global-matcher')
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'delivery_requests' },
+      (payload) => handleIncoming(payload.new),
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'delivery_requests' },
+      (payload) => {
+        const before = payload.old?.payment_status;
+        const after = payload.new?.payment_status;
+        if (before !== 'held' && after === 'held') {
+          handleIncoming(payload.new);
+        }
+      },
+    )
+    .subscribe();
+
+  return () => stopBackgroundMatcher();
+}
+
+export async function updateProviderStatus(providerId: number, isOnline: boolean) {
+  const { error } = await supabase
+    .from('users')
+    .update({ is_active: isOnline })
+    .eq('user_id', providerId);
+
+  if (error) {
+    console.error('❌ Error updating provider status:', error);
+  }
+}
+
+export async function getMatchingStats(providerId: number) {
+  try {
+    const { data: deliveries } = await supabase
+      .from('deliveries')
+      .select('*')
+      .eq('provider_id', providerId);
+
+    const { data: pending } = await supabase
+      .from('delivery_requests')
+      .select('*')
+      .eq('delivery_status', 'Pending')
+      .eq('payment_status', 'held');
+
+    return {
+      totalDeliveries: deliveries?.length || 0,
+      pendingRequests: pending?.length || 0,
+      matchRate:
+        deliveries?.length && pending?.length
+          ? ((deliveries.length / (deliveries.length + pending.length)) * 100).toFixed(1)
+          : '0',
+    };
+  } catch (error) {
+    console.error('Error getting matching stats:', error);
+    return null;
+  }
+}

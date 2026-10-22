@@ -96,6 +96,7 @@ serve(async (req) => {
         data?.channel_code ||
         data?.payment_method?.channel_code ||
         data?.payment_method?.type ||
+        data?.payment_method?.ewallet?.channel_code ||
         null
 
       console.log('[SESSION.COMPLETED]', {
@@ -109,28 +110,30 @@ serve(async (req) => {
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status, payment_reference, payment_request_id')
+        .select('payment_status, payment_reference, payment_request_id, payment_provider')
         .eq('request_id', requestId)
         .maybeSingle()
 
       if (
         (reqRow?.payment_status === 'held' || reqRow?.payment_status === 'released') &&
-        reqRow?.payment_reference &&
+        reqRow?.payment_reference?.startsWith('py-') &&
         reqRow?.payment_request_id
       ) {
         console.log('[SESSION.COMPLETED] Already complete, skipping')
         return new Response('OK', { status: 200 })
       }
 
+      const resolvedProvider = mapProvider(channelCode) ?? reqRow?.payment_provider ?? null
+
       const updatePayload: Record<string, unknown> = {
         payment_status: 'held',
         escrow_status: 'held',
         paid_at: new Date().toISOString(),
-        payment_provider: mapProvider(channelCode),
       }
+      if (resolvedProvider) updatePayload.payment_provider = resolvedProvider
       if (paymentId) updatePayload.payment_reference = paymentId
       if (paymentRequestId) updatePayload.payment_request_id = paymentRequestId
-      if (paymentSessionId && !reqRow?.payment_reference) {
+      if (paymentSessionId && !paymentId && !reqRow?.payment_reference) {
         updatePayload.payment_reference = paymentSessionId
       }
 
@@ -151,6 +154,7 @@ serve(async (req) => {
           request_id: requestId,
           event: 'payment_succeeded',
           amount,
+          provider: resolvedProvider,
           xendit_reference: paymentId || paymentRequestId,
           notes: `Session API payment completed. pr=${paymentRequestId ?? 'n/a'}, py=${paymentId ?? 'n/a'}`,
         })
@@ -160,9 +164,7 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // PAYMENT SESSION EXPIRED — NEW HANDLER (Fix #2)
-    // Fires when a payment session is abandoned and Xendit's 30-min TTL
-    // expires. Marks the row failed so it doesn't linger in 'processing'.
+    // PAYMENT SESSION EXPIRED
     // ==================================================================
     if (event === 'payment_session.expired') {
       const data = body.data ?? body
@@ -173,37 +175,23 @@ serve(async (req) => {
       console.log('[SESSION.EXPIRED]', { sessionId, requestId })
 
       if (!sessionId || !requestId) {
-        console.log('[SESSION.EXPIRED] missing sessionId or requestId, skipping')
         return new Response('OK', { status: 200 })
       }
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status, payment_reference, delivery_status')
+        .select('payment_status, payment_reference, delivery_status, payment_provider')
         .eq('request_id', requestId)
         .maybeSingle()
 
-      if (!reqRow) {
-        console.log('[SESSION.EXPIRED] row not found, skipping')
-        return new Response('OK', { status: 200 })
-      }
+      if (!reqRow) return new Response('OK', { status: 200 })
 
-      // Only mark as failed if:
-      //   - Row is still 'processing' (payment never landed)
-      //   - Row's payment_reference matches THIS session (same one that expired)
       const shouldMark =
         reqRow.payment_status === 'processing' &&
         reqRow.payment_reference === sessionId
 
-      if (!shouldMark) {
-        console.log('[SESSION.EXPIRED] row already moved on, skipping', {
-          current_status: reqRow.payment_status,
-          current_ref: reqRow.payment_reference,
-        })
-        return new Response('OK', { status: 200 })
-      }
+      if (!shouldMark) return new Response('OK', { status: 200 })
 
-      // Defensive: update only if still processing and same session
       await supabase
         .from('delivery_requests')
         .update({
@@ -218,6 +206,7 @@ serve(async (req) => {
         request_id: requestId,
         event: 'payment_session_expired',
         amount: 0,
+        provider: reqRow.payment_provider ?? null,
         xendit_reference: sessionId,
         notes: 'Xendit payment session expired without payment',
       })
@@ -226,12 +215,11 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // PAYMENT SUCCESS / CAPTURE — backfill if session didn't set reference
+    // PAYMENT SUCCESS / CAPTURE
     // ==================================================================
     if (event === 'payment.succeeded' || event === 'payment.capture') {
       const data = body.data
 
-      // Fix #3: read payment ID from multiple possible fields
       const paymentId = data.id || data.payment_id || data.capture_id || null
       const paymentRequestId =
         data.payment_request_id ||
@@ -245,42 +233,36 @@ serve(async (req) => {
         data?.channel_code ||
         data?.payment_method?.channel_code ||
         data?.payment_method?.type ||
+        data?.payment_method?.ewallet?.channel_code ||
         null
 
-      console.log('[PAYMENT.SUCCESS/CAPTURE]', {
-        paymentId, paymentRequestId, referenceId, requestId, amount,
-      })
-
-      // Skip if we truly have no way to identify this transaction
-      if (!paymentId && !paymentRequestId) {
-        console.log('[PAYMENT.SUCCESS/CAPTURE] no identifiers in payload, skipping')
-        return new Response('OK', { status: 200 })
-      }
-
+      if (!paymentId && !paymentRequestId) return new Response('OK', { status: 200 })
       if (!referenceId?.startsWith('delivery_') || !requestId) {
         return new Response('OK', { status: 200 })
       }
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('payment_status, payment_reference, payment_request_id')
+        .select('payment_status, payment_reference, payment_request_id, payment_provider')
         .eq('request_id', requestId)
         .maybeSingle()
+
+      const resolvedProvider = mapProvider(channelCode) ?? reqRow?.payment_provider ?? null
 
       const updatePayload: Record<string, unknown> = {
         payment_status: 'held',
         escrow_status: 'held',
-        payment_provider: mapProvider(channelCode),
       }
-      if (!reqRow?.payment_reference && paymentId) {
+      if (resolvedProvider) updatePayload.payment_provider = resolvedProvider
+
+      const needsPyRef = !reqRow?.payment_reference || reqRow.payment_reference.startsWith('ps-')
+      if (needsPyRef && paymentId) {
         updatePayload.payment_reference = paymentId
         updatePayload.paid_at = new Date().toISOString()
       }
       if (!reqRow?.payment_request_id && paymentRequestId) {
         updatePayload.payment_request_id = paymentRequestId
       }
-
-      console.log('[PAYMENT.SUCCESS/CAPTURE] Writing', updatePayload)
 
       const { error: updErr } = await supabase
         .from('delivery_requests')
@@ -292,11 +274,12 @@ serve(async (req) => {
         return new Response('OK', { status: 200 })
       }
 
-      if (!reqRow?.payment_reference && paymentId) {
+      if (needsPyRef && paymentId) {
         await supabase.from('escrow_transactions').insert({
           request_id: requestId,
           event: 'payment_succeeded',
           amount,
+          provider: resolvedProvider,
           xendit_reference: paymentId,
           notes: `Funds received. pr=${paymentRequestId ?? 'n/a'}`,
         })
@@ -320,6 +303,12 @@ serve(async (req) => {
         return new Response('OK', { status: 200 })
       }
 
+      const { data: reqRow } = await supabase
+        .from('delivery_requests')
+        .select('payment_provider')
+        .eq('request_id', requestId)
+        .maybeSingle()
+
       await supabase
         .from('delivery_requests')
         .update({ payment_status: 'failed' })
@@ -329,6 +318,7 @@ serve(async (req) => {
         request_id: requestId,
         event: 'payment_failed',
         amount: 0,
+        provider: reqRow?.payment_provider ?? null,
         xendit_reference: data.id,
         notes: String(reason),
       })
@@ -337,7 +327,7 @@ serve(async (req) => {
     }
 
     // ==================================================================
-    // REFUND SUCCEEDED — Fix #1: now backfills refund_id on the row
+    // REFUND SUCCEEDED
     // ==================================================================
     if (event === 'refund.succeeded') {
       const refund = body.data ?? body
@@ -345,32 +335,31 @@ serve(async (req) => {
       const paymentId = refund.payment_id ?? refund.payment_request_id ?? null
       const amount = Number(refund.amount || 0)
 
-      console.log('[REFUND.SUCCEEDED]', { refundId, paymentId, amount })
-
       if (!refundId && !paymentId) return new Response('OK', { status: 200 })
 
       let requestId: number | null = null
+      let provider: string | null = null
+
       if (refundId) {
         const { data: r1 } = await supabase
           .from('delivery_requests')
-          .select('request_id')
+          .select('request_id, payment_provider')
           .eq('refund_id', refundId)
           .maybeSingle()
         requestId = r1?.request_id ?? null
+        provider = r1?.payment_provider ?? null
       }
       if (!requestId && paymentId) {
         const { data: r2 } = await supabase
           .from('delivery_requests')
-          .select('request_id')
+          .select('request_id, payment_provider')
           .eq('payment_reference', paymentId)
           .maybeSingle()
         requestId = r2?.request_id ?? null
+        provider = r2?.payment_provider ?? null
       }
 
-      if (!requestId) {
-        console.warn('[REFUND.SUCCEEDED] No matching request', refundId)
-        return new Response('OK', { status: 200 })
-      }
+      if (!requestId) return new Response('OK', { status: 200 })
 
       await supabase
         .from('delivery_requests')
@@ -379,7 +368,6 @@ serve(async (req) => {
           escrow_status: 'refunded',
           escrow_refunded_at: new Date().toISOString(),
           refund_status: 'succeeded',
-          // Fix #1: backfill the refund ID onto the row (was missing)
           refund_id: refundId,
         })
         .eq('request_id', requestId)
@@ -388,6 +376,7 @@ serve(async (req) => {
         request_id: requestId,
         event: 'refunded',
         amount,
+        provider,
         xendit_reference: refundId ?? paymentId,
         notes: 'Xendit refund settled',
       })
@@ -403,13 +392,11 @@ serve(async (req) => {
       const refundId = refund.id
       const reason = refund.failure_reason || refund.description || 'Unknown'
 
-      console.log('[REFUND.FAILED]', { refundId, reason })
-
       if (!refundId) return new Response('OK', { status: 200 })
 
       const { data: reqRow } = await supabase
         .from('delivery_requests')
-        .select('request_id')
+        .select('request_id, payment_provider')
         .eq('refund_id', refundId)
         .maybeSingle()
 
@@ -427,6 +414,7 @@ serve(async (req) => {
           request_id: reqRow.request_id,
           event: 'refund_failed',
           amount: 0,
+          provider: reqRow.payment_provider ?? null,
           xendit_reference: refundId,
           notes: `Refund failed: ${String(reason)}`,
         })

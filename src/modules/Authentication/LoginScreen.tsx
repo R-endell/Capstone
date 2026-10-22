@@ -8,13 +8,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { registerPushToken } from '../../services/pushService';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-import { resolveHomeRoute, clearLastMode } from '../../utils/resolveHomeRoute';
+import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -135,7 +136,7 @@ export default function LoginScreen() {
         setSentTo(email.trim().toLowerCase());
         setPhase('2fa');
         setCooldown(COOLDOWN_SECONDS);
-        return; // Stop execution here
+        return;
       }
 
       // If no 2FA, route straight to dashboard
@@ -159,12 +160,11 @@ export default function LoginScreen() {
       const { data, error } = await supabase.auth.verifyOtp({
         email: sentTo,
         token: otpCode.trim(),
-        type: 'email', // 'email' works for magic link / OTP
+        type: 'email',
       });
 
       if (error) throw error;
 
-      // OTP Verified! Now send them to the dashboard.
       if (data?.user) {
         await routeToDashboard(data.user.id);
       }
@@ -208,8 +208,118 @@ export default function LoginScreen() {
   };
 
   const handleGoogleLogin = async () => {
-    // Keep your existing Google Login logic here
-    // ...
+    setLoading(true);
+    try {
+      const redirectTo = Linking.createURL('auth/callback');
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.url) throw new Error('Could not start Google Sign-In.');
+
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      if (result.type !== 'success' || !result.url) {
+        return;
+      }
+
+      // Extract either PKCE ?code= or implicit #access_token=...&refresh_token=...
+      const returnedUrl = result.url;
+      const parsed = Linking.parse(returnedUrl);
+      const queryParams = (parsed.queryParams ?? {}) as Record<string, string | undefined>;
+
+      let access_token = queryParams.access_token;
+      let refresh_token = queryParams.refresh_token;
+      const code = queryParams.code;
+
+      if (!access_token && returnedUrl.includes('#')) {
+        const hash = returnedUrl.split('#')[1];
+        const hashParams = new URLSearchParams(hash);
+        access_token = hashParams.get('access_token') || undefined;
+        refresh_token = hashParams.get('refresh_token') || undefined;
+      }
+
+      let authUser: any = null;
+
+      if (access_token && refresh_token) {
+        const { data: sessionData, error: sessionErr } = await supabase.auth.setSession({
+          access_token,
+          refresh_token,
+        });
+        if (sessionErr) throw sessionErr;
+        authUser = sessionData?.user;
+      } else if (code) {
+        const { data: sessionData, error: codeErr } = await supabase.auth.exchangeCodeForSession(code);
+        if (codeErr) throw codeErr;
+        authUser = sessionData?.user;
+      } else {
+        throw new Error('Google sign-in did not return a valid session token.');
+      }
+
+      if (!authUser) {
+        const { data: userResp } = await supabase.auth.getUser();
+        authUser = userResp?.user;
+      }
+      if (!authUser) throw new Error('Could not retrieve authenticated user.');
+
+      // Ensure user exists in public.users (trg_users_default_role assigns Sender role automatically)
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('user_id')
+        .eq('auth_id', authUser.id)
+        .maybeSingle();
+
+      if (!existingUser) {
+        const meta = authUser.user_metadata || {};
+        const fullName = String(meta.full_name || meta.name || '').trim();
+        const nameParts = fullName ? fullName.split(/\s+/) : [];
+        const firstName = meta.given_name || nameParts[0] || 'User';
+        const lastName = meta.family_name || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
+        const avatarUrl = meta.avatar_url || meta.picture || null;
+
+        // Check if email already exists (e.g. previously registered via email)
+        const { data: emailMatch } = await supabase
+          .from('users')
+          .select('user_id')
+          .eq('email', authUser.email)
+          .maybeSingle();
+
+        if (emailMatch) {
+          await supabase
+            .from('users')
+            .update({
+              auth_id: authUser.id,
+              ...(avatarUrl ? { profile_photo: avatarUrl } : {}),
+            })
+            .eq('user_id', emailMatch.user_id);
+        } else {
+          const { error: insertErr } = await supabase
+            .from('users')
+            .insert({
+              auth_id: authUser.id,
+              first_name: firstName,
+              last_name: lastName,
+              email: authUser.email || '',
+              profile_photo: avatarUrl,
+              is_verified: false,
+              is_active: true,
+            });
+          if (insertErr) throw insertErr;
+        }
+      }
+
+      await routeToDashboard(authUser.id);
+    } catch (err: any) {
+      console.error('[GoogleLogin] error:', err);
+      Alert.alert('Google Sign-In Failed', err?.message || 'Could not sign in with Google.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const glowScale = glowAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
@@ -385,7 +495,6 @@ export default function LoginScreen() {
   );
 }
 
-// Keep your existing makeStyles function
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   keyboardAvoid: { flex: 1 },

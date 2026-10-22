@@ -2,6 +2,7 @@
 import { Alert } from 'react-native';
 import { supabase } from '../../../../utils/supabase';
 import { ScheduleState } from './ScheduleContext';
+import { getRoadDistanceKm } from '../../../../services/routeService';
 
 // Storage bucket for package photos (create it in Supabase -> Storage, mark it Public)
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
@@ -100,6 +101,37 @@ async function buildItemsPayload(items: ScheduleState['items']) {
   return payload.map(({ hadPhoto, ...rest }) => rest);
 }
 
+function formatScheduledTimeForDB(val: Date | string | null | undefined): string | null {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    return trimmed.replace('T', ' ');
+  }
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    const hh = String(val.getHours()).padStart(2, '0');
+    const mm = String(val.getMinutes()).padStart(2, '0');
+    const ss = String(val.getSeconds()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+  }
+  return null;
+}
+
+async function resolveRateIdForDropoffType(dropoffType?: string | null): Promise<number> {
+  const isDoorToDoor = /door/i.test(String(dropoffType || ''));
+  const { data: rate } = await supabase
+    .from('delivery_rates')
+    .select('rate_id')
+    .ilike('delivery_type', isDoorToDoor ? '%door%' : '%curb%')
+    .limit(1)
+    .maybeSingle();
+
+  return rate?.rate_id ?? (isDoorToDoor ? 2 : 1);
+}
+
 export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | 'schedule') {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not authenticated');
@@ -189,21 +221,18 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     if (retry.error) throw retry.error;
   }
 
-  // Get rate
-  const { data: rate } = await supabase
-    .from('delivery_rates')
-    .select('rate_id')
-    .limit(1)
-    .single();
+  // Match rate_id to pickup_type (Curb-side = 1, Door-to-door = 2)
+  const resolvedRateId = await resolveRateIdForDropoffType(state.dropoffType);
+
+  // Calculate real road distance instead of hardcoding 5.0
+  const distanceKm = await getRoadDistanceKm(
+    state.pickupLocation!,
+    state.dropoffLocation!,
+  );
 
   // Status depends on mode
   const deliveryStatus = 'Pending';
 
-  /* ============================================================
-   * ✅ FIX: Read receiver from state — do NOT hardcode phone.
-   *    Prefer receiver_id + receiver_phone from the picked receiver.
-   *    Fall back to state.receiver's phone_number if needed.
-   * ============================================================ */
   // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
@@ -216,19 +245,17 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .from('delivery_requests')
     .insert({
       pickup_type: state.dropoffType,
-      scheduled_time: state.scheduledDate
-        ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
-        : null,
+      scheduled_time: mode === 'schedule' ? formatScheduledTimeForDB(state.scheduledDate) : null,
       delivery_status: deliveryStatus,
 
       receiver_id: receiverId,
       receiver_phone: receiverPhone,
 
-      total_distance: 5.0,
+      total_distance: Number(distanceKm.toFixed(2)),
       estimated_cost: state.estimatedCost,
       dropoff_location_id: dropoffLoc!.location_id,
       pickup_location_id: pickupLoc!.location_id,
-      rate_id: rate!.rate_id,
+      rate_id: resolvedRateId,
       sender_id: dbUserId,
       cargo_id: cargo!.cargo_id,
     })
@@ -298,9 +325,13 @@ export async function updateScheduleInDB(
     await supabase.from('cargo_profiles').update(cargoUpdate).eq('cargo_id', existingIds.cargoId);
   }
 
-  /* ============================================================
-   * ✅ FIX: Keep receiver in sync on edit.
-   * ============================================================ */
+  // Match rate_id and recalculate distance on edit as well
+  const resolvedRateId = await resolveRateIdForDropoffType(state.dropoffType);
+  const distanceKm = await getRoadDistanceKm(
+    state.pickupLocation!,
+    state.dropoffLocation!,
+  );
+
   // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
@@ -314,9 +345,9 @@ export async function updateScheduleInDB(
     .from('delivery_requests')
     .update({
       pickup_type: state.dropoffType,
-      scheduled_time: state.scheduledDate
-        ? `${state.scheduledDate.getFullYear()}-${String(state.scheduledDate.getMonth() + 1).padStart(2, '0')}-${String(state.scheduledDate.getDate()).padStart(2, '0')} 00:00:00`
-        : null,
+      rate_id: resolvedRateId,
+      total_distance: Number(distanceKm.toFixed(2)),
+      scheduled_time: formatScheduledTimeForDB(state.scheduledDate),
       estimated_cost: state.estimatedCost,
 
       receiver_id: receiverId,

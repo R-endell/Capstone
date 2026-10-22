@@ -299,15 +299,19 @@ const enrichDeliveries = async (list: any[]) => {
   } catch { }
   try {
     if (deliveryIds.length) {
-      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status, payment_method').in('delivery_id', deliveryIds);
+      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status').in('delivery_id', deliveryIds);
       (data || []).forEach((e: any) => { escrows[e.delivery_id] = e; });
     }
   } catch { }
-  return list.map(d => ({
-    ...d,
-    sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
-    escrow: d.escrow || escrows[d.delivery_id] || null,
-  }));
+  return list.map(d => {
+    const rawEscrow = d.escrow || escrows[d.delivery_id] || null;
+    const provider = d.delivery_requests?.payment_provider || null;
+    return {
+      ...d,
+      sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
+      escrow: rawEscrow ? { ...rawEscrow, payment_method: provider } : (provider ? { payment_method: provider } : null),
+    };
+  });
 };
 
 /* ==================================================================== */
@@ -503,17 +507,19 @@ export default function TaskScreen() {
   const markPickupVerified = async (deliveryId: number, requestId: number) => {
     try {
       const { error: qrErr } = await supabase
-        .from('qr_verifications').update({ pickup_verified: true }).eq('delivery_id', deliveryId);
+        .from('qr_verifications')
+        .update({ pickup_verified: true })
+        .eq('delivery_id', deliveryId);
       if (qrErr) throw qrErr;
 
       const { error: reqErr } = await supabase
-        .from('delivery_requests').update({ delivery_status: 'In Transit' }).eq('request_id', requestId);
+        .from('delivery_requests')
+        .update({ delivery_status: 'In Transit' })
+        .eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
-      await supabase.from('delivery_status_history').insert({
-        delivery_id: deliveryId, status: 'Picked up',
-        updated_at: new Date().toISOString(),
-      });
+      // Note: trg_log_pickup_status_history on qr_verifications automatically
+      // inserts the 'Picked up' row into delivery_status_history.
 
       const patchDelivery = (list: any[]) =>
         list.map(d => {
@@ -688,36 +694,26 @@ export default function TaskScreen() {
         }
       }
 
-      if (!verified) { Alert.alert('Verification Failed', 'The code could not be verified. Please try again.'); return; }
+      if (!verified) {
+        Alert.alert('Verification Failed', 'The code could not be verified. Please try again.');
+        return;
+      }
 
       const now = new Date().toISOString();
 
-      const { error: delError } = await supabase.from('deliveries').update({ completed_at: now }).eq('delivery_id', deliveryId);
+      await supabase
+        .from('qr_verifications')
+        .update({ dropoff_verified: true })
+        .eq('delivery_id', deliveryId);
+
+      // Updating completed_at triggers trg_release_escrow and trg_log_delivery_status_history
+      // in Postgres, which atomically update delivery_requests, escrow_payments,
+      // transactions, escrow_transactions, provider_wallet (85%), and delivery_status_history.
+      const { error: delError } = await supabase
+        .from('deliveries')
+        .update({ completed_at: now })
+        .eq('delivery_id', deliveryId);
       if (delError) throw delError;
-
-      if (requestId) {
-        const { error: reqError } = await supabase.from('delivery_requests').update({ delivery_status: 'Completed' }).eq('request_id', requestId);
-        if (reqError) throw reqError;
-      }
-
-      await supabase.from('qr_verifications').update({ dropoff_verified: true }).eq('delivery_id', deliveryId);
-
-      const { data: escrowData } = await supabase
-        .from('escrow_payments').update({ escrow_status: 'Completed' })
-        .eq('delivery_id', deliveryId).select('*').single();
-
-      if (escrowData && escrowData.provider_id) {
-        const { data: wallet } = await supabase.from('provider_wallet').select('*').eq('provider_id', escrowData.provider_id).single();
-        if (wallet) {
-          await supabase.from('provider_wallet')
-            .update({ balance: Number(wallet.balance) + Number(escrowData.amount) })
-            .eq('wallet_id', wallet.wallet_id);
-        }
-      }
-
-      await supabase.from('delivery_status_history').insert({
-        delivery_id: deliveryId, status: 'Delivered', updated_at: now,
-      });
 
       Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
@@ -730,7 +726,9 @@ export default function TaskScreen() {
     } catch (error: any) {
       console.error('[completeDelivery] exception:', error);
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
-    } finally { setDeliveryOTPVerifying(false); }
+    } finally {
+      setDeliveryOTPVerifying(false);
+    }
   };
 
   const loadData = async () => {
