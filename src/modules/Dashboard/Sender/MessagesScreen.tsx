@@ -155,6 +155,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = useRef<number | null>(null);
   const currentUserName = useRef<string>('');
+  const selectedRoomRef = useRef<ChatRoom | null>(null);
+  selectedRoomRef.current = selectedRoom;
+  const notifiedMsgIds = useRef<Set<number>>(new Set());
+
   const subscription = useRef<any>(null);
   const roomsSubscription = useRef<any>(null);
   const autoOpenHandled = useRef<number | null>(null);
@@ -787,7 +791,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       Alert.alert(
         'Number unavailable',
         selectedRoom.is_support
-          ? 'Support does not accept phone calls. Use the chat instead.'
+          ? 'Pack-N-Ship System does not accept phone calls. Use the chat instead.'
           : 'This user has not provided a contact number yet.',
       );
       return;
@@ -807,7 +811,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const openChatOptions = (room: ChatRoom) => {
     if (room.is_support) {
-      Alert.alert('Support conversation', 'This is a support conversation with Pack-N-Ship. You can\'t archive or delete it.');
+      Alert.alert('System conversation', 'This is an official conversation with Pack-N-Ship. You can\'t archive or delete it.');
       return;
     }
 
@@ -887,7 +891,48 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     roomsSubscription.current = supabase
       .channel(`chat-rooms-list-${Date.now()}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_rooms' }, () => fetchConversations())
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
+        fetchConversations();
+
+        // Notify the current user when Pack-N-Ship System messages them
+        const incoming = payload.new as ChatMessage;
+        const myId = currentUserId.current;
+        if (!incoming || !myId || incoming.sender_id === myId) return;
+        if (notifiedMsgIds.current.has(incoming.message_id)) return;
+
+        // Skip push if user is already viewing this exact room
+        const activeRoom = selectedRoomRef.current;
+        if (activeRoom && activeRoom.all_room_ids.includes(incoming.room_id)) return;
+
+        try {
+          const { data: roomRow } = await supabase
+            .from('chat_rooms')
+            .select('room_id, is_support, participant_a, participant_b')
+            .eq('room_id', incoming.room_id)
+            .maybeSingle();
+
+          if (
+            roomRow &&
+            roomRow.is_support &&
+            (roomRow.participant_a === myId || roomRow.participant_b === myId)
+          ) {
+            notifiedMsgIds.current.add(incoming.message_id);
+            const rawPreview = isImageMessage(incoming.message)
+              ? '📷 Sent you a photo'
+              : incoming.message;
+            const preview = rawPreview.length > 80 ? `${rawPreview.slice(0, 80)}...` : rawPreview;
+
+            await notifyUser(
+              myId,
+              '💬 Pack-N-Ship',
+              `Pack-N-Ship messaged you: ${preview}`,
+              { type: 'chat', roomId: incoming.room_id, senderId: incoming.sender_id, isSystem: true },
+            );
+          }
+        } catch (err) {
+          console.warn('[Chat] system message notify error:', err);
+        }
+      })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
       .subscribe();
 
@@ -943,7 +988,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <View style={styles.chatInfo}>
             <View style={styles.chatNameRow}>
               <Text style={styles.chatName} numberOfLines={1}>
-                {isSupport ? 'Pack-N-Ship Support' : `${item.other.first_name} ${item.other.last_name}`}
+                {isSupport ? 'Pack-N-Ship' : `${item.other.first_name} ${item.other.last_name}`}
               </Text>
               {item.latest_sent_at && (
                 <Text style={[styles.chatTime, isUnread && styles.chatTimeUnread]}>{formatChatTime(item.latest_sent_at)}</Text>
@@ -951,7 +996,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
             <View style={styles.chatMsgRow}>
               {isSupport && (
-                <View style={styles.supportTag}><Text style={styles.supportTagText}>SUPPORT</Text></View>
+                <View style={styles.supportTag}><Text style={styles.supportTagText}>SYSTEM</Text></View>
               )}
               <Text style={[styles.chatLastMsg, isUnread && styles.chatLastMsgUnread]} numberOfLines={1}>
                 {preview}
@@ -1158,11 +1203,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
             <View style={styles.chatHeaderInfo}>
               <Text style={styles.chatHeaderName} numberOfLines={1}>
-                {selectedRoom.is_support ? 'Pack-N-Ship Support' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
+                {selectedRoom.is_support ? 'Pack-N-Ship' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
                 {selectedRoom.is_support
-                  ? 'Official support channel'
+                  ? 'System'
                   : selectedRoom.role === 'sender'
                   ? 'Provider'
                   : 'Sender'}
