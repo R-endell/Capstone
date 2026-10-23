@@ -203,6 +203,11 @@ export default function LiveTrackingScreen() {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const deliveryId: number = route.params?.deliveryId;
+  // Provider mode: opened from Explore to follow a provider who is on the road,
+  // with no delivery attached. Uses provider_locations instead of delivery_locations.
+  const providerParamId: number | undefined = route.params?.providerId;
+  const routeParamId: number | undefined = route.params?.routeId;
+  const isProviderMode = route.params?.mode === 'provider' && !!providerParamId;
 
   const webRef = useRef<WebView>(null);
   const lastSentFixRef = useRef<string>('');
@@ -219,7 +224,78 @@ export default function LiveTrackingScreen() {
   const bannerAnim = useRef(new Animated.Value(0)).current;
   const lastStageRef = useRef<number>(-1);
 
+  const loadProviderStatic = useCallback(async () => {
+    if (!providerParamId) return;
+
+    let q = supabase
+      .from('provider_routes')
+      .select(`
+        route_id, provider_id,
+        start_location:locations!provider_routes_start_location_id_fkey ( street_address, latitude, longitude ),
+        end_location:locations!provider_routes_end_location_id_fkey ( street_address, latitude, longitude ),
+        vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, plate_number, max_weight_kg )
+      `)
+      .eq('provider_id', providerParamId);
+    if (routeParamId) q = q.eq('route_id', routeParamId);
+    const { data: r } = await q.limit(1).maybeSingle();
+
+    if (!r) { setLoading(false); return; }
+
+    const start: any = (r as any).start_location;
+    const end: any = (r as any).end_location;
+
+    setData({
+      deliveryId: 0,
+      requestId: 0,
+      providerId: providerParamId,
+      acceptedAt: null,
+      completedAt: null,
+      estimatedEta: null,
+      deliveryStatus: 'On the road',
+      pickupVerified: false,
+      dropoffVerified: false,
+      pickup: {
+        latitude: Number(start?.latitude) || 10.3157,
+        longitude: Number(start?.longitude) || 123.8854,
+        address: start?.street_address ?? 'Route start',
+      },
+      dropoff: {
+        latitude: Number(end?.latitude) || 10.3157,
+        longitude: Number(end?.longitude) || 123.8854,
+        address: end?.street_address ?? 'Destination',
+      },
+    });
+    setVehicle((r as any).vehicle ?? null);
+
+    const { data: p } = await supabase
+      .from('users')
+      .select('user_id, first_name, last_name, phone_number, profile_photo')
+      .eq('user_id', providerParamId)
+      .maybeSingle();
+    setProvider(p);
+
+    // ASSUMED table: provider_locations(provider_id, latitude, longitude, heading, speed, accuracy, updated_at)
+    const { data: f } = await supabase
+      .from('provider_locations')
+      .select('latitude, longitude, heading, speed, accuracy, updated_at')
+      .eq('provider_id', providerParamId)
+      .maybeSingle();
+    if (f) {
+      setFix({
+        latitude: f.latitude,
+        longitude: f.longitude,
+        heading: f.heading ?? null,
+        speed: f.speed ?? null,
+        accuracy: f.accuracy ?? null,
+        updated_at: f.updated_at,
+      });
+    }
+
+    setLoading(false);
+  }, [providerParamId, routeParamId]);
+
   const loadStatic = useCallback(async () => {
+    if (isProviderMode) { await loadProviderStatic(); return; }
     if (!deliveryId) return;
     const { data: d } = await supabase
       .from('deliveries')
@@ -283,12 +359,38 @@ export default function LiveTrackingScreen() {
     if (latest) setFix(latest);
 
     setLoading(false);
-  }, [deliveryId]);
+  }, [deliveryId, isProviderMode, loadProviderStatic]);
 
   useEffect(() => { loadStatic(); }, [loadStatic]);
 
+  // Provider mode: follow provider_locations for this provider only.
   useEffect(() => {
-    if (!deliveryId) return;
+    if (!isProviderMode || !providerParamId) return;
+    const ch = supabase
+      .channel(`live-track-provider-${providerParamId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'provider_locations', filter: `provider_id=eq.${providerParamId}` },
+        (payload: any) => {
+          if (payload.eventType === 'DELETE') { setFix(null); return; }
+          const row = payload.new;
+          if (!row) return;
+          setFix({
+            latitude: row.latitude,
+            longitude: row.longitude,
+            heading: row.heading ?? null,
+            speed: row.speed ?? null,
+            accuracy: row.accuracy ?? null,
+            updated_at: row.updated_at,
+          });
+        },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [isProviderMode, providerParamId]);
+
+  useEffect(() => {
+    if (isProviderMode || !deliveryId) return;
     const ch = supabase
       .channel(`live-track-${deliveryId}-${Date.now()}`)
       .on(
@@ -317,14 +419,14 @@ export default function LiveTrackingScreen() {
       .subscribe();
 
     return () => { supabase.removeChannel(ch); };
-  }, [deliveryId, loadStatic]);
+  }, [deliveryId, isProviderMode, loadStatic]);
 
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), 15_000);
     return () => clearInterval(t);
   }, []);
 
-  const targetIsDropoff = !!data?.pickupVerified && !data?.completedAt;
+  const targetIsDropoff = isProviderMode || (!!data?.pickupVerified && !data?.completedAt);
 
   useEffect(() => {
     if (!fix || !data || !webRef.current) return;
@@ -542,6 +644,7 @@ export default function LiveTrackingScreen() {
 
           <Text style={styles.updated}>{formatLastSeen(fix?.updated_at)}</Text>
 
+          {!isProviderMode && (
           <View style={styles.timeline}>
             {timeline.map((step, i) => {
               const reached = stage >= step.key;
@@ -559,6 +662,7 @@ export default function LiveTrackingScreen() {
               );
             })}
           </View>
+          )}
         </ScrollView>
       </View>
     </View>
