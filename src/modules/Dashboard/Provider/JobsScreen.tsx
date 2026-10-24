@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -255,217 +255,381 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap — plain OpenStreetMap light tiles only                      */
+/* Map helpers (native Google Maps)                                     */
 /* ==================================================================== */
-const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
-  const lat = startLat ?? endLat ?? 10.3157;
-  const lng = startLng ?? endLng ?? 123.8854;
+const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-          .marker-start { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
-          .marker-end { background: #111827; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${lat}, ${lng}], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const mapStyles = StyleSheet.create({
+  mkDot: {
+    width: 26, height: 26, borderRadius: 13,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+  },
+  mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
+  zoneBadge: {
+    backgroundColor: '#FFFFFF', borderRadius: 10,
+    paddingHorizontal: 7, paddingVertical: 2,
+    borderWidth: 1, borderColor: '#FFD2B0',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15, shadowRadius: 2, elevation: 1,
+  },
+  zoneBadgeText: { fontSize: 10, fontWeight: '800', color: '#9A4A12' },
+  meMarker: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  meHalo: {
+    position: 'absolute', width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,117,31,0.25)',
+  },
+  meDot: {
+    position: 'absolute', left: 11, top: 11,
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: '#FF751F', borderWidth: 3, borderColor: '#FFFFFF',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35, shadowRadius: 4, elevation: 3,
+  },
+  meArrowWrap: { position: 'absolute', width: 44, height: 44 },
+  meArrow: {
+    position: 'absolute', left: 17, top: -4,
+    width: 0, height: 0,
+    borderLeftWidth: 5, borderRightWidth: 5, borderBottomWidth: 10,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
+    borderBottomColor: '#FF751F',
+  },
+});
 
-          ${startLat && startLng ? `
-            L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: '${startLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
-          ${endLat && endLng ? `
-            L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: '${endLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
+};
 
-          ${startLat && startLng && endLat && endLng ? `
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + ${startLng} + ',' + ${startLat} + ';'
-              + ${endLng} + ',' + ${endLat}
-              + '?overview=full&geometries=geojson';
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-              });
-          ` : ''}
-        </script>
-      </body>
-    </html>
-  `;
+/* ==================================================================== */
+/* RouteMap — native Google Maps (non-interactive detail view)          */
+/* ==================================================================== */
+const RouteMap = ({
+  startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E',
+}: any) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+
+  useEffect(() => {
+    if (startLat == null || startLng == null || endLat == null || endLng == null) return;
+    let cancelled = false;
+
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: startLat, lng: startLng },
+        { lat: endLat, lng: endLng },
+      );
+      if (cancelled) return;
+      setCoords(line);
+      const t = setTimeout(() => {
+        mapRef.current?.fitToCoordinates(line, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: false,
+        });
+      }, 120);
+      return () => clearTimeout(t);
+    })();
+
+    return () => { cancelled = true; };
+  }, [startLat, startLng, endLat, endLng]);
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
+        longitude: startLng ?? endLng ?? DEFAULT_CENTER.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
       scrollEnabled={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
+      zoomEnabled={false}
+      rotateEnabled={false}
+      pitchEnabled={false}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      {startLat != null && startLng != null && (
+        <Marker
+          coordinate={{ latitude: startLat, longitude: startLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+            <Text style={mapStyles.mkDotText}>{startLabel}</Text>
+          </View>
+        </Marker>
+      )}
+
+      {endLat != null && endLng != null && (
+        <Marker
+          coordinate={{ latitude: endLat, longitude: endLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+            <Text style={mapStyles.mkDotText}>{endLabel}</Text>
+          </View>
+        </Marker>
+      )}
+
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
+      )}
+    </MapView>
   );
 };
 
 /* ==================================================================== */
-/* ProviderMap — plain OpenStreetMap light tiles only                   */
+/* ProviderMap — native Google Maps (interactive provider dashboard)    */
 /* ==================================================================== */
-const PROVIDER_MAP_HTML = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style>
-      html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-      .me { position: relative; width: 44px; height: 44px; }
-      .me .halo { position: absolute; left: 0; top: 0; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,117,31,0.25); animation: pulse 2s ease-out infinite; }
-      .me .dot { position: absolute; left: 11px; top: 11px; width: 22px; height: 22px; border-radius: 50%; background: #FF751F; border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
-      .me .head { position: absolute; left: 0; top: 0; width: 44px; height: 44px; }
-      .me .head:after { content: ''; position: absolute; left: 17px; top: -4px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 10px solid #FF751F; }
-      @keyframes pulse { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.5); opacity: 0; } }
-      .mk { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font: 700 11px sans-serif; color: #fff; }
-      .mk.p { background: #FF751F; } .mk.d { background: #111827; } .mk.s { background: #3B82F6; } .mk.e { background: #EF4444; }
-      .zone { background: #fff; border-radius: 10px; padding: 2px 7px; font: 800 10px sans-serif; color: #9A4A12; border: 1px solid #FFD2B0; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
-    </style>
-  </head>
-  <body>
-    <div id="map"></div>
-    <script>
-      var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([10.3157, 123.8854], 14);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-      var meMarker = null;
-      var routeLayer = L.layerGroup().addTo(map);
-      var orderLayer = L.layerGroup().addTo(map);
-      var demandLayer = L.layerGroup().addTo(map);
-      var firstFix = true, lastTick = 0, routeKey = '', orderKey = '', demandKey = '';
-
-      function meIcon(h) {
-        var head = (h === null || h === undefined || isNaN(h)) ? '' : '<div class="head" style="transform: rotate(' + h + 'deg)"></div>';
-        return L.divIcon({ className: '', html: '<div class="me"><div class="halo"></div>' + head + '<div class="dot"></div></div>', iconSize: [44, 44], iconAnchor: [22, 22] });
-      }
-      function mk(cls, t) {
-        return L.divIcon({ className: '', html: '<div class="mk ' + cls + '">' + t + '</div>', iconSize: [26, 26], iconAnchor: [13, 13] });
-      }
-      function drawRoad(layer, a, b, style) {
-        var url = 'https://router.project-osrm.org/route/v1/driving/' + a.lng + ',' + a.lat + ';' + b.lng + ',' + b.lat + '?overview=full&geometries=geojson';
-        fetch(url).then(function (r) { return r.json(); }).then(function (d) {
-          if (d.code === 'Ok' && d.routes && d.routes.length) {
-            var pts = d.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
-            L.polyline(pts, style).addTo(layer);
-          } else {
-            L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
-          }
-        }).catch(function () {
-          L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
-        });
-      }
-      function fit(points, padBottom) {
-        if (!points.length) return;
-        if (points.length === 1) { map.setView(points[0], 16); return; }
-        map.fitBounds(L.latLngBounds(points), { paddingTopLeft: [30, 170], paddingBottomRight: [30, padBottom || 260], maxZoom: 16 });
-      }
-
-      window.updateState = function (s) {
-        try {
-          var me = s.provider ? [s.provider.lat, s.provider.lng] : null;
-          if (me) {
-            if (!meMarker) meMarker = L.marker(me, { icon: meIcon(s.provider.heading), zIndexOffset: 1000 }).addTo(map);
-            else { meMarker.setLatLng(me); meMarker.setIcon(meIcon(s.provider.heading)); }
-          }
-
-          var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
-          if (rk !== routeKey) {
-            routeKey = rk; routeLayer.clearLayers();
-            if (s.route) {
-              L.marker([s.route.start.lat, s.route.start.lng], { icon: mk('s', 'S') }).addTo(routeLayer);
-              L.marker([s.route.end.lat, s.route.end.lng], { icon: mk('e', 'E') }).addTo(routeLayer);
-              drawRoad(routeLayer, s.route.start, s.route.end, { color: '#3B82F6', weight: 5, opacity: 0.7 });
-            }
-          }
-
-          var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
-          if (ok !== orderKey) {
-            orderKey = ok; orderLayer.clearLayers();
-            if (s.order) {
-              L.marker([s.order.pickup.lat, s.order.pickup.lng], { icon: mk('p', 'P') }).addTo(orderLayer);
-              L.marker([s.order.dropoff.lat, s.order.dropoff.lng], { icon: mk('d', 'D') }).addTo(orderLayer);
-              drawRoad(orderLayer, s.order.pickup, s.order.dropoff, { color: '#FF751F', weight: 6, opacity: 0.9 });
-              if (me) L.polyline([me, [s.order.pickup.lat, s.order.pickup.lng]], { color: '#111827', weight: 3, opacity: 0.5, dashArray: '6, 8' }).addTo(orderLayer);
-              var pts = [[s.order.pickup.lat, s.order.pickup.lng], [s.order.dropoff.lat, s.order.dropoff.lng]];
-              if (me) pts.push(me);
-              fit(pts, s.padBottom);
-            } else if (me) {
-              map.setView(me, 15);
-            }
-          }
-
-          var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) : '';
-          if (dk !== demandKey) {
-            demandKey = dk; demandLayer.clearLayers();
-            if (dk) {
-              var zones = [[0.007, 0.005, 1, '1.8x'], [-0.006, 0.008, 0.6, '1.4x'], [0.004, -0.009, 0.8, '1.6x'], [-0.008, -0.005, 0.3, '1.1x']];
-              zones.forEach(function (z) {
-                var c = [me[0] + z[0], me[1] + z[1]];
-                L.circle(c, { radius: 450 + z[2] * 300, color: '#FF751F', weight: 1, fillColor: '#FF751F', fillOpacity: 0.1 + z[2] * 0.2 }).addTo(demandLayer);
-                L.marker(c, { icon: L.divIcon({ className: '', html: '<div class="zone">' + z[3] + ' demand</div>', iconSize: [78, 18], iconAnchor: [39, 9] }) }).addTo(demandLayer);
-              });
-            }
-          }
-
-          if (firstFix && me && !s.order) { firstFix = false; map.setView(me, 15); }
-          if (s.tick !== lastTick) { lastTick = s.tick; if (me) map.setView(me, 16, { animate: true }); }
-        } catch (e) {}
-      };
-    </script>
-  </body>
-</html>
-`;
-
 const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }: any) => {
-  const ref = useRef<WebView>(null);
-  const [ready, setReady] = useState(false);
-  const payload = JSON.stringify({ provider, route, order, demand, tick: recenterTick, padBottom });
+  const mapRef = useRef<MapView>(null);
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [orderCoords, setOrderCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
+  const lastRouteKey = useRef('');
+  const lastOrderKey = useRef('');
+  const lastFitKey = useRef('');
+  const firstFix = useRef(true);
+
+  /* Route polyline (start → end) */
   useEffect(() => {
-    if (!ready) return;
-    ref.current?.injectJavaScript(`window.updateState && window.updateState(${payload}); true;`);
-  }, [ready, payload]);
+    if (!route) { setRouteCoords([]); lastRouteKey.current = ''; return; }
+    const key = `${route.start.lat},${route.start.lng},${route.end.lat},${route.end.lng}`;
+    if (key === lastRouteKey.current) return;
+    lastRouteKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(route.start, route.end);
+      if (!cancelled) setRouteCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng]);
+
+  /* Order polyline (pickup → dropoff) */
+  useEffect(() => {
+    if (!order) { setOrderCoords([]); lastOrderKey.current = ''; return; }
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastOrderKey.current) return;
+    lastOrderKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(order.pickup, order.dropoff);
+      if (!cancelled) setOrderCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  /* Auto-fit when a new order comes in */
+  useEffect(() => {
+    if (!order) return;
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastFitKey.current) return;
+    lastFitKey.current = key;
+
+    const pts: { latitude: number; longitude: number }[] = [
+      { latitude: order.pickup.lat, longitude: order.pickup.lng },
+      { latitude: order.dropoff.lat, longitude: order.dropoff.lng },
+    ];
+    if (provider) pts.push({ latitude: provider.lat, longitude: provider.lng });
+
+    const t = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(pts, {
+        edgePadding: { top: 170, right: 30, bottom: padBottom || 260, left: 30 },
+        animated: true,
+      });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  /* First fix → center on provider when there's no active order */
+  useEffect(() => {
+    if (!provider || order) return;
+    if (!firstFix.current) return;
+    firstFix.current = false;
+
+    const t = setTimeout(() => {
+      mapRef.current?.animateToRegion(
+        { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
+        500,
+      );
+    }, 150);
+    return () => clearTimeout(t);
+  }, [provider?.lat, provider?.lng, order]);
+
+  /* Manual recenter */
+  useEffect(() => {
+    if (!recenterTick || !provider) return;
+    mapRef.current?.animateToRegion(
+      { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+      400,
+    );
+  }, [recenterTick]);
+
+  const demandZones = provider && demand
+    ? [
+        { dLat: 0.007, dLng: 0.005, mult: 1.8, label: '1.8x' },
+        { dLat: -0.006, dLng: 0.008, mult: 1.4, label: '1.4x' },
+        { dLat: 0.004, dLng: -0.009, mult: 1.6, label: '1.6x' },
+        { dLat: -0.008, dLng: -0.005, mult: 1.1, label: '1.1x' },
+      ]
+    : [];
 
   return (
-    <WebView
-      ref={ref}
-      originWhitelist={['*']}
-      source={{ html: PROVIDER_MAP_HTML }}
-      style={{ flex: 1, backgroundColor: '#EEF0F2' }}
-      javaScriptEnabled
-      domStorageEnabled
-      androidLayerType="hardware"
-      onLoadEnd={() => setReady(true)}
-    />
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
+        longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+      toolbarEnabled={false}
+    >
+      {/* Demand heat zones (bottom layer) */}
+      {demandZones.map((z, i) => {
+        const center = { latitude: provider.lat + z.dLat, longitude: provider.lng + z.dLng };
+        return (
+          <React.Fragment key={`dz-${i}`}>
+            <Circle
+              center={center}
+              radius={450 + z.mult * 300}
+              strokeColor="rgba(255,117,31,0.9)"
+              strokeWidth={1}
+              fillColor="rgba(255,117,31,0.25)"
+            />
+            <Marker coordinate={center} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+              <View style={mapStyles.zoneBadge}>
+                <Text style={mapStyles.zoneBadgeText}>{z.label} demand</Text>
+              </View>
+            </Marker>
+          </React.Fragment>
+        );
+      })}
+
+      {/* Route S/E */}
+      {route && (
+        <>
+          <Marker
+            coordinate={{ latitude: route.start.lat, longitude: route.start.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#3B82F6' }]}>
+              <Text style={mapStyles.mkDotText}>S</Text>
+            </View>
+          </Marker>
+          <Marker
+            coordinate={{ latitude: route.end.lat, longitude: route.end.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#EF4444' }]}>
+              <Text style={mapStyles.mkDotText}>E</Text>
+            </View>
+          </Marker>
+          {routeCoords.length > 1 && (
+            <Polyline coordinates={routeCoords} strokeColor="#3B82F6" strokeWidth={4} />
+          )}
+        </>
+      )}
+
+      {/* Active order P/D */}
+      {order && (
+        <>
+          <Marker
+            coordinate={{ latitude: order.pickup.lat, longitude: order.pickup.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+              <Text style={mapStyles.mkDotText}>P</Text>
+            </View>
+          </Marker>
+          <Marker
+            coordinate={{ latitude: order.dropoff.lat, longitude: order.dropoff.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+              <Text style={mapStyles.mkDotText}>D</Text>
+            </View>
+          </Marker>
+          {orderCoords.length > 1 && (
+            <Polyline coordinates={orderCoords} strokeColor={ORANGE} strokeWidth={5} />
+          )}
+          {provider && (
+            <Polyline
+              coordinates={[
+                { latitude: provider.lat, longitude: provider.lng },
+                { latitude: order.pickup.lat, longitude: order.pickup.lng },
+              ]}
+              strokeColor="#111827"
+              strokeWidth={2}
+              lineDashPattern={[6, 8]}
+            />
+          )}
+        </>
+      )}
+
+      {/* Provider marker with heading arrow */}
+      {provider && (
+        <Marker
+          coordinate={{ latitude: provider.lat, longitude: provider.lng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          flat
+          tracksViewChanges
+        >
+          <View style={mapStyles.meMarker}>
+            <View style={mapStyles.meHalo} />
+            {provider.heading != null && (
+              <View
+                style={[
+                  mapStyles.meArrowWrap,
+                  { transform: [{ rotate: `${provider.heading}deg` }] },
+                ]}
+              >
+                <View style={mapStyles.meArrow} />
+              </View>
+            )}
+            <View style={mapStyles.meDot} />
+          </View>
+        </Marker>
+      )}
+    </MapView>
   );
 };
 
@@ -621,7 +785,6 @@ export default function JobsScreen() {
     catch (e) { console.warn('mark read failed', e); }
   };
 
-  // ---- NEW: shared routing ----
   const handleNotifPress = async (n: Notif) => {
     await markNotifRead(n);
     setNotifModalOpen(false);
@@ -1741,7 +1904,6 @@ export default function JobsScreen() {
           <View style={{ width: 32 }} />
         </View>
         <View style={{ flex: 1 }}>
-          {/* NEW: role="provider" so routing works consistently */}
           <NotificationsList embedded role="provider" />
         </View>
       </View>
