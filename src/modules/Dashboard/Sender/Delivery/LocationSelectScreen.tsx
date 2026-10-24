@@ -12,7 +12,8 @@ import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext'; 
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orange;
 
 const CEBU_QUICK_SPOTS = [
   { name: 'IT Park', lat: 10.3288, lon: 123.9065 },

@@ -23,7 +23,8 @@ import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 
 type VerifyEmailRouteParamList = {
   VerifyEmail: {

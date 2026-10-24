@@ -12,8 +12,11 @@ import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { brand, spacing } from '../../../constants';
+import MenuItem from '../../../components/MenuItem';
+import Card from '../../../components/Card';
 
-const ORANGE = '#FF751F';
+const ORANGE = brand.orangeDark;
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -307,6 +310,10 @@ export default function AccountScreen() {
               style={styles.editIconBtn}
               onPress={() => navigation.navigate('EditProfile')}
               activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Edit profile"
+              accessibilityHint="Update your personal information"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="pencil" size={16} color={colors.textSecondary} />
             </TouchableOpacity>
@@ -322,108 +329,110 @@ export default function AccountScreen() {
         <Animated.View style={[styles.bodyContentWrapper, fadeUp(contentAnim, 20)]}>
           <Text style={styles.sectionTitle}>Account & Services</Text>
 
-          <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToProvider} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+          <Card padding="xs" style={{ paddingVertical: 0 }}>
+            <MenuItem
+              label={providerMenuTitle}
+              subtext={providerMenuSubtext}
+              onPress={handleSwitchToProvider}
+              accessibilityLabel={providerMenuTitle}
+              accessibilityHint={providerMenuSubtext}
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
                   <Ionicons name="swap-horizontal-outline" size={19} color={ORANGE} />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>{providerMenuTitle}</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>{providerMenuSubtext}</Text>
-                </View>
-              </View>
-
-              {providerState === 'approved' && (
-                <View style={styles.providerBadge}>
-                  <View style={styles.providerBadgeDot} />
-                  <Text style={styles.providerBadgeText}>Active</Text>
-                </View>
-              )}
-              {providerState === 'pending' && (
-                <View style={styles.pendingBadge}>
-                  <Ionicons name="time-outline" size={10} color={colors.warning} />
-                  <Text style={styles.pendingBadgeText}>Pending</Text>
-                </View>
-              )}
-              {providerState === 'rejected' && (
-                <View style={styles.rejectedBadge}>
-                  <Ionicons name="close-circle-outline" size={10} color={colors.error} />
-                  <Text style={styles.rejectedBadgeText}>Rejected</Text>
-                </View>
-              )}
-              {providerState === 'none' && (
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-              )}
-            </TouchableOpacity>
+              }
+              badge={
+                providerState === 'approved' ? (
+                  <View style={styles.providerBadge}>
+                    <View style={styles.providerBadgeDot} />
+                    <Text style={styles.providerBadgeText}>Active</Text>
+                  </View>
+                ) : providerState === 'pending' ? (
+                  <View style={styles.pendingBadge}>
+                    <Ionicons name="time-outline" size={10} color={colors.warning} />
+                    <Text style={styles.pendingBadgeText}>Pending</Text>
+                  </View>
+                ) : providerState === 'rejected' ? (
+                  <View style={styles.rejectedBadge}>
+                    <Ionicons name="close-circle-outline" size={10} color={colors.error} />
+                    <Text style={styles.rejectedBadgeText}>Rejected</Text>
+                  </View>
+                ) : undefined
+              }
+              showChevron={providerState === 'none'}
+            />
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Payment Methods"
+              subtext="Manage cards & wallets"
+              onPress={() => navigation.navigate('PaymentMethods')}
+              accessibilityLabel="Payment Methods"
+              accessibilityHint="Manage cards and wallets"
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#16243B' : '#EFF6FF' }]}>
                   <Ionicons name="card-outline" size={19} color="#3B82F6" />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Payment Methods</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
+              }
+            />
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DisputeCenter' as any)} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Dispute Center"
+              subtext="Report a problem with a delivery"
+              onPress={() => navigation.navigate('DisputeCenter' as any)}
+              accessibilityLabel="Dispute Center"
+              accessibilityHint="Report a problem with a delivery"
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#2A1F0A' : '#FEF3C7' }]}>
                   <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dispute Center</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem with a delivery</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
+              }
+            />
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'sender' })} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Customer Service"
+              subtext="Report a problem, track cases, contact support"
+              onPress={() => (navigation as any).navigate('Support', { role: 'sender' })}
+              accessibilityLabel="Customer Service"
+              accessibilityHint="Report a problem, track cases, contact support"
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
                   <Ionicons name="headset-outline" size={19} color={ORANGE} />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Customer Service</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
-          </View>
+              }
+            />
+          </Card>
 
           <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Preferences & System</Text>
 
           <View style={styles.menuCard}>
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('Settings')} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Settings"
+              subtext="App preferences & notifications"
+              onPress={() => navigation.navigate('Settings')}
+              accessibilityLabel="Settings"
+              accessibilityHint="App preferences and notifications"
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#1F262E' : '#F3F4F6' }]}>
                   <Ionicons name="settings-outline" size={19} color={colors.textSecondary} />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Settings</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>App preferences & notifications</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
+              }
+            />
 
             <View style={styles.menuDivider} />
 
             {/* ≡ƒîÖ Dark Mode toggle ΓÇö placed directly below Settings */}
-            <View style={styles.menuItem}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Dark Mode"
+              subtext={isDark ? 'Currently using dark theme' : 'Switch to dark theme'}
+              accessibilityLabel="Dark Mode"
+              accessibilityHint={isDark ? 'Turn off dark theme' : 'Turn on dark theme'}
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
                   <Ionicons
                     name={isDark ? 'moon' : 'moon-outline'}
@@ -431,36 +440,36 @@ export default function AccountScreen() {
                     color={ORANGE}
                   />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dark Mode</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {isDark ? 'Currently using dark theme' : 'Switch to dark theme'}
-                  </Text>
-                </View>
-              </View>
-              <Switch
-                value={isDark}
-                onValueChange={toggleDark}
-                trackColor={{ false: '#D1D5DB', true: ORANGE }}
-                thumbColor="#FFFFFF"
-                ios_backgroundColor="#D1D5DB"
-              />
-            </View>
+              }
+              rightIcon={
+                <Switch
+                  value={isDark}
+                  onValueChange={toggleDark}
+                  trackColor={{ false: '#D1D5DB', true: ORANGE }}
+                  thumbColor="#FFFFFF"
+                  ios_backgroundColor="#D1D5DB"
+                  accessibilityRole="switch"
+                  accessibilityState={{ checked: isDark }}
+                />
+              }
+              showChevron={false}
+            />
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
+            <MenuItem
+              label="Log out"
+              subtext="Sign out of your account"
+              onPress={handleLogoutConfirm}
+              accessibilityLabel="Log out"
+              accessibilityHint="Sign out of your account"
+              leftIcon={
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.errorBg }]}>
                   <Ionicons name="log-out-outline" size={19} color={colors.error} />
                 </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.logoutText}>Log out</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Sign out of your account</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#FCA5A5" />
-            </TouchableOpacity>
+              }
+              chevronColor="#FCA5A5"
+            />
           </View>
 
           <Text style={styles.versionText}>Pack-N-Ship ┬╖ v1.0.0</Text>

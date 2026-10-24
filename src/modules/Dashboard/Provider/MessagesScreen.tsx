@@ -18,8 +18,12 @@ import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import EmptyState from '../../../components/EmptyState';
+import LoadingState from '../../../components/LoadingState';
+import { spacing, borderRadius } from '../../../constants';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 const PAGE_SIZE = 30;
 const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
 const IMG_MARKER_START = '[img]';
@@ -1310,29 +1314,22 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       <Animated.View style={fadeUp(listHeaderAnim, -10)}>{renderTabHeader()}</Animated.View>
 
       {loading ? (
-        <View style={styles.centerLoader}>
-          <ActivityIndicator size="large" color={ORANGE} />
-        </View>
+        <LoadingState message="Loading messages..." />
       ) : activeTab === 'notification' ? (
         <View style={{ flex: 1 }}>
           <NotificationsList embedded />
         </View>
       ) : filteredConversations.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Ionicons
-            name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
-            size={48}
-            color={colors.textMuted}
-          />
-          <Text style={styles.emptyTitle}>
-            {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
-          </Text>
-          <Text style={styles.emptySubtext}>
-            {messagesView === 'inbox'
+        <EmptyState
+          icon={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
+          title={messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
+          description={
+            messagesView === 'inbox'
               ? 'When you contact a provider or sender, your conversation will show up here.'
-              : 'Chats you archive will be saved here.'}
-          </Text>
-        </View>
+              : 'Chats you archive will be saved here.'
+          }
+          iconColor={ORANGE}
+        />
       ) : (
         <View style={{ flex: 1 }}>
           <FlatList
@@ -1380,7 +1377,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16, letterSpacing: -0.2 },
   emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
-  listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+  listContentFlat: { paddingHorizontal: spacing.lg + 4, paddingTop: spacing.md, paddingBottom: spacing.lg + 4 },
 
   chatRowWrapper: {
     flexDirection: 'row', alignItems: 'center',

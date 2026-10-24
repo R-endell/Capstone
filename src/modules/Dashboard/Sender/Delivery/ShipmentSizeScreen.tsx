@@ -19,7 +19,8 @@ import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orange;
 
 const SIZE_META = {
   Small: {

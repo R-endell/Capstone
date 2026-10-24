@@ -19,7 +19,8 @@ import {
   validateConfirmPassword,
 } from '../../utils/passwordValidation';
 
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 
 // 1. Make the params optional to prevent crashes if navigated without them
 type ResetRouteParamList = {

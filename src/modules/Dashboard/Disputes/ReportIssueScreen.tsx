@@ -1,4 +1,4 @@
-// src/modules/Dashboard/Disputes/ReportIssueScreen.tsx
+  // src/modules/Dashboard/Disputes/ReportIssueScreen.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar, TextInput,
@@ -13,7 +13,8 @@ import {
 } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#F27024';
+import { brand } from '../../../constants';
+const ORANGE = brand.orange;
 
 const MIN_DESC = 10;
 const MAX_DESC = 500;

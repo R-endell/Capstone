@@ -7,7 +7,8 @@ import { useTheme, ThemeColors } from '../../utils/themeContext';
 const GCASH_LOGO = require('../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../assets/maya.jpeg');
 
-const ORANGE = '#FF751F';
+import { brand } from '../../constants';
+const ORANGE = brand.orangeDark;
 
 interface Props {
   method: PaymentMethod;

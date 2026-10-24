@@ -12,7 +12,8 @@ import { supabase } from '../../../../utils/supabase';
 import { fetchLatestFix, ProviderFix } from '../../../../services/locationService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orangeDark;
 const AVG_CITY_SPEED_KMH = 22;
 const STALE_MS = 45_000;
 

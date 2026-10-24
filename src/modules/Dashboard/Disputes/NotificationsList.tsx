@@ -15,7 +15,8 @@ import { getMyUserId } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 const SENDER_NAME = 'Pack-N-Ship';
 
 type Notif = NotifRow;

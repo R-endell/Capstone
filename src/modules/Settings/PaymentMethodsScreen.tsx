@@ -16,7 +16,8 @@ import { PaymentMethod } from '../../types/payment';
 import PaymentMethodCard from './PaymentMethodCard';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../constants';
+const ORANGE = brand.orangeDark;
 
 export default function PaymentMethodsScreen() {
   const navigation = useNavigation<any>();

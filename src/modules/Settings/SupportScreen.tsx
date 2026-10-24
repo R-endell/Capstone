@@ -11,7 +11,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../constants';
+const ORANGE = brand.orangeDark;
 
 type SupportCase = {
   kind: 'dispute' | 'issue' | 'delivery';

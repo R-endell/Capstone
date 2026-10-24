@@ -16,7 +16,8 @@ import { WebView } from 'react-native-webview';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 
 export default function EditProfileScreen() {
   const navigation = useNavigation<any>();

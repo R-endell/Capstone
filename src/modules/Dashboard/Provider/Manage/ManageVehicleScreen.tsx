@@ -26,7 +26,8 @@ import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 
 interface Vehicle {
   vehicle_id: number;

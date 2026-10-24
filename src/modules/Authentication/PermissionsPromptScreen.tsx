@@ -10,7 +10,8 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../App';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 
 const PERMISSION_STEPS = [
   {

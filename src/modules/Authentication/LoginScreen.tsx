@@ -19,7 +19,8 @@ import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
 
 WebBrowser.maybeCompleteAuthSession();
 
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 const COOLDOWN_SECONDS = 60;
 
 export default function LoginScreen() {
@@ -332,6 +333,8 @@ export default function LoginScreen() {
         style={[styles.themeToggle, { top: insets.top + 12 }]}
         onPress={toggleDark}
         activeOpacity={0.85}
+        accessibilityRole="button"
+        accessibilityLabel={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
         <Ionicons name={isDark ? 'sunny-outline' : 'moon-outline'} size={20} color={colors.textPrimary} />
@@ -457,7 +460,7 @@ export default function LoginScreen() {
                     </View>
                     {passwordError ? <Text style={styles.errorText}>{passwordError}</Text> : null}
 
-                    <TouchableOpacity style={styles.forgotPasswordButton} disabled={loading} onPress={() => navigation.navigate('ForgotPassword')}>
+                    <TouchableOpacity style={styles.forgotPasswordButton} disabled={loading} onPress={() => navigation.navigate('ForgotPassword')} accessibilityRole="button" accessibilityLabel="Forgot password">
                       <Text style={styles.forgotPasswordText}>Forgot password?</Text>
                     </TouchableOpacity>
                   </View>
@@ -467,6 +470,9 @@ export default function LoginScreen() {
                     onPress={handleLogin}
                     disabled={loading}
                     activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Log in"
+                    accessibilityState={{ disabled: loading }}
                   >
                     {loading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.loginText}>Log In</Text>}
                   </TouchableOpacity>

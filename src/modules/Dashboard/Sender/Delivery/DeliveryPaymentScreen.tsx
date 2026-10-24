@@ -14,7 +14,8 @@ import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const GCASH_LOGO = require('../../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
-const ORANGE = '#F27024';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orange;
 
 export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const { requestId, amount } = route.params;

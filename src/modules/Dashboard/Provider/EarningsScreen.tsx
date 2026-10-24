@@ -11,7 +11,8 @@ import { supabase } from '../../../utils/supabase';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */

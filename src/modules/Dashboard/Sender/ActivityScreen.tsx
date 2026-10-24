@@ -14,10 +14,17 @@ import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import EmptyState from '../../../components/EmptyState';
+import LoadingState from '../../../components/LoadingState';
+import StatusBadge from '../../../components/StatusBadge';
+import { spacing, borderRadius } from '../../../constants';
+import SectionHeader from '../../../components/SectionHeader';
+import Card from '../../../components/Card';
 import { notifyUser } from '../../../services/pushService';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#FF751F';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
@@ -1134,20 +1141,14 @@ export default function ActivityScreen() {
       >
         <Animated.View style={{ opacity: listAnim }}>
           {isLoading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={ORANGE} />
-              <Text style={styles.loadingText}>Loading activity...</Text>
-            </View>
+            <LoadingState message="Loading activity..." />
           ) : filteredDeliveries.length === 0 ? (
-            <View style={styles.noResultsContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons name="cube-outline" size={32} color={ORANGE} />
-              </View>
-              <Text style={styles.noResultsText}>No deliveries found</Text>
-              <Text style={styles.noResultsSubtext}>
-                {deliveries.length === 0 ? 'Your scheduled shipments will appear here' : `No deliveries in this ${activeTab} tab yet`}
-              </Text>
-            </View>
+            <EmptyState
+              icon="cube-outline"
+              title="No deliveries found"
+              description={deliveries.length === 0 ? 'Your scheduled shipments will appear here' : `No deliveries in this ${activeTab} tab yet`}
+              iconColor={ORANGE}
+            />
           ) : (
             filteredDeliveries.map((item, index) => {
               const isCompletedItem = item.status === 'Completed';
@@ -1165,10 +1166,10 @@ export default function ActivityScreen() {
               return (
                 <TouchableOpacity
                   key={item.request_id || index}
-                  style={[styles.card, (isCompletedItem || isCancelledItem) && styles.completedCard]}
                   onPress={() => setSelectedDelivery(item)}
                   activeOpacity={0.9}
                 >
+                  <Card padding="lg" style={[(isCompletedItem || isCancelledItem) && styles.completedCard, { marginBottom: spacing.md }]}>
                   <View style={styles.cardHeader}>
                     <View style={styles.cardHeaderLeft}>
                       <View style={styles.serviceTypeBadge}>
@@ -1177,12 +1178,22 @@ export default function ActivityScreen() {
                         </Text>
                       </View>
                       {(!isCompletedItem) && (
-                        <View style={[styles.statusBadge, { backgroundColor: getStatusBg(item.status) }]}>
-                          <Ionicons name={getStatusIcon(item.status)} size={12} color={getStatusColor(item.status)} />
-                          <Text style={[styles.statusBadgeText, { color: getStatusColor(item.status) }]}>
-                            {statusLabel}
-                          </Text>
-                        </View>
+                        <StatusBadge
+                          label={statusLabel}
+                          variant={
+                            item.status === 'Completed'
+                              ? 'success'
+                              : item.status === 'Cancelled'
+                              ? 'error'
+                              : item.status === 'In Progress' || item.status === 'In Transit'
+                              ? 'info'
+                              : item.status === 'Waiting for Provider'
+                              ? 'warning'
+                              : item.status === 'Accepted'
+                              ? 'orange'
+                              : 'neutral'
+                          }
+                        />
                       )}
                     </View>
                     <View style={styles.sdItemsChip}>
@@ -2197,7 +2208,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   noResultsSubtext: { fontSize: 11, color: c.textSecondary, marginTop: 3, textAlign: 'center' },
 
   card: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
+    backgroundColor: c.card, borderRadius: borderRadius.lg, padding: spacing.lg, marginBottom: spacing.md,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 8, elevation: 2,
     borderWidth: 1, borderColor: c.border,
@@ -2456,7 +2467,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sdPayDivider: { height: 1, backgroundColor: c.divider, marginVertical: 10 },
   sdTotalBox: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: ORANGE, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 16, marginTop: 16,
+    backgroundColor: ORANGE, borderRadius: borderRadius.lg, paddingHorizontal: spacing.lg, paddingVertical: spacing.lg, marginTop: spacing.lg,
   },
   sdTotalLabel: { fontSize: 13, fontWeight: '700', color: '#FFE4D2' },
   sdTotalValue: { fontSize: 24, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.5 },

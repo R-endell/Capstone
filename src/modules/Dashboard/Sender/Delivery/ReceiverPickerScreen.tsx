@@ -9,7 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orangeDark;
 
 /** Normalize PH phone number to E.164 (+63XXXXXXXXXX) */
 const toE164 = (raw: string): string => {

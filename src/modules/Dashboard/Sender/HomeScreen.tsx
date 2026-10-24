@@ -26,8 +26,11 @@ import { supabase } from '../../../utils/supabase';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { brand, spacing, borderRadius } from '../../../constants';
+import ActionCard from '../../../components/ActionCard';
+import SectionHeader from '../../../components/SectionHeader';
 
-const ORANGE = '#F27024';
+const ORANGE = brand.orange;
 
 type Notif = NotifRow;
 
@@ -352,12 +355,17 @@ export default function HomeScreen() {
               style={styles.notificationIcon}
               onPress={handleOpenNotifs}
               activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+              accessibilityHint="Open notifications"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="notifications-outline" size={22} color={colors.textPrimary} />
               {unreadCount > 0 && (
                 <View style={styles.notificationBadge}>
-                  {unreadCount <= 9 && (<Text style={styles.notificationBadgeText}>{unreadCount}</Text>)}
+                  <Text style={styles.notificationBadgeText}>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -366,45 +374,24 @@ export default function HomeScreen() {
 
         {/* ACTIONS SECTION */}
         <Animated.View style={[styles.actionContainer, fadeUp(actionsAnim)]}>
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionCardPrimary]}
+          <ActionCard
+            title="Send a Package"
+            subtitle="Book a delivery for now"
             onPress={handleSendPackage}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.actionIconContainer, styles.actionIconPrimary]}>
-              <Image
-                source={require('../../../../assets/send-package-now.png')}
-                style={styles.actionCustomIcon}
-                resizeMode="contain"
-              />
-            </View>
-            <View style={styles.actionTextContainer}>
-              <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
-              <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
-            </View>
-            <View style={styles.chevronPrimary}>
-              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-            </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionCardSecondary]}
+            imageSource={require('../../../../assets/send-package-now.png')}
+            variant="primary"
+            accessibilityLabel="Send a Package"
+            accessibilityHint="Book a delivery for now"
+          />
+          <ActionCard
+            title="Schedule Delivery"
+            subtitle="Plan for a future date & time"
             onPress={handleScheduleDelivery}
-            activeOpacity={0.85}
-          >
-            <View style={styles.actionIconContainer}>
-              <Image
-                source={require('../../../../assets/schedule-delivery-calendar.png')}
-                style={styles.actionCustomIcon}
-                resizeMode="contain"
-              />
-            </View>
-            <View style={styles.actionTextContainer}>
-              <Text style={styles.actionTitle}>Schedule a Delivery</Text>
-              <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
+            imageSource={require('../../../../assets/schedule-delivery.png')}
+            variant="secondary"
+            accessibilityLabel="Schedule Delivery"
+            accessibilityHint="Plan for a future date and time"
+          />
         </Animated.View>
 
         {/* PROMOTIONS SECTION */}
@@ -447,12 +434,7 @@ export default function HomeScreen() {
 
         {/* SHIPPING TIPS SECTION */}
         <Animated.View style={[styles.sectionContainer, fadeUp(tipsAnim)]}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitleNoPad}>Shipping Tips & Guides</Text>
-            <TouchableOpacity onPress={() => handleContentTap('All Tips')}>
-              <Text style={styles.seeAllText}>See all</Text>
-            </TouchableOpacity>
-          </View>
+          <SectionHeader title="Shipping Tips & Guides" actionLabel="See all" onActionPress={() => handleContentTap('All Tips')} />
 
           <TouchableOpacity
             style={styles.tipCard}
@@ -522,20 +504,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 24,
-    marginBottom: 32,
+    paddingHorizontal: spacing['2xl'],
+    marginBottom: spacing['3xl'],
   },
-  greetingTextContainer: { flex: 1, paddingRight: 16 },
+  greetingTextContainer: { flex: 1, paddingRight: spacing.lg },
   greetingTitle: {
     fontSize: 26,
     fontWeight: '800',
     color: c.textPrimary,
     letterSpacing: -0.5,
-    marginBottom: 4,
+    marginBottom: spacing.xs,
   },
   greetingSubtitle: { fontSize: 15, color: c.textSecondary, fontWeight: '400' },
   notificationIcon: {
-    width: 44, height: 44, borderRadius: 22,
+    width: 44, height: 44, borderRadius: borderRadius.full,
     backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
@@ -553,7 +535,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   notificationBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
   /* ── Action Cards ──────────────────────────────────── */
-  actionContainer: { paddingHorizontal: 24, marginBottom: 28 },
+  actionContainer: { paddingHorizontal: spacing['2xl'], marginBottom: spacing['3xl'] - 4 },
   actionCard: {
     flexDirection: 'row', alignItems: 'center',
     borderRadius: 18, paddingVertical: 18, paddingHorizontal: 16,
@@ -598,11 +580,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sectionContainer: { marginBottom: 28 },
   sectionHeaderRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 24, marginBottom: 14,
+    paddingHorizontal: spacing['2xl'], marginBottom: spacing.md + 2,
   },
   sectionTitle: {
     fontSize: 18, fontWeight: '800', color: c.textPrimary,
-    letterSpacing: -0.4, paddingHorizontal: 24, marginBottom: 14,
+    letterSpacing: -0.4, paddingHorizontal: spacing['2xl'], marginBottom: spacing.md + 2,
   },
   sectionTitleNoPad: {
     fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
@@ -610,18 +592,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   seeAllText: { fontSize: 14, fontWeight: '700', color: ORANGE },
 
   /* Promotions */
-  promoScrollContainer: { paddingHorizontal: 24, gap: 12 },
+  promoScrollContainer: { paddingHorizontal: spacing['2xl'], gap: spacing.md },
   promoCard: {
     flexDirection: 'row', alignItems: 'center',
-    borderWidth: 1, borderRadius: 16, padding: 16, width: 260,
+    borderWidth: 1, borderRadius: borderRadius.lg, padding: spacing.lg, width: 260,
   },
   promoCardAmberLight: { backgroundColor: '#FFF7ED', borderColor: '#FFE4D2' },
   promoCardAmberDark: { backgroundColor: '#2A1A0E', borderColor: '#5A3418' },
   promoCardGreenLight: { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' },
   promoCardGreenDark: { backgroundColor: '#0F2A1F', borderColor: '#1F5138' },
   promoIconWrap: {
-    width: 44, height: 44, borderRadius: 12,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    width: 44, height: 44, borderRadius: borderRadius.md,
+    justifyContent: 'center', alignItems: 'center', marginRight: spacing.md,
   },
   promoTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
   promoSub: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
@@ -631,17 +613,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.card,
     borderWidth: 1, borderColor: c.border,
-    borderRadius: 16, padding: 16,
-    marginHorizontal: 24, marginBottom: 10,
+    borderRadius: borderRadius.lg, padding: spacing.lg,
+    marginHorizontal: spacing['2xl'], marginBottom: spacing.sm + 2,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
     shadowRadius: 4, elevation: 1,
   },
   tipIconWrap: {
-    width: 44, height: 44, borderRadius: 12,
+    width: 44, height: 44, borderRadius: borderRadius.md,
     backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
-    marginRight: 14,
+    marginRight: spacing.md + 2,
   },
   tipTextWrap: { flex: 1, paddingRight: 12 },
   tipTitle: { fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 4 },
@@ -653,8 +635,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 16,
   },
   modalCard: {
-    backgroundColor: c.card, borderRadius: 20,
-    paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
+    backgroundColor: c.card, borderRadius: borderRadius['2xl'],
+    paddingTop: spacing.xs + 2, paddingBottom: spacing.xs, maxHeight: '78%',
     shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
     shadowRadius: 20, elevation: 12,
@@ -675,7 +657,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   notifRowUnread: { backgroundColor: c.accentSoft },
   notifIcon: {
-    width: 36, height: 36, borderRadius: 18,
+    width: 36, height: 36, borderRadius: borderRadius.full,
     backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
   },

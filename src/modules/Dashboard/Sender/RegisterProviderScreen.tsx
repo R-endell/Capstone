@@ -15,7 +15,8 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 const BUCKET_NAME = 'vehicle-documents';
 
 const ID_ANALYZER_KEY = 'idk_lpCmsQcDtGPddpKFSEAFoWySTEwD3C3usJcIBzkz';

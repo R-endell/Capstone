@@ -9,7 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 import { POLICIES } from './policyContent';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../constants';
+const ORANGE = brand.orangeDark;
 
 export default function LegalPoliciesScreen() {
   const navigation = useNavigation<any>();

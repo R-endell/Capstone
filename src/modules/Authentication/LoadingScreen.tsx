@@ -16,7 +16,8 @@ import { supabase } from '../../utils/supabase';
 import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
 import { registerPushToken } from '../../services/pushService';
 /** Brand */
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 
 /** Timing */
 const SPLASH_DURATION = 2500;

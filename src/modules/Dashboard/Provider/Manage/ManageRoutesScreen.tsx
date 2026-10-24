@@ -13,7 +13,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 
 interface LocationType {
   location_id: number;

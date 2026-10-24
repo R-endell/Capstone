@@ -13,7 +13,8 @@ import {
 } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
-const ORANGE = '#F27024';
+import { brand } from '../../../constants';
+const ORANGE = brand.orange;
 
 const MIN_RESPONSE = 10;
 const MAX_RESPONSE = 500;

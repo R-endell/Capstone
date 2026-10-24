@@ -14,6 +14,9 @@ import { useSchedule } from '../Sender/Delivery/ScheduleContext';
 import { WebView } from 'react-native-webview';
 import { decode } from 'base64-arraybuffer';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import EmptyState from '../../../components/EmptyState';
+import LoadingState from '../../../components/LoadingState';
+import { spacing, borderRadius } from '../../../constants';
 
 /* ---- MiniMap unchanged: always light OSM tiles ---- */
 const MiniMap = ({ lat, lng }: { lat: number; lng: number }) => {
@@ -60,7 +63,8 @@ const MiniMap = ({ lat, lng }: { lat: number; lng: number }) => {
 };
 
 const { height } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../../constants';
+const ORANGE = brand.orange;
 
 type Trip = {
   id: string;
@@ -504,10 +508,7 @@ export default function ExploreScreen() {
       </View>
 
       {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
-          <Text style={styles.loadingText}>Loading trips...</Text>
-        </View>
+        <LoadingState message="Loading trips..." />
       ) : (
         <FlatList
           data={filteredTrips}
@@ -517,15 +518,16 @@ export default function ExploreScreen() {
           showsVerticalScrollIndicator={false}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} colors={[ORANGE]} />}
           ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons name="search-outline" size={48} color={colors.textMuted} />
-              <Text style={styles.emptyText}>No trips found</Text>
-              <Text style={styles.emptySubtext}>
-                {trips.length === 0
+            <EmptyState
+              icon="search-outline"
+              title="No trips found"
+              description={
+                trips.length === 0
                   ? 'No active routes right now. Check back soon.'
-                  : 'Try adjusting your search or filters.'}
-              </Text>
-            </View>
+                  : 'Try adjusting your search or filters.'
+              }
+              iconColor={ORANGE}
+            />
           }
         />
       )}
@@ -754,7 +756,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   activeFiltersRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, gap: 6 },
   filterChip: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.divider,
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 16, gap: 4,
+    paddingHorizontal: spacing.sm + 2, paddingVertical: spacing.xs, borderRadius: borderRadius.lg, gap: spacing.xs,
   },
   filterChipText: { fontSize: 12, color: c.textSecondary },
   clearAllText: { fontSize: 12, color: ORANGE, fontWeight: '600' },
@@ -765,7 +767,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
   tripCard: {
-    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 16,
+    backgroundColor: c.card, borderRadius: borderRadius.md, padding: spacing.lg, marginBottom: spacing.lg,
     borderWidth: 1, borderColor: c.border,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 5, elevation: 2,

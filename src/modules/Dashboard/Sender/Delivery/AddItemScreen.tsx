@@ -22,7 +22,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orangeDark;
 
 const SIZE_META = {
   Small: {

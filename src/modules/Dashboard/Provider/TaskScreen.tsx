@@ -23,7 +23,8 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
 
-const ORANGE = '#FF751F';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;

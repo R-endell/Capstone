@@ -14,7 +14,8 @@ import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 import { validateEmail } from '../../utils/passwordValidation';
 
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 const COOLDOWN_SECONDS = 60;
 
 export default function ForgotPasswordScreen() {

@@ -16,7 +16,8 @@ import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { notifyUser } from '../../../../services/pushService';
 
 const { height } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orange;
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 

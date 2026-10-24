@@ -11,7 +11,8 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { brand } from '../../../../constants';
+const ORANGE = brand.orange;
 const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WEEK_DAYS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 

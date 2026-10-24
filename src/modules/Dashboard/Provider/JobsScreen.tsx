@@ -17,9 +17,15 @@ import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRout
 import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import EmptyState from '../../../components/EmptyState';
+import LoadingState from '../../../components/LoadingState';
+import StatusBadge from '../../../components/StatusBadge';
+import { spacing, borderRadius } from '../../../constants';
+import SectionHeader from '../../../components/SectionHeader';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
-const ORANGE = '#FF751F';
+import { brand } from '../../../constants';
+const ORANGE = brand.orangeDark;
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
@@ -1750,10 +1756,9 @@ export default function JobsScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
         <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
-        <ActivityIndicator size="large" color={ORANGE} />
-        <Text style={styles.loadingText}>Loading...</Text>
+        <LoadingState message="Loading jobs..." />
       </View>
     );
   }
@@ -2049,7 +2054,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   offerCode: { fontSize: 13, fontWeight: '800', color: c.textMuted },
   offerStatsRow: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    borderRadius: 16, paddingVertical: 12, marginTop: 12,
+    borderRadius: borderRadius.lg, paddingVertical: spacing.md, marginTop: spacing.md,
     borderWidth: 1, borderColor: c.border,
   },
   offerStat: { flex: 1, alignItems: 'center' },
@@ -2075,7 +2080,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   offerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
   declineBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 15, borderRadius: 16, backgroundColor: c.errorBg,
+    paddingVertical: spacing.md + 3, borderRadius: borderRadius.lg, backgroundColor: c.errorBg,
     borderWidth: 1, borderColor: c.error,
   },
   declineBtnText: { fontSize: 15, fontWeight: '800', color: c.error },

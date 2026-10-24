@@ -17,7 +17,8 @@ import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
-const ORANGE = '#F27024';
+import { brand } from '../../constants';
+const ORANGE = brand.orange;
 const COOLDOWN_SECONDS = 60;
 
 export default function RegisterScreen() {
@@ -440,7 +441,7 @@ export default function RegisterScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <TouchableOpacity style={[styles.themeToggle, { top: insets.top + 12 }]} onPress={toggleDark} activeOpacity={0.85}>
+                  <TouchableOpacity style={[styles.themeToggle, { top: insets.top + 12 }]} onPress={toggleDark} activeOpacity={0.85} accessibilityRole="button" accessibilityLabel={isDark ? 'Switch to light mode' : 'Switch to dark mode'}>
         <Ionicons name={isDark ? 'sunny-outline' : 'moon-outline'} size={20} color={colors.textPrimary} />
       </TouchableOpacity>
 
@@ -603,7 +604,7 @@ export default function RegisterScreen() {
                     {confirmPasswordError ? <Text style={styles.errorText}>{confirmPasswordError}</Text> : null}
                   </View>
 
-                  <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleSignUp} disabled={loading}>
+                  <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleSignUp} disabled={loading} accessibilityRole="button" accessibilityLabel="Create Account" accessibilityState={{ disabled: loading }}>
                     {loading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.buttonText}>Create Account</Text>}
                   </TouchableOpacity>
 

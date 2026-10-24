@@ -10,7 +10,8 @@ import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../utils/supabase';
 import { useTheme, ThemeColors } from '../utils/themeContext';
 
-const ORANGE = '#FF751F';
+import { brand } from '../constants';
+const ORANGE = brand.orangeDark;
 const FAB_SIZE = 54;
 const EDGE_PADDING = 10;
 const TOP_SAFE = 80;
@@ -521,7 +522,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(17,24,39,0.45)',
   },
   sheet: {
