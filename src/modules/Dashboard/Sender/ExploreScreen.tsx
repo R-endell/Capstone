@@ -1,120 +1,93 @@
 // src/modules/Dashboard/Sender/ExploreScreen.tsx
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, StyleSheet, Modal,
-  Dimensions, FlatList, ScrollView, RefreshControl, ActivityIndicator,
-  Alert, KeyboardAvoidingView, Platform, Image,
+  View, Text, TouchableOpacity, StyleSheet, Modal,
+  Dimensions, FlatList, RefreshControl, ActivityIndicator,
+  Alert, Image, Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../../utils/supabase';
 import { useSchedule } from '../Sender/Delivery/ScheduleContext';
-import { WebView } from 'react-native-webview';
-import { decode } from 'base64-arraybuffer';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import {
+  LiveFix, fetchLiveFixes, subscribeLiveFixes, isFixFresh,
+} from '../../../services/providerLiveService';
+import ProviderTrackModal, { TrackTrip } from './ProviderTrackModal';
 
-/* ---- MiniMap unchanged: always light OSM tiles ---- */
-const MiniMap = ({ lat, lng }: { lat: number; lng: number }) => {
-  const html = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .pin { width: 14px; height: 14px; border-radius: 50%; background: #F27024; border: 2px solid #FFF; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', {
-            zoomControl: false, attributionControl: false,
-            dragging: false, touchZoom: false, scrollWheelZoom: false,
-            doubleClickZoom: false, boxZoom: false, keyboard: false,
-          }).setView([${lat}, ${lng}], 14);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-          L.marker([${lat}, ${lng}], {
-            icon: L.divIcon({ className: '', html: '<div class="pin"></div>', iconSize: [14, 14], iconAnchor: [7, 7] })
-          }).addTo(map);
-        </script>
-      </body>
-    </html>
-  `;
-
-  return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
-  );
-};
+// expo-location is loaded lazily so the screen still works (showing every provider)
+// if the package isn't installed in the current dev build yet.
+let Location: any = null;
+try { Location = require('expo-location'); } catch { Location = null; }
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
+
+/** Providers that left more than this long ago and are no longer online are hidden. */
+const HIDE_DEPARTED_AFTER_MIN = 180;
+const SEND_NOW_WINDOW_MIN = 60; // "leaving soon" window
 
 type Trip = {
   id: string;
   routeId: number;
   providerId: number;
   name: string;
-  status: 'Active' | 'Offline';
+  isActive: boolean;
   rating: number;
   pickup: string;
   dropoff: string;
   pickupCoords: { lat: number; lng: number };
   dropoffCoords: { lat: number; lng: number };
-  accepts: string;
-  estimate: string;
   timeLabel: string;
-  isTimeExact: boolean;
   departureTime: Date;
   vehicleType: string;
-  maxWeightKg: number;
+};
+
+type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'offline';
+
+type CardTrip = Trip & {
+  fix: LiveFix | null;
+  state: TripState;
+  distanceKm: number | null; // sender -> provider (live position when known, else their start point)
 };
 
 type FilterState = {
-  status: 'all' | 'Active' | 'Offline';
+  show: 'all' | 'onTheWay' | 'upcoming';
+  radiusKm: number | null; // null = any distance
 };
 
-const deriveAccepts = (maxWeightKg: number): string => {
-  if (maxWeightKg <= 100) return 'Small to Medium box';
-  if (maxWeightKg <= 500) return 'Medium Box to Large box';
-  return 'Large box to XL';
-};
+const DEFAULT_RADIUS_KM = 10;
+const RADIUS_OPTIONS: (number | null)[] = [2, 5, 10, 20, null];
 
-const deriveEstimate = (maxWeightKg: number): string => {
-  if (maxWeightKg <= 100) return '₱15.00 - ₱25.00';
-  if (maxWeightKg <= 500) return '₱20.00 - ₱36.00';
-  return '₱35.00 - ₱50.00';
-};
+type LocStatus = 'loading' | 'granted' | 'denied' | 'unavailable';
 
-const formatTimeLabel = (dep: Date): { label: string; exact: boolean } => {
+const toRad = (d: number) => (d * Math.PI) / 180;
+const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => {
+  const R = 6371;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+};
+const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
+const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
+const minutesUntil = (d: Date, now: number) => Math.round((d.getTime() - now) / 60000);
+
+const formatTimeLabel = (dep: Date): string => {
   const diffMin = Math.round((dep.getTime() - Date.now()) / 60000);
-  if (diffMin < 0) return { label: 'Departed', exact: false };
-  if (diffMin < 60) return { label: `Leaves in ${diffMin} mins`, exact: false };
+  if (diffMin < 0) return 'On the road now';
+  if (diffMin < 60) return `Leaves in ${diffMin} mins`;
   if (diffMin < 1440) {
-    return {
-      label: `Today at ${dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`,
-      exact: true,
-    };
+    return `Today at ${dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
   }
-  return {
-    label:
-      dep.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-      ' at ' +
-      dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-    exact: true,
-  };
+  return (
+    dep.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+    ' at ' +
+    dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  );
 };
 
 export default function ExploreScreen() {
@@ -122,26 +95,22 @@ export default function ExploreScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+  const { dispatch: scheduleDispatch } = useSchedule();
 
-  const [search, setSearch] = useState('');
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [fixes, setFixes] = useState<Record<number, LiveFix>>({});
+  const [now, setNow] = useState(Date.now());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<Trip | null>(null);
   const [filterModalVisible, setFilterModalVisible] = useState(false);
-  const [filters, setFilters] = useState<FilterState>({ status: 'all' });
+  const [filters, setFilters] = useState<FilterState>({ show: 'all', radiusKm: DEFAULT_RADIUS_KM });
+  const [trackRouteId, setTrackRouteId] = useState<number | null>(null);
+  const [requesting, setRequesting] = useState(false);
 
-  const [sheetSize, setSheetSize] = useState<'Small' | 'Medium' | 'Large'>('Small');
-  const [sheetPickupType, setSheetPickupType] = useState<'Curb-side Drop-off' | 'Door-to-door'>('Curb-side Drop-off');
-  const [sheetWeight, setSheetWeight] = useState('');
-  const [sheetDescription, setSheetDescription] = useState('');
-  const [sheetFragile, setSheetFragile] = useState(false);
-  const [sheetSubmitting, setSheetSubmitting] = useState(false);
+  const [myCoords, setMyCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [locStatus, setLocStatus] = useState<LocStatus>('loading');
 
-  const { state: scheduleState, dispatch: scheduleDispatch } = useSchedule();
-  const pickupLocation = scheduleState.explorePickup;
-  const dropoffLocation = scheduleState.exploreDropoff;
-
+  /* ------------------------------ data ------------------------------ */
   const fetchTrips = useCallback(async () => {
     try {
       const { data, error } = await supabase
@@ -162,32 +131,27 @@ export default function ExploreScreen() {
         const vehicle = r.vehicle || {};
         const start = r.start_location || {};
         const end = r.end_location || {};
-
         const dep = r.departure_time ? new Date(r.departure_time) : new Date();
-        const { label, exact } = formatTimeLabel(dep);
 
         return {
           id: String(r.route_id),
           routeId: r.route_id,
           providerId: r.provider_id,
           name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
-          status: provider.is_active ? 'Active' : 'Offline',
+          isActive: !!provider.is_active,
           rating: 4.9,
-          pickup: start.street_address || 'Pickup location',
-          dropoff: end.street_address || 'Dropoff location',
+          pickup: start.street_address || 'Starting point',
+          dropoff: end.street_address || 'Destination',
           pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },
           dropoffCoords: { lat: Number(end.latitude) || 0, lng: Number(end.longitude) || 0 },
-          accepts: deriveAccepts(Number(vehicle.max_weight_kg) || 0),
-          estimate: deriveEstimate(Number(vehicle.max_weight_kg) || 0),
-          timeLabel: label,
-          isTimeExact: exact,
+          timeLabel: formatTimeLabel(dep),
           departureTime: dep,
-          vehicleType: vehicle.vehicle_type || 'Unknown',
-          maxWeightKg: Number(vehicle.max_weight_kg) || 0,
+          vehicleType: vehicle.vehicle_type || 'Vehicle',
         };
       });
 
       setTrips(mapped);
+      setFixes(await fetchLiveFixes(mapped.map((t) => t.providerId)));
     } catch (err) {
       console.error('Error fetching trips:', err);
       setTrips([]);
@@ -197,320 +161,403 @@ export default function ExploreScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { fetchTrips(); }, [fetchTrips]));
+  const locateMe = useCallback(async () => {
+    if (!Location) { setLocStatus('unavailable'); return; }
+    try {
+      let perm = await Location.getForegroundPermissionsAsync();
+      if (perm.status !== 'granted') perm = await Location.requestForegroundPermissionsAsync();
+      if (perm.status !== 'granted') { setLocStatus('denied'); return; }
 
-  const onRefresh = () => { setRefreshing(true); fetchTrips(); };
+      const last = await Location.getLastKnownPositionAsync().catch(() => null);
+      if (last) {
+        setMyCoords({ lat: last.coords.latitude, lng: last.coords.longitude });
+        setLocStatus('granted');
+      }
+      const fresh = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      setMyCoords({ lat: fresh.coords.latitude, lng: fresh.coords.longitude });
+      setLocStatus('granted');
+    } catch (e) {
+      console.warn('Location error:', e);
+      setLocStatus((prev) => (prev === 'granted' ? 'granted' : 'unavailable'));
+    }
+  }, []);
+
+  // Reload + start listening for live provider movement while this tab is focused
+  useFocusEffect(
+    useCallback(() => {
+      fetchTrips();
+      locateMe();
+      const unsub = subscribeLiveFixes(({ providerId, fix, deleted }) => {
+        setFixes((prev) => {
+          if (deleted) {
+            if (!(providerId in prev)) return prev;
+            const next = { ...prev };
+            delete next[providerId];
+            return next;
+          }
+          return fix ? { ...prev, [providerId]: fix } : prev;
+        });
+      });
+      const tick = setInterval(() => setNow(Date.now()), 15_000);
+      return () => { unsub(); clearInterval(tick); };
+    }, [fetchTrips, locateMe]),
+  );
+
+  // Keep the labels ("Leaves in 12 mins") honest without refetching
+  useEffect(() => { setNow(Date.now()); }, [trips]);
+
+  const onRefresh = () => { setRefreshing(true); fetchTrips(); locateMe(); };
+
+  /* ------------------------ derived card data ------------------------ */
+  const cardTrips = useMemo<CardTrip[]>(() => {
+    const out: CardTrip[] = [];
+    trips.forEach((t) => {
+      const fix = fixes[t.providerId] ?? null;
+      const live = isFixFresh(fix, now);
+      const mins = minutesUntil(t.departureTime, now);
+
+      let state: TripState;
+      if (live) state = 'live';
+      else if (t.isActive && mins <= 0) state = 'onRoad';
+      else if (mins > 0 && mins <= SEND_NOW_WINDOW_MIN) state = 'soon';
+      else if (mins > SEND_NOW_WINDOW_MIN) state = 'scheduled';
+      else state = 'offline'; // departed and no longer online
+
+      // Not on their way any more -> not shown
+      if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
+      if (state === 'offline') return;
+
+      const ref = live && fix
+        ? { lat: fix.latitude, lng: fix.longitude }
+        : t.pickupCoords;
+      const hasRef = !!(ref.lat || ref.lng);
+      const distanceKm = myCoords && hasRef ? haversineKm(myCoords.lat, myCoords.lng, ref.lat, ref.lng) : null;
+
+      out.push({
+        ...t,
+        timeLabel: formatTimeLabel(t.departureTime),
+        fix: live ? fix : null,
+        state,
+        distanceKm,
+      });
+    });
+    return out;
+  }, [trips, fixes, now, myCoords]);
 
   const filteredTrips = useMemo(() => {
-    return trips.filter((trip) => {
-      const q = search.toLowerCase();
-      const matchesSearch =
-        !q ||
-        trip.name.toLowerCase().includes(q) ||
-        trip.pickup.toLowerCase().includes(q) ||
-        trip.dropoff.toLowerCase().includes(q);
-      if (!matchesSearch) return false;
-      if (filters.status !== 'all' && trip.status !== filters.status) return false;
+    const list = cardTrips.filter((t) => {
+      if (myCoords && filters.radiusKm !== null) {
+        if (t.distanceKm === null || t.distanceKm > filters.radiusKm) return false;
+      }
+      if (filters.show === 'onTheWay' && !(t.state === 'live' || t.state === 'onRoad')) return false;
+      if (filters.show === 'upcoming' && !(t.state === 'soon' || t.state === 'scheduled')) return false;
       return true;
     });
-  }, [trips, search, filters]);
-
-  const resetFilters = () => setFilters({ status: 'all' });
-  const hasActiveFilters = filters.status !== 'all';
-
-  const openLocationPicker = (which: 'pickup' | 'dropoff') => {
-    navigation.navigate('PickupLocation', { type: which, for: which, fromExplore: true });
-  };
-
-  const upsertLocation = async (loc: { address: string; latitude: number; longitude: number }): Promise<number> => {
-    const { data: existing } = await supabase
-      .from('locations').select('location_id')
-      .eq('latitude', loc.latitude).eq('longitude', loc.longitude)
-      .limit(1).maybeSingle();
-
-    if (existing) return existing.location_id;
-
-    const parts = loc.address.split(',').map((s) => s.trim());
-    const { data: inserted, error } = await supabase
-      .from('locations')
-      .insert({
-        street_address: parts[0] || loc.address,
-        barangay: parts[1] || 'Unknown',
-        city: parts[2] || 'Unknown',
-        province: parts[3] || 'Unknown',
-        zip_code: '0000',
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-      })
-      .select('location_id')
-      .single();
-
-    if (error) throw error;
-    return inserted.location_id;
-  };
-
-  const handleSendMatchRequest = async () => {
-    if (!selectedProvider) return;
-
-    const weight = parseFloat(sheetWeight);
-    if (!pickupLocation) { Alert.alert('Required', 'Please choose a pickup location.'); return; }
-    if (!dropoffLocation) { Alert.alert('Required', 'Please choose a dropoff location.'); return; }
-    if (!weight || weight <= 0) { Alert.alert('Required', 'Please enter a weight.'); return; }
-    if (weight > selectedProvider.maxWeightKg) {
-      Alert.alert('Too Heavy', `${selectedProvider.name.split(' ')[0]}'s vehicle accepts up to ${selectedProvider.maxWeightKg} kg.`);
-      return;
+    if (myCoords) {
+      list.sort((a, b) =>
+        (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity) ||
+        a.departureTime.getTime() - b.departureTime.getTime());
     }
+    return list;
+  }, [cardTrips, filters, myCoords]);
 
-    setSheetSubmitting(true);
+  const resetFilters = () => setFilters({ show: 'all', radiusKm: DEFAULT_RADIUS_KM });
+  const hasActiveFilters = filters.show !== 'all' || filters.radiusKm !== DEFAULT_RADIUS_KM;
+  const locationKnown = !!myCoords;
+
+  const trackTrip: (CardTrip & TrackTrip) | null = useMemo(
+    () => (trackRouteId == null ? null : (cardTrips.find((t) => t.routeId === trackRouteId) as any) ?? null),
+    [trackRouteId, cardTrips],
+  );
+
+  /* ---------------- request a delivery along a provider's way ---------------- */
+  const requestAlongRoute = async (trip: TrackTrip) => {
+    if (requesting) return;
+    setRequesting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('You must be logged in.');
-
-      const { data: sender } = await supabase
-        .from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
-      if (!sender) throw new Error('Could not find your user record.');
-
-      let cargoPicUrl: string | null = null;
-
-      if (sheetImageBase64) {
-        try {
-          setSheetUploadingImage(true);
-          const fileName = `cargo_${sender.user_id}_${Date.now()}.jpg`;
-          const { error: upErr } = await supabase.storage
-            .from('cargo-images')
-            .upload(fileName, decode(sheetImageBase64), {
-              contentType: 'image/jpeg',
-              upsert: true,
-            });
-          if (upErr) throw upErr;
-
-          const { data: urlData } = supabase.storage.from('cargo-images').getPublicUrl(fileName);
-          cargoPicUrl = urlData?.publicUrl || null;
-        } catch (upErr: any) {
-          console.warn('Cargo image upload failed:', upErr?.message);
-        } finally {
-          setSheetUploadingImage(false);
-        }
+      // 1) Sender's current location = pickup
+      let coords = myCoords;
+      if (!coords) {
+        await locateMe();
+        coords = myCoords;
       }
-
-      const qty =
-        sheetSize === 'Small' ? { small_box_qty: 1, medium_box_qty: 0, large_box_qty: 0 } :
-        sheetSize === 'Medium' ? { small_box_qty: 0, medium_box_qty: 1, large_box_qty: 0 } :
-                                 { small_box_qty: 0, medium_box_qty: 0, large_box_qty: 1 };
-
-      const { data: cargo, error: cargoErr } = await supabase
-        .from('cargo_profiles')
-        .insert({
-          description: sheetDescription.trim() || 'No description.',
-          total_weight_kg: weight,
-          is_fragile: sheetFragile,
-          cargo_pic: cargoPicUrl,
-          sender_id: sender.user_id,
-          ...qty,
-        })
-        .select('cargo_id').single();
-      if (cargoErr) throw cargoErr;
-
-      const pickupLocId = await upsertLocation(pickupLocation);
-      const dropoffLocId = await upsertLocation(dropoffLocation);
-
-      const { data: rate } = await supabase
-        .from('delivery_rates').select('rate_id').limit(1).maybeSingle();
-      if (!rate) throw new Error('No delivery rates configured.');
-
-      const priceMatch = selectedProvider.estimate.match(/₱([\d.]+)/);
-      const estimatedCost = priceMatch ? parseFloat(priceMatch[1]) : 20;
-
-      const { data: request, error: reqErr } = await supabase
-        .from('delivery_requests')
-        .insert({
-          pickup_type: sheetPickupType,
-          delivery_status: 'Pending',
-          scheduled_time: selectedProvider.departureTime.toISOString(),
-          receiver_phone: '0000000000',
-          total_distance: 5.0,
-          estimated_cost: estimatedCost,
-          pickup_location_id: pickupLocId,
-          dropoff_location_id: dropoffLocId,
-          rate_id: rate.rate_id,
-          sender_id: sender.user_id,
-          cargo_id: cargo.cargo_id,
-        })
-        .select('request_id').single();
-      if (reqErr) throw reqErr;
-
-      Alert.alert(
-        'Request Sent',
-        `Your match request was sent to ${selectedProvider.name.split(' ')[0]}.`,
-        [{ text: 'OK', onPress: () => { setSelectedProvider(null); resetSheet(); } }]
-      );
-    } catch (err: any) {
-      console.error('Match request error:', err);
-      Alert.alert('Error', err?.message || 'Failed to send match request.');
-    } finally {
-      setSheetSubmitting(false);
-    }
-  };
-
-  const resetSheet = () => {
-    setSheetSize('Small');
-    setSheetPickupType('Curb-side Drop-off');
-    setSheetWeight('');
-    setSheetDescription('');
-    setSheetFragile(false);
-    scheduleDispatch({ type: 'SET_EXPLORE_PICKUP', payload: null });
-    scheduleDispatch({ type: 'SET_EXPLORE_DROPOFF', payload: null });
-    setSheetImageUri(null);
-    setSheetImageBase64(null);
-  };
-
-  const [sheetImageUri, setSheetImageUri] = useState<string | null>(null);
-  const [sheetImageBase64, setSheetImageBase64] = useState<string | null>(null);
-  const [sheetUploadingImage, setSheetUploadingImage] = useState(false);
-
-  const pickShipmentImage = () => { launchImage('library'); };
-
-  const launchImage = async () => {
-    try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (perm.status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow photo access.');
+      if (!coords && Location) {
+        try {
+          const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          coords = { lat: p.coords.latitude, lng: p.coords.longitude };
+        } catch { /* handled below */ }
+      }
+      if (!coords) {
+        Alert.alert(
+          'Location needed',
+          'Turn on location so we can use your current position as the pickup point.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open settings', onPress: () => Linking.openSettings() },
+          ],
+        );
         return;
       }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.6,
-        base64: true,
+
+      let address = 'My current location';
+      try {
+        if (Location) {
+          const [a] = await Location.reverseGeocodeAsync({ latitude: coords.lat, longitude: coords.lng });
+          if (a) {
+            const parts = [a.street || a.name, a.district || a.subregion, a.city, a.region].filter(Boolean);
+            if (parts.length) address = parts.join(', ');
+          }
+        }
+      } catch { /* keep default */ }
+
+      // 2) Start the normal "Send Package Now" flow with pickup + provider pre-filled
+      scheduleDispatch({ type: 'RESET' });
+      scheduleDispatch({ type: 'SET_MODE', payload: 'sendNow' });
+      scheduleDispatch({
+        type: 'SET_PICKUP_LOCATION',
+        payload: { address, latitude: coords.lat, longitude: coords.lng },
       });
-      if (!result.canceled && result.assets[0]) {
-        setSheetImageUri(result.assets[0].uri);
-        setSheetImageBase64(result.assets[0].base64 || null);
-      }
-    } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Could not pick image.');
+      scheduleDispatch({
+        type: 'SET_PREFERRED_PROVIDER',
+        payload: { providerId: trip.providerId, routeId: trip.routeId, name: trip.name },
+      });
+
+      setTrackRouteId(null);
+      navigation.navigate('DropoffType', { mode: 'sendNow' });
+    } finally {
+      setRequesting(false);
     }
   };
 
-  const renderTripCard = ({ item }: { item: Trip }) => (
-    <View style={styles.tripCard}>
-      <View style={styles.cardHeader}>
-        <View style={styles.avatarCircle}>
-          <Ionicons name="person" size={24} color="#FFF" />
-        </View>
-        <View style={styles.providerInfo}>
-          <Text style={styles.providerName}>{item.name}</Text>
-          <View style={styles.badgesRow}>
-            <View style={[styles.statusBadge, item.status === 'Active' ? styles.statusActive : styles.statusOffline]}>
-              <Text style={styles.statusText}>{item.status}</Text>
+  /* ------------------------------ UI bits ------------------------------ */
+  const stateBadge = (s: TripState) => {
+    switch (s) {
+      case 'live':
+        return { label: 'On the way · Live', color: colors.success, bg: colors.successBg, icon: 'navigate' as const };
+      case 'onRoad':
+        return { label: 'On the way', color: '#0284C7', bg: isDark ? '#0C2130' : '#E0F2FE', icon: 'car-sport-outline' as const };
+      case 'soon':
+        return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'time-outline' as const };
+      default:
+        return { label: 'Scheduled', color: '#2563EB', bg: isDark ? '#0F2744' : '#DBEAFE', icon: 'calendar-outline' as const };
+    }
+  };
+
+  const renderTripCard = ({ item }: { item: CardTrip }) => {
+    const badge = stateBadge(item.state);
+    return (
+      <TouchableOpacity style={styles.pcCard} activeOpacity={0.9} onPress={() => setTrackRouteId(item.routeId)}>
+        <View style={styles.pcHeader}>
+          <View style={styles.pcHeaderLeft}>
+            <View style={styles.pcTypeBadge}>
+              <Text style={styles.pcTypeText} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
-            <Ionicons name="star" size={14} color={colors.warning} style={{ marginLeft: 6, marginRight: 2 }} />
-            <Text style={styles.ratingText}>{item.rating}</Text>
-            <TouchableOpacity style={styles.chatIcon}>
-              <Ionicons name="chatbubbles-outline" size={14} color={colors.textPrimary} />
+            <View style={[styles.pcStatusBadge, { backgroundColor: badge.bg }]}>
+              <Ionicons name={badge.icon} size={12} color={badge.color} />
+              <Text style={[styles.pcStatusText, { color: badge.color }]} numberOfLines={1}>{badge.label}</Text>
+            </View>
+          </View>
+          {item.distanceKm !== null && (
+            <View style={styles.pcDistChip}>
+              <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
+              <Text style={styles.pcDistText}>{formatKm(item.distanceKm)} away</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.pcRouteBox}>
+          <View style={styles.pcRouteRow}>
+            <View style={styles.pcDotOrange} />
+            <Text style={styles.pcRouteText} numberOfLines={1}>{item.pickup}</Text>
+          </View>
+          <View style={styles.pcConnector} />
+          <View style={styles.pcRouteRow}>
+            <View style={styles.pcDotDark} />
+            <Text style={styles.pcRouteText} numberOfLines={1}>{item.dropoff}</Text>
+          </View>
+        </View>
+
+        <View style={styles.pcContextRow}>
+          <View style={styles.pcDateBox}>
+            <Ionicons
+              name={item.state === 'scheduled' ? 'calendar-outline' : 'timer-outline'}
+              size={13}
+              color={colors.textSecondary}
+            />
+            <Text style={styles.pcContextText} numberOfLines={1}>{item.timeLabel}</Text>
+          </View>
+          <View style={styles.pcProviderPill}>
+            <Ionicons name="car-sport" size={13} color={colors.success} />
+            <Text style={styles.pcProviderText} numberOfLines={1}>{item.name}</Text>
+          </View>
+        </View>
+
+        <View style={styles.pcFooter}>
+          <View style={styles.pcRating}>
+            <Ionicons name="star" size={14} color={colors.warning} />
+            <Text style={styles.pcRatingText}>{item.rating}</Text>
+          </View>
+          <View style={styles.pcButtons}>
+            <TouchableOpacity
+              style={styles.pcTrackBtn}
+              onPress={() => setTrackRouteId(item.routeId)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
+              <Text style={styles.pcBtnText}>Track</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.pcRequestBtn}
+              onPress={() => requestAlongRoute(item)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="paper-plane-outline" size={14} color="#FFFFFF" />
+              <Text style={styles.pcBtnText}>Request</Text>
             </TouchableOpacity>
           </View>
         </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const nextRadius = () => RADIUS_OPTIONS.find((r) => r === null || (filters.radiusKm !== null && r > filters.radiusKm)) ?? null;
+
+  const headerEl = (
+    <View style={styles.headerContainer}>
+      <Text style={styles.pageTitle}>Explore</Text>
+
+      {/* Booking entry points: same cards that used to live on Home */}
+      <View style={styles.actionContainer}>
+        <TouchableOpacity
+          style={[styles.actionCard, styles.actionCardPrimary]}
+          onPress={() => navigation.navigate('DropoffType', { mode: 'sendNow' })}
+          activeOpacity={0.85}
+        >
+          <View style={[styles.actionIconContainer, styles.actionIconPrimary]}>
+            <Image
+              source={require('../../../../assets/send-package-now.png')}
+              style={styles.actionCustomIcon}
+              resizeMode="contain"
+            />
+          </View>
+          <View style={styles.actionTextContainer}>
+            <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
+            <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
+          </View>
+          <View style={styles.chevronPrimary}>
+            <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.actionCard, styles.actionCardSecondary]}
+          onPress={() => navigation.navigate('DropoffType', { mode: 'schedule' })}
+          activeOpacity={0.85}
+        >
+          <View style={styles.actionIconContainer}>
+            <Image
+              source={require('../../../../assets/schedule-delivery-calendar.png')}
+              style={styles.actionCustomIcon}
+              resizeMode="contain"
+            />
+          </View>
+          <View style={styles.actionTextContainer}>
+            <Text style={styles.actionTitle}>Schedule a Delivery</Text>
+            <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.routeSection}>
-        <View style={styles.timeline}>
-          <View style={styles.timelinePoint}>
-            <View style={styles.blueDot}><View style={styles.blueDotInner} /></View>
-            <Text style={styles.timelineText} numberOfLines={1}>{item.pickup}</Text>
-          </View>
-          <View style={styles.timelineLine} />
-          <View style={styles.timelinePoint}>
-            <Ionicons name="location" size={18} color={colors.error} style={{ marginLeft: -1, marginRight: 7 }} />
-            <Text style={styles.timelineText} numberOfLines={1}>{item.dropoff}</Text>
-          </View>
-        </View>
-        <View style={styles.miniMap}>
-          <MiniMap lat={item.pickupCoords.lat || 10.3157} lng={item.pickupCoords.lng || 123.8854} />
-        </View>
-      </View>
-
-      <View style={styles.divider} />
-
-      <View style={styles.cardFooter}>
-        <View style={styles.footerLeft}>
-          <Text style={styles.footerLabel}>Accepts</Text>
-          <Text style={styles.acceptsText}>{item.accepts}</Text>
-          <View style={styles.timeRow}>
-            <Ionicons name={item.isTimeExact ? 'calendar-outline' : 'timer-outline'} size={14} color={colors.textPrimary} />
-            <Text style={styles.timeText}>{item.timeLabel}</Text>
-          </View>
-        </View>
-        <View style={styles.footerRight}>
-          <Text style={styles.footerLabel}>Estimate</Text>
-          <Text style={styles.estimateText}>{item.estimate}</Text>
-          <TouchableOpacity onPress={() => { resetSheet(); setSelectedProvider(item); }}>
-            <Text style={styles.bookBtnText}>Book this Provider</Text>
+      {hasActiveFilters && (
+        <View style={styles.activeFiltersRow}>
+          {filters.show !== 'all' && (
+            <View style={styles.filterChip}>
+              <Text style={styles.filterChipText}>
+                {filters.show === 'onTheWay' ? 'On the way' : 'Leaving later'}
+              </Text>
+              <TouchableOpacity onPress={() => setFilters({ ...filters, show: 'all' })}>
+                <Ionicons name="close-circle" size={14} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          )}
+          {filters.radiusKm !== DEFAULT_RADIUS_KM && (
+            <View style={styles.filterChip}>
+              <Text style={styles.filterChipText}>Within: {radiusLabel(filters.radiusKm)}</Text>
+              <TouchableOpacity onPress={() => setFilters({ ...filters, radiusKm: DEFAULT_RADIUS_KM })}>
+                <Ionicons name="close-circle" size={14} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          )}
+          <TouchableOpacity onPress={resetFilters}>
+            <Text style={styles.clearAllText}>Clear All</Text>
           </TouchableOpacity>
         </View>
+      )}
+
+      {locStatus === 'loading' && !locationKnown ? (
+        <View style={styles.locBanner}>
+          <ActivityIndicator size="small" color={ORANGE} />
+          <Text style={styles.locBannerText}>Finding your location…</Text>
+        </View>
+      ) : locationKnown ? (
+        <View style={styles.locBanner}>
+          <Ionicons name="location" size={16} color={ORANGE} />
+          <Text style={styles.locBannerText}>
+            {filters.radiusKm === null
+              ? 'Showing providers closest to you'
+              : `Providers within ${filters.radiusKm} km of you`}
+          </Text>
+          <TouchableOpacity onPress={locateMe} hitSlop={10}>
+            <Ionicons name="refresh" size={16} color={colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={[styles.locBanner, styles.locBannerWarn]}>
+          <Ionicons name="location-outline" size={16} color={colors.error} />
+          <Text style={styles.locBannerText}>
+            {locStatus === 'denied'
+              ? 'Location is off, so all providers are shown. Turn it on to see who is near you.'
+              : 'Could not get your location, so all providers are shown.'}
+          </Text>
+          <TouchableOpacity onPress={locStatus === 'denied' ? () => Linking.openSettings() : locateMe} hitSlop={10}>
+            <Text style={styles.locBannerAction}>{locStatus === 'denied' ? 'Settings' : 'Retry'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      <View style={styles.sectionHeaderRow}>
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={styles.sectionTitle}>Providers Near You</Text>
+          <Text style={styles.sectionSubtitleTight}>
+            These providers are already on their way. Tap one to see where they are right now, or request a delivery along their route.
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
+          onPress={() => setFilterModalVisible(true)}
+        >
+          <Ionicons name="options-outline" size={24} color={hasActiveFilters ? ORANGE : colors.textPrimary} />
+          {hasActiveFilters && <View style={styles.filterDot} />}
+        </TouchableOpacity>
       </View>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.headerContainer}>
-        <Text style={styles.pageTitle}>Explore Trips</Text>
-        <View style={styles.searchRow}>
-          <View style={styles.searchBar}>
-            <Ionicons name="search-outline" size={20} color={colors.textMuted} />
-            <TextInput
-              placeholder="Search by name, pickup, dropoff..."
-              placeholderTextColor={colors.textMuted}
-              style={styles.searchInput}
-              value={search}
-              onChangeText={setSearch}
-              clearButtonMode="while-editing"
-            />
-            {search.length > 0 && (
-              <TouchableOpacity onPress={() => setSearch('')}>
-                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
-              </TouchableOpacity>
-            )}
-          </View>
-          <TouchableOpacity
-            style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
-            onPress={() => setFilterModalVisible(true)}
-          >
-            <Ionicons name="options-outline" size={24} color={hasActiveFilters ? ORANGE : colors.textPrimary} />
-            {hasActiveFilters && <View style={styles.filterDot} />}
-          </TouchableOpacity>
-        </View>
-
-        {hasActiveFilters && (
-          <View style={styles.activeFiltersRow}>
-            <View style={styles.filterChip}>
-              <Text style={styles.filterChipText}>Status: {filters.status}</Text>
-              <TouchableOpacity onPress={() => setFilters({ ...filters, status: 'all' })}>
-                <Ionicons name="close-circle" size={14} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity onPress={resetFilters}>
-              <Text style={styles.clearAllText}>Clear All</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        <Text style={styles.sectionTitle}>Active Trips Heading Your Way</Text>
-        <Text style={styles.sectionSubtitle}>
-          These riders are already on your path. Save money by matching.
-        </Text>
-      </View>
-
       {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
-          <Text style={styles.loadingText}>Loading trips...</Text>
+        <View style={{ flex: 1, paddingHorizontal: 20 }}>
+          {headerEl}
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={ORANGE} />
+            <Text style={styles.loadingText}>Finding providers near you...</Text>
+          </View>
         </View>
       ) : (
         <FlatList
           data={filteredTrips}
+          ListHeaderComponent={headerEl}
           keyExtractor={(item) => item.id}
           renderItem={renderTripCard}
           contentContainerStyle={styles.listContainer}
@@ -518,17 +565,42 @@ export default function ExploreScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} colors={[ORANGE]} />}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="search-outline" size={48} color={colors.textMuted} />
-              <Text style={styles.emptyText}>No trips found</Text>
-              <Text style={styles.emptySubtext}>
-                {trips.length === 0
-                  ? 'No active routes right now. Check back soon.'
-                  : 'Try adjusting your search or filters.'}
+              <Ionicons name="car-outline" size={48} color={colors.textMuted} />
+              <Text style={styles.emptyText}>
+                {locationKnown && cardTrips.length > 0 ? 'No providers near you' : 'No providers on the road'}
               </Text>
+              <Text style={styles.emptySubtext}>
+                {cardTrips.length === 0
+                  ? 'Nobody is on their way right now. Check back soon.'
+                  : locationKnown && filters.radiusKm !== null
+                    ? `Nobody is traveling within ${filters.radiusKm} km of you right now.`
+                    : 'Try adjusting your filters.'}
+              </Text>
+              {locationKnown && cardTrips.length > 0 && filters.radiusKm !== null && (
+                <TouchableOpacity
+                  style={styles.emptyAction}
+                  activeOpacity={0.85}
+                  onPress={() => setFilters({ ...filters, radiusKm: nextRadius() })}
+                >
+                  <Text style={styles.emptyActionText}>
+                    Widen radius{nextRadius() === null ? ' to any distance' : ` to ${nextRadius()} km`}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
           }
         />
       )}
+
+      {/* LIVE TRACK + REQUEST (no package details) */}
+      <ProviderTrackModal
+        visible={!!trackTrip}
+        trip={trackTrip}
+        fix={trackTrip ? fixes[trackTrip.providerId] ?? null : null}
+        myCoords={myCoords}
+        onClose={() => setTrackRouteId(null)}
+        onRequest={requestAlongRoute}
+      />
 
       {/* FILTER MODAL */}
       <Modal visible={filterModalVisible} transparent animationType="fade" onRequestClose={() => setFilterModalVisible(false)}>
@@ -541,22 +613,48 @@ export default function ExploreScreen() {
                 <Ionicons name="close" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
+
             <View style={styles.filterSection}>
-              <Text style={styles.filterSectionTitle}>Status</Text>
+              <Text style={styles.filterSectionTitle}>Show</Text>
               <View style={styles.filterOptionsRow}>
-                {(['all', 'Active', 'Offline'] as const).map((status) => (
+                {([
+                  { key: 'all', label: 'All' },
+                  { key: 'onTheWay', label: 'On the way' },
+                  { key: 'upcoming', label: 'Leaving later' },
+                ] as const).map((o) => (
                   <TouchableOpacity
-                    key={status}
-                    style={[styles.filterOption, filters.status === status && styles.filterOptionActive]}
-                    onPress={() => setFilters({ ...filters, status })}
+                    key={o.key}
+                    style={[styles.filterOption, filters.show === o.key && styles.filterOptionActive]}
+                    onPress={() => setFilters({ ...filters, show: o.key })}
                   >
-                    <Text style={[styles.filterOptionText, filters.status === status && styles.filterOptionTextActive]}>
-                      {status === 'all' ? 'All' : status}
+                    <Text style={[styles.filterOptionText, filters.show === o.key && styles.filterOptionTextActive]}>
+                      {o.label}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </View>
             </View>
+
+            <View style={styles.filterSection}>
+              <Text style={styles.filterSectionTitle}>Distance from you</Text>
+              <View style={styles.filterOptionsRow}>
+                {RADIUS_OPTIONS.map((r) => (
+                  <TouchableOpacity
+                    key={String(r)}
+                    style={[styles.filterOption, filters.radiusKm === r && styles.filterOptionActive]}
+                    onPress={() => setFilters({ ...filters, radiusKm: r })}
+                  >
+                    <Text style={[styles.filterOptionText, filters.radiusKm === r && styles.filterOptionTextActive]}>
+                      {r === null ? 'Any' : `${r} km`}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {!locationKnown && (
+                <Text style={styles.filterHint}>Turn on location to filter by distance.</Text>
+              )}
+            </View>
+
             <TouchableOpacity style={styles.applyFiltersBtn} onPress={() => setFilterModalVisible(false)}>
               <Text style={styles.applyFiltersBtnText}>Apply Filters</Text>
             </TouchableOpacity>
@@ -568,182 +666,61 @@ export default function ExploreScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* MATCH BOTTOM SHEET */}
-      <Modal visible={!!selectedProvider} transparent animationType="slide" onRequestClose={() => setSelectedProvider(null)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setSelectedProvider(null)} activeOpacity={1} />
-          <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 20 }]}>
-            {selectedProvider && (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <Text style={styles.modalTitle}>Match with {selectedProvider.name.split(' ')[0]}?</Text>
-                <Text style={styles.modalDesc}>
-                  {selectedProvider.name.split(' ')[0]} is traveling to{' '}
-                  <Text style={{ fontWeight: '700' }}>{selectedProvider.dropoff}</Text>. Choose your pickup
-                  and dropoff, then tell us what you're sending.
-                </Text>
-
-                <Text style={styles.fieldLabel}>Pickup location</Text>
-                <TouchableOpacity style={styles.locationRow} onPress={() => openLocationPicker('pickup')} activeOpacity={0.85}>
-                  <View style={styles.locationDot}><View style={styles.locationDotInner} /></View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.locationText, !pickupLocation && { color: colors.textMuted }]} numberOfLines={1}>
-                      {pickupLocation ? pickupLocation.address : 'Tap to choose pickup point'}
-                    </Text>
-                    {pickupLocation && (
-                      <Text style={styles.locationCoords}>
-                        {pickupLocation.latitude.toFixed(5)}, {pickupLocation.longitude.toFixed(5)}
-                      </Text>
-                    )}
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-                </TouchableOpacity>
-
-                <Text style={styles.fieldLabel}>Dropoff location</Text>
-                <TouchableOpacity style={styles.locationRow} onPress={() => openLocationPicker('dropoff')} activeOpacity={0.85}>
-                  <Ionicons name="location" size={18} color={colors.error} style={{ marginLeft: -1, marginRight: 8 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.locationText, !dropoffLocation && { color: colors.textMuted }]} numberOfLines={1}>
-                      {dropoffLocation ? dropoffLocation.address : 'Tap to choose dropoff point'}
-                    </Text>
-                    {dropoffLocation && (
-                      <Text style={styles.locationCoords}>
-                        {dropoffLocation.latitude.toFixed(5)}, {dropoffLocation.longitude.toFixed(5)}
-                      </Text>
-                    )}
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-                </TouchableOpacity>
-
-                <View style={styles.shipmentHeaderRow}>
-                  <View style={styles.orangeBoxIcon}>
-                    <Ionicons name="cube" size={24} color="#FFF" />
-                  </View>
-                  <Text style={styles.shipmentHeader}>What's in your shipment?</Text>
-                </View>
-
-                <Text style={styles.fieldLabel}>Service type</Text>
-                <View style={styles.sizeSelectorRow}>
-                  {(['Curb-side Drop-off', 'Door-to-door'] as const).map((t) => {
-                    const active = sheetPickupType === t;
-                    return (
-                      <TouchableOpacity
-                        key={t}
-                        style={[styles.sizeBox, active && styles.sizeBoxActive, { height: 70 }]}
-                        onPress={() => setSheetPickupType(t)}
-                        activeOpacity={0.85}
-                      >
-                        <Ionicons name={t === 'Door-to-door' ? 'home-outline' : 'walk-outline'} size={22} color={active ? ORANGE : colors.textMuted} />
-                        <Text style={[styles.sizeText, active && { color: ORANGE }]}>
-                          {t === 'Door-to-door' ? 'Door-to-door' : 'Curb-side'}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                <Text style={styles.fieldLabel}>Box size</Text>
-                <View style={styles.sizeSelectorRow}>
-                  {(['Small', 'Medium', 'Large'] as const).map((s) => {
-                    const active = sheetSize === s;
-                    const iconSize = s === 'Small' ? 24 : s === 'Medium' ? 30 : 36;
-                    return (
-                      <TouchableOpacity
-                        key={s}
-                        style={[styles.sizeBox, active && styles.sizeBoxActive]}
-                        onPress={() => setSheetSize(s)}
-                        activeOpacity={0.85}
-                      >
-                        <Ionicons name="cube-outline" size={iconSize} color={active ? ORANGE : colors.textMuted} />
-                        <Text style={[styles.sizeText, active && { color: ORANGE }]}>{s}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                <Text style={styles.fieldLabel}>Total weight (kg)</Text>
-                <TextInput
-                  style={styles.textInput}
-                  keyboardType="decimal-pad"
-                  placeholder="e.g. 3.5"
-                  placeholderTextColor={colors.textMuted}
-                  value={sheetWeight}
-                  onChangeText={setSheetWeight}
-                />
-
-                <Text style={styles.fieldLabel}>Description (optional)</Text>
-                <TextInput
-                  style={[styles.textInput, { height: 70, textAlignVertical: 'top' }]}
-                  multiline
-                  placeholder="e.g. Flower vase, please handle with care"
-                  placeholderTextColor={colors.textMuted}
-                  value={sheetDescription}
-                  onChangeText={setSheetDescription}
-                />
-
-                <Text style={styles.fieldLabel}>Photo of package (optional)</Text>
-                <TouchableOpacity style={styles.imagePickerRow} onPress={pickShipmentImage} activeOpacity={0.85}>
-                  {sheetImageUri ? (
-                    <>
-                      <Image source={{ uri: sheetImageUri }} style={styles.imagePreview} />
-                      <View style={styles.imagePickerOverlay}>
-                        <Ionicons name="camera-reverse-outline" size={18} color="#FFFFFF" />
-                        <Text style={styles.imagePickerOverlayText}>Change</Text>
-                      </View>
-                    </>
-                  ) : (
-                    <View style={styles.imagePickerEmpty}>
-                      <View style={styles.imagePickerEmptyIcon}>
-                        <Ionicons name="cloud-upload-outline" size={26} color={ORANGE} />
-                      </View>
-                      <Text style={styles.imagePickerEmptyText}>Tap to add a photo</Text>
-                      <Text style={styles.imagePickerEmptyHint}>JPEG or PNG • Max 5 MB</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.fragileRow} onPress={() => setSheetFragile((v) => !v)} activeOpacity={0.85}>
-                  <Ionicons name={sheetFragile ? 'checkbox' : 'square-outline'} size={22} color={sheetFragile ? ORANGE : colors.textMuted} />
-                  <Text style={styles.fragileText}>This item is fragile</Text>
-                </TouchableOpacity>
-
-                <View style={styles.totalRow}>
-                  <Text style={styles.totalLabel}>Estimated Total</Text>
-                  <Text style={styles.totalPrice}>{selectedProvider.estimate.split(' - ')[0]}</Text>
-                </View>
-
-                <TouchableOpacity
-                  style={[styles.sendRequestBtn, sheetSubmitting && { opacity: 0.7 }]}
-                  onPress={handleSendMatchRequest}
-                  disabled={sheetSubmitting}
-                  activeOpacity={0.9}
-                >
-                  {sheetSubmitting ? (
-                    <ActivityIndicator color="#064E3B" />
-                  ) : (
-                    <Text style={styles.sendRequestBtnText}>Send Request to Match</Text>
-                  )}
-                </TouchableOpacity>
-              </ScrollView>
-            )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </SafeAreaView>
   );
 }
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
-  headerContainer: { paddingHorizontal: 20, paddingTop: 25, backgroundColor: c.background, zIndex: 1 },
+  headerContainer: { paddingTop: 25, backgroundColor: c.background },
   pageTitle: { fontSize: 30, fontWeight: '800', color: c.textPrimary, marginBottom: 16 },
-  searchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  searchBar: {
-    flex: 1, flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
-    borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginRight: 10,
+
+  /* Same size/layout as the original Home action cards */
+  actionContainer: { marginHorizontal: 4, marginBottom: 20 },
+  actionCard: {
+    flexDirection: 'row', alignItems: 'center',
+    borderRadius: 18, paddingVertical: 18, paddingHorizontal: 16,
+    marginBottom: 14, minHeight: 80,
   },
-  searchInput: { flex: 1, marginLeft: 8, fontSize: 14, color: c.textPrimary },
+  actionCardPrimary: {
+    backgroundColor: ORANGE, borderWidth: 0,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25, shadowRadius: 12, elevation: 6,
+  },
+  actionCardSecondary: {
+    backgroundColor: c.card,
+    borderWidth: 1.5, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowRadius: 6, elevation: 2,
+  },
+  actionIconContainer: {
+    width: 52, height: 52, borderRadius: 14,
+    backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+    marginRight: 14,
+    borderWidth: 1, borderColor: ORANGE,
+  },
+  actionIconPrimary: {
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderColor: 'rgba(255,255,255,0.35)',
+  },
+  actionCustomIcon: { width: 28, height: 28 },
+  actionTextContainer: { flex: 1, paddingRight: 8 },
+  actionTitlePrimary: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
+  actionSubtitlePrimary: { color: 'rgba(255,255,255,0.88)', fontSize: 13, marginTop: 3, fontWeight: '400' },
+  actionTitle: { color: c.textPrimary, fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
+  actionSubtitle: { color: c.textSecondary, fontSize: 13, marginTop: 3, fontWeight: '400' },
+  chevronPrimary: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+
+  /* Section header + filter */
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
+  sectionTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  sectionSubtitleTight: { fontSize: 11, color: c.textSecondary, lineHeight: 16 },
   filterBtn: {
     width: 44, height: 44, borderWidth: 1, borderColor: c.border,
     borderRadius: 8, backgroundColor: c.card,
@@ -758,67 +735,89 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   filterChipText: { fontSize: 12, color: c.textSecondary },
   clearAllText: { fontSize: 12, color: ORANGE, fontWeight: '600' },
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sectionSubtitle: { fontSize: 11, color: c.textSecondary, marginBottom: 16, lineHeight: 16 },
+
+  locBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.accentSoft, borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 9, marginBottom: 14,
+  },
+  locBannerWarn: { backgroundColor: c.card, borderWidth: 1, borderColor: c.border },
+  locBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textPrimary, lineHeight: 16 },
+  locBannerAction: { fontSize: 12, fontWeight: '800', color: ORANGE },
+
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60, gap: 12 },
   loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  tripCard: {
-    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 16,
-    borderWidth: 1, borderColor: c.border,
+  /* Provider card: same look as the delivery cards on the Activity tab */
+  pcCard: {
+    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 5, elevation: 2,
+    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 8, elevation: 2,
+    borderWidth: 1, borderColor: c.border,
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
-  avatarCircle: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#D97706',
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+  pcHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  pcHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8, flexShrink: 1 },
+  pcTypeBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, flexShrink: 1 },
+  pcTypeText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  pcStatusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4, flexShrink: 1 },
+  pcStatusText: { fontSize: 11, fontWeight: '800' },
+  pcDistChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.background,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: c.divider,
   },
-  providerInfo: { flex: 1 },
-  providerName: { fontSize: 14, fontWeight: '700', color: c.textPrimary, marginBottom: 4 },
-  badgesRow: { flexDirection: 'row', alignItems: 'center' },
-  statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12 },
-  statusActive: { backgroundColor: '#A3E635' },
-  statusOffline: { backgroundColor: isDark ? '#4B5563' : '#D1D5DB' },
-  statusText: { fontSize: 10, fontWeight: '600', color: '#111827' },
-  ratingText: { fontSize: 12, fontWeight: '600', color: c.textPrimary, marginRight: 8 },
-  chatIcon: {
-    width: 22, height: 22, borderRadius: 11, borderWidth: 1, borderColor: c.border,
-    justifyContent: 'center', alignItems: 'center',
+  pcDistText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
+
+  pcRouteBox: {
+    backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
+    marginBottom: 12, borderWidth: 1, borderColor: c.divider,
   },
-  routeSection: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  timeline: { flex: 1, paddingRight: 16 },
-  timelinePoint: { flexDirection: 'row', alignItems: 'center' },
-  blueDot: {
-    width: 14, height: 14, borderRadius: 7, borderWidth: 3, borderColor: '#3B82F6',
-    justifyContent: 'center', alignItems: 'center', marginRight: 8,
+  pcRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  pcDotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
+  pcDotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary },
+  pcConnector: { width: 2, height: 10, backgroundColor: c.border, marginLeft: 3, marginVertical: 3 },
+  pcRouteText: { fontSize: 14, fontWeight: '600', color: c.textPrimary, flex: 1 },
+
+  pcContextRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
+  pcDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1 },
+  pcContextText: { fontSize: 12, color: c.textSecondary, fontWeight: '600', flexShrink: 1 },
+  pcProviderPill: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.successBg,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 5,
+    borderWidth: 1, borderColor: c.success, flexShrink: 1,
   },
-  blueDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#3B82F6' },
-  timelineLine: { width: 1, height: 16, backgroundColor: c.border, marginLeft: 6, marginVertical: 4 },
-  timelineText: { fontSize: 12, color: c.textPrimary },
-  miniMap: {
-    width: 80, height: 60, backgroundColor: c.divider,
-    borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: c.border,
+  pcProviderText: { fontSize: 11, fontWeight: '700', color: c.success },
+
+  pcFooter: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
   },
-  divider: { height: 1, backgroundColor: c.border, marginBottom: 12 },
-  cardFooter: { flexDirection: 'row', justifyContent: 'space-between' },
-  footerLeft: { flex: 1 },
-  footerRight: { alignItems: 'flex-end' },
-  footerLabel: { fontSize: 9, color: c.textSecondary, marginBottom: 2 },
-  acceptsText: { fontSize: 11, fontWeight: '600', color: c.textPrimary, marginBottom: 8 },
-  timeRow: { flexDirection: 'row', alignItems: 'center' },
-  timeText: { fontSize: 12, fontWeight: '700', color: c.textPrimary, marginLeft: 4 },
-  estimateText: { fontSize: 11, fontWeight: '700', color: c.textPrimary, marginBottom: 8 },
-  bookBtnText: { fontSize: 12, fontWeight: '600', color: ORANGE },
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 60 },
+  pcRating: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  pcRatingText: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  pcButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pcTrackBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#7C3AED',
+    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, gap: 6,
+  },
+  pcRequestBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
+    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, gap: 6,
+  },
+  pcBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },
   emptyText: { fontSize: 16, fontWeight: '600', color: c.textSecondary, marginTop: 12 },
   emptySubtext: { fontSize: 13, color: c.textMuted, marginTop: 4, textAlign: 'center' },
+  emptyAction: {
+    marginTop: 16, paddingHorizontal: 18, paddingVertical: 10,
+    borderRadius: 20, borderWidth: 1.5, borderColor: ORANGE,
+  },
+  emptyActionText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   filterModal: {
     backgroundColor: c.card, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: 24, maxHeight: height * 0.6,
+    padding: 24, maxHeight: height * 0.7,
   },
   filterModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   filterModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary },
@@ -832,78 +831,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   filterOptionActive: { borderColor: ORANGE, backgroundColor: c.accentSoft },
   filterOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
   filterOptionTextActive: { color: ORANGE, fontWeight: '700' },
+  filterHint: { fontSize: 11, color: c.textMuted, marginTop: 8 },
   applyFiltersBtn: { backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 14, alignItems: 'center', marginTop: 10 },
   applyFiltersBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
   resetFiltersBtn: { paddingVertical: 12, alignItems: 'center' },
   resetFiltersBtnText: { color: c.textSecondary, fontWeight: '600', fontSize: 14 },
-
-  bottomSheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: 24, maxHeight: height * 0.9,
-  },
-  modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 8 },
-  modalDesc: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginBottom: 20 },
-  shipmentHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  orangeBoxIcon: {
-    width: 36, height: 36, borderRadius: 8, backgroundColor: '#F59E0B',
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
-    transform: [{ rotate: '-10deg' }],
-  },
-  shipmentHeader: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: c.textPrimary, marginBottom: 6 },
-  sizeSelectorRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  sizeBox: {
-    flex: 1, backgroundColor: c.divider, borderRadius: 8, height: 80,
-    justifyContent: 'center', alignItems: 'center', marginHorizontal: 4,
-    borderWidth: 2, borderColor: 'transparent',
-  },
-  sizeBoxActive: { backgroundColor: c.accentSoft, borderColor: ORANGE },
-  sizeText: { fontSize: 10, fontWeight: '600', color: c.textPrimary, marginTop: 6 },
-  textInput: {
-    backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
-    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 14, color: c.textPrimary, marginBottom: 16,
-  },
-  fragileRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 20 },
-  fragileText: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-  totalLabel: { fontSize: 14, color: c.textSecondary },
-  totalPrice: { fontSize: 18, fontWeight: '700', color: c.textPrimary },
-  sendRequestBtn: { backgroundColor: '#A3E635', borderRadius: 30, paddingVertical: 16, alignItems: 'center' },
-  sendRequestBtnText: { color: '#064E3B', fontSize: 15, fontWeight: '600' },
-
-  locationRow: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    borderWidth: 1, borderColor: c.border, borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 12, marginBottom: 16, gap: 10,
-  },
-  locationDot: {
-    width: 14, height: 14, borderRadius: 7, borderWidth: 3,
-    borderColor: '#3B82F6',
-    justifyContent: 'center', alignItems: 'center',
-  },
-  locationDotInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#3B82F6' },
-  locationText: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
-  locationCoords: { fontSize: 10, color: c.textMuted, marginTop: 2, fontWeight: '500' },
-
-  imagePickerRow: {
-    height: 100, borderRadius: 12, borderWidth: 1.5, borderStyle: 'dashed',
-    borderColor: c.border, backgroundColor: c.background,
-    marginBottom: 16, overflow: 'hidden', position: 'relative',
-  },
-  imagePickerEmpty: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 4 },
-  imagePreview: { width: '100%', height: '100%', resizeMode: 'cover' },
-  imagePickerOverlay: {
-    position: 'absolute', bottom: 8, right: 8,
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(17,24,39,0.75)',
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
-  },
-  imagePickerOverlayText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
-  imagePickerEmptyIcon: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center', marginBottom: 6,
-  },
-  imagePickerEmptyText: { fontSize: 12, color: c.textPrimary, fontWeight: '700' },
-  imagePickerEmptyHint: { fontSize: 10, color: c.textMuted, fontWeight: '500', marginTop: 2 },
 });

@@ -8,7 +8,6 @@ import {
   StatusBar,
   Animated,
   Easing,
-  Image,
   Platform,
   ScrollView,
   Alert,
@@ -64,6 +63,65 @@ const titleForType = (type: string, fallback: string): string => {
   return fallback;
 };
 
+/* ------------------ static content (edit freely) ------------------ */
+const STEPS = [
+  { icon: 'search-outline', title: 'Find a provider', text: 'Open Explore to see providers traveling near your location.' },
+  { icon: 'flash-outline', title: 'Send Now or Schedule', text: 'Tap Send Package Now for an instant booking, or Schedule a Delivery to plan a future date.' },
+  { icon: 'navigate-outline', title: 'Track your delivery', text: 'Follow your package in Activity until it is confirmed delivered.' },
+] as const;
+
+const APP_UPDATES = [
+  { icon: 'camera-outline', tag: 'New', title: 'Live selfie verification', text: 'Providers now take a live selfie when they register, for safer deliveries.' },
+  { icon: 'shield-checkmark-outline', tag: 'New', title: 'Dispute Center', text: 'Report a problem with a delivery and follow it until it is resolved.' },
+  { icon: 'moon-outline', tag: 'Update', title: 'Light & dark mode', text: 'The app now follows your theme and matches your phone’s navigation bar.' },
+] as const;
+
+const GUIDES = [
+  {
+    icon: 'cube-outline', title: 'How to prepare your package',
+    points: [
+      'Use a sturdy box and seal every seam with strong tape.',
+      'Wrap fragile items in bubble wrap or soft cloth and fill empty space so nothing shifts.',
+      'Mark the box fragile in the app so your provider handles it with care.',
+      'Add a clear photo of the packed box before you send the request.',
+    ],
+  },
+  {
+    icon: 'scale-outline', title: 'Choosing a box size and weight',
+    points: [
+      'Pick Small, Medium or Large based on your box, not on how heavy it is.',
+      'Enter the real weight. Each provider’s vehicle has a maximum load, and heavier packages cannot be matched.',
+      'If you are between sizes, choose the bigger one to avoid problems at pickup.',
+    ],
+  },
+  {
+    icon: 'walk-outline', title: 'Curb-side vs Door-to-door',
+    points: [
+      'Curb-side Drop-off: the provider meets you at the pickup point and leaves the package at the drop-off point.',
+      'Door-to-door: the provider collects from and delivers to the door.',
+      'Be reachable at the pickup point a few minutes before the departure time.',
+    ],
+  },
+  {
+    icon: 'warning-outline', title: 'Items you should not send', danger: true,
+    points: [
+      'Illegal or restricted goods, weapons and anything dangerous.',
+      'Flammable, explosive or hazardous materials.',
+      'Cash, valuables and documents you cannot afford to lose.',
+      'Live animals and perishable food that cannot survive the trip.',
+    ],
+  },
+] as const;
+
+const FAQS = [
+  { q: 'How do I book a delivery?', a: 'Open the Explore tab. Tap Send Package Now for an instant booking or Schedule a Delivery to plan ahead, then set your pickup and drop-off points and describe your package. You can also book one of the providers listed near you.' },
+  { q: 'What is the difference between Send Now and Schedule?', a: 'Send Package Now books a delivery right away. Schedule a Delivery lets you choose a future date and time for your shipment.' },
+  { q: 'Why do I see providers near me?', a: 'Explore lists providers whose trips start close to your location, so your package rides along a route they are already making. That keeps the cost lower than a dedicated courier.' },
+  { q: 'How is the price estimated?', a: 'The estimate depends on the box size and the provider’s vehicle. You can see the estimate on each provider’s card before you send a request.' },
+  { q: 'What if my package is late or damaged?', a: 'Report it from the Dispute Center. Add details and photos so the team can review the case.' },
+  { q: 'Who are the providers?', a: 'Providers are registered providers who submitted an ID, a live selfie and their vehicle details for verification before they could accept deliveries.' },
+] as const;
+
 export default function HomeScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
@@ -80,6 +138,9 @@ export default function HomeScreen() {
   const [fullListOpen, setFullListOpen] = useState(false);
 
   const notifChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+
+  const [openGuide, setOpenGuide] = useState<number | null>(null);
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
 
   /* ------------------ user + notifications ------------------ */
   useEffect(() => {
@@ -151,9 +212,10 @@ export default function HomeScreen() {
 
   /* ------------------ animations ------------------ */
   const headerAnim = useRef(new Animated.Value(0)).current;
-  const actionsAnim = useRef(new Animated.Value(0)).current;
-  const promoAnim = useRef(new Animated.Value(0)).current;
-  const tipsAnim = useRef(new Animated.Value(0)).current;
+  const stepsAnim = useRef(new Animated.Value(0)).current;
+  const updatesAnim = useRef(new Animated.Value(0)).current;
+  const guidesAnim = useRef(new Animated.Value(0)).current;
+  const faqAnim = useRef(new Animated.Value(0)).current;
   const bellPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -166,9 +228,10 @@ export default function HomeScreen() {
 
     Animated.stagger(100, [
       animate(headerAnim, 0),
-      animate(actionsAnim, 0),
-      animate(promoAnim, 0),
-      animate(tipsAnim, 0),
+      animate(stepsAnim, 0),
+      animate(updatesAnim, 0),
+      animate(guidesAnim, 0),
+      animate(faqAnim, 0),
     ]).start();
 
     const pulse = Animated.loop(
@@ -179,14 +242,12 @@ export default function HomeScreen() {
     );
     pulse.start();
     return () => pulse.stop();
-  }, [headerAnim, actionsAnim, promoAnim, tipsAnim, bellPulse]);
+  }, [headerAnim, stepsAnim, updatesAnim, guidesAnim, faqAnim, bellPulse]);
 
   /* ------------------ handlers ------------------ */
-  const handleSendPackage = () => {
-    navigation.navigate('DropoffType', { mode: 'sendNow' });
-  };
-  const handleScheduleDelivery = () => {
-    navigation.navigate('DropoffType', { mode: 'schedule' });
+  // Booking now lives on the Explore tab; Home only points the way.
+  const goToExplore = (mode?: 'sendNow' | 'schedule') => {
+    (navigation as any).navigate('Explore', mode ? { mode, ts: Date.now() } : undefined);
   };
   const handleOpenNotifs = () => {
     setNotifModalOpen(true);
@@ -221,10 +282,6 @@ export default function HomeScreen() {
     if (!handled) {
       Alert.alert(n.title || 'Notification', n.body || '');
     }
-  };
-
-  const handleContentTap = (title: string) => {
-    Alert.alert(title, 'This feature will be available in a future update.');
   };
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
@@ -344,7 +401,7 @@ export default function HomeScreen() {
         <Animated.View style={[styles.header, fadeUp(headerAnim, -10)]}>
           <View style={styles.greetingTextContainer}>
             <Text style={styles.greetingTitle}>Hello, {userName} 👋</Text>
-            <Text style={styles.greetingSubtitle}>Ready to send a package today?</Text>
+            <Text style={styles.greetingSubtitle}>Learn how to ship smarter with Pack-N-Ship</Text>
           </View>
 
           <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }} pointerEvents="box-none">
@@ -364,146 +421,106 @@ export default function HomeScreen() {
           </Animated.View>
         </Animated.View>
 
-        {/* ACTIONS SECTION */}
-        <Animated.View style={[styles.actionContainer, fadeUp(actionsAnim)]}>
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionCardPrimary]}
-            onPress={handleSendPackage}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.actionIconContainer, styles.actionIconPrimary]}>
-              <Image
-                source={require('../../../../assets/send-package-now.png')}
-                style={styles.actionCustomIcon}
-                resizeMode="contain"
-              />
+        {/* HOW IT WORKS */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(stepsAnim)]}>
+          <Text style={styles.sectionTitle}>How Pack-N-Ship Works</Text>
+          <View style={styles.stepsCard}>
+            {STEPS.map((st, i) => (
+              <View key={st.title} style={styles.stepRow}>
+                <View style={styles.stepNumber}><Text style={styles.stepNumberText}>{i + 1}</Text></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.stepTitle}>{st.title}</Text>
+                  <Text style={styles.stepText}>{st.text}</Text>
+                </View>
+                <Ionicons name={st.icon} size={20} color={ORANGE} />
+              </View>
+            ))}
+            <View style={styles.stepsLinks}>
+              <TouchableOpacity style={styles.stepsLink} onPress={() => goToExplore('sendNow')} activeOpacity={0.85}>
+                <Ionicons name="flash" size={14} color={ORANGE} />
+                <Text style={styles.stepsLinkText}>Send Now</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.stepsLink} onPress={() => goToExplore('schedule')} activeOpacity={0.85}>
+                <Ionicons name="calendar-outline" size={14} color={ORANGE} />
+                <Text style={styles.stepsLinkText}>Schedule</Text>
+              </TouchableOpacity>
+              <Text style={styles.stepsLinksHint}>Both are in Explore</Text>
             </View>
-            <View style={styles.actionTextContainer}>
-              <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
-              <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
-            </View>
-            <View style={styles.chevronPrimary}>
-              <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
-            </View>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.actionCard, styles.actionCardSecondary]}
-            onPress={handleScheduleDelivery}
-            activeOpacity={0.85}
-          >
-            <View style={styles.actionIconContainer}>
-              <Image
-                source={require('../../../../assets/schedule-delivery-calendar.png')}
-                style={styles.actionCustomIcon}
-                resizeMode="contain"
-              />
-            </View>
-            <View style={styles.actionTextContainer}>
-              <Text style={styles.actionTitle}>Schedule a Delivery</Text>
-              <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
+          </View>
         </Animated.View>
 
-        {/* PROMOTIONS SECTION */}
-        <Animated.View style={[styles.sectionContainer, fadeUp(promoAnim)]}>
-          <Text style={styles.sectionTitle}>Special Offers</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.promoScrollContainer}
-          >
-            <TouchableOpacity
-              style={[styles.promoCard, isDark ? styles.promoCardAmberDark : styles.promoCardAmberLight]}
-              activeOpacity={0.85}
-              onPress={() => handleContentTap('20% Off Promotion')}
-            >
-              <View style={[styles.promoIconWrap, { backgroundColor: isDark ? '#3A2411' : '#FFEDD5' }]}>
-                <Ionicons name="ticket" size={24} color={isDark ? '#FDBA74' : '#EA580C'} />
+        {/* APP UPDATES */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(updatesAnim)]}>
+          <Text style={styles.sectionTitle}>What’s New</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.updateScroll}>
+            {APP_UPDATES.map((u) => (
+              <View key={u.title} style={styles.updateCard}>
+                <View style={styles.updateTop}>
+                  <View style={styles.updateIconWrap}>
+                    <Ionicons name={u.icon} size={20} color={ORANGE} />
+                  </View>
+                  <View style={styles.updateTag}><Text style={styles.updateTagText}>{u.tag}</Text></View>
+                </View>
+                <Text style={styles.updateTitle}>{u.title}</Text>
+                <Text style={styles.updateText}>{u.text}</Text>
               </View>
-              <View>
-                <Text style={styles.promoTitle}>20% Off First Delivery</Text>
-                <Text style={styles.promoSub}>Use code WELCOME20</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.promoCard, isDark ? styles.promoCardGreenDark : styles.promoCardGreenLight]}
-              activeOpacity={0.85}
-              onPress={() => handleContentTap('Free Priority Matching')}
-            >
-              <View style={[styles.promoIconWrap, { backgroundColor: isDark ? '#0F2A1F' : '#DCFCE7' }]}>
-                <Ionicons name="flash" size={24} color={isDark ? '#34D399' : '#16A34A'} />
-              </View>
-              <View>
-                <Text style={styles.promoTitle}>Fast Track Upgrade</Text>
-                <Text style={styles.promoSub}>Free priority courier matching</Text>
-              </View>
-            </TouchableOpacity>
+            ))}
           </ScrollView>
         </Animated.View>
 
-        {/* SHIPPING TIPS SECTION */}
-        <Animated.View style={[styles.sectionContainer, fadeUp(tipsAnim)]}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitleNoPad}>Shipping Tips & Guides</Text>
-            <TouchableOpacity onPress={() => handleContentTap('All Tips')}>
-              <Text style={styles.seeAllText}>See all</Text>
-            </TouchableOpacity>
-          </View>
+        {/* PACKING & SHIPPING GUIDES */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(guidesAnim)]}>
+          <Text style={styles.sectionTitle}>Shipping Guides</Text>
+          {GUIDES.map((g, i) => {
+            const open = openGuide === i;
+            const danger = 'danger' in g && g.danger;
+            return (
+              <View key={g.title} style={styles.tipCard}>
+                <TouchableOpacity
+                  style={styles.accordionHead}
+                  onPress={() => setOpenGuide(open ? null : i)}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.tipIconWrap}>
+                    <Ionicons name={g.icon} size={20} color={danger ? colors.error : ORANGE} />
+                  </View>
+                  <Text style={[styles.tipTitle, { flex: 1, marginBottom: 0 }]}>{g.title}</Text>
+                  <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+                {open && (
+                  <View style={styles.accordionBody}>
+                    {g.points.map((p) => (
+                      <View key={p} style={styles.bulletRow}>
+                        <View style={[styles.bulletDot, danger && { backgroundColor: colors.error }]} />
+                        <Text style={styles.bulletText}>{p}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </Animated.View>
 
-          <TouchableOpacity
-            style={styles.tipCard}
-            activeOpacity={0.8}
-            onPress={() => handleContentTap('Packing Fragile Items')}
-          >
-            <View style={styles.tipIconWrap}>
-              <Ionicons name="cube-outline" size={20} color={ORANGE} />
-            </View>
-            <View style={styles.tipTextWrap}>
-              <Text style={styles.tipTitle}>How to Pack Fragile Items</Text>
-              <Text style={styles.tipSub} numberOfLines={2}>
-                Use adequate bubble wrap and secure the corners to prevent any damage during transit.
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.tipCard}
-            activeOpacity={0.8}
-            onPress={() => handleContentTap('Weight Guidelines')}
-          >
-            <View style={styles.tipIconWrap}>
-              <Ionicons name="scale-outline" size={20} color={ORANGE} />
-            </View>
-            <View style={styles.tipTextWrap}>
-              <Text style={styles.tipTitle}>Understanding Weight Guidelines</Text>
-              <Text style={styles.tipSub} numberOfLines={2}>
-                Ensure your package weight is accurate to avoid unexpected extra charges.
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.tipCard}
-            activeOpacity={0.8}
-            onPress={() => handleContentTap('Prohibited Items')}
-          >
-            <View style={styles.tipIconWrap}>
-              <Ionicons name="warning-outline" size={20} color={colors.error} />
-            </View>
-            <View style={styles.tipTextWrap}>
-              <Text style={styles.tipTitle}>Prohibited Delivery Items</Text>
-              <Text style={styles.tipSub} numberOfLines={2}>
-                Review the list of items that our courier partners are not allowed to transport.
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-          </TouchableOpacity>
+        {/* FAQ */}
+        <Animated.View style={[styles.sectionContainer, fadeUp(faqAnim)]}>
+          <Text style={styles.sectionTitle}>Frequently Asked Questions</Text>
+          {FAQS.map((f, i) => {
+            const open = openFaq === i;
+            return (
+              <View key={f.q} style={styles.tipCard}>
+                <TouchableOpacity
+                  style={styles.accordionHead}
+                  onPress={() => setOpenFaq(open ? null : i)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.tipTitle, { flex: 1, marginBottom: 0, paddingRight: 8 }]}>{f.q}</Text>
+                  <Ionicons name={open ? 'remove' : 'add'} size={20} color={ORANGE} />
+                </TouchableOpacity>
+                {open && <Text style={styles.faqAnswer}>{f.a}</Text>}
+              </View>
+            );
+          })}
         </Animated.View>
       </ScrollView>
 
@@ -552,100 +569,81 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   notificationBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
-  /* ── Action Cards ──────────────────────────────────── */
-  actionContainer: { paddingHorizontal: 24, marginBottom: 28 },
-  actionCard: {
-    flexDirection: 'row', alignItems: 'center',
-    borderRadius: 18, paddingVertical: 18, paddingHorizontal: 16,
-    marginBottom: 14, minHeight: 80,
-  },
-  actionCardPrimary: {
-    backgroundColor: ORANGE, borderWidth: 0,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 12, elevation: 6,
-  },
-  actionCardSecondary: {
-    backgroundColor: c.card,
-    borderWidth: 1.5, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
-    shadowRadius: 6, elevation: 2,
-  },
-  actionIconContainer: {
-    width: 52, height: 52, borderRadius: 14,
-    backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center',
-    marginRight: 14,
-    borderWidth: 1, borderColor: ORANGE,
-  },
-  actionIconPrimary: {
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderColor: 'rgba(255,255,255,0.35)',
-  },
-  actionCustomIcon: { width: 28, height: 28 },
-  actionTextContainer: { flex: 1, paddingRight: 8 },
-  actionTitlePrimary: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
-  actionSubtitlePrimary: { color: 'rgba(255,255,255,0.88)', fontSize: 13, marginTop: 3, fontWeight: '400' },
-  actionTitle: { color: c.textPrimary, fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
-  actionSubtitle: { color: c.textSecondary, fontSize: 13, marginTop: 3, fontWeight: '400' },
-  chevronPrimary: {
-    width: 32, height: 32, borderRadius: 16,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    justifyContent: 'center', alignItems: 'center',
-  },
-
-  /* ── Bottom Content Sections ───────────────────────── */
+  /* ── Sections ──────────────────────────────────────── */
   sectionContainer: { marginBottom: 28 },
-  sectionHeaderRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 24, marginBottom: 14,
-  },
   sectionTitle: {
     fontSize: 18, fontWeight: '800', color: c.textPrimary,
     letterSpacing: -0.4, paddingHorizontal: 24, marginBottom: 14,
   },
-  sectionTitleNoPad: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
-  },
-  seeAllText: { fontSize: 14, fontWeight: '700', color: ORANGE },
 
-  /* Promotions */
-  promoScrollContainer: { paddingHorizontal: 24, gap: 12 },
-  promoCard: {
-    flexDirection: 'row', alignItems: 'center',
-    borderWidth: 1, borderRadius: 16, padding: 16, width: 260,
+  /* How it works */
+  stepsCard: {
+    marginHorizontal: 24, backgroundColor: c.card, borderRadius: 18,
+    borderWidth: 1, borderColor: c.border, padding: 16, gap: 14,
   },
-  promoCardAmberLight: { backgroundColor: '#FFF7ED', borderColor: '#FFE4D2' },
-  promoCardAmberDark: { backgroundColor: '#2A1A0E', borderColor: '#5A3418' },
-  promoCardGreenLight: { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' },
-  promoCardGreenDark: { backgroundColor: '#0F2A1F', borderColor: '#1F5138' },
-  promoIconWrap: {
-    width: 44, height: 44, borderRadius: 12,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  stepNumber: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
   },
-  promoTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  promoSub: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
+  stepNumberText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  stepTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginBottom: 2 },
+  stepText: { fontSize: 12, color: c.textSecondary, lineHeight: 16 },
+  stepsLinks: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    borderTopWidth: 1, borderTopColor: c.divider, paddingTop: 12,
+  },
+  stepsLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    borderWidth: 1.5, borderColor: ORANGE, borderRadius: 16,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  stepsLinkText: { color: ORANGE, fontWeight: '800', fontSize: 12 },
+  stepsLinksHint: { flex: 1, textAlign: 'right', fontSize: 11, color: c.textMuted, fontWeight: '600' },
 
-  /* Shipping Tips */
+  /* What's new */
+  updateScroll: { paddingHorizontal: 24, gap: 12 },
+  updateCard: {
+    width: 250, backgroundColor: c.card, borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: c.border,
+  },
+  updateTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  updateIconWrap: {
+    width: 40, height: 40, borderRadius: 12, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  updateTag: { backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
+  updateTagText: { color: ORANGE, fontSize: 10, fontWeight: '800' },
+  updateTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  updateText: { fontSize: 12, color: c.textSecondary, lineHeight: 17 },
+
+  /* Guides + FAQ accordions */
   tipCard: {
-    flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.card,
     borderWidth: 1, borderColor: c.border,
-    borderRadius: 16, padding: 16,
+    borderRadius: 16, padding: 14,
     marginHorizontal: 24, marginBottom: 10,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
     shadowRadius: 4, elevation: 1,
   },
+  accordionHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   tipIconWrap: {
-    width: 44, height: 44, borderRadius: 12,
-    backgroundColor: c.accentSoft,
+    width: 40, height: 40, borderRadius: 12, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
-    marginRight: 14,
   },
-  tipTextWrap: { flex: 1, paddingRight: 12 },
   tipTitle: { fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 4 },
-  tipSub: { fontSize: 12, color: c.textSecondary, lineHeight: 16 },
+  accordionBody: {
+    marginTop: 12, paddingTop: 12, gap: 8,
+    borderTopWidth: 1, borderTopColor: c.divider,
+  },
+  bulletRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  bulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: ORANGE, marginTop: 6 },
+  bulletText: { flex: 1, fontSize: 13, color: c.textSecondary, lineHeight: 19 },
+  faqAnswer: {
+    fontSize: 13, color: c.textSecondary, lineHeight: 19,
+    marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
+  },
 
   /* ── Notification modal ─────────────────────────────── */
   modalBackdrop: {
