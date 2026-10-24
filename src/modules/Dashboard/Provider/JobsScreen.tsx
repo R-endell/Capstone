@@ -11,6 +11,7 @@ import { WebView } from 'react-native-webview';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
@@ -22,6 +23,8 @@ import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+
+const GOOGLE_MAPS_API_KEY = 'AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg';
 
 interface Location {
   location_id?: number;
@@ -255,7 +258,7 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap — plain OpenStreetMap light tiles only                      */
+/* RouteMap — Google Maps JavaScript API                                */
 /* ==================================================================== */
 const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
   const lat = startLat ?? endLat ?? 10.3157;
@@ -266,50 +269,92 @@ const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLab
     <html>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}"></script>
         <style>
           html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-          .marker-start { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
-          .marker-end { background: #111827; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
         </style>
       </head>
       <body>
         <div id="map"></div>
         <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${lat}, ${lng}], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+          function initMap() {
+            var centerLoc = { lat: ${lat}, lng: ${lng} };
+            var map = new google.maps.Map(document.getElementById('map'), {
+              center: centerLoc,
+              zoom: 13,
+              disableDefaultUI: true,
+              draggable: false,
+              scrollwheel: false,
+              disableDoubleClickZoom: true
+            });
 
-          ${startLat && startLng ? `
-            L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: '${startLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
-          ${endLat && endLng ? `
-            L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: '${endLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
+            var directionsService = new google.maps.DirectionsService();
+            var directionsRenderer = new google.maps.DirectionsRenderer({
+              map: map,
+              suppressMarkers: true,
+              polylineOptions: {
+                strokeColor: '#FF751F',
+                strokeWeight: 5,
+                strokeOpacity: 0.85
+              }
+            });
 
-          ${startLat && startLng && endLat && endLng ? `
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + ${startLng} + ',' + ${startLat} + ';'
-              + ${endLng} + ',' + ${endLat}
-              + '?overview=full&geometries=geojson';
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
+            ${startLat && startLng ? `
+              new google.maps.Marker({
+                position: { lat: ${startLat}, lng: ${startLng} },
+                map: map,
+                label: { text: '${startLabel}', color: 'white', fontWeight: 'bold' },
+                icon: {
+                  path: google.maps.SymbolPath.CIRCLE,
+                  scale: 12,
+                  fillColor: '#FF751F',
+                  fillOpacity: 1,
+                  strokeColor: 'white',
+                  strokeWeight: 3
                 }
-              })
-              .catch(function() {
-                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
               });
-          ` : ''}
+            ` : ''}
+
+            ${endLat && endLng ? `
+              new google.maps.Marker({
+                position: { lat: ${endLat}, lng: ${endLng} },
+                map: map,
+                label: { text: '${endLabel}', color: 'white', fontWeight: 'bold' },
+                icon: {
+                  path: google.maps.SymbolPath.CIRCLE,
+                  scale: 12,
+                  fillColor: '#111827',
+                  fillOpacity: 1,
+                  strokeColor: 'white',
+                  strokeWeight: 3
+                }
+              });
+            ` : ''}
+
+            ${startLat && startLng && endLat && endLng ? `
+              directionsService.route({
+                origin: { lat: ${startLat}, lng: ${startLng} },
+                destination: { lat: ${endLat}, lng: ${endLng} },
+                travelMode: 'DRIVING'
+              }, function(response, status) {
+                if (status === 'OK') {
+                  directionsRenderer.setDirections(response);
+                } else {
+                  new google.maps.Polyline({
+                    path: [
+                      { lat: ${startLat}, lng: ${startLng} },
+                      { lat: ${endLat}, lng: ${endLng} }
+                    ],
+                    map: map,
+                    strokeColor: '#FF751F',
+                    strokeWeight: 4,
+                    strokeOpacity: 0.6
+                  });
+                }
+              });
+            ` : ''}
+          }
+          window.onload = initMap;
         </script>
       </body>
     </html>
@@ -329,117 +374,246 @@ const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLab
 };
 
 /* ==================================================================== */
-/* ProviderMap — plain OpenStreetMap light tiles only                   */
+/* ProviderMap — Google Maps JavaScript API                             */
 /* ==================================================================== */
 const PROVIDER_MAP_HTML = `
 <!DOCTYPE html>
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}"></script>
     <style>
       html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-      .me { position: relative; width: 44px; height: 44px; }
-      .me .halo { position: absolute; left: 0; top: 0; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,117,31,0.25); animation: pulse 2s ease-out infinite; }
-      .me .dot { position: absolute; left: 11px; top: 11px; width: 22px; height: 22px; border-radius: 50%; background: #FF751F; border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
-      .me .head { position: absolute; left: 0; top: 0; width: 44px; height: 44px; }
-      .me .head:after { content: ''; position: absolute; left: 17px; top: -4px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 10px solid #FF751F; }
-      @keyframes pulse { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.5); opacity: 0; } }
-      .mk { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font: 700 11px sans-serif; color: #fff; }
-      .mk.p { background: #FF751F; } .mk.d { background: #111827; } .mk.s { background: #3B82F6; } .mk.e { background: #EF4444; }
-      .zone { background: #fff; border-radius: 10px; padding: 2px 7px; font: 800 10px sans-serif; color: #9A4A12; border: 1px solid #FFD2B0; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
     </style>
   </head>
   <body>
     <div id="map"></div>
     <script>
-      var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([10.3157, 123.8854], 14);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
+      var map;
+      var directionsService;
+      var routeDirectionsRenderer;
+      var orderDirectionsRenderer;
+      
       var meMarker = null;
-      var routeLayer = L.layerGroup().addTo(map);
-      var orderLayer = L.layerGroup().addTo(map);
-      var demandLayer = L.layerGroup().addTo(map);
+      var routeStartMarker = null;
+      var routeEndMarker = null;
+      var orderPickupMarker = null;
+      var orderDropoffMarker = null;
+      var providerToPickupLine = null;
+
+      var demandCircles = [];
+      var demandMarkers = [];
+
       var firstFix = true, lastTick = 0, routeKey = '', orderKey = '', demandKey = '';
 
-      function meIcon(h) {
-        var head = (h === null || h === undefined || isNaN(h)) ? '' : '<div class="head" style="transform: rotate(' + h + 'deg)"></div>';
-        return L.divIcon({ className: '', html: '<div class="me"><div class="halo"></div>' + head + '<div class="dot"></div></div>', iconSize: [44, 44], iconAnchor: [22, 22] });
-      }
-      function mk(cls, t) {
-        return L.divIcon({ className: '', html: '<div class="mk ' + cls + '">' + t + '</div>', iconSize: [26, 26], iconAnchor: [13, 13] });
-      }
-      function drawRoad(layer, a, b, style) {
-        var url = 'https://router.project-osrm.org/route/v1/driving/' + a.lng + ',' + a.lat + ';' + b.lng + ',' + b.lat + '?overview=full&geometries=geojson';
-        fetch(url).then(function (r) { return r.json(); }).then(function (d) {
-          if (d.code === 'Ok' && d.routes && d.routes.length) {
-            var pts = d.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
-            L.polyline(pts, style).addTo(layer);
-          } else {
-            L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
-          }
-        }).catch(function () {
-          L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
+      function initMap() {
+        map = new google.maps.Map(document.getElementById('map'), {
+          center: { lat: 10.3157, lng: 123.8854 },
+          zoom: 14,
+          disableDefaultUI: true
+        });
+
+        directionsService = new google.maps.DirectionsService();
+
+        routeDirectionsRenderer = new google.maps.DirectionsRenderer({
+          map: map,
+          suppressMarkers: true,
+          polylineOptions: { strokeColor: '#3B82F6', strokeWeight: 5, strokeOpacity: 0.7 }
+        });
+
+        orderDirectionsRenderer = new google.maps.DirectionsRenderer({
+          map: map,
+          suppressMarkers: true,
+          polylineOptions: { strokeColor: '#FF751F', strokeWeight: 6, strokeOpacity: 0.9 }
         });
       }
-      function fit(points, padBottom) {
-        if (!points.length) return;
-        if (points.length === 1) { map.setView(points[0], 16); return; }
-        map.fitBounds(L.latLngBounds(points), { paddingTopLeft: [30, 170], paddingBottomRight: [30, padBottom || 260], maxZoom: 16 });
+
+      function createBadgeIcon(text, bgColor) {
+        return {
+          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
+            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
+              <circle cx="14" cy="14" r="11" fill="\${bgColor}" stroke="#ffffff" stroke-width="3"/>
+              <text x="14" y="18" font-size="11" font-weight="bold" fill="#ffffff" text-anchor="middle" font-family="sans-serif">\${text}</text>
+            </svg>
+          \`),
+          scaledSize: new google.maps.Size(28, 28),
+          anchor: new google.maps.Point(14, 14)
+        };
+      }
+
+      function createMeIcon(heading) {
+        var rot = (heading !== null && heading !== undefined && !isNaN(heading)) ? heading : 0;
+        return {
+          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
+            <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+              <circle cx="22" cy="22" r="20" fill="rgba(255,117,31,0.25)"/>
+              <g transform="rotate(\${rot} 22 22)">
+                <polygon points="22,8 17,18 27,18" fill="#FF751F"/>
+              </g>
+              <circle cx="22" cy="22" r="11" fill="#FF751F" stroke="#ffffff" stroke-width="3"/>
+            </svg>
+          \`),
+          scaledSize: new google.maps.Size(44, 44),
+          anchor: new google.maps.Point(22, 22)
+        };
+      }
+
+      function clearDemand() {
+        demandCircles.forEach(function(c) { c.setMap(null); });
+        demandMarkers.forEach(function(m) { m.setMap(null); });
+        demandCircles = [];
+        demandMarkers = [];
       }
 
       window.updateState = function (s) {
         try {
           var me = s.provider ? [s.provider.lat, s.provider.lng] : null;
           if (me) {
-            if (!meMarker) meMarker = L.marker(me, { icon: meIcon(s.provider.heading), zIndexOffset: 1000 }).addTo(map);
-            else { meMarker.setLatLng(me); meMarker.setIcon(meIcon(s.provider.heading)); }
+            var pos = { lat: me[0], lng: me[1] };
+            if (!meMarker) {
+              meMarker = new google.maps.Marker({
+                position: pos,
+                map: map,
+                icon: createMeIcon(s.provider.heading),
+                zIndex: 1000
+              });
+            } else {
+              meMarker.setPosition(pos);
+              meMarker.setIcon(createMeIcon(s.provider.heading));
+            }
           }
 
           var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
           if (rk !== routeKey) {
-            routeKey = rk; routeLayer.clearLayers();
+            routeKey = rk;
+            if (routeStartMarker) { routeStartMarker.setMap(null); routeStartMarker = null; }
+            if (routeEndMarker) { routeEndMarker.setMap(null); routeEndMarker = null; }
+            routeDirectionsRenderer.set('directions', null);
+
             if (s.route) {
-              L.marker([s.route.start.lat, s.route.start.lng], { icon: mk('s', 'S') }).addTo(routeLayer);
-              L.marker([s.route.end.lat, s.route.end.lng], { icon: mk('e', 'E') }).addTo(routeLayer);
-              drawRoad(routeLayer, s.route.start, s.route.end, { color: '#3B82F6', weight: 5, opacity: 0.7 });
+              routeStartMarker = new google.maps.Marker({
+                position: { lat: s.route.start.lat, lng: s.route.start.lng },
+                map: map,
+                icon: createBadgeIcon('S', '#3B82F6')
+              });
+              routeEndMarker = new google.maps.Marker({
+                position: { lat: s.route.end.lat, lng: s.route.end.lng },
+                map: map,
+                icon: createBadgeIcon('E', '#EF4444')
+              });
+              directionsService.route({
+                origin: { lat: s.route.start.lat, lng: s.route.start.lng },
+                destination: { lat: s.route.end.lat, lng: s.route.end.lng },
+                travelMode: 'DRIVING'
+              }, function(res, status) {
+                if (status === 'OK') routeDirectionsRenderer.setDirections(res);
+              });
             }
           }
 
           var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
           if (ok !== orderKey) {
-            orderKey = ok; orderLayer.clearLayers();
+            orderKey = ok;
+            if (orderPickupMarker) { orderPickupMarker.setMap(null); orderPickupMarker = null; }
+            if (orderDropoffMarker) { orderDropoffMarker.setMap(null); orderDropoffMarker = null; }
+            if (providerToPickupLine) { providerToPickupLine.setMap(null); providerToPickupLine = null; }
+            orderDirectionsRenderer.set('directions', null);
+
             if (s.order) {
-              L.marker([s.order.pickup.lat, s.order.pickup.lng], { icon: mk('p', 'P') }).addTo(orderLayer);
-              L.marker([s.order.dropoff.lat, s.order.dropoff.lng], { icon: mk('d', 'D') }).addTo(orderLayer);
-              drawRoad(orderLayer, s.order.pickup, s.order.dropoff, { color: '#FF751F', weight: 6, opacity: 0.9 });
-              if (me) L.polyline([me, [s.order.pickup.lat, s.order.pickup.lng]], { color: '#111827', weight: 3, opacity: 0.5, dashArray: '6, 8' }).addTo(orderLayer);
-              var pts = [[s.order.pickup.lat, s.order.pickup.lng], [s.order.dropoff.lat, s.order.dropoff.lng]];
-              if (me) pts.push(me);
-              fit(pts, s.padBottom);
+              var pPos = { lat: s.order.pickup.lat, lng: s.order.pickup.lng };
+              var dPos = { lat: s.order.dropoff.lat, lng: s.order.dropoff.lng };
+
+              orderPickupMarker = new google.maps.Marker({ position: pPos, map: map, icon: createBadgeIcon('P', '#FF751F') });
+              orderDropoffMarker = new google.maps.Marker({ position: dPos, map: map, icon: createBadgeIcon('D', '#111827') });
+
+              directionsService.route({
+                origin: pPos,
+                destination: dPos,
+                travelMode: 'DRIVING'
+              }, function(res, status) {
+                if (status === 'OK') orderDirectionsRenderer.setDirections(res);
+              });
+
+              if (me) {
+                providerToPickupLine = new google.maps.Polyline({
+                  path: [{ lat: me[0], lng: me[1] }, pPos],
+                  map: map,
+                  strokeColor: '#111827',
+                  strokeWeight: 3,
+                  strokeOpacity: 0.5
+                });
+              }
+
+              var bounds = new google.maps.LatLngBounds();
+              bounds.extend(pPos);
+              bounds.extend(dPos);
+              if (me) bounds.extend({ lat: me[0], lng: me[1] });
+              map.fitBounds(bounds, { top: 50, bottom: s.padBottom || 260, left: 30, right: 30 });
             } else if (me) {
-              map.setView(me, 15);
+              map.setCenter({ lat: me[0], lng: me[1] });
+              map.setZoom(15);
             }
           }
 
-          var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) : '';
+          var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) + ',' + s.demand : '';
           if (dk !== demandKey) {
-            demandKey = dk; demandLayer.clearLayers();
-            if (dk) {
-              var zones = [[0.007, 0.005, 1, '1.8x'], [-0.006, 0.008, 0.6, '1.4x'], [0.004, -0.009, 0.8, '1.6x'], [-0.008, -0.005, 0.3, '1.1x']];
-              zones.forEach(function (z) {
-                var c = [me[0] + z[0], me[1] + z[1]];
-                L.circle(c, { radius: 450 + z[2] * 300, color: '#FF751F', weight: 1, fillColor: '#FF751F', fillOpacity: 0.1 + z[2] * 0.2 }).addTo(demandLayer);
-                L.marker(c, { icon: L.divIcon({ className: '', html: '<div class="zone">' + z[3] + ' demand</div>', iconSize: [78, 18], iconAnchor: [39, 9] }) }).addTo(demandLayer);
+            demandKey = dk;
+            clearDemand();
+            if (s.demand && me) {
+              var zones = [
+                { latOff: 0.007, lngOff: 0.005, size: 1, label: '1.8x' },
+                { latOff: -0.006, lngOff: 0.008, size: 0.6, label: '1.4x' },
+                { latOff: 0.004, lngOff: -0.009, size: 0.8, label: '1.6x' },
+                { latOff: -0.008, lngOff: -0.005, size: 0.3, label: '1.1x' }
+              ];
+              zones.forEach(function(z) {
+                var cPos = { lat: me[0] + z.latOff, lng: me[1] + z.lngOff };
+                var circle = new google.maps.Circle({
+                  strokeColor: '#FF751F',
+                  strokeOpacity: 0.8,
+                  strokeWeight: 1,
+                  fillColor: '#FF751F',
+                  fillOpacity: 0.1 + z.size * 0.2,
+                  map: map,
+                  center: cPos,
+                  radius: 450 + z.size * 300
+                });
+                demandCircles.push(circle);
+
+                var zMarker = new google.maps.Marker({
+                  position: cPos,
+                  map: map,
+                  icon: {
+                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
+                      <svg xmlns="http://www.w3.org/2000/svg" width="78" height="24" viewBox="0 0 78 24">
+                        <rect x="1" y="1" width="76" height="22" rx="10" fill="#ffffff" stroke="#FFD2B0" stroke-width="1"/>
+                        <text x="39" y="16" font-size="10" font-weight="800" fill="#9A4A12" text-anchor="middle" font-family="sans-serif">\${z.label} demand</text>
+                      </svg>
+                    \`),
+                    scaledSize: new google.maps.Size(78, 24),
+                    anchor: new google.maps.Point(39, 12)
+                  }
+                });
+                demandMarkers.push(zMarker);
               });
             }
           }
 
-          if (firstFix && me && !s.order) { firstFix = false; map.setView(me, 15); }
-          if (s.tick !== lastTick) { lastTick = s.tick; if (me) map.setView(me, 16, { animate: true }); }
-        } catch (e) {}
+          if (firstFix && me && !s.order) {
+            firstFix = false;
+            map.setCenter({ lat: me[0], lng: me[1] });
+            map.setZoom(15);
+          }
+          if (s.tick !== lastTick) {
+            lastTick = s.tick;
+            if (me) map.setCenter({ lat: me[0], lng: me[1] });
+          }
+        } catch (e) {
+          console.error(e);
+        }
       };
+
+      window.onload = initMap;
     </script>
   </body>
 </html>
@@ -621,7 +795,6 @@ export default function JobsScreen() {
     catch (e) { console.warn('mark read failed', e); }
   };
 
-  // ---- NEW: shared routing ----
   const handleNotifPress = async (n: Notif) => {
     await markNotifRead(n);
     setNotifModalOpen(false);
@@ -1133,11 +1306,6 @@ export default function JobsScreen() {
       { text: 'Accept', onPress: () => doAccept(req) },
     ]);
   };
-
-  const fadeUp = (value: Animated.Value, distance = 24) => ({
-    opacity: value,
-    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
-  });
 
   const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
   const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
@@ -1741,7 +1909,6 @@ export default function JobsScreen() {
           <View style={{ width: 32 }} />
         </View>
         <View style={{ flex: 1 }}>
-          {/* NEW: role="provider" so routing works consistently */}
           <NotificationsList embedded role="provider" />
         </View>
       </View>

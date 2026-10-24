@@ -5,7 +5,7 @@ import {
   Dimensions, ActivityIndicator, Animated, Easing, TextInput, FlatList, Keyboard, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { WebView } from 'react-native-webview';
+import MapView, { PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
@@ -13,6 +13,9 @@ import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#F27024';
+
+// INSERT YOUR API KEY HERE FOR SEARCH & GEOCODING
+const GOOGLE_MAPS_API_KEY = 'AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg';
 
 const CEBU_QUICK_SPOTS = [
   { name: 'IT Park', lat: 10.3288, lon: 123.9065 },
@@ -23,45 +26,6 @@ const CEBU_QUICK_SPOTS = [
   { name: 'USC Talamban', lat: 10.3542, lon: 123.9125 },
 ];
 
-const openStreetMapHtml = `
-  <!DOCTYPE html>
-  <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-      <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-      <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-      <style>
-        body { margin: 0; padding: 0; }
-        #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-      </style>
-    </head>
-    <body>
-      <div id="map"></div>
-      <script>
-        window.map = L.map('map', {zoomControl: false}).setView([10.3157, 123.8854], 16);
-
-        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap contributors',
-          maxZoom: 19
-        }).addTo(window.map);
-
-        window.map.on('movestart', function() {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MOVE_START' }));
-        });
-
-        window.map.on('moveend', function() {
-          var center = window.map.getCenter();
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'MOVE_END',
-            latitude: center.lat,
-            longitude: center.lng
-          }));
-        });
-      </script>
-    </body>
-  </html>
-`;
-
 export default function LocationSelectScreen({ route, navigation }: any) {
   const { type, initialCoords } = route.params;
   const { state, dispatch } = useSchedule();
@@ -69,7 +33,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
-  const webViewRef = useRef<WebView>(null);
+  
+  const mapRef = useRef<MapView>(null);
 
   const [markerCoord, setMarkerCoord] = useState({
     latitude: initialCoords?.latitude || 10.3157,
@@ -82,7 +47,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const [locating, setLocating] = useState(false);
   const [isDraggingMap, setIsDraggingMap] = useState(false);
 
-  // Structured address state to prevent null columns in the database
   const [structuredAddress, setStructuredAddress] = useState({
     street_address: '',
     barangay: '',
@@ -138,39 +102,44 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }],
   });
 
+  // Google Maps Reverse Geocoding
   const reverseGeocode = async (coords: { latitude: number; longitude: number }) => {
-    // 1. Try Nominatim FIRST for better granular data in the Philippines (barangays)
     try {
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.latitude}&lon=${coords.longitude}&addressdetails=1`,
-        { headers: { 'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)' } }
+        `https://maps.googleapis.com/maps/api/geocode/json?latlng=${coords.latitude},${coords.longitude}&key=${GOOGLE_MAPS_API_KEY}`
       );
       const json = await response.json();
       
-      if (json && json.address) {
-        const a = json.address;
-        const streetParts = [a.house_number, a.road].filter(Boolean);
-        const street = streetParts.length > 0 ? streetParts.join(' ') : (json.display_name ? json.display_name.split(',')[0] : 'Selected Location');
-        
-        const subParts = [a.suburb || a.neighbourhood, a.city || a.town || a.municipality, a.state].filter(Boolean).join(', ');
+      if (json.status === 'OK' && json.results.length > 0) {
+        const result = json.results[0];
+        const components = result.address_components;
+
+        const getComponent = (type: string) => 
+          components.find((c: any) => c.types.includes(type))?.long_name || '';
+
+        const street = getComponent('route') || result.formatted_address.split(',')[0];
+        const barangay = getComponent('sublocality') || getComponent('neighborhood') || 'Unknown';
+        const city = getComponent('locality') || getComponent('administrative_area_level_2') || 'Unknown';
+        const province = getComponent('administrative_area_level_1') || 'Unknown';
+        const zip = getComponent('postal_code') || '0000';
 
         setAddressName(street);
-        setAddressSub(subParts || json.display_name || '');
+        setAddressSub(result.formatted_address);
         
         setStructuredAddress({
           street_address: street,
-          barangay: a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown',
-          city: a.city || a.town || a.municipality || 'Unknown',
-          province: a.state || a.state_district || a.county || a.province || a.region || 'Unknown',
-          zip_code: (a.postcode && a.postcode.length === 4) ? a.postcode : '0000',
+          barangay,
+          city,
+          province,
+          zip_code: zip,
         });
         return;
       }
     } catch (err) {
-      console.warn('Nominatim reverse geocode failed, falling back to expo-location', err);
+      console.warn('Google Geocode failed, falling back to expo-location', err);
     }
 
-    // 2. Fallback to expo-location if Nominatim fails
+    // Fallback to expo-location
     try {
       const [addr] = await Location.reverseGeocodeAsync(coords);
       if (addr) {
@@ -218,14 +187,13 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
       setMarkerCoord(newCoords);
       reverseGeocode(newCoords);
-      if (webViewRef.current) {
-        webViewRef.current.injectJavaScript(`
-          if (window.map) {
-            window.map.setView([${newCoords.latitude}, ${newCoords.longitude}], 16);
-          }
-          true;
-        `);
-      }
+      
+      mapRef.current?.animateToRegion({
+        latitude: newCoords.latitude,
+        longitude: newCoords.longitude,
+        latitudeDelta: 0.005,
+        longitudeDelta: 0.005,
+      });
     })();
   }, [type, initialCoords]);
 
@@ -236,14 +204,13 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       const newCoords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
       setMarkerCoord(newCoords);
       reverseGeocode(newCoords);
-      if (webViewRef.current) {
-        webViewRef.current.injectJavaScript(`
-          if (window.map) {
-            window.map.setView([${newCoords.latitude}, ${newCoords.longitude}], 16);
-          }
-          true;
-        `);
-      }
+      
+      mapRef.current?.animateToRegion({
+        latitude: newCoords.latitude,
+        longitude: newCoords.longitude,
+        latitudeDelta: 0.005,
+        longitudeDelta: 0.005,
+      });
     } catch {
       Alert.alert('Error', 'Could not fetch your current location.');
     } finally {
@@ -263,16 +230,16 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       province: 'Cebu',
       zip_code: '6000',
     });
-    if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(`
-        if (window.map) {
-          window.map.setView([${spot.lat}, ${spot.lon}], 17);
-        }
-        true;
-      `);
-    }
+    
+    mapRef.current?.animateToRegion({
+      latitude: spot.lat,
+      longitude: spot.lon,
+      latitudeDelta: 0.005,
+      longitudeDelta: 0.005,
+    });
   };
 
+  // Google Places API Text Search
   const handleSearch = async (text: string) => {
     setSearchQuery(text);
     if (!text.trim()) {
@@ -283,16 +250,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     try {
       setSearchLoading(true);
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(text + ', Cebu, Philippines')}&addressdetails=1&limit=8`,
-        {
-          headers: {
-            'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)',
-            'Accept': 'application/json',
-          },
-        }
+        `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(text + ', Cebu, Philippines')}&key=${GOOGLE_MAPS_API_KEY}`
       );
       const data = await response.json();
-      setSearchResults(Array.isArray(data) ? data : []);
+      setSearchResults(data.results || []);
     } catch (error) {
       console.log('Search error:', error);
       setSearchResults([]);
@@ -302,50 +263,37 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   };
 
   const selectSearchResult = (item: any) => {
-    const lat = parseFloat(item.lat);
-    const lon = parseFloat(item.lon);
+    const lat = item.geometry.location.lat;
+    const lon = item.geometry.location.lng;
     const newCoords = { latitude: lat, longitude: lon };
 
     setMarkerCoord(newCoords);
+    setAddressName(item.name || 'Selected Location');
+    setAddressSub(item.formatted_address || '');
     
-    const mainName = item.display_name ? item.display_name.split(',')[0] : 'Selected Location';
-    setAddressName(mainName);
-    setAddressSub(item.display_name || '');
-    
-    const a = item.address || {};
-    const streetParts = [a.house_number, a.road].filter(Boolean);
-    const street = streetParts.length > 0 ? streetParts.join(' ') : mainName;
-    
-    setStructuredAddress({
-      street_address: street,
-      barangay: a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown',
-      city: a.city || a.town || a.municipality || 'Unknown',
-      province: a.state || a.state_district || a.county || a.province || a.region || 'Unknown',
-      zip_code: (a.postcode && a.postcode.length === 4) ? a.postcode : '0000',
-    });
+    // We do a fresh reverse geocode to get the structured fields properly
+    reverseGeocode(newCoords);
 
     setIsSearching(false);
     setSearchQuery('');
     setSearchResults([]);
     Keyboard.dismiss();
 
-    if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(`
-        if (window.map) {
-          window.map.setView([${lat}, ${lon}], 17);
-        }
-        true;
-      `);
-    }
+    mapRef.current?.animateToRegion({
+      latitude: lat,
+      longitude: lon,
+      latitudeDelta: 0.005,
+      longitudeDelta: 0.005,
+    });
   };
 
   const confirmLocation = () => {
     const fullAddress = `${addressName}, ${addressSub}`;
     const locationInfo = {
-      address: fullAddress, // Kept for backwards compatibility
+      address: fullAddress, 
       latitude: markerCoord.latitude,
       longitude: markerCoord.longitude,
-      ...structuredAddress, // Spread the new structured fields
+      ...structuredAddress, 
     };
 
     if (route.params?.fromExplore) {
@@ -378,32 +326,15 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     ? (isDark ? '#FDBA74' : '#C2410C')
     : (isDark ? '#F87171' : '#DC2626');
 
-  const handleMessage = (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'MOVE_START') {
-        setIsDraggingMap(true);
-      } else if (data.type === 'MOVE_END' && data.latitude && data.longitude) {
-        setIsDraggingMap(false);
-        const newCoords = { latitude: data.latitude, longitude: data.longitude };
-        setMarkerCoord(newCoords);
-        reverseGeocode(newCoords);
-      }
-    } catch (error) {
-      console.log('Error parsing map message:', error);
-    }
+  const onRegionChange = () => {
+    if (!isDraggingMap) setIsDraggingMap(true);
   };
 
-  const handleWebViewLoad = () => {
-    setMapLoaded(true);
-    if (webViewRef.current) {
-      webViewRef.current.injectJavaScript(`
-        if (window.map) {
-          window.map.setView([${markerCoord.latitude}, ${markerCoord.longitude}], 16);
-        }
-        true;
-      `);
-    }
+  const onRegionChangeComplete = (region: Region) => {
+    setIsDraggingMap(false);
+    const newCoords = { latitude: region.latitude, longitude: region.longitude };
+    setMarkerCoord(newCoords);
+    reverseGeocode(newCoords);
   };
 
   const pinTranslateY = pinBounce.interpolate({
@@ -415,18 +346,22 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <WebView
-        ref={webViewRef}
+      <MapView
+        ref={mapRef}
+        provider={PROVIDER_GOOGLE}
         style={styles.map}
-        source={{ html: openStreetMapHtml }}
-        onMessage={handleMessage}
-        onLoadEnd={handleWebViewLoad}
-        javaScriptEnabled
-        domStorageEnabled
-        startInLoadingState
-        androidLayerType="hardware"
-        originWhitelist={['*']}
-        mixedContentMode="always"
+        initialRegion={{
+          latitude: markerCoord.latitude,
+          longitude: markerCoord.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
+        }}
+        onMapReady={() => setMapLoaded(true)}
+        onRegionChange={onRegionChange}
+        onRegionChangeComplete={onRegionChangeComplete}
+        showsUserLocation={false} 
+        showsMyLocationButton={false}
+        showsCompass={false}
       />
 
       {!mapLoaded && (
@@ -436,6 +371,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </View>
       )}
 
+      {/* Floating Center Pin */}
       <View style={styles.centerPinContainer} pointerEvents="none">
         <Animated.View style={[styles.pinWrapper, { transform: [{ translateY: pinTranslateY }] }]}>
           <View style={styles.pinHead}>
@@ -523,10 +459,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.searchResultTitle} numberOfLines={1}>
-                    {item.display_name ? item.display_name.split(',')[0] : 'Location'}
+                    {item.name || item.formatted_address?.split(',')[0]}
                   </Text>
                   <Text style={styles.searchResultSub} numberOfLines={2}>
-                    {item.display_name}
+                    {item.formatted_address}
                   </Text>
                 </View>
               </TouchableOpacity>
