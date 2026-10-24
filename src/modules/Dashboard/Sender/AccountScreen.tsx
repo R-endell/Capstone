@@ -2,11 +2,12 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
-  Alert, StatusBar, Animated, Easing, BackHandler, Switch,
+  Alert, StatusBar, Animated, Easing, BackHandler, Switch, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
@@ -21,7 +22,7 @@ export default function AccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
   const { isDark, colors, toggleDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = makeStyles(colors, isDark);
 
   const [firstName, setFirstName] = useState<string>('First');
   const [lastName, setLastName] = useState<string>('Last');
@@ -29,6 +30,8 @@ export default function AccountScreen() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
   const [providerState, setProviderState] = useState<ProviderState>('none');
+  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
+  const [rejectionModalVisible, setRejectionModalVisible] = useState<boolean>(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
@@ -83,76 +86,153 @@ export default function AccountScreen() {
     }, [navigation])
   );
 
+  const checkAndShowRejectionAutoModal = useCallback(
+    async (uid: number, verifId: number | null, reasonText: string | null) => {
+      try {
+        const seenKey = `provider_rejection_seen_${uid}_${verifId || 'latest'}_${reasonText || ''}`;
+        const alreadySeen = await AsyncStorage.getItem(seenKey);
+        if (!alreadySeen) {
+          await AsyncStorage.setItem(seenKey, 'true');
+          setRejectionModalVisible(true);
+        }
+      } catch {
+        setRejectionModalVisible(true);
+      }
+    },
+    []
+  );
+
+  const fetchUserData = useCallback(async () => {
+    try {
+      setImgKey(Date.now());
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
+      if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
+      if (user.user_metadata?.avatar_url) {
+        setAvatarUrl(user.user_metadata.avatar_url);
+        setImageError(false);
+      }
+      setUserEmail(user.email || 'john.doe@example.com');
+
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('user_id, first_name, last_name, profile_photo')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      if (userError || !userData) return;
+
+      setUserId(userData.user_id);
+
+      if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
+      if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
+      if (!user.user_metadata?.avatar_url && userData.profile_photo) {
+        setAvatarUrl(userData.profile_photo);
+        setImageError(false);
+      }
+
+      const { data: userRoles, error: rolesError } = await supabase
+        .from('user_roles')
+        .select(`role_id, roles!inner (role_name)`)
+        .eq('user_id', userData.user_id);
+
+      if (rolesError) return;
+
+      const hasProviderRole = (userRoles || []).some(
+        (ur: any) => ur.roles?.role_name === 'Provider'
+      );
+
+      // Also check provider_verifications directly in case they applied
+      const { data: verif, error: verifError } = await supabase
+        .from('provider_verifications')
+        .select('verification_id, verification_status, rejection_reason, submitted_at')
+        .eq('provider_id', userData.user_id)
+        .order('submitted_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!hasProviderRole && !verif) {
+        setProviderState('none');
+        setRejectionReason(null);
+        return;
+      }
+
+      if (verifError || !verif) {
+        setProviderState('pending');
+        setRejectionReason(null);
+        return;
+      }
+
+      const status = (verif.verification_status || '').toLowerCase();
+      if (status === 'approved' || status === 'verified') {
+        setProviderState('approved');
+        setRejectionReason(null);
+      } else if (status === 'rejected') {
+        const reason = verif.rejection_reason?.trim() || null;
+        setProviderState('rejected');
+        setRejectionReason(reason);
+        await checkAndShowRejectionAutoModal(
+          userData.user_id,
+          verif.verification_id ?? null,
+          reason
+        );
+      } else {
+        setProviderState('pending');
+        setRejectionReason(null);
+      }
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+    }
+  }, [checkAndShowRejectionAutoModal]);
+
   useFocusEffect(
     useCallback(() => {
-      const fetchUserData = async () => {
-        try {
-          setImgKey(Date.now());
-          const { data: { user } } = await supabase.auth.getUser();
-          if (!user) return;
-
-          if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
-          if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
-          if (user.user_metadata?.avatar_url) {
-            setAvatarUrl(user.user_metadata.avatar_url);
-            setImageError(false);
-          }
-          setUserEmail(user.email || 'john.doe@example.com');
-
-          const { data: userData, error: userError } = await supabase
-            .from('users')
-            .select('user_id, first_name, last_name, profile_photo')
-            .eq('auth_id', user.id)
-            .maybeSingle();
-
-          if (userError || !userData) return;
-
-          setUserId(userData.user_id);
-
-          if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
-          if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
-          if (!user.user_metadata?.avatar_url && userData.profile_photo) {
-            setAvatarUrl(userData.profile_photo);
-            setImageError(false);
-          }
-
-          const { data: userRoles, error: rolesError } = await supabase
-            .from('user_roles')
-            .select(`role_id, roles!inner (role_name)`)
-            .eq('user_id', userData.user_id);
-
-          if (rolesError) return;
-
-          const hasProviderRole = (userRoles || []).some(
-            (ur: any) => ur.roles?.role_name === 'Provider'
-          );
-
-          if (!hasProviderRole) {
-            setProviderState('none');
-            return;
-          }
-
-          const { data: verif, error: verifError } = await supabase
-            .from('provider_verifications')
-            .select('verification_status, submitted_at')
-            .eq('provider_id', userData.user_id)
-            .order('submitted_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (verifError || !verif) { setProviderState('pending'); return; }
-
-          const status = (verif.verification_status || '').toLowerCase();
-          if (status === 'approved' || status === 'verified') setProviderState('approved');
-          else if (status === 'rejected') setProviderState('rejected');
-          else setProviderState('pending');
-        } catch (error) {
-          console.error('Error fetching user data:', error);
-        }
-      };
       fetchUserData();
-    }, [])
+    }, [fetchUserData])
   );
+
+  // Realtime subscription so if the admin rejects/approves while the user is on AccountScreen, it updates immediately
+  useEffect(() => {
+    if (!userId) return;
+
+    const channel = supabase
+      .channel(`account-provider-verif-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'provider_verifications',
+          filter: `provider_id=eq.${userId}`,
+        },
+        (payload) => {
+          const updated = payload.new as any;
+          if (!updated) return;
+          const status = String(updated.verification_status || '').toLowerCase();
+          if (status === 'rejected') {
+            const reason = updated.rejection_reason?.trim() || null;
+            setProviderState('rejected');
+            setRejectionReason(reason);
+            setRejectionModalVisible(true);
+          } else if (status === 'approved' || status === 'verified') {
+            setProviderState('approved');
+            setRejectionReason(null);
+            setRejectionModalVisible(false);
+          } else if (status === 'pending') {
+            setProviderState('pending');
+            setRejectionReason(null);
+            setRejectionModalVisible(false);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
 
   const handleLogoutConfirm = () => {
     Alert.alert(
@@ -174,13 +254,14 @@ export default function AccountScreen() {
     );
   };
 
+  const handleReapplyProvider = () => {
+    setRejectionModalVisible(false);
+    navigation.navigate('RegisterProvider');
+  };
+
   const handleSwitchToProvider = async () => {
-    // Only an APPROVED provider may be remembered as "provider mode". Saving it
-    // before this check let pending/rejected/never-applied users get sent to the
-    // Provider interface on the next app start.
     if (providerState === 'approved') {
       await setLastMode('provider');
-      // reset (not navigate) so Back can't walk back into the other interface
       navigation.reset({
         index: 0,
         routes: [{ name: 'ProviderTabs', params: { screen: 'Jobs' } }],
@@ -198,17 +279,7 @@ export default function AccountScreen() {
     }
 
     if (providerState === 'rejected') {
-      Alert.alert(
-        'Application Rejected',
-        'Your previous provider application was rejected. You can submit a new application with updated documents.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Re-apply',
-            onPress: () => navigation.navigate('RegisterProvider'),
-          },
-        ]
-      );
+      setRejectionModalVisible(true);
       return;
     }
 
@@ -237,7 +308,10 @@ export default function AccountScreen() {
     switch (providerState) {
       case 'approved': return 'Manage delivery tasks';
       case 'pending':  return 'Waiting for admin approval';
-      case 'rejected': return 'Tap to re-apply with new documents';
+      case 'rejected':
+        return rejectionReason
+          ? `Reason: ${rejectionReason}`
+          : 'Tap to view rejection reason & register again';
       default:         return 'Earn by delivering packages';
     }
   })();
@@ -320,6 +394,31 @@ export default function AccountScreen() {
         contentContainerStyle={styles.mainScrollContent}
       >
         <Animated.View style={[styles.bodyContentWrapper, fadeUp(contentAnim, 20)]}>
+
+          {/* Prominent Rejection Banner on Account Screen if rejected */}
+          {providerState === 'rejected' && (
+            <TouchableOpacity
+              style={styles.rejectionAlertBanner}
+              onPress={() => setRejectionModalVisible(true)}
+              activeOpacity={0.85}
+            >
+              <View style={styles.rejectionBannerIconWrap}>
+                <Ionicons name="alert-circle" size={22} color={colors.error} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rejectionBannerTitle}>Provider Application Rejected</Text>
+                <Text style={styles.rejectionBannerSubtext} numberOfLines={2}>
+                  {rejectionReason
+                    ? `Reason: ${rejectionReason}`
+                    : 'Your application was not approved. Tap to review and register again.'}
+                </Text>
+              </View>
+              <View style={styles.rejectionBannerActionPill}>
+                <Text style={styles.rejectionBannerActionText}>Re-apply</Text>
+              </View>
+            </TouchableOpacity>
+          )}
+
           <Text style={styles.sectionTitle}>Account & Services</Text>
 
           <View style={styles.menuCard}>
@@ -421,7 +520,6 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            {/* ≡ƒîÖ Dark Mode toggle ΓÇö placed directly below Settings */}
             <View style={styles.menuItem}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
@@ -463,17 +561,70 @@ export default function AccountScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={styles.versionText}>Pack-N-Ship ┬╖ v1.0.0</Text>
+          <Text style={styles.versionText}>Pack-N-Ship · v1.0.0</Text>
         </Animated.View>
       </ScrollView>
+
+      {/* ================================================================ */}
+      {/* PROVIDER REJECTION MODAL                                         */}
+      {/* ================================================================ */}
+      <Modal
+        visible={rejectionModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRejectionModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalIconCircle}>
+              <Ionicons name="close-circle" size={38} color={colors.error} />
+            </View>
+
+            <Text style={styles.modalTitle}>Application Rejected</Text>
+            <Text style={styles.modalDescription}>
+              Your provider verification request was not approved by the administrator.
+            </Text>
+
+            <View style={styles.reasonBox}>
+              <Text style={styles.reasonLabel}>REASON FOR REJECTION</Text>
+              <Text style={styles.reasonValue}>
+                {rejectionReason || 'No specific reason was provided. Please review your submitted license and vehicle documents.'}
+              </Text>
+            </View>
+
+            <Text style={styles.modalHint}>
+              You can submit a new provider application at any time with updated documents and clear photos.
+            </Text>
+
+            <View style={styles.modalActionsRow}>
+              <TouchableOpacity
+                style={styles.modalSecondaryBtn}
+                onPress={() => setRejectionModalVisible(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.modalSecondaryBtnText}>Close</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.modalPrimaryBtn}
+                onPress={handleReapplyProvider}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="refresh-outline" size={17} color="#FFFFFF" />
+                <Text style={styles.modalPrimaryBtnText}>Register Again</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Styles ΓÇö generated from the current theme                           */
+/* Styles — generated from the current theme                           */
 /* ------------------------------------------------------------------ */
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
   fixedTopContainer: {
@@ -527,6 +678,48 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mainContent: { flex: 1 },
   mainScrollContent: { paddingBottom: 40 },
   bodyContentWrapper: { paddingHorizontal: 20, paddingTop: 8 },
+
+  rejectionAlertBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.errorBg,
+    borderWidth: 1,
+    borderColor: c.error,
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 18,
+    gap: 12,
+  },
+  rejectionBannerIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: isDark ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rejectionBannerTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: c.error,
+  },
+  rejectionBannerSubtext: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: c.textSecondary,
+    marginTop: 2,
+  },
+  rejectionBannerActionPill: {
+    backgroundColor: c.error,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  rejectionBannerActionText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
 
   sectionTitle: {
     fontSize: 16, fontWeight: '800', color: c.textPrimary,
@@ -583,5 +776,120 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   versionText: {
     textAlign: 'center', color: c.textMuted, fontSize: 11,
     fontWeight: '600', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
+  },
+
+  /* Rejection Modal Styles */
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: c.card,
+    borderRadius: 26,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.3,
+    shadowRadius: 24,
+    elevation: 10,
+  },
+  modalIconCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: c.errorBg,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: c.error,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: c.textPrimary,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  modalDescription: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: c.textSecondary,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginBottom: 18,
+  },
+  reasonBox: {
+    width: '100%',
+    backgroundColor: c.errorBg,
+    borderWidth: 1,
+    borderColor: c.error,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 16,
+  },
+  reasonLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: c.error,
+    letterSpacing: 0.8,
+    marginBottom: 6,
+  },
+  reasonValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: c.textPrimary,
+    lineHeight: 20,
+  },
+  modalHint: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: c.textMuted,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 22,
+  },
+  modalActionsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  modalSecondaryBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: c.border,
+    backgroundColor: c.divider,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalSecondaryBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: c.textSecondary,
+  },
+  modalPrimaryBtn: {
+    flex: 1.4,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: ORANGE,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  modalPrimaryBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
 });

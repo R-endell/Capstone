@@ -2069,7 +2069,7 @@ export default function ActivityScreen() {
     const receiverName = selectedDelivery.receiver?.receiver_name || 'the receiver';
 
     const trackingId = `PNS-${String(selectedDelivery.request_id).padStart(4, '0')}`;
-    const smsMessage = `Hi ${receiverName}, here is your delivery OTP for shipment #${trackingId}: ${otp || '------'}. Please read this code to the courier when they arrive.`;
+    const smsMessage = `Hi ${receiverName}, here is your delivery OTP for shipment #${trackingId}: ${otp || '------'}. Please read this code to the courier when they arrive.\n\nYou can also track your package here: https://packnship.streamlit.app/`;
 
     const sendSMS = () => {
       if (!otp) return;
