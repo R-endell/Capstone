@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -258,388 +258,381 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap — Google Maps JavaScript API                                */
+/* Map helpers (native Google Maps)                                     */
 /* ==================================================================== */
-const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
-  const lat = startLat ?? endLat ?? 10.3157;
-  const lng = startLng ?? endLng ?? 123.8854;
+const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          function initMap() {
-            var centerLoc = { lat: ${lat}, lng: ${lng} };
-            var map = new google.maps.Map(document.getElementById('map'), {
-              center: centerLoc,
-              zoom: 13,
-              disableDefaultUI: true,
-              draggable: false,
-              scrollwheel: false,
-              disableDoubleClickZoom: true
-            });
+const mapStyles = StyleSheet.create({
+  mkDot: {
+    width: 26, height: 26, borderRadius: 13,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+  },
+  mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
+  zoneBadge: {
+    backgroundColor: '#FFFFFF', borderRadius: 10,
+    paddingHorizontal: 7, paddingVertical: 2,
+    borderWidth: 1, borderColor: '#FFD2B0',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15, shadowRadius: 2, elevation: 1,
+  },
+  zoneBadgeText: { fontSize: 10, fontWeight: '800', color: '#9A4A12' },
+  meMarker: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  meHalo: {
+    position: 'absolute', width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,117,31,0.25)',
+  },
+  meDot: {
+    position: 'absolute', left: 11, top: 11,
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: '#FF751F', borderWidth: 3, borderColor: '#FFFFFF',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35, shadowRadius: 4, elevation: 3,
+  },
+  meArrowWrap: { position: 'absolute', width: 44, height: 44 },
+  meArrow: {
+    position: 'absolute', left: 17, top: -4,
+    width: 0, height: 0,
+    borderLeftWidth: 5, borderRightWidth: 5, borderBottomWidth: 10,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
+    borderBottomColor: '#FF751F',
+  },
+});
 
-            var directionsService = new google.maps.DirectionsService();
-            var directionsRenderer = new google.maps.DirectionsRenderer({
-              map: map,
-              suppressMarkers: true,
-              polylineOptions: {
-                strokeColor: '#FF751F',
-                strokeWeight: 5,
-                strokeOpacity: 0.85
-              }
-            });
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
+};
 
-            ${startLat && startLng ? `
-              new google.maps.Marker({
-                position: { lat: ${startLat}, lng: ${startLng} },
-                map: map,
-                label: { text: '${startLabel}', color: 'white', fontWeight: 'bold' },
-                icon: {
-                  path: google.maps.SymbolPath.CIRCLE,
-                  scale: 12,
-                  fillColor: '#FF751F',
-                  fillOpacity: 1,
-                  strokeColor: 'white',
-                  strokeWeight: 3
-                }
-              });
-            ` : ''}
+/* ==================================================================== */
+/* RouteMap — native Google Maps (non-interactive detail view)          */
+/* ==================================================================== */
+const RouteMap = ({
+  startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E',
+}: any) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
-            ${endLat && endLng ? `
-              new google.maps.Marker({
-                position: { lat: ${endLat}, lng: ${endLng} },
-                map: map,
-                label: { text: '${endLabel}', color: 'white', fontWeight: 'bold' },
-                icon: {
-                  path: google.maps.SymbolPath.CIRCLE,
-                  scale: 12,
-                  fillColor: '#111827',
-                  fillOpacity: 1,
-                  strokeColor: 'white',
-                  strokeWeight: 3
-                }
-              });
-            ` : ''}
+  useEffect(() => {
+    if (startLat == null || startLng == null || endLat == null || endLng == null) return;
+    let cancelled = false;
 
-            ${startLat && startLng && endLat && endLng ? `
-              directionsService.route({
-                origin: { lat: ${startLat}, lng: ${startLng} },
-                destination: { lat: ${endLat}, lng: ${endLng} },
-                travelMode: 'DRIVING'
-              }, function(response, status) {
-                if (status === 'OK') {
-                  directionsRenderer.setDirections(response);
-                } else {
-                  new google.maps.Polyline({
-                    path: [
-                      { lat: ${startLat}, lng: ${startLng} },
-                      { lat: ${endLat}, lng: ${endLng} }
-                    ],
-                    map: map,
-                    strokeColor: '#FF751F',
-                    strokeWeight: 4,
-                    strokeOpacity: 0.6
-                  });
-                }
-              });
-            ` : ''}
-          }
-          window.onload = initMap;
-        </script>
-      </body>
-    </html>
-  `;
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: startLat, lng: startLng },
+        { lat: endLat, lng: endLng },
+      );
+      if (cancelled) return;
+      setCoords(line);
+      const t = setTimeout(() => {
+        mapRef.current?.fitToCoordinates(line, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: false,
+        });
+      }, 120);
+      return () => clearTimeout(t);
+    })();
+
+    return () => { cancelled = true; };
+  }, [startLat, startLng, endLat, endLng]);
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
+        longitude: startLng ?? endLng ?? DEFAULT_CENTER.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
       scrollEnabled={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
+      zoomEnabled={false}
+      rotateEnabled={false}
+      pitchEnabled={false}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      {startLat != null && startLng != null && (
+        <Marker
+          coordinate={{ latitude: startLat, longitude: startLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+            <Text style={mapStyles.mkDotText}>{startLabel}</Text>
+          </View>
+        </Marker>
+      )}
+
+      {endLat != null && endLng != null && (
+        <Marker
+          coordinate={{ latitude: endLat, longitude: endLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+            <Text style={mapStyles.mkDotText}>{endLabel}</Text>
+          </View>
+        </Marker>
+      )}
+
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
+      )}
+    </MapView>
   );
 };
 
 /* ==================================================================== */
-/* ProviderMap — Google Maps JavaScript API                             */
+/* ProviderMap — native Google Maps (interactive provider dashboard)    */
 /* ==================================================================== */
-const PROVIDER_MAP_HTML = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}"></script>
-    <style>
-      html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-    </style>
-  </head>
-  <body>
-    <div id="map"></div>
-    <script>
-      var map;
-      var directionsService;
-      var routeDirectionsRenderer;
-      var orderDirectionsRenderer;
-      
-      var meMarker = null;
-      var routeStartMarker = null;
-      var routeEndMarker = null;
-      var orderPickupMarker = null;
-      var orderDropoffMarker = null;
-      var providerToPickupLine = null;
-
-      var demandCircles = [];
-      var demandMarkers = [];
-
-      var firstFix = true, lastTick = 0, routeKey = '', orderKey = '', demandKey = '';
-
-      function initMap() {
-        map = new google.maps.Map(document.getElementById('map'), {
-          center: { lat: 10.3157, lng: 123.8854 },
-          zoom: 14,
-          disableDefaultUI: true
-        });
-
-        directionsService = new google.maps.DirectionsService();
-
-        routeDirectionsRenderer = new google.maps.DirectionsRenderer({
-          map: map,
-          suppressMarkers: true,
-          polylineOptions: { strokeColor: '#3B82F6', strokeWeight: 5, strokeOpacity: 0.7 }
-        });
-
-        orderDirectionsRenderer = new google.maps.DirectionsRenderer({
-          map: map,
-          suppressMarkers: true,
-          polylineOptions: { strokeColor: '#FF751F', strokeWeight: 6, strokeOpacity: 0.9 }
-        });
-      }
-
-      function createBadgeIcon(text, bgColor) {
-        return {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 28 28">
-              <circle cx="14" cy="14" r="11" fill="\${bgColor}" stroke="#ffffff" stroke-width="3"/>
-              <text x="14" y="18" font-size="11" font-weight="bold" fill="#ffffff" text-anchor="middle" font-family="sans-serif">\${text}</text>
-            </svg>
-          \`),
-          scaledSize: new google.maps.Size(28, 28),
-          anchor: new google.maps.Point(14, 14)
-        };
-      }
-
-      function createMeIcon(heading) {
-        var rot = (heading !== null && heading !== undefined && !isNaN(heading)) ? heading : 0;
-        return {
-          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
-            <svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
-              <circle cx="22" cy="22" r="20" fill="rgba(255,117,31,0.25)"/>
-              <g transform="rotate(\${rot} 22 22)">
-                <polygon points="22,8 17,18 27,18" fill="#FF751F"/>
-              </g>
-              <circle cx="22" cy="22" r="11" fill="#FF751F" stroke="#ffffff" stroke-width="3"/>
-            </svg>
-          \`),
-          scaledSize: new google.maps.Size(44, 44),
-          anchor: new google.maps.Point(22, 22)
-        };
-      }
-
-      function clearDemand() {
-        demandCircles.forEach(function(c) { c.setMap(null); });
-        demandMarkers.forEach(function(m) { m.setMap(null); });
-        demandCircles = [];
-        demandMarkers = [];
-      }
-
-      window.updateState = function (s) {
-        try {
-          var me = s.provider ? [s.provider.lat, s.provider.lng] : null;
-          if (me) {
-            var pos = { lat: me[0], lng: me[1] };
-            if (!meMarker) {
-              meMarker = new google.maps.Marker({
-                position: pos,
-                map: map,
-                icon: createMeIcon(s.provider.heading),
-                zIndex: 1000
-              });
-            } else {
-              meMarker.setPosition(pos);
-              meMarker.setIcon(createMeIcon(s.provider.heading));
-            }
-          }
-
-          var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
-          if (rk !== routeKey) {
-            routeKey = rk;
-            if (routeStartMarker) { routeStartMarker.setMap(null); routeStartMarker = null; }
-            if (routeEndMarker) { routeEndMarker.setMap(null); routeEndMarker = null; }
-            routeDirectionsRenderer.set('directions', null);
-
-            if (s.route) {
-              routeStartMarker = new google.maps.Marker({
-                position: { lat: s.route.start.lat, lng: s.route.start.lng },
-                map: map,
-                icon: createBadgeIcon('S', '#3B82F6')
-              });
-              routeEndMarker = new google.maps.Marker({
-                position: { lat: s.route.end.lat, lng: s.route.end.lng },
-                map: map,
-                icon: createBadgeIcon('E', '#EF4444')
-              });
-              directionsService.route({
-                origin: { lat: s.route.start.lat, lng: s.route.start.lng },
-                destination: { lat: s.route.end.lat, lng: s.route.end.lng },
-                travelMode: 'DRIVING'
-              }, function(res, status) {
-                if (status === 'OK') routeDirectionsRenderer.setDirections(res);
-              });
-            }
-          }
-
-          var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
-          if (ok !== orderKey) {
-            orderKey = ok;
-            if (orderPickupMarker) { orderPickupMarker.setMap(null); orderPickupMarker = null; }
-            if (orderDropoffMarker) { orderDropoffMarker.setMap(null); orderDropoffMarker = null; }
-            if (providerToPickupLine) { providerToPickupLine.setMap(null); providerToPickupLine = null; }
-            orderDirectionsRenderer.set('directions', null);
-
-            if (s.order) {
-              var pPos = { lat: s.order.pickup.lat, lng: s.order.pickup.lng };
-              var dPos = { lat: s.order.dropoff.lat, lng: s.order.dropoff.lng };
-
-              orderPickupMarker = new google.maps.Marker({ position: pPos, map: map, icon: createBadgeIcon('P', '#FF751F') });
-              orderDropoffMarker = new google.maps.Marker({ position: dPos, map: map, icon: createBadgeIcon('D', '#111827') });
-
-              directionsService.route({
-                origin: pPos,
-                destination: dPos,
-                travelMode: 'DRIVING'
-              }, function(res, status) {
-                if (status === 'OK') orderDirectionsRenderer.setDirections(res);
-              });
-
-              if (me) {
-                providerToPickupLine = new google.maps.Polyline({
-                  path: [{ lat: me[0], lng: me[1] }, pPos],
-                  map: map,
-                  strokeColor: '#111827',
-                  strokeWeight: 3,
-                  strokeOpacity: 0.5
-                });
-              }
-
-              var bounds = new google.maps.LatLngBounds();
-              bounds.extend(pPos);
-              bounds.extend(dPos);
-              if (me) bounds.extend({ lat: me[0], lng: me[1] });
-              map.fitBounds(bounds, { top: 50, bottom: s.padBottom || 260, left: 30, right: 30 });
-            } else if (me) {
-              map.setCenter({ lat: me[0], lng: me[1] });
-              map.setZoom(15);
-            }
-          }
-
-          var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) + ',' + s.demand : '';
-          if (dk !== demandKey) {
-            demandKey = dk;
-            clearDemand();
-            if (s.demand && me) {
-              var zones = [
-                { latOff: 0.007, lngOff: 0.005, size: 1, label: '1.8x' },
-                { latOff: -0.006, lngOff: 0.008, size: 0.6, label: '1.4x' },
-                { latOff: 0.004, lngOff: -0.009, size: 0.8, label: '1.6x' },
-                { latOff: -0.008, lngOff: -0.005, size: 0.3, label: '1.1x' }
-              ];
-              zones.forEach(function(z) {
-                var cPos = { lat: me[0] + z.latOff, lng: me[1] + z.lngOff };
-                var circle = new google.maps.Circle({
-                  strokeColor: '#FF751F',
-                  strokeOpacity: 0.8,
-                  strokeWeight: 1,
-                  fillColor: '#FF751F',
-                  fillOpacity: 0.1 + z.size * 0.2,
-                  map: map,
-                  center: cPos,
-                  radius: 450 + z.size * 300
-                });
-                demandCircles.push(circle);
-
-                var zMarker = new google.maps.Marker({
-                  position: cPos,
-                  map: map,
-                  icon: {
-                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(\`
-                      <svg xmlns="http://www.w3.org/2000/svg" width="78" height="24" viewBox="0 0 78 24">
-                        <rect x="1" y="1" width="76" height="22" rx="10" fill="#ffffff" stroke="#FFD2B0" stroke-width="1"/>
-                        <text x="39" y="16" font-size="10" font-weight="800" fill="#9A4A12" text-anchor="middle" font-family="sans-serif">\${z.label} demand</text>
-                      </svg>
-                    \`),
-                    scaledSize: new google.maps.Size(78, 24),
-                    anchor: new google.maps.Point(39, 12)
-                  }
-                });
-                demandMarkers.push(zMarker);
-              });
-            }
-          }
-
-          if (firstFix && me && !s.order) {
-            firstFix = false;
-            map.setCenter({ lat: me[0], lng: me[1] });
-            map.setZoom(15);
-          }
-          if (s.tick !== lastTick) {
-            lastTick = s.tick;
-            if (me) map.setCenter({ lat: me[0], lng: me[1] });
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      };
-
-      window.onload = initMap;
-    </script>
-  </body>
-</html>
-`;
-
 const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }: any) => {
-  const ref = useRef<WebView>(null);
-  const [ready, setReady] = useState(false);
-  const payload = JSON.stringify({ provider, route, order, demand, tick: recenterTick, padBottom });
+  const mapRef = useRef<MapView>(null);
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [orderCoords, setOrderCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
+  const lastRouteKey = useRef('');
+  const lastOrderKey = useRef('');
+  const lastFitKey = useRef('');
+  const firstFix = useRef(true);
+
+  /* Route polyline (start → end) */
   useEffect(() => {
-    if (!ready) return;
-    ref.current?.injectJavaScript(`window.updateState && window.updateState(${payload}); true;`);
-  }, [ready, payload]);
+    if (!route) { setRouteCoords([]); lastRouteKey.current = ''; return; }
+    const key = `${route.start.lat},${route.start.lng},${route.end.lat},${route.end.lng}`;
+    if (key === lastRouteKey.current) return;
+    lastRouteKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(route.start, route.end);
+      if (!cancelled) setRouteCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng]);
+
+  /* Order polyline (pickup → dropoff) */
+  useEffect(() => {
+    if (!order) { setOrderCoords([]); lastOrderKey.current = ''; return; }
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastOrderKey.current) return;
+    lastOrderKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(order.pickup, order.dropoff);
+      if (!cancelled) setOrderCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  /* Auto-fit when a new order comes in */
+  useEffect(() => {
+    if (!order) return;
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastFitKey.current) return;
+    lastFitKey.current = key;
+
+    const pts: { latitude: number; longitude: number }[] = [
+      { latitude: order.pickup.lat, longitude: order.pickup.lng },
+      { latitude: order.dropoff.lat, longitude: order.dropoff.lng },
+    ];
+    if (provider) pts.push({ latitude: provider.lat, longitude: provider.lng });
+
+    const t = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(pts, {
+        edgePadding: { top: 170, right: 30, bottom: padBottom || 260, left: 30 },
+        animated: true,
+      });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  /* First fix → center on provider when there's no active order */
+  useEffect(() => {
+    if (!provider || order) return;
+    if (!firstFix.current) return;
+    firstFix.current = false;
+
+    const t = setTimeout(() => {
+      mapRef.current?.animateToRegion(
+        { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
+        500,
+      );
+    }, 150);
+    return () => clearTimeout(t);
+  }, [provider?.lat, provider?.lng, order]);
+
+  /* Manual recenter */
+  useEffect(() => {
+    if (!recenterTick || !provider) return;
+    mapRef.current?.animateToRegion(
+      { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+      400,
+    );
+  }, [recenterTick]);
+
+  const demandZones = provider && demand
+    ? [
+        { dLat: 0.007, dLng: 0.005, mult: 1.8, label: '1.8x' },
+        { dLat: -0.006, dLng: 0.008, mult: 1.4, label: '1.4x' },
+        { dLat: 0.004, dLng: -0.009, mult: 1.6, label: '1.6x' },
+        { dLat: -0.008, dLng: -0.005, mult: 1.1, label: '1.1x' },
+      ]
+    : [];
 
   return (
-    <WebView
-      ref={ref}
-      originWhitelist={['*']}
-      source={{ html: PROVIDER_MAP_HTML }}
-      style={{ flex: 1, backgroundColor: '#EEF0F2' }}
-      javaScriptEnabled
-      domStorageEnabled
-      androidLayerType="hardware"
-      onLoadEnd={() => setReady(true)}
-    />
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
+        longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+      toolbarEnabled={false}
+    >
+      {/* Demand heat zones (bottom layer) */}
+      {demandZones.map((z, i) => {
+        const center = { latitude: provider.lat + z.dLat, longitude: provider.lng + z.dLng };
+        return (
+          <React.Fragment key={`dz-${i}`}>
+            <Circle
+              center={center}
+              radius={450 + z.mult * 300}
+              strokeColor="rgba(255,117,31,0.9)"
+              strokeWidth={1}
+              fillColor="rgba(255,117,31,0.25)"
+            />
+            <Marker coordinate={center} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+              <View style={mapStyles.zoneBadge}>
+                <Text style={mapStyles.zoneBadgeText}>{z.label} demand</Text>
+              </View>
+            </Marker>
+          </React.Fragment>
+        );
+      })}
+
+      {/* Route S/E */}
+      {route && (
+        <>
+          <Marker
+            coordinate={{ latitude: route.start.lat, longitude: route.start.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#3B82F6' }]}>
+              <Text style={mapStyles.mkDotText}>S</Text>
+            </View>
+          </Marker>
+          <Marker
+            coordinate={{ latitude: route.end.lat, longitude: route.end.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#EF4444' }]}>
+              <Text style={mapStyles.mkDotText}>E</Text>
+            </View>
+          </Marker>
+          {routeCoords.length > 1 && (
+            <Polyline coordinates={routeCoords} strokeColor="#3B82F6" strokeWidth={4} />
+          )}
+        </>
+      )}
+
+      {/* Active order P/D */}
+      {order && (
+        <>
+          <Marker
+            coordinate={{ latitude: order.pickup.lat, longitude: order.pickup.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+              <Text style={mapStyles.mkDotText}>P</Text>
+            </View>
+          </Marker>
+          <Marker
+            coordinate={{ latitude: order.dropoff.lat, longitude: order.dropoff.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+              <Text style={mapStyles.mkDotText}>D</Text>
+            </View>
+          </Marker>
+          {orderCoords.length > 1 && (
+            <Polyline coordinates={orderCoords} strokeColor={ORANGE} strokeWidth={5} />
+          )}
+          {provider && (
+            <Polyline
+              coordinates={[
+                { latitude: provider.lat, longitude: provider.lng },
+                { latitude: order.pickup.lat, longitude: order.pickup.lng },
+              ]}
+              strokeColor="#111827"
+              strokeWidth={2}
+              lineDashPattern={[6, 8]}
+            />
+          )}
+        </>
+      )}
+
+      {/* Provider marker with heading arrow */}
+      {provider && (
+        <Marker
+          coordinate={{ latitude: provider.lat, longitude: provider.lng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          flat
+          tracksViewChanges
+        >
+          <View style={mapStyles.meMarker}>
+            <View style={mapStyles.meHalo} />
+            {provider.heading != null && (
+              <View
+                style={[
+                  mapStyles.meArrowWrap,
+                  { transform: [{ rotate: `${provider.heading}deg` }] },
+                ]}
+              >
+                <View style={mapStyles.meArrow} />
+              </View>
+            )}
+            <View style={mapStyles.meDot} />
+          </View>
+        </Marker>
+      )}
+    </MapView>
   );
 };
 
