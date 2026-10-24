@@ -13,9 +13,17 @@
         "NSLocationWhenInUseUsageDescription": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Pack-N-Ship shares your location with the sender while you are delivering.",
         "NSCameraUsageDescription": "Allow Pack-N-Ship to take photos of your package."
+      },
+      "config": {
+        "googleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
       }
     },
     "android": {
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
+        }
+      },
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
