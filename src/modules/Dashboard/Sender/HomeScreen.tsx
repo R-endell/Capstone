@@ -387,7 +387,7 @@ export default function HomeScreen() {
             title="Schedule Delivery"
             subtitle="Plan for a future date & time"
             onPress={handleScheduleDelivery}
-            imageSource={require('../../../../assets/schedule-delivery.png')}
+          
             variant="secondary"
             accessibilityLabel="Schedule Delivery"
             accessibilityHint="Plan for a future date and time"

@@ -8,7 +8,7 @@ type Props = {
   title: string;
   subtitle: string;
   onPress: () => void;
-  imageSource: ImageSourcePropType;
+  imageSource?: ImageSourcePropType;
   variant?: 'primary' | 'secondary';
   accessibilityLabel?: string;
   accessibilityHint?: string;
