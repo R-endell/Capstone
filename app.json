@@ -24,7 +24,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.rendelljames.Capstone",
-      "googleServicesFile": "./google-services.json",
+      "googleServicesFile": "./android/app/google-services.json",
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "ACCESS_FINE_LOCATION",

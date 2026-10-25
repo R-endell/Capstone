@@ -1,13 +1,15 @@
 // supabase/functions/redirect-bridge/index.ts
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-
 const ALLOWED_SCHEMES = ['packnship://'];
+
+declare const Deno: {
+  serve(handler: (req: Request) => Response | Promise<Response>): void;
+};
 
 function isAllowed(url: string): boolean {
   return ALLOWED_SCHEMES.some((s) => url.startsWith(s));
 }
 
-serve((req) => {
+Deno.serve((req: Request) => {
   const url = new URL(req.url);
   const legacyTo = url.searchParams.get('to');
   const redirectTo = url.searchParams.get('redirect_to');

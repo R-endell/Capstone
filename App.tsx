@@ -10,6 +10,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import "expo-crypto";
 import { supabase } from './src/utils/supabase';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
@@ -64,6 +65,7 @@ import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailS
 import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
 import JobsScreen from './src/modules/Dashboard/Provider/JobsScreen';
 import EarningsScreen from './src/modules/Dashboard/Provider/EarningsScreen';
+import CashoutScreen from './src/modules/Dashboard/Provider/CashoutScreen';
 import TaskScreen from './src/modules/Dashboard/Provider/TaskScreen';
 import ProviderMessagesScreen from './src/modules/Dashboard/Provider/MessagesScreen';
 import ManageVehicleScreen from './src/modules/Dashboard/Provider/Manage/ManageVehicleScreen';
@@ -144,6 +146,7 @@ export type RootStackParamList = {
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
   DeliveryPayment: { requestId: number; amount: number };
+  Cashout: { providerId?: number } | undefined;
   LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
   VerifyEmail: { token_hash: string; type: string };
@@ -754,6 +757,11 @@ function AppInner() {
         <Stack.Screen
           name="DeliveryPayment"
           component={DeliveryPaymentScreen}
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
+          name="Cashout"
+          component={CashoutScreen}
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />
         <Stack.Screen

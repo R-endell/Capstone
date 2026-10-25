@@ -1,6 +1,17 @@
 // supabase/functions/xendit-refund/index.ts
+// These imports are resolved by the Deno runtime used by Supabase Edge Functions.
+// @ts-expect-error Deno URL import is unavailable to a non-Deno TypeScript language service.
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+// @ts-expect-error Deno URL import is unavailable to a non-Deno TypeScript language service.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// Supabase Edge Functions provide Deno at runtime. This declaration keeps the
+// file type-checkable when the editor is not using the Deno TypeScript setup.
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+};
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -82,7 +93,7 @@ async function resolvePaymentRequestId(
   return null;
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
 
   try {
