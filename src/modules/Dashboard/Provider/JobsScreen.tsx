@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
+import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -18,11 +18,20 @@ import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
-import { MAP_PROPS } from '../../../utils/mapConfig';
+import { MAP_PROPS, GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+
+// Explicit Light Mode override props for Google Maps
+const LIGHT_MAP_PROPS = {
+  ...MAP_PROPS,
+  provider: PROVIDER_GOOGLE,
+  googleMapId: GOOGLE_MAP_ID,
+  userInterfaceStyle: 'light' as const,
+  customMapStyle: [],
+};
 
 interface Location {
   location_id?: number;
@@ -260,7 +269,7 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* Map helpers (native Google Maps)                                     */
+/* Map helpers (native Google Maps — Always Light Mode)                 */
 /* ==================================================================== */
 const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
 
@@ -328,7 +337,7 @@ const fetchRoadCoords = async (
 };
 
 /* ==================================================================== */
-/* RouteMap — native Google Maps (non-interactive detail view)          */
+/* RouteMap — native Google Maps (non-interactive detail view, Light)   */
 /* ==================================================================== */
 const RouteMap = ({
   startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E',
@@ -362,7 +371,7 @@ const RouteMap = ({
   return (
     <MapView
       ref={mapRef}
-      {...MAP_PROPS}
+      {...LIGHT_MAP_PROPS}
       style={{ flex: 1 }}
       initialRegion={{
         latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
@@ -411,7 +420,7 @@ const RouteMap = ({
 };
 
 /* ==================================================================== */
-/* ProviderMap — native Google Maps (interactive provider dashboard)    */
+/* ProviderMap — native Google Maps (interactive dashboard, Light)      */
 /* ==================================================================== */
 const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }: any) => {
   const mapRef = useRef<MapView>(null);
@@ -511,7 +520,7 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }
   return (
     <MapView
       ref={mapRef}
-      {...MAP_PROPS}
+      {...LIGHT_MAP_PROPS}
       style={{ flex: 1 }}
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
@@ -1802,7 +1811,7 @@ export default function JobsScreen() {
       : null;
 
     return (
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <View style={{ flex: 1, backgroundColor: '#EEF0F2' }}>
         <ProviderMap
           provider={loc}
           route={mapRoute}
@@ -1935,7 +1944,11 @@ export default function JobsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle={selectedRequest ? 'light-content' : 'dark-content'}
+      />
       {selectedRequest ? renderRequestDetail(selectedRequest) : renderMain()}
 
       {renderNotifModal()}
