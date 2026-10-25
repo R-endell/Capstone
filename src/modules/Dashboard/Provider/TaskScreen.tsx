@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Provider/TaskScreen.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -16,9 +16,11 @@ import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
 import { clearLocationFix } from '../../../services/locationService';
-import { useMemo } from 'react';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+
+// IMPORT THE MAP ID
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
@@ -26,9 +28,12 @@ const MAYA_LOGO = require('../../../../assets/maya.jpeg');
 const ORANGE = '#FF751F';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
+// Distance threshold (in km) for an unmatched sender request to be flagged as "Nearby" the provider's route corridor
+const MAX_CORRIDOR_DISTANCE_KM = 4.5;
+
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
 const extractFunctionError = async (error: any, fallback = 'Something went wrong.'): Promise<string> => {
@@ -45,6 +50,151 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
     }
   } catch { /* keep fallback */ }
   return detail;
+};
+
+/* ==================================================================== */
+/* Geospatial & Route Corridor Helpers                                  */
+/* ==================================================================== */
+const toRad = (deg: number) => (deg * Math.PI) / 180;
+
+const haversineKm = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number => {
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const pointToSegmentInfo = (
+  pLat: number,
+  pLng: number,
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): { distanceKm: number; t: number } => {
+  const meanLat = toRad((aLat + bLat + pLat) / 3);
+  const cosLat = Math.cos(meanLat);
+
+  const ax = aLng * cosLat;
+  const ay = aLat;
+  const bx = bLng * cosLat;
+  const by = bLat;
+  const px = pLng * cosLat;
+  const py = pLat;
+
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+
+  let t = 0;
+  if (lenSq > 1e-12) {
+    t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+  }
+
+  const projLng = aLng + t * (bLng - aLng);
+  const projLat = aLat + t * (bLat - aLat);
+
+  return {
+    distanceKm: haversineKm(pLat, pLng, projLat, projLng),
+    t,
+  };
+};
+
+interface ProviderCorridor {
+  key: string;
+  routeId: number | null;
+  vehicleId: number | null;
+  label: string;
+  startLat: number;
+  startLng: number;
+  endLat: number;
+  endLng: number;
+  isLiveTask?: boolean;
+}
+
+interface RouteProximityMeta {
+  corridor: ProviderCorridor;
+  pickupDeviationKm: number;
+  dropoffDeviationKm: number;
+  totalDetourKm: number;
+  isNearby: boolean;
+}
+
+const evaluateRequestProximity = (
+  pickupLat: number | null | undefined,
+  pickupLng: number | null | undefined,
+  dropoffLat: number | null | undefined,
+  dropoffLng: number | null | undefined,
+  corridors: ProviderCorridor[],
+): RouteProximityMeta | null => {
+  if (
+    pickupLat == null ||
+    pickupLng == null ||
+    dropoffLat == null ||
+    dropoffLng == null ||
+    corridors.length === 0
+  ) {
+    return null;
+  }
+
+  let bestMatch: RouteProximityMeta | null = null;
+
+  for (const c of corridors) {
+    const pInfo = pointToSegmentInfo(
+      Number(pickupLat),
+      Number(pickupLng),
+      c.startLat,
+      c.startLng,
+      c.endLat,
+      c.endLng,
+    );
+    const dInfo = pointToSegmentInfo(
+      Number(dropoffLat),
+      Number(dropoffLng),
+      c.startLat,
+      c.startLng,
+      c.endLat,
+      c.endLng,
+    );
+
+    const withinCorridor =
+      pInfo.distanceKm <= MAX_CORRIDOR_DISTANCE_KM &&
+      dInfo.distanceKm <= MAX_CORRIDOR_DISTANCE_KM;
+
+    const alignedDirection = dInfo.t >= pInfo.t - 0.15;
+    const isNearby = withinCorridor && alignedDirection;
+    const totalDetourKm = Number((pInfo.distanceKm + dInfo.distanceKm).toFixed(2));
+
+    const candidate: RouteProximityMeta = {
+      corridor: c,
+      pickupDeviationKm: Number(pInfo.distanceKm.toFixed(2)),
+      dropoffDeviationKm: Number(dInfo.distanceKm.toFixed(2)),
+      totalDetourKm,
+      isNearby,
+    };
+
+    if (!bestMatch) {
+      bestMatch = candidate;
+    } else if (candidate.isNearby && !bestMatch.isNearby) {
+      bestMatch = candidate;
+    } else if (candidate.isNearby === bestMatch.isNearby && candidate.totalDetourKm < bestMatch.totalDetourKm) {
+      bestMatch = candidate;
+    }
+  }
+
+  return bestMatch;
 };
 
 /* ==================================================================== */
@@ -78,11 +228,40 @@ const openNavigation = (lat: number | null | undefined, lng: number | null | und
 };
 
 /* ==================================================================== */
-/* TaskRouteMap — unchanged light tiles                                 */
+/* Route Map helper (OSRM road coordinates for Google Maps Polyline)    */
+/* ==================================================================== */
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
+};
+
+/* ==================================================================== */
+/* TaskRouteMap — Native Google Maps (supports Provider Corridor line)  */
 /* ==================================================================== */
 const TaskRouteMap = ({
   pickupLat, pickupLng,
   dropoffLat, dropoffLng,
+  corridorStartLat, corridorStartLng,
+  corridorEndLat, corridorEndLng,
   zoom = 12,
   interactive = false,
 }: {
@@ -90,106 +269,124 @@ const TaskRouteMap = ({
   pickupLng?: number | null;
   dropoffLat?: number | null;
   dropoffLng?: number | null;
+  corridorStartLat?: number | null;
+  corridorStartLng?: number | null;
+  corridorEndLat?: number | null;
+  corridorEndLng?: number | null;
   zoom?: number;
   interactive?: boolean;
 }) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [corridorCoords, setCorridorCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+
   const hasPickup = pickupLat != null && pickupLng != null;
   const hasDropoff = dropoffLat != null && dropoffLng != null;
+  const hasCorridor =
+    corridorStartLat != null &&
+    corridorStartLng != null &&
+    corridorEndLat != null &&
+    corridorEndLng != null;
 
-  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
-  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
+  const centerLat = hasPickup ? Number(pickupLat) : (hasDropoff ? Number(dropoffLat) : 10.3157);
+  const centerLng = hasPickup ? Number(pickupLng) : (hasDropoff ? Number(dropoffLng) : 123.8854);
 
-  const dragging = interactive ? 'true' : 'false';
-  const touchZoom = interactive ? 'true' : 'false';
-  const scrollWheelZoom = interactive ? 'true' : 'false';
-  const doubleClickZoom = interactive ? 'true' : 'false';
-  const zoomControl = interactive ? 'true' : 'false';
+  useEffect(() => {
+    if (!hasPickup || !hasDropoff) { setCoords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: Number(pickupLat), lng: Number(pickupLng) },
+        { lat: Number(dropoffLat), lng: Number(dropoffLng) },
+      );
+      let cLine: { latitude: number; longitude: number }[] = [];
+      if (hasCorridor) {
+        cLine = await fetchRoadCoords(
+          { lat: Number(corridorStartLat), lng: Number(corridorStartLng) },
+          { lat: Number(corridorEndLat), lng: Number(corridorEndLng) },
+        );
+      }
+      if (cancelled) return;
+      setCoords(line);
+      setCorridorCoords(cLine);
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-pickup { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${hasPickup ? pickupLat : 'null'};
-          var pickupLng = ${hasPickup ? pickupLng : 'null'};
-          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
-          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
-
-          var map = L.map('map', {
-            zoomControl: ${zoomControl},
-            attributionControl: false,
-            dragging: ${dragging},
-            touchZoom: ${touchZoom},
-            scrollWheelZoom: ${scrollWheelZoom},
-            doubleClickZoom: ${doubleClickZoom},
-          }).setView([${centerLat}, ${centerLng}], ${zoom});
-
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
-
-          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-              });
-          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
-            map.setView([pickupLat, pickupLng], ${zoom});
-          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
-            map.setView([dropoffLat, dropoffLng], ${zoom});
-          }
-        </script>
-      </body>
-    </html>
-  `;
+      const allFit = [...line, ...cLine];
+      const t = setTimeout(() => {
+        if (allFit.length > 1) {
+          mapRef.current?.fitToCoordinates(allFit, {
+            edgePadding: { top: 44, right: 44, bottom: 44, left: 44 },
+            animated: false,
+          });
+        }
+      }, 150);
+      return () => clearTimeout(t);
+    })();
+    return () => { cancelled = true; };
+  }, [
+    pickupLat, pickupLng, dropoffLat, dropoffLng,
+    corridorStartLat, corridorStartLng, corridorEndLat, corridorEndLng,
+    hasPickup, hasDropoff, hasCorridor,
+  ]);
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={StyleSheet.absoluteFill}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
+      initialRegion={{
+        latitude: centerLat,
+        longitude: centerLng,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      }}
       scrollEnabled={interactive}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
+      zoomEnabled={interactive}
+      rotateEnabled={interactive}
+      pitchEnabled={interactive}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      {corridorCoords.length > 1 && (
+        <Polyline
+          coordinates={corridorCoords}
+          strokeColor="#2563EB"
+          strokeWidth={3}
+          lineDashPattern={[6, 4]}
+        />
+      )}
+
+      {hasPickup && (
+        <Marker
+          coordinate={{ latitude: Number(pickupLat), longitude: Number(pickupLng) }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>P</Text>
+          </View>
+        </Marker>
+      )}
+
+      {hasDropoff && (
+        <Marker
+          coordinate={{ latitude: Number(dropoffLat), longitude: Number(dropoffLng) }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: '#111827', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>D</Text>
+          </View>
+        </Marker>
+      )}
+
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
+      )}
+    </MapView>
   );
 };
 
@@ -256,7 +453,9 @@ const buildCargoItems = (cargo: any) => {
 
 const buildTaskInfo = (d: any) => {
   const request = d?.delivery_requests || null;
-  const cargo = Array.isArray(request?.cargo) ? request.cargo[0] : request?.cargo;
+  const cargo = Array.isArray(request?.cargo)
+    ? request.cargo[0]
+    : (request?.cargo || (Array.isArray(request?.cargo_profiles) ? request.cargo_profiles[0] : request?.cargo_profiles));
   const receiver = Array.isArray(request?.receiver) ? request.receiver[0] : request?.receiver;
   const pickup = splitAddress(request?.pickup_location?.street_address);
   const dropoff = splitAddress(request?.dropoff_location?.street_address);
@@ -270,6 +469,8 @@ const buildTaskInfo = (d: any) => {
     receiver,
     pickup: { ...pickup, lat: request?.pickup_location?.latitude ?? null, lng: request?.pickup_location?.longitude ?? null },
     dropoff: { ...dropoff, lat: request?.dropoff_location?.latitude ?? null, lng: request?.dropoff_location?.longitude ?? null },
+    pickupNote: (request?.pickup_note as string | null) || null,
+    dropoffNote: (request?.dropoff_note as string | null) || null,
     items,
     totalItems: items.length > 1 ? items.length : (qtyTotal || items.length),
     weightKg: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
@@ -315,8 +516,6 @@ const enrichDeliveries = async (list: any[]) => {
 /* ==================================================================== */
 /* Cancellation detection                                               */
 /* ==================================================================== */
-// Treat a delivery as cancelled when the request status is Cancelled,
-// OR when escrow / payment has been refunded (defensive — covers older rows).
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -370,10 +569,13 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
 /* ==================================================================== */
 /* TaskScreen                                                           */
 /* ==================================================================== */
+type MainTab = 'senderRoutes' | 'active' | 'completed' | 'cancelled' | 'all';
+type SenderRouteFilter = 'all' | 'nearby' | 'urgent';
+
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const styles = makeStyles(colors);
 
   const hasLoadedRef = useRef(false);
@@ -384,6 +586,13 @@ export default function TaskScreen() {
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
+
+  // Unmatched Sender Routes state + Filter state
+  const [allSenderRequests, setAllSenderRequests] = useState<any[]>([]);
+  const [senderRouteFilter, setSenderRouteFilter] = useState<SenderRouteFilter>('all');
+  const [providerCorridors, setProviderCorridors] = useState<ProviderCorridor[]>([]);
+  const [selectedSenderRequestId, setSelectedSenderRequestId] = useState<number | null>(null);
+  const [acceptingRequestId, setAcceptingRequestId] = useState<number | null>(null);
 
   // Ping state
   const [pingingId, setPingingId] = useState<number | null>(null);
@@ -396,7 +605,8 @@ export default function TaskScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'active' | 'completed' | 'cancelled' | 'all'>('active');
+  // Default tab is 'active', with 'senderRoutes' placed on the left side of 'active'
+  const [activeTab, setActiveTab] = useState<MainTab>('active');
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mapModalVisible, setMapModalVisible] = useState(false);
@@ -422,20 +632,21 @@ export default function TaskScreen() {
   }, [headerAnim, contentAnim]);
 
   useEffect(() => {
-    if (selectedId == null) return;
+    if (selectedId == null && selectedSenderRequestId == null) return;
     detailAnim.setValue(0);
     Animated.timing(detailAnim, { toValue: 1, duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  }, [selectedId, detailAnim]);
+  }, [selectedId, selectedSenderRequestId, detailAnim]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
+      if (selectedSenderRequestId != null) { setSelectedSenderRequestId(null); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [photoPreview, mapModalVisible, selectedId]);
+  }, [photoPreview, mapModalVisible, selectedId, selectedSenderRequestId]);
 
   useEffect(() => {
     if (!verifyModalVisible) return;
@@ -454,11 +665,158 @@ export default function TaskScreen() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData } = await supabase.from('users').select('*').eq('auth_id', user.id).single();
-      setUserData(userData);
-      setProviderId(userData.user_id);
-      return userData.user_id;
+      const { data: uData } = await supabase.from('users').select('*').eq('auth_id', user.id).single();
+      setUserData(uData);
+      setProviderId(uData.user_id);
+      return uData.user_id;
     } catch { return null; }
+  };
+
+  /* ==================================================================== */
+  /* Fetch Unmatched Sender Requests Only + Compute Proximity             */
+  /* ==================================================================== */
+  const fetchUnmatchedSenderRequests = async (pid: number, currentActiveDeliveries: any[]) => {
+    try {
+      // 1. Load provider's saved routes from `provider_routes`
+      const { data: routeRows } = await supabase
+        .from('provider_routes')
+        .select(`
+          route_id,
+          departure_time,
+          route_frequency,
+          vehicle_id,
+          start_location:locations!provider_routes_start_location_id_fkey (*),
+          end_location:locations!provider_routes_end_location_id_fkey (*)
+        `)
+        .eq('provider_id', pid)
+        .order('created_at', { ascending: false });
+
+      const corridors: ProviderCorridor[] = [];
+
+      (routeRows || []).forEach((r: any) => {
+        const sLat = Number(r?.start_location?.latitude);
+        const sLng = Number(r?.start_location?.longitude);
+        const eLat = Number(r?.end_location?.latitude);
+        const eLng = Number(r?.end_location?.longitude);
+        if (Number.isFinite(sLat) && Number.isFinite(sLng) && Number.isFinite(eLat) && Number.isFinite(eLng)) {
+          const sName = splitAddress(r.start_location?.street_address || r.start_location?.barangay).main;
+          const eName = splitAddress(r.end_location?.street_address || r.end_location?.barangay).main;
+          corridors.push({
+            key: `route-${r.route_id}`,
+            routeId: r.route_id,
+            vehicleId: r.vehicle_id ?? null,
+            label: `${sName} → ${eName}`,
+            startLat: sLat,
+            startLng: sLng,
+            endLat: eLat,
+            endLng: eLng,
+            isLiveTask: false,
+          });
+        }
+      });
+
+      // Also include active delivery routes so providers currently on a task can see nearby requests along their trip
+      (currentActiveDeliveries || []).forEach((d: any) => {
+        const req = d?.delivery_requests;
+        const sLat = Number(req?.pickup_location?.latitude);
+        const sLng = Number(req?.pickup_location?.longitude);
+        const eLat = Number(req?.dropoff_location?.latitude);
+        const eLng = Number(req?.dropoff_location?.longitude);
+        if (Number.isFinite(sLat) && Number.isFinite(sLng) && Number.isFinite(eLat) && Number.isFinite(eLng)) {
+          const sName = splitAddress(req?.pickup_location?.street_address).main;
+          const eName = splitAddress(req?.dropoff_location?.street_address).main;
+          corridors.push({
+            key: `active-delivery-${d.delivery_id}`,
+            routeId: d.route_id ?? null,
+            vehicleId: d.vehicle_id ?? null,
+            label: `Active Task: ${sName} → ${eName}`,
+            startLat: sLat,
+            startLng: sLng,
+            endLat: eLat,
+            endLng: eLng,
+            isLiveTask: true,
+          });
+        }
+      });
+
+      setProviderCorridors(corridors);
+
+      // 2. Fetch ONLY Pending delivery requests that do NOT have a preferred_provider_id or preferred_route_id match
+      const { data: pendingReqs, error: reqError } = await supabase
+        .from('delivery_requests')
+        .select(`
+          *,
+          cargo:cargo_profiles!delivery_requests_cargo_id_fkey (*),
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey (*),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*),
+          receiver:receivers!delivery_requests_receiver_id_fkey (*)
+        `)
+        .eq('delivery_status', 'Pending')
+        .is('preferred_provider_id', null)
+        .is('preferred_route_id', null)
+        .neq('sender_id', pid)
+        .order('created_at', { ascending: false });
+
+      if (reqError || !pendingReqs || pendingReqs.length === 0) {
+        setAllSenderRequests([]);
+        return;
+      }
+
+      // 3. Strictly exclude any request that already has a match in `deliveries`
+      const reqIds = pendingReqs.map((r: any) => r.request_id);
+      const { data: existingDeliveries } = await supabase
+        .from('deliveries')
+        .select('request_id')
+        .in('request_id', reqIds);
+
+      const matchedRequestIds = new Set((existingDeliveries || []).map((d: any) => d.request_id));
+      const strictlyUnmatchedReqs = pendingReqs.filter((r: any) => !matchedRequestIds.has(r.request_id));
+
+      // 4. Evaluate proximity against provider's corridors for every unmatched request
+      const mappedUnmatched = strictlyUnmatchedReqs.map((req: any) => {
+        const pLat = req?.pickup_location?.latitude;
+        const pLng = req?.pickup_location?.longitude;
+        const dLat = req?.dropoff_location?.latitude;
+        const dLng = req?.dropoff_location?.longitude;
+
+        const proximityMeta = evaluateRequestProximity(pLat, pLng, dLat, dLng, corridors);
+        return {
+          request_id: req.request_id,
+          delivery_requests: req,
+          proximityMeta,
+        };
+      });
+
+      // 5. Enrich sender info
+      const senderIds = Array.from(new Set(mappedUnmatched.map(item => item.delivery_requests?.sender_id).filter(Boolean)));
+      const sendersMap: Record<number, any> = {};
+      if (senderIds.length > 0) {
+        const { data: sRows } = await supabase
+          .from('users')
+          .select('user_id, first_name, last_name, phone_number')
+          .in('user_id', senderIds);
+        (sRows || []).forEach((u: any) => { sendersMap[u.user_id] = u; });
+      }
+
+      const enriched = mappedUnmatched
+        .map(item => ({
+          ...item,
+          sender: sendersMap[item.delivery_requests?.sender_id] || null,
+        }))
+        .sort((a, b) => {
+          const aNear = a.proximityMeta?.isNearby ? 1 : 0;
+          const bNear = b.proximityMeta?.isNearby ? 1 : 0;
+          if (aNear !== bNear) return bNear - aNear;
+          if (a.proximityMeta && b.proximityMeta) {
+            return a.proximityMeta.totalDetourKm - b.proximityMeta.totalDetourKm;
+          }
+          return 0;
+        });
+
+      setAllSenderRequests(enriched);
+    } catch (err) {
+      console.error('Error fetching unmatched sender requests:', err);
+    }
   };
 
   const fetchDeliveries = async (pid: number) => {
@@ -477,7 +835,183 @@ export default function TaskScreen() {
       setActiveDeliveries(active);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
+
+      await fetchUnmatchedSenderRequests(pid, active);
     } catch (error) { console.error('Error fetching deliveries:', error); }
+  };
+
+  /* ==================================================================== */
+  /* Accept an Unmatched Sender Request                                   */
+  /* ==================================================================== */
+  const handleAcceptSenderRequest = async (senderItem: any) => {
+    if (!providerId) return;
+    const req = senderItem?.delivery_requests;
+    if (!req?.request_id) return;
+
+    const meta: RouteProximityMeta | null = senderItem?.proximityMeta || null;
+
+    Alert.alert(
+      'Accept Sender Route',
+      `Accept unmatched shipment #${trackingCode(req.request_id)} for ${money(req.estimated_cost)}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Accept Task',
+          onPress: async () => {
+            setAcceptingRequestId(req.request_id);
+            try {
+              // 1. Verify request is still Pending and unclaimed
+              const { data: latestReq, error: checkErr } = await supabase
+                .from('delivery_requests')
+                .select('request_id, delivery_status, sender_id, estimated_cost, total_distance')
+                .eq('request_id', req.request_id)
+                .single();
+
+              if (checkErr || !latestReq) {
+                throw new Error('Could not find this delivery request.');
+              }
+              if (latestReq.delivery_status !== 'Pending') {
+                Alert.alert('Unavailable', 'This request was already accepted or cancelled.');
+                await fetchDeliveries(providerId);
+                return;
+              }
+
+              const { data: existingDel } = await supabase
+                .from('deliveries')
+                .select('delivery_id')
+                .eq('request_id', req.request_id)
+                .maybeSingle();
+
+              if (existingDel) {
+                Alert.alert('Unavailable', 'Another courier just accepted this request.');
+                await fetchDeliveries(providerId);
+                return;
+              }
+
+              // 2. Resolve vehicle_id for the provider
+              let vehicleId: number | null = meta?.corridor?.vehicleId ?? null;
+              if (!vehicleId) {
+                const { data: vehicles } = await supabase
+                  .from('vehicles')
+                  .select('vehicle_id, verification_status')
+                  .eq('provider_id', providerId)
+                  .order('vehicle_id', { ascending: false });
+
+                if (!vehicles || vehicles.length === 0) {
+                  Alert.alert('Vehicle Required', 'Please register a vehicle in Manage Vehicles before accepting tasks.');
+                  return;
+                }
+                const approved = vehicles.find((v: any) => /approved|verified/i.test(String(v.verification_status)));
+                vehicleId = (approved || vehicles[0]).vehicle_id;
+              }
+
+              // 3. Calculate estimated ETA
+              const distKm = Number(req.total_distance) || 5;
+              const travelMins = Math.max(20, Math.round((distKm / 25) * 60) + 15);
+              const estimatedEta = new Date(Date.now() + travelMins * 60 * 1000).toISOString();
+
+              // 4. Insert into `deliveries`
+              const { data: newDelivery, error: delErr } = await supabase
+                .from('deliveries')
+                .insert({
+                  request_id: req.request_id,
+                  provider_id: providerId,
+                  route_id: meta?.corridor?.routeId ?? null,
+                  vehicle_id: vehicleId,
+                  accepted_at: new Date().toISOString(),
+                  estimated_eta: estimatedEta,
+                })
+                .select('*')
+                .single();
+
+              if (delErr || !newDelivery) {
+                throw delErr || new Error('Failed to create delivery record.');
+              }
+
+              // 5. Update `delivery_requests` status to 'Accepted'
+              await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Accepted' })
+                .eq('request_id', req.request_id);
+
+              // 6. Ensure `qr_verifications` exists for this delivery
+              const { data: existingQr } = await supabase
+                .from('qr_verifications')
+                .select('qr_id')
+                .eq('delivery_id', newDelivery.delivery_id)
+                .maybeSingle();
+
+              if (!existingQr) {
+                const genPin = () => String(Math.floor(1000 + Math.random() * 9000));
+                const randSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+                await supabase.from('qr_verifications').insert({
+                  delivery_id: newDelivery.delivery_id,
+                  pickup_qr: `PNS-PICKUP-${newDelivery.delivery_id}-${randSuffix}`,
+                  dropoff_qr: `PNS-DROPOFF-${newDelivery.delivery_id}-${randSuffix}`,
+                  pickup_pin: genPin(),
+                  dropoff_pin: genPin(),
+                  pickup_verified: false,
+                  dropoff_verified: false,
+                });
+              }
+
+              // 7. Ensure `escrow_payments` record exists
+              const { data: existingEscrow } = await supabase
+                .from('escrow_payments')
+                .select('escrow_id')
+                .eq('delivery_id', newDelivery.delivery_id)
+                .maybeSingle();
+
+              if (!existingEscrow) {
+                await supabase.from('escrow_payments').insert({
+                  delivery_id: newDelivery.delivery_id,
+                  sender_id: req.sender_id,
+                  provider_id: providerId,
+                  amount: Number(req.estimated_cost) || 0,
+                  escrow_status: 'On hold',
+                });
+              }
+
+              // 8. Log status history
+              try {
+                await supabase.from('delivery_status_history').insert({
+                  delivery_id: newDelivery.delivery_id,
+                  status: 'Accepted',
+                });
+              } catch { /* non-fatal */ }
+
+              // 9. Notify the sender
+              if (req.sender_id) {
+                const courierName = userData
+                  ? [userData.first_name, userData.last_name].filter(Boolean).join(' ')
+                  : 'A courier';
+                notifyUser(
+                  req.sender_id,
+                  'Courier Assigned! 🚚',
+                  `${courierName} accepted your shipment #${trackingCode(req.request_id)}.`,
+                  { deliveryId: newDelivery.delivery_id, requestId: req.request_id },
+                );
+              }
+
+              setSelectedSenderRequestId(null);
+              await fetchDeliveries(providerId);
+              setActiveTab('active');
+              setSelectedId(newDelivery.delivery_id);
+
+              Alert.alert(
+                '✅ Task Accepted!',
+                `Shipment #${trackingCode(req.request_id)} is now in your Active Tasks.`,
+              );
+            } catch (err: any) {
+              console.error('Error accepting sender request:', err);
+              Alert.alert('Accept Failed', err?.message || 'Could not accept this delivery request.');
+            } finally {
+              setAcceptingRequestId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   // --- PING SENDER LOGIC ---
@@ -544,9 +1078,6 @@ export default function TaskScreen() {
         .update({ delivery_status: 'In Transit' })
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
-
-      // Note: trg_log_pickup_status_history on qr_verifications automatically
-      // inserts the 'Picked up' row into delivery_status_history.
 
       const patchDelivery = (list: any[]) =>
         list.map(d => {
@@ -733,9 +1264,6 @@ export default function TaskScreen() {
         .update({ dropoff_verified: true })
         .eq('delivery_id', deliveryId);
 
-      // Updating completed_at triggers trg_release_escrow and trg_log_delivery_status_history
-      // in Postgres, which atomically update delivery_requests, escrow_payments,
-      // transactions, escrow_transactions, provider_wallet (85%), and delivery_status_history.
       const { error: delError } = await supabase
         .from('deliveries')
         .update({ completed_at: now })
@@ -773,7 +1301,8 @@ export default function TaskScreen() {
     const channel = supabase
       .channel(`task-realtime-${providerId}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
       .subscribe();
@@ -782,8 +1311,6 @@ export default function TaskScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
-  // If the currently selected task becomes cancelled (or leaves the list),
-  // close any open task-scoped modals so we don't leave stale UI behind.
   useEffect(() => {
     if (selectedId == null) return;
     const stillActive = activeDeliveries.some(d => d.delivery_id === selectedId);
@@ -795,6 +1322,14 @@ export default function TaskScreen() {
       closeDeliveryOTPModal();
     }
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
+
+  useEffect(() => {
+    if (selectedSenderRequestId == null) return;
+    const stillOpen = allSenderRequests.some(r => r.request_id === selectedSenderRequestId);
+    if (!stillOpen) {
+      setSelectedSenderRequestId(null);
+    }
+  }, [allSenderRequests, selectedSenderRequestId]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -871,17 +1406,518 @@ export default function TaskScreen() {
 
   const allTasks = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries];
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
-  const tabCount = (t: 'active' | 'completed' | 'cancelled' | 'all') =>
-    t === 'active' ? activeDeliveries.length
+  const selectedSenderRequest = selectedSenderRequestId != null
+    ? allSenderRequests.find(r => r.request_id === selectedSenderRequestId) || null
+    : null;
+
+  const nearbyCount = useMemo(
+    () => allSenderRequests.filter(r => r.proximityMeta?.isNearby).length,
+    [allSenderRequests],
+  );
+  const urgentCount = useMemo(
+    () => allSenderRequests.filter(r => r.delivery_requests?.emergency_flag).length,
+    [allSenderRequests],
+  );
+
+  const filteredSenderRequests = useMemo(() => {
+    if (senderRouteFilter === 'nearby') {
+      return allSenderRequests.filter(r => r.proximityMeta?.isNearby);
+    }
+    if (senderRouteFilter === 'urgent') {
+      return allSenderRequests.filter(r => r.delivery_requests?.emergency_flag);
+    }
+    return allSenderRequests;
+  }, [allSenderRequests, senderRouteFilter]);
+
+  const tabCount = (t: MainTab) =>
+    t === 'senderRoutes' ? allSenderRequests.length
+      : t === 'active' ? activeDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
+
+  const tabLabel = (t: MainTab) =>
+    t === 'senderRoutes' ? "Sender's Routes" : t.charAt(0).toUpperCase() + t.slice(1);
 
   const filteredTasks =
     activeTab === 'active' ? activeDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
+
+  /* ==================================================================== */
+  /* Render Unmatched Sender Route Card                                   */
+  /* ==================================================================== */
+  const renderSenderRouteCard = (item: any) => {
+    const info = buildTaskInfo(item);
+    if (!info.request) return null;
+    const meta: RouteProximityMeta | null = item.proximityMeta || null;
+    const isNearby = !!meta?.isNearby;
+    const isAccepting = acceptingRequestId === info.request.request_id;
+
+    return (
+      <TouchableOpacity
+        key={`sender-req-${info.request.request_id}`}
+        style={[styles.card, isNearby && { borderColor: ORANGE, borderWidth: 1.3 }]}
+        onPress={() => setSelectedSenderRequestId(info.request.request_id)}
+        activeOpacity={0.9}
+      >
+        <View style={styles.cardHeader}>
+          <View style={styles.cardHeaderLeft}>
+            <View style={styles.serviceBadge}>
+              <Text style={styles.serviceBadgeText}>{serviceLabel(info.request.pickup_type)}</Text>
+            </View>
+            {isNearby ? (
+              <View style={[styles.statusBadge, { backgroundColor: colors.accentSoft }]}>
+                <Ionicons name="compass" size={12} color={ORANGE} />
+                <Text style={[styles.statusBadgeText, { color: ORANGE }]}>
+                  Nearby (+{meta?.totalDetourKm} km)
+                </Text>
+              </View>
+            ) : (
+              <View style={[styles.statusBadge, { backgroundColor: colors.warningBg }]}>
+                <Ionicons name="radio-button-on" size={11} color={colors.warning} />
+                <Text style={[styles.statusBadgeText, { color: colors.warning }]}>
+                  Unmatched
+                </Text>
+              </View>
+            )}
+            {info.request.emergency_flag && (
+              <View style={[styles.statusBadge, { backgroundColor: colors.errorBg }]}>
+                <Ionicons name="flash" size={11} color={colors.error} />
+                <Text style={[styles.statusBadgeText, { color: colors.error }]}>Urgent</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.itemsChip}>
+            <Ionicons name="cube-outline" size={12} color={colors.textSecondary} />
+            <Text style={styles.itemsChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
+          </View>
+        </View>
+
+        <Text style={styles.cardDate}>{dateLabel(info.request)}</Text>
+
+        {!!meta && (
+          <View style={[styles.nearbyCorridorBanner, !isNearby && { backgroundColor: colors.divider }]}>
+            <Ionicons
+              name={isNearby ? 'git-branch-outline' : 'navigate-outline'}
+              size={14}
+              color={isNearby ? '#2563EB' : colors.textSecondary}
+            />
+            <Text
+              style={[styles.nearbyCorridorText, !isNearby && { color: colors.textSecondary }]}
+              numberOfLines={1}
+            >
+              {isNearby
+                ? `Close to your ${meta.corridor.label}`
+                : `${meta.totalDetourKm} km from ${meta.corridor.label}`}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.routeBox}>
+          <View style={styles.routeRow}>
+            <View style={styles.dotOrange} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{info.pickup.main}</Text>
+            {!!meta && (
+              <Text style={[styles.deviationTag, !isNearby && styles.deviationTagMuted]}>
+                {meta.pickupDeviationKm} km
+              </Text>
+            )}
+          </View>
+          <View style={styles.routeConnectorLine} />
+          <View style={styles.routeRow}>
+            <View style={styles.dotDark} />
+            <Text style={styles.routeAddressText} numberOfLines={1}>{info.dropoff.main}</Text>
+            {!!meta && (
+              <Text style={[styles.deviationTag, !isNearby && styles.deviationTagMuted]}>
+                {meta.dropoffDeviationKm} km
+              </Text>
+            )}
+          </View>
+        </View>
+
+        <View style={styles.cardChipRow}>
+          {info.weightKg != null && (
+            <View style={styles.infoChip}>
+              <Ionicons name="barbell-outline" size={12} color={colors.textSecondary} />
+              <Text style={styles.infoChipText}>{info.weightKg} kg</Text>
+            </View>
+          )}
+          {info.request.total_distance != null && (
+            <View style={styles.infoChip}>
+              <Ionicons name="navigate-outline" size={12} color={colors.textSecondary} />
+              <Text style={styles.infoChipText}>{Number(info.request.total_distance).toFixed(1)} km trip</Text>
+            </View>
+          )}
+          {info.fragile && (
+            <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+              <Ionicons name="warning" size={12} color={colors.error} />
+              <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
+            </View>
+          )}
+          {!!info.senderName && (
+            <View style={styles.infoChip}>
+              <Ionicons name="person-outline" size={12} color={colors.textSecondary} />
+              <Text style={styles.infoChipText} numberOfLines={1}>{info.senderName}</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.cardFooter}>
+          <View>
+            <Text style={styles.footerLabel}>ESTIMATED EARNINGS</Text>
+            <Text style={styles.priceText}>{money(info.earnings)}</Text>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: colors.accentSoft, shadowColor: 'transparent', paddingHorizontal: 13 }]}
+              onPress={() => setSelectedSenderRequestId(info.request.request_id)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="eye-outline" size={15} color={ORANGE} />
+              <Text style={[styles.actionBtnText, { color: ORANGE }]}>Details</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={() => handleAcceptSenderRequest(item)}
+              disabled={isAccepting}
+              activeOpacity={0.9}
+            >
+              {isAccepting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
+                  <Text style={styles.actionBtnText}>Accept</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  /* ==================================================================== */
+  /* Render Unmatched Sender Request Detail View (When Clicked)           */
+  /* ==================================================================== */
+  const renderSenderRouteDetailView = (item: any) => {
+    const info = buildTaskInfo(item);
+    const meta: RouteProximityMeta | null = item.proximityMeta || null;
+    const req = info.request;
+    const code = trackingCode(req?.request_id);
+    const isAccepting = acceptingRequestId === req?.request_id;
+
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <Animated.View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+          <TouchableOpacity onPress={() => setSelectedSenderRequestId(null)} style={styles.backCircleBtn} activeOpacity={0.8}>
+            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.detailHeaderTitle}>Sender Route Details</Text>
+          <View style={styles.headerSpacer} />
+        </Animated.View>
+
+        <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
+          <Animated.View style={{ opacity: detailAnim }}>
+            <View style={styles.nextCard}>
+              <View style={styles.nextTop}>
+                <View style={styles.nextIcon}>
+                  <Ionicons name={meta?.isNearby ? 'compass' : 'cube'} size={24} color={ORANGE} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.nextEyebrow}>
+                    {meta?.isNearby ? 'NEARBY YOUR CURRENT ROUTE' : 'UNMATCHED SENDER REQUEST'}
+                  </Text>
+                  <Text style={styles.nextTitle}>
+                    {meta ? meta.corridor.label : `${info.pickup.main} → ${info.dropoff.main}`}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.nextLocBox}>
+                {meta ? (
+                  <>
+                    <Text style={styles.nextLocLabel}>DISTANCE FROM YOUR ROUTE</Text>
+                    <Text style={styles.nextLocMain}>
+                      Pickup: {meta.pickupDeviationKm} km off · Drop-off: {meta.dropoffDeviationKm} km off
+                    </Text>
+                    <Text style={styles.nextLocSub}>
+                      {meta.isNearby
+                        ? `Within ${MAX_CORRIDOR_DISTANCE_KM} km of your route (Total detour: ~${meta.totalDetourKm} km)`
+                        : `Total detour from your route: ~${meta.totalDetourKm} km`}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.nextLocLabel}>ROUTE SUMMARY</Text>
+                    <Text style={styles.nextLocMain} numberOfLines={2}>
+                      {info.pickup.main} to {info.dropoff.main}
+                    </Text>
+                    <Text style={styles.nextLocSub}>
+                      Scheduled: {dateLabel(req)}
+                    </Text>
+                  </>
+                )}
+
+                <View style={styles.nextChipRow}>
+                  <View style={styles.nextChip}>
+                    <Ionicons name={/door/i.test(req?.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#FFFFFF" />
+                    <Text style={styles.nextChipText}>{serviceLabel(req?.pickup_type)}</Text>
+                  </View>
+                  <View style={styles.nextChip}>
+                    <Ionicons name="cube-outline" size={12} color="#FFFFFF" />
+                    <Text style={styles.nextChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
+                  </View>
+                  {req?.total_distance != null && (
+                    <View style={styles.nextChip}>
+                      <Ionicons name="navigate-outline" size={12} color="#FFFFFF" />
+                      <Text style={styles.nextChipText}>{Number(req.total_distance).toFixed(1)} km trip</Text>
+                    </View>
+                  )}
+                  {info.fragile && (
+                    <View style={[styles.nextChip, { backgroundColor: colors.error }]}>
+                      <Ionicons name="warning" size={12} color="#FFFFFF" />
+                      <Text style={styles.nextChipText}>Fragile</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.nextPrimaryBtn, { marginTop: 14 }]}
+                onPress={() => handleAcceptSenderRequest(item)}
+                disabled={isAccepting}
+                activeOpacity={0.9}
+              >
+                {isAccepting ? (
+                  <ActivityIndicator size="small" color={ORANGE} />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={19} color={ORANGE} />
+                    <Text style={styles.nextPrimaryText}>Accept Route & Start Task ({money(info.earnings)})</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.trackTextRow}>
+              <Text style={styles.trackTextLabel}>Request ID</Text>
+              <Text style={styles.trackTextId} selectable numberOfLines={1}>#{code}</Text>
+              <TouchableOpacity
+                onPress={() => copyTracking(code)}
+                activeOpacity={0.7}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                style={styles.trackTextCopy}
+              >
+                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
+              <TouchableOpacity style={[styles.sdMap, { height: 210 }]} activeOpacity={0.9} onPress={() => setMapModalVisible(true)}>
+                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                  <TaskRouteMap
+                    pickupLat={info.pickup.lat}
+                    pickupLng={info.pickup.lng}
+                    dropoffLat={info.dropoff.lat}
+                    dropoffLng={info.dropoff.lng}
+                    corridorStartLat={meta?.corridor?.startLat}
+                    corridorStartLng={meta?.corridor?.startLng}
+                    corridorEndLat={meta?.corridor?.endLat}
+                    corridorEndLng={meta?.corridor?.endLng}
+                    zoom={12}
+                    interactive={false}
+                  />
+                </View>
+                <View style={styles.mapTapHint}>
+                  <Text style={styles.mapTapHintText}>
+                    {meta ? 'Orange: Sender · Blue: Your Route (Tap to expand)' : 'Full map'}
+                  </Text>
+                  <Ionicons name="expand-outline" size={11} color="#FFFFFF" />
+                </View>
+              </TouchableOpacity>
+
+              <View style={styles.sdRoutePad}>
+                <View style={styles.sdRouteRow}>
+                  <View style={styles.sdRouteRail}>
+                    <View style={styles.sdPinPickup}><Text style={styles.sdPinLetter}>P</Text></View>
+                    <View style={styles.sdRailLine} />
+                  </View>
+                  <View style={styles.sdRouteText}>
+                    <Text style={styles.eyebrow}>
+                      PICKUP {meta ? `· ${meta.pickupDeviationKm} KM FROM YOUR ROUTE` : ''}
+                    </Text>
+                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
+                    {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
+                    {!!info.pickupNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.pickupNote}</Text>
+                      </View>
+                    )}
+
+                    <TouchableOpacity
+                      style={styles.inlineNavigateBtn}
+                      onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
+                      <Text style={styles.inlineNavigateText}>Preview in Google Maps</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <View style={styles.sdRouteRow}>
+                  <View style={styles.sdRouteRail}>
+                    <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
+                  </View>
+                  <View style={[styles.sdRouteText, { paddingBottom: 0 }]}>
+                    <Text style={styles.eyebrow}>
+                      DROP-OFF {meta ? `· ${meta.dropoffDeviationKm} KM FROM YOUR ROUTE` : ''}
+                    </Text>
+                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
+                    {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
+                    {!!info.dropoffNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.dropoffNote}</Text>
+                      </View>
+                    )}
+
+                    <TouchableOpacity
+                      style={styles.inlineNavigateBtn}
+                      onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
+                      <Text style={styles.inlineNavigateText}>Preview in Google Maps</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="people-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Contacts</Text>
+              </View>
+              {renderContactRow({
+                role: 'SENDER · PICKUP', name: info.senderName, phone: info.senderPhone, icon: 'person-outline',
+              })}
+              <View style={styles.contactDivider} />
+              {renderContactRow({
+                role: 'RECEIVER · DROP-OFF', name: info.receiverName, phone: info.receiverPhone, icon: 'person',
+              })}
+            </View>
+
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="cube-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Package details</Text>
+              </View>
+
+              <View style={styles.statsRow}>
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>ITEMS</Text>
+                  <Text style={styles.statValue}>{info.totalItems}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>WEIGHT</Text>
+                  <Text style={styles.statValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.stat}>
+                  <Text style={styles.statLabel}>FRAGILE</Text>
+                  <Text style={[styles.statValue, info.fragile && { color: colors.error }]}>{info.fragile ? 'Yes' : 'No'}</Text>
+                </View>
+              </View>
+
+              <View style={[styles.handlingBox, info.fragile && styles.handlingBoxWarn]}>
+                <Ionicons
+                  name={info.fragile ? 'warning' : 'information-circle-outline'}
+                  size={16}
+                  color={info.fragile ? colors.error : ORANGE}
+                />
+                <Text style={[styles.handlingText, info.fragile && { color: colors.error }]}>
+                  {info.fragile ? 'Fragile — handle with care and keep upright. ' : ''}
+                  {/door/i.test(req?.pickup_type || '')
+                    ? 'Door-to-door: collect from and hand over at the door.'
+                    : 'Curb-side: collect from and hand over at the curb or entrance.'}
+                </Text>
+              </View>
+
+              {info.items.map((it: any, i: number) => {
+                const ok = !!it.photo && !failedPhotos[it.photo];
+                return (
+                  <View key={i} style={styles.itemBlock}>
+                    {ok ? (
+                      <TouchableOpacity activeOpacity={0.92} onPress={() => setPhotoPreview(it.photo)} style={styles.itemPhotoWrap}>
+                        <Image
+                          source={{ uri: it.photo }}
+                          style={styles.itemPhoto}
+                          resizeMode="cover"
+                          onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
+                        />
+                        <View style={styles.enlargeHint}><Ionicons name="expand-outline" size={12} color="#FFFFFF" /></View>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.itemNoPhoto}>
+                        <Ionicons name="image-outline" size={18} color={colors.textMuted} />
+                        <Text style={styles.itemNoPhotoText}>{it.photo ? "Photo couldn't be loaded" : 'No photo provided'}</Text>
+                      </View>
+                    )}
+                    <View style={styles.itemInfoRow}>
+                      <View style={{ flex: 1 }}>
+                        {info.items.length > 1 && <Text style={styles.eyebrow}>ITEM {i + 1}</Text>}
+                        <Text style={styles.itemTitle} numberOfLines={3}>{it.description}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        {!!it.size && <View style={styles.infoChip}><Text style={styles.infoChipText}>{it.size}</Text></View>}
+                        {it.fragile && (
+                          <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+                            <Ionicons name="warning" size={11} color={colors.error} />
+                            <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+
+            <View style={styles.sdCard}>
+              <View style={styles.sdCardHeader}>
+                <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
+                <Text style={styles.sdCardTitle}>Earnings</Text>
+              </View>
+              <View style={styles.payRow}>
+                <Text style={styles.payLabel}>Payment type</Text>
+                <View style={styles.payValueRow}>
+                  <Ionicons name="shield-checkmark-outline" size={15} color={colors.textSecondary} />
+                  <Text style={styles.payValue}>Escrow payment</Text>
+                </View>
+              </View>
+              {!!req?.payment_provider && (
+                <View style={styles.payRow}>
+                  <Text style={styles.payLabel}>Sender paid via</Text>
+                  <PaymentMethodBadge provider={req.payment_provider} />
+                </View>
+              )}
+              <View style={styles.sdTotalBox}>
+                <Text style={styles.sdTotalLabel}>Estimated earnings</Text>
+                <Text style={styles.sdTotalValue}>{money(info.earnings)}</Text>
+              </View>
+            </View>
+          </Animated.View>
+        </ScrollView>
+      </View>
+    );
+  };
 
   /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
@@ -1025,13 +2061,16 @@ export default function TaskScreen() {
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['senderRoutes', 'active', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             return (
               <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
+                {t === 'senderRoutes' && (
+                  <Ionicons name="compass-outline" size={15} color={on ? ORANGE : colors.textSecondary} />
+                )}
                 <Text style={[styles.tabText, on && styles.tabTextActive]}>
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                  {tabLabel(t)}
                 </Text>
                 {count > 0 && (
                   <View style={[styles.tabCountBadge, on && styles.tabCountBadgeActive]}>
@@ -1051,7 +2090,89 @@ export default function TaskScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
-          {filteredTasks.length === 0 ? (
+          {activeTab === 'senderRoutes' ? (
+            <>
+              {/* Filter Bar inside Sender's Routes Tab */}
+              <View style={styles.filterBarRow}>
+                <TouchableOpacity
+                  style={[styles.filterPill, senderRouteFilter === 'all' && styles.filterPillActive]}
+                  onPress={() => setSenderRouteFilter('all')}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name="layers-outline"
+                    size={13}
+                    color={senderRouteFilter === 'all' ? '#FFFFFF' : colors.textSecondary}
+                  />
+                  <Text style={[styles.filterPillText, senderRouteFilter === 'all' && styles.filterPillTextActive]}>
+                    All Unmatched ({allSenderRequests.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.filterPill, senderRouteFilter === 'nearby' && styles.filterPillActive]}
+                  onPress={() => setSenderRouteFilter('nearby')}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name="compass"
+                    size={13}
+                    color={senderRouteFilter === 'nearby' ? '#FFFFFF' : ORANGE}
+                  />
+                  <Text style={[styles.filterPillText, senderRouteFilter === 'nearby' && styles.filterPillTextActive]}>
+                    Nearby My Route ({nearbyCount})
+                  </Text>
+                </TouchableOpacity>
+
+                {urgentCount > 0 && (
+                  <TouchableOpacity
+                    style={[styles.filterPill, senderRouteFilter === 'urgent' && styles.filterPillActive]}
+                    onPress={() => setSenderRouteFilter('urgent')}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons
+                      name="flash"
+                      size={13}
+                      color={senderRouteFilter === 'urgent' ? '#FFFFFF' : colors.error}
+                    />
+                    <Text style={[styles.filterPillText, senderRouteFilter === 'urgent' && styles.filterPillTextActive]}>
+                      Urgent ({urgentCount})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {senderRouteFilter === 'nearby' && providerCorridors.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconCircle}>
+                    <Ionicons name="map-outline" size={30} color={ORANGE} />
+                  </View>
+                  <Text style={styles.emptyTitle}>No active route configured</Text>
+                  <Text style={styles.emptySubtext}>
+                    Add a route in Manage Routes or switch to "All Unmatched" to browse all open sender requests.
+                  </Text>
+                </View>
+              ) : filteredSenderRequests.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconCircle}>
+                    <Ionicons name="compass-outline" size={30} color={ORANGE} />
+                  </View>
+                  <Text style={styles.emptyTitle}>
+                    {senderRouteFilter === 'nearby'
+                      ? 'No nearby unmatched routes right now'
+                      : 'No unmatched sender requests'}
+                  </Text>
+                  <Text style={styles.emptySubtext}>
+                    {senderRouteFilter === 'nearby'
+                      ? `No unmatched requests are within ${MAX_CORRIDOR_DISTANCE_KM} km of your route right now. Tap "All Unmatched" to see all available requests.`
+                      : 'When senders post new delivery requests that have no match yet, they will appear here.'}
+                  </Text>
+                </View>
+              ) : (
+                filteredSenderRequests.map(renderSenderRouteCard)
+              )}
+            </>
+          ) : filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <Ionicons
@@ -1073,7 +2194,7 @@ export default function TaskScreen() {
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
                   : allTasks.length === 0
-                    ? 'Deliveries you accept appear here. Review matched requests in the Jobs tab.'
+                    ? "Deliveries you accept appear here. Check the Sender's Routes tab to browse and accept unmatched requests."
                     : 'Try another tab to view history.'}
               </Text>
             </View>
@@ -1291,6 +2412,12 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>PICKUP</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
                     {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
+                    {!!info.pickupNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.pickupNote}</Text>
+                      </View>
+                    )}
 
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
@@ -1310,6 +2437,12 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>DROP-OFF</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
                     {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
+                    {!!info.dropoffNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.dropoffNote}</Text>
+                      </View>
+                    )}
 
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
@@ -1580,8 +2713,10 @@ export default function TaskScreen() {
   );
 
   const renderMapModal = () => {
-    if (!selectedTask) return null;
-    const info = buildTaskInfo(selectedTask);
+    const activeTarget = selectedSenderRequest || selectedTask;
+    if (!activeTarget) return null;
+    const info = buildTaskInfo(activeTarget);
+    const meta: RouteProximityMeta | null = selectedSenderRequest?.proximityMeta || null;
     return (
       <Modal visible={mapModalVisible} animationType="slide" onRequestClose={() => setMapModalVisible(false)}>
         <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -1591,6 +2726,10 @@ export default function TaskScreen() {
               pickupLng={info.pickup.lng}
               dropoffLat={info.dropoff.lat}
               dropoffLng={info.dropoff.lng}
+              corridorStartLat={meta?.corridor?.startLat}
+              corridorStartLng={meta?.corridor?.startLng}
+              corridorEndLat={meta?.corridor?.endLat}
+              corridorEndLng={meta?.corridor?.endLng}
               zoom={12}
               interactive
             />
@@ -1736,7 +2875,11 @@ export default function TaskScreen() {
   return (
     <View style={styles.safeArea}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
-      {selectedTask ? renderDetailView(selectedTask) : renderListView()}
+      {selectedSenderRequest
+        ? renderSenderRouteDetailView(selectedSenderRequest)
+        : selectedTask
+          ? renderDetailView(selectedTask)
+          : renderListView()}
 
       {renderScannerModal()}
       {renderMapModal()}
@@ -1769,6 +2912,34 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
   tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
   tabCountTextActive: { color: ORANGE },
+
+  filterBarRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14,
+  },
+  filterPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 13, paddingVertical: 8, borderRadius: 14,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+  },
+  filterPillActive: {
+    backgroundColor: ORANGE, borderColor: ORANGE,
+  },
+  filterPillText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
+  filterPillTextActive: { color: '#FFFFFF' },
+
+  nearbyCorridorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(37, 99, 235, 0.10)', borderRadius: 10,
+    paddingHorizontal: 10, paddingVertical: 6, marginBottom: 10,
+  },
+  nearbyCorridorText: { flex: 1, fontSize: 12, fontWeight: '800', color: '#2563EB' },
+  deviationTag: {
+    fontSize: 11, fontWeight: '800', color: ORANGE,
+    backgroundColor: c.accentSoft, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+  },
+  deviationTagMuted: {
+    color: c.textSecondary, backgroundColor: c.divider,
+  },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
@@ -1948,6 +3119,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
   sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
   inlineNavigateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

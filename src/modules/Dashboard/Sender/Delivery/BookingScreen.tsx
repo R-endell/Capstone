@@ -4,7 +4,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
   Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
@@ -1046,93 +1046,17 @@ export default function BookingScreen({ route, navigation }: any) {
   const mapTopPad = Math.round(insets.top + 120);
   const mapBottomPad = 320;
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-          .marker-pickup { background: #F27024; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${pickupLat === null ? 'null' : pickupLat};
-          var pickupLng = ${pickupLng === null ? 'null' : pickupLng};
-          var dropoffLat = ${dropoffLat === null ? 'null' : dropoffLat};
-          var dropoffLng = ${dropoffLng === null ? 'null' : dropoffLng};
-
-          var centerLat = (pickupLat !== null) ? pickupLat : ((dropoffLat !== null) ? dropoffLat : 10.3157);
-          var centerLng = (pickupLng !== null) ? pickupLng : ((dropoffLng !== null) ? dropoffLng : 123.8854);
-
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 12);
-          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          var fitOpts = { paddingTopLeft: [40, ${mapTopPad}], paddingBottomRight: [40, ${mapBottomPad}], maxZoom: 15 };
-          var markers = [];
-          if (pickupLat !== null && pickupLng !== null) {
-            markers.push(L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map));
-          }
-          if (dropoffLat !== null && dropoffLng !== null) {
-            markers.push(L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map));
-          }
-
-          if (pickupLat !== null && pickupLng !== null && dropoffLat !== null && dropoffLng !== null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  var polyline = L.polyline(latlngs, {
-                    color: '#F27024', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round'
-                  }).addTo(map);
-                  map.fitBounds(polyline.getBounds(), fitOpts);
-                } else {
-                  var group = new L.featureGroup(markers);
-                  map.fitBounds(group.getBounds(), fitOpts);
-                }
-              })
-              .catch(function() {
-                var group = new L.featureGroup(markers);
-                map.fitBounds(group.getBounds(), fitOpts);
-              });
-          } else if (markers.length > 0) {
-            var group = new L.featureGroup(markers);
-            map.fitBounds(group.getBounds(), fitOpts);
-          }
-        </script>
-      </body>
-    </html>
-  `;
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <WebView
-        style={styles.map}
-        source={{ html: mapHtml }}
-        scrollEnabled={false}
-        javaScriptEnabled
-        domStorageEnabled
-        androidLayerType="hardware"
-        originWhitelist={['*']}
-        mixedContentMode="always"
+      <RoutePreviewMap
+        pickupLat={pickupLat}
+        pickupLng={pickupLng}
+        dropoffLat={dropoffLat}
+        dropoffLng={dropoffLng}
+        padTop={mapTopPad}
+        padBottom={mapBottomPad}
       />
 
       <View style={[styles.topOverlay, { top: insets.top + 8 }]}>

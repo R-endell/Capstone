@@ -1,6 +1,6 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, LogBox, Platform, View } from 'react-native';
+import { Alert, AppState, LogBox, Platform, View } from 'react-native';
 import {
   NavigationContainer,
   useNavigation,
@@ -553,6 +553,157 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
   }, []);
 }
 
+// ---------- DEACTIVATION GUARD ----------
+function useDeactivationGuard(navigationRef: React.RefObject<any>) {
+  const handlingKickRef = useRef(false);
+  const channelRef = useRef<any>(null);
+
+  const getActiveRouteName = (): string | null => {
+    const state = navigationRef.current?.getRootState?.();
+    const findRoute = (navState: any): string | null => {
+      if (!navState) return null;
+      const idx = navState.index ?? 0;
+      const route = navState.routes?.[idx];
+      if (!route) return null;
+      if (route.state) return findRoute(route.state);
+      return route.name ?? null;
+    };
+    return findRoute(state);
+  };
+
+  const forceDeactivatedLogout = async () => {
+    if (handlingKickRef.current) return;
+
+    // Avoid firing duplicate alerts if LoginScreen is already handling the login attempt
+    const currentRoute = getActiveRouteName();
+    if (currentRoute === 'Login') return;
+
+    handlingKickRef.current = true;
+
+    try {
+      stopBackgroundMatcher();
+      await clearLastMode();
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('[DeactivationGuard] signOut cleanup error:', e);
+    }
+
+    if (navigationRef.current?.isReady?.()) {
+      navigationRef.current.reset({
+        index: 0,
+        routes: [{ name: 'Login' }],
+      });
+    }
+
+    Alert.alert(
+      'Account Deactivated',
+      'Your account has been deactivated by an administrator. You have been logged out.',
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            handlingKickRef.current = false;
+          },
+        },
+      ],
+      {
+        cancelable: false,
+        onDismiss: () => {
+          handlingKickRef.current = false;
+        },
+      }
+    );
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const cleanupChannel = () => {
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+    };
+
+    const checkAndSubscribe = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.user) {
+        cleanupChannel();
+        return;
+      }
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id, is_active')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!isMounted || !userRow) return;
+
+      // Immediate check (e.g., on app resume or cold boot)
+      if (userRow.is_active === false) {
+        await forceDeactivatedLogout();
+        return;
+      }
+
+      // Subscribe to real-time updates on this user's row
+      cleanupChannel();
+      channelRef.current = supabase
+        .channel(`user-active-guard-${userRow.user_id}-${Date.now()}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'users',
+            filter: `user_id=eq.${userRow.user_id}`,
+          },
+          async (payload) => {
+            const updated = payload.new as { is_active?: boolean };
+            if (updated && updated.is_active === false) {
+              await forceDeactivatedLogout();
+            }
+          }
+        )
+        .subscribe();
+    };
+
+    checkAndSubscribe();
+
+    // Re-bind when auth session changes (login / logout)
+    const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        cleanupChannel();
+        return;
+      }
+      if (
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED' ||
+        event === 'INITIAL_SESSION'
+      ) {
+        checkAndSubscribe();
+      }
+    });
+
+    // Re-check whenever app returns to foreground
+    const appStateSub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        checkAndSubscribe();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      cleanupChannel();
+      authSub.subscription.unsubscribe();
+      appStateSub.remove();
+    };
+  }, [navigationRef]);
+}
+
 // ---------- Inner App ----------
 function AppInner() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
@@ -560,7 +711,8 @@ function AppInner() {
   const matcherStartedRef = useRef(false);
 
   useRoleGuard(navigationRef as any);
-    useDeepLink(navigationRef);
+  useDeactivationGuard(navigationRef as any);
+  useDeepLink(navigationRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -579,11 +731,17 @@ function AppInner() {
 
       const { data: userRow } = await supabase
         .from('users')
-        .select('user_id')
+        .select('user_id, is_active')
         .eq('auth_id', session.user.id)
         .maybeSingle();
 
-      if (!userRow?.user_id) return;
+      if (!userRow?.user_id || userRow.is_active === false) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
 
       const { data: providerRole } = await supabase
         .from('roles')
@@ -684,10 +842,10 @@ function AppInner() {
 
       const { data: userRow } = await supabase
         .from('users')
-        .select('user_id')
+        .select('user_id, is_active')
         .eq('auth_id', session.user.id)
         .maybeSingle();
-      if (!userRow?.user_id) return;
+      if (!userRow?.user_id || userRow.is_active === false) return;
 
       await registerPushToken(userRow.user_id);
     };

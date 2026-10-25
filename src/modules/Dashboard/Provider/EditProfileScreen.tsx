@@ -12,9 +12,10 @@ import * as Location from 'expo-location';
 import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'react-native';
-import { WebView } from 'react-native-webview';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const ORANGE = '#FA7A25';
 
@@ -39,7 +40,7 @@ export default function EditProfileScreen() {
   const [isMapVisible, setIsMapVisible] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [mapCenter, setMapCenter] = useState({ lat: 10.3157, lng: 123.8854 });
-  const mapWebViewRef = useRef<WebView>(null);
+  const mapRef = useRef<MapView>(null);
 
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -112,17 +113,6 @@ export default function EditProfileScreen() {
   };
 
   // --- MAP LOGIC ---
-  const handleMapMessage = async (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'MOVE_END' && data.latitude && data.longitude) {
-        setMapCenter({ lat: data.latitude, lng: data.longitude });
-      }
-    } catch (error) {
-      console.warn('Map message error:', error);
-    }
-  };
-
   const handleLocateMe = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -134,20 +124,21 @@ export default function EditProfileScreen() {
       const newCoords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
       
       setMapCenter(newCoords);
-      if (mapWebViewRef.current) {
-        mapWebViewRef.current.injectJavaScript(`
-          if (window.map) {
-            window.map.setView([${newCoords.lat}, ${newCoords.lng}], 16);
-          }
-          true;
-        `);
+      
+      if (mapRef.current) {
+        mapRef.current.animateToRegion({
+          latitude: newCoords.lat,
+          longitude: newCoords.lng,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }, 500);
       }
     } catch {
       Alert.alert('Error', 'Could not fetch your current location.');
     }
   };
 
-    const confirmMapLocation = async () => {
+  const confirmMapLocation = async () => {
     setIsGeocoding(true);
     try {
       const response = await fetch(
@@ -160,42 +151,17 @@ export default function EditProfileScreen() {
       
       let street = 'Selected Location';
       let city = 'Unknown City';
-      let barangay = 'Unknown';
-      let province = 'Unknown';
-      let zipCode = '0000';
       
       if (json && json.address) {
         const a = json.address;
-        
-        // 1. Build a nice street address
         const streetParts = [a.house_number, a.road].filter(Boolean);
         street = streetParts.length > 0 ? streetParts.join(' ') : (json.display_name ? json.display_name.split(',')[0] : 'Selected Location');
-        
-        // 2. Extract City/Municipality
-        city = a.city || a.town || a.municipality || a.suburb || 'Unknown City';
-        
-        // 3. Extract Barangay (Try suburb, neighbourhood, village, or quarter)
-        barangay = a.suburb || a.neighbourhood || a.village || a.quarter || 'Unknown';
-        
-        // 4. Extract Province (Try state, state_district, or county)
-        province = a.state || a.state_district || a.county || a.province || a.region || 'Unknown';
-        
-        // 5. Extract Zip Code
-        zipCode = (a.postcode && a.postcode.length === 4) ? a.postcode : '0000';
+        city = a.city || a.town || a.municipality || 'Unknown City';
       }
 
       setAddress(`${street}, ${city}`);
       setLat(mapCenter.lat);
       setLng(mapCenter.lng);
-      
-      // Update the structured address
-      setStructuredAddress({
-        barangay,
-        city,
-        province,
-        zip_code: zipCode,
-      });
-      
       setIsMapVisible(false);
     } catch (err) {
       Alert.alert('Error', 'Could not get the address for this location.');
@@ -203,37 +169,6 @@ export default function EditProfileScreen() {
       setIsGeocoding(false);
     }
   };
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', { zoomControl: false }).setView([${mapCenter.lat}, ${mapCenter.lng}], 16);
-          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-
-          window.map.on('moveend', function() {
-            var center = window.map.getCenter();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'MOVE_END',
-              latitude: center.lat,
-              longitude: center.lng
-            }));
-          });
-        </script>
-      </body>
-    </html>
-  `;
 
   const handleSaveProfile = async () => {
     if (!firstName.trim() || !lastName.trim()) { 
@@ -488,18 +423,25 @@ export default function EditProfileScreen() {
       {/* MAP MODAL */}
       <Modal visible={isMapVisible} animationType="slide" transparent={false}>
         <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <WebView
-            ref={mapWebViewRef}
-            originWhitelist={['*']}
-            source={{ html: mapHtml }}
-            style={{ flex: 1, backgroundColor: 'transparent' }}
-            onMessage={handleMapMessage}
-            androidLayerType="hardware"
-            overScrollMode="never"
-            bounces={false}
-            javaScriptEnabled
-            domStorageEnabled
-            useWebKit
+          <MapView
+            ref={mapRef}
+            provider={PROVIDER_GOOGLE}
+            style={{ flex: 1 }}
+            googleMapId={GOOGLE_MAP_ID}
+            userInterfaceStyle="light"
+            initialRegion={{
+              latitude: mapCenter.lat,
+              longitude: mapCenter.lng,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }}
+            onRegionChangeComplete={(region) => {
+              setMapCenter({ lat: region.latitude, lng: region.longitude });
+            }}
+            showsUserLocation={true}
+            showsMyLocationButton={false}
+            showsCompass={false}
+            toolbarEnabled={false}
           />
           
           <View style={styles.mapPinContainer} pointerEvents="none">

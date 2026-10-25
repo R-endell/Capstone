@@ -4,7 +4,7 @@
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/appiconfixed.png",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
@@ -13,14 +13,20 @@
         "NSLocationWhenInUseUsageDescription": "Allow Pack-N-Ship to access your location to pinpoint pickup and drop-off points.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Pack-N-Ship shares your location with the sender while you are delivering.",
         "NSCameraUsageDescription": "Allow Pack-N-Ship to take photos of your package."
+      },
+      "config": {
+        "googleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
       }
     },
     "android": {
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
+        }
+      },
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/appiconfixed.png",
+        "backgroundColor": "#FFFFFF"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.rendelljames.Capstone",
@@ -51,18 +57,28 @@
               "scheme": "packnship"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/appiconfixed.png"
     },
     "plugins": [
       "expo-splash-screen",
       "expo-web-browser",
       "expo-sqlite",
       "expo-status-bar",
+      [
+        "react-native-maps",
+        {
+          "androidGoogleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg",
+          "iosGoogleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-location",
@@ -75,7 +91,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/applogo.jpeg",
+          "icon": "./assets/appiconfixed.png",
           "color": "#FF751F"
         }
       ],
@@ -98,10 +114,12 @@
       "expo-font"
     ],
     "extra": {
+      "owner": "junjosephps-team",
+      "slug": "packnship",
       "eas": {
-        "projectId": "54ddbcc8-9774-4a60-9f65-1b58fac28b3c"
+        "projectId": "1c9f41a3-3eae-47b2-9aef-9ce9350c66e7"
       }
     },
-    "owner": "junjosephp"
+    "owner": "junjosephps-team"
   }
 }

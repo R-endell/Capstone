@@ -521,7 +521,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   modalRoot: { flex: 1, justifyContent: 'flex-end' },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: 'rgba(17,24,39,0.45)',
   },
   sheet: {

@@ -7,6 +7,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
+import { MAP_PROPS } from '../../../../utils/mapConfig';
 import { supabase } from '../../../../utils/supabase';
 import { deleteDelivery } from './scheduleService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
@@ -183,6 +184,7 @@ export default function DeliveryListScreen({ route, navigation }: any) {
         </View>
 
         <MapView
+          {...MAP_PROPS}
           style={styles.miniMap}
           scrollEnabled={false}
           zoomEnabled={false}
