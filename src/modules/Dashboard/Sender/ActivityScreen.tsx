@@ -8,13 +8,15 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
+
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const { width } = Dimensions.get('window');
 const ORANGE = '#FF751F';
@@ -123,7 +125,34 @@ const notifyProviderOfCancellation = async (opts: {
 };
 
 /* ==================================================================== */
-/* LeafletMap                                                           */
+/* OSRM road route helper                                              */
+/* ==================================================================== */
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
+};
+
+/* ==================================================================== */
+/* RouteMap — native Google Maps                                       */
 /* ==================================================================== */
 const LeafletMap = ({
   pickupLat, pickupLng, dropoffLat, dropoffLng, interactive = false,
@@ -134,124 +163,84 @@ const LeafletMap = ({
   dropoffLng?: number | null;
   interactive?: boolean;
 }) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+
   const hasPickup = pickupLat != null && pickupLng != null;
   const hasDropoff = dropoffLat != null && dropoffLng != null;
 
-  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
-  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
+  const centerLat = hasPickup ? (pickupLat as number) : (hasDropoff ? (dropoffLat as number) : 10.3157);
+  const centerLng = hasPickup ? (pickupLng as number) : (hasDropoff ? (dropoffLng as number) : 123.8854);
 
-  const dragging = interactive ? 'true' : 'false';
-  const touchZoom = interactive ? 'true' : 'false';
-  const scrollWheelZoom = interactive ? 'true' : 'false';
-  const doubleClickZoom = interactive ? 'true' : 'false';
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-pickup { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${hasPickup ? pickupLat : 'null'};
-          var pickupLng = ${hasPickup ? pickupLng : 'null'};
-          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
-          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
-
-          var map = L.map('map', {
-            zoomControl: false,
-            attributionControl: false,
-            dragging: ${dragging},
-            touchZoom: ${touchZoom},
-            scrollWheelZoom: ${scrollWheelZoom},
-            doubleClickZoom: ${doubleClickZoom},
-          }).setView([${centerLat}, ${centerLng}], 13);
-
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-          var pickupIcon = L.divIcon({
-            className: '',
-            html: '<div class="marker-pickup">P</div>',
-            iconSize: [22, 22],
-            iconAnchor: [11, 11],
-          });
-          var dropoffIcon = L.divIcon({
-            className: '',
-            html: '<div class="marker-dropoff">D</div>',
-            iconSize: [22, 22],
-            iconAnchor: [11, 11],
-          });
-
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
-
-          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, {
-                    color: '#FF751F',
-                    weight: 5,
-                    opacity: 0.9,
-                    lineJoin: 'round',
-                    lineCap: 'round',
-                  }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                    color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8',
-                  }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], {
-                  color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8',
-                }).addTo(map);
-                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-              });
-          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
-            map.setView([pickupLat, pickupLng], 14);
-          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
-            map.setView([dropoffLat, dropoffLng], 14);
-          }
-        </script>
-      </body>
-    </html>
-  `;
+  useEffect(() => {
+    if (!hasPickup || !hasDropoff) { setCoords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: pickupLat as number, lng: pickupLng as number },
+        { lat: dropoffLat as number, lng: dropoffLng as number },
+      );
+      if (cancelled) return;
+      setCoords(line);
+      const t = setTimeout(() => {
+        mapRef.current?.fitToCoordinates(line, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: false,
+        });
+      }, 120);
+      return () => clearTimeout(t);
+    })();
+    return () => { cancelled = true; };
+  }, [pickupLat, pickupLng, dropoffLat, dropoffLng]);
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={{ flex: 1 }}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
+      initialRegion={{
+        latitude: centerLat,
+        longitude: centerLng,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
       scrollEnabled={interactive}
-      showsVerticalScrollIndicator={false}
-      showsHorizontalScrollIndicator={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
+      zoomEnabled={interactive}
+      rotateEnabled={interactive}
+      pitchEnabled={interactive}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      {hasPickup && (
+        <Marker
+          coordinate={{ latitude: pickupLat as number, longitude: pickupLng as number }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>P</Text>
+          </View>
+        </Marker>
+      )}
+      {hasDropoff && (
+        <Marker
+          coordinate={{ latitude: dropoffLat as number, longitude: dropoffLng as number }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: '#111827', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>D</Text>
+          </View>
+        </Marker>
+      )}
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
+      )}
+    </MapView>
   );
 };
 
@@ -489,8 +478,7 @@ export default function ActivityScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
-  
-  // Added 'cancelled' to the tabs
+
   const [activeTab, setActiveTab] = useState<'all' | 'active' | 'pending' | 'completed' | 'cancelled'>('all');
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -922,7 +910,6 @@ export default function ActivityScreen() {
     navigation.navigate('ScheduleDelivery', { editData: rawData, mode: rawData.scheduled_time ? 'schedule' : 'sendNow' });
   };
 
-  // New Cancel Logic: Updates status instead of deleting
   const handleCancelDelivery = (rawData: any) => {
     if (!rawData) return;
     Alert.alert('Cancel Delivery', 'Are you sure you want to cancel this delivery?', [
@@ -949,7 +936,6 @@ export default function ActivityScreen() {
               reqRow?.escrow_status === 'held';
             wasPaid = wasHeld;
 
-            // Do NOT delete the row; just update the status
             const updateData: any = { delivery_status: 'Cancelled' };
 
             if (wasHeld) {
@@ -976,7 +962,6 @@ export default function ActivityScreen() {
             setSelectedDelivery(null);
             fetchData();
 
-            // Local confirmation notification on the sender's phone.
             fireCancelNotification({
               requestId: reqId,
               amount,
@@ -984,7 +969,6 @@ export default function ActivityScreen() {
               refundFailed,
             });
 
-            // Push notification to the assigned provider (if any).
             if (providerId) {
               notifyProviderOfCancellation({
                 providerId,
@@ -1418,7 +1402,7 @@ export default function ActivityScreen() {
     const ratingLabels = ['Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
     const shownRating = ratingSaved ? ratingSaved.rating : ratingValue;
 
-    const escrowStatusText = isCancelled 
+    const escrowStatusText = isCancelled
       ? 'Refunded / Cancelled'
       : isCompleted
       ? 'Released to courier'
@@ -1875,7 +1859,6 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {/* HIDE BUTTONS IF CANCELLED OR COMPLETED */}
           {!isCompleted && !isCancelled && (
             <View style={styles.detailActionsRow}>
               {!d?.isMatched && (

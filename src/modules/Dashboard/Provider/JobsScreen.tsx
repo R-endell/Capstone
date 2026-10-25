@@ -11,7 +11,6 @@ import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
-import Constants from 'expo-constants';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
@@ -20,11 +19,12 @@ import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 
+// 1. Import the Map ID from your utils folder
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
+
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
-
-const GOOGLE_MAPS_API_KEY = 'AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg';
 
 interface Location {
   location_id?: number;
@@ -82,6 +82,8 @@ interface JobRequest {
   estimated_cost: number;
   pickup: JobPlace;
   dropoff: JobPlace;
+  pickupNote: string | null;
+  dropoffNote: string | null;
   items: JobItem[];
   totalItems: number;
   weightKg: number | null;
@@ -247,6 +249,8 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
     estimated_cost: Number(r.estimated_cost) || 0,
     pickup: { ...pu, lat: r.pickup_location?.latitude ?? null, lng: r.pickup_location?.longitude ?? null },
     dropoff: { ...dr, lat: r.dropoff_location?.latitude ?? null, lng: r.dropoff_location?.longitude ?? null },
+    pickupNote: r.pickup_note || null,
+    dropoffNote: r.dropoff_note || null,
     items,
     totalItems: Array.isArray(itemsJson) && itemsJson.length > 0 ? itemsJson.length : (boxTotal || 1),
     weightKg: Number(cargo?.total_weight_kg) || null,
@@ -362,6 +366,8 @@ const RouteMap = ({
       ref={mapRef}
       provider={PROVIDER_GOOGLE}
       style={{ flex: 1 }}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
       initialRegion={{
         latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
         longitude: startLng ?? endLng ?? DEFAULT_CENTER.longitude,
@@ -511,6 +517,8 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }
       ref={mapRef}
       provider={PROVIDER_GOOGLE}
       style={{ flex: 1 }}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
         longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
@@ -1004,6 +1012,7 @@ export default function JobsScreen() {
       .select(`
         request_id, pickup_type, scheduled_time, created_at, estimated_cost,
         delivery_status, sender_id, receiver_id, receiver_phone,
+        pickup_note, dropoff_note,
         cargo:cargo_id ( * ),
         pickup_location:locations!delivery_requests_pickup_location_id_fkey ( * ),
         dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( * ),
@@ -1464,6 +1473,12 @@ export default function JobsScreen() {
                   <Text style={styles.eyebrow}>PICKUP</Text>
                   <Text style={styles.routeMain} numberOfLines={2}>{r.pickup.main}</Text>
                   {!!r.pickup.sub && <Text style={styles.routeSub} numberOfLines={2}>{r.pickup.sub}</Text>}
+                  {!!r.pickupNote && (
+                    <View style={styles.routeNote}>
+                      <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                      <Text style={styles.routeNoteText}>{r.pickupNote}</Text>
+                    </View>
+                  )}
                 </View>
               </View>
               <View style={styles.routeRow}>
@@ -1474,6 +1489,12 @@ export default function JobsScreen() {
                   <Text style={styles.eyebrow}>DROP-OFF</Text>
                   <Text style={styles.routeMain} numberOfLines={2}>{r.dropoff.main}</Text>
                   {!!r.dropoff.sub && <Text style={styles.routeSub} numberOfLines={2}>{r.dropoff.sub}</Text>}
+                  {!!r.dropoffNote && (
+                    <View style={styles.routeNote}>
+                      <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                      <Text style={styles.routeNoteText}>{r.dropoffNote}</Text>
+                    </View>
+                  )}
                 </View>
               </View>
             </View>
@@ -2345,6 +2366,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routeText: { flex: 1, paddingBottom: 16 },
   routeMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
   routeSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
   personRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: {

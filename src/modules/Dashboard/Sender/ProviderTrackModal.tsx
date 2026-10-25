@@ -1,22 +1,19 @@
 // src/modules/Dashboard/Sender/ProviderTrackModal.tsx
-//
-// Full-screen live view of ONE provider who is on their way (before any package
-// exists). Shows the provider's route, where they are right now, and where the
-// sender is. Contains NO package information. The sender can ask for a delivery
-// along this provider's route from here.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Modal, Image, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { LiveFix, isFixFresh } from '../../../services/providerLiveService';
 
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
+
 const ORANGE = '#FF751F';
-const AVG_CITY_SPEED_KMH = 22;  
+const AVG_CITY_SPEED_KMH = 22;
 
 export type TrackTrip = {
   routeId: number;
@@ -60,111 +57,45 @@ const formatLastSeen = (iso?: string | null) => {
   return `Last seen ${new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 };
 
-/* ------------------------------------------------------------------ */
-/* Leaflet page. Rebuilt only when the route / sender position changes; */
-/* provider movement is pushed with injectJavaScript (no reload).       */
-/* ------------------------------------------------------------------ */
-function buildMapHtml(
-  start: { lat: number; lng: number },
-  end: { lat: number; lng: number },
-  sender: { lat: number; lng: number } | null,
-  provider: { lat: number; lng: number } | null,
-  bottomInsetPx: number,
-) {
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <style>
-    html, body, #map { margin:0; padding:0; width:100%; height:100%; background:#E5E7EB; }
-    .pin { display:flex; align-items:center; justify-content:center; font-weight:900; color:#FFF; box-shadow:0 2px 8px rgba(0,0,0,0.35); }
-    .pin-start { background:#FF751F; border:3px solid #FFF; border-radius:50%; width:24px; height:24px; font-size:10px; }
-    .pin-end { background:#111827; border:3px solid #FFF; border-radius:50%; width:24px; height:24px; font-size:10px; }
-    .pin-me { background:#2563EB; border:3px solid #FFF; border-radius:50%; width:18px; height:18px; box-shadow:0 0 0 6px rgba(37,99,235,0.22); }
-    .pin-provider { background:#22C55E; border:3px solid #FFF; border-radius:50%; width:36px; height:36px; font-size:17px; }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <script>
-    var START = [${start.lat}, ${start.lng}];
-    var END = [${end.lat}, ${end.lng}];
-    var ME = ${sender ? `[${sender.lat}, ${sender.lng}]` : 'null'};
-    var PROV = ${provider ? `[${provider.lat}, ${provider.lng}]` : 'null'};
-    var BOTTOM_INSET = ${Math.max(0, Math.round(bottomInsetPx))};
-
-    var map = L.map('map', { zoomControl:false, attributionControl:false }).setView(START, 13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
-
-    function icon(cls, html, size) {
-      return L.divIcon({ className:'', html:'<div class="pin ' + cls + '">' + html + '</div>', iconSize:[size,size], iconAnchor:[size/2,size/2] });
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
     }
-    L.marker(START, { icon: icon('pin-start', 'S', 24) }).addTo(map);
-    L.marker(END,   { icon: icon('pin-end', 'D', 24) }).addTo(map);
-
-    var meMarker = null, provMarker = null, routeLine = null, lastRouteAt = 0, lastRouteFrom = null;
-    if (ME) meMarker = L.marker(ME, { icon: icon('pin-me', '', 18), zIndexOffset: 500 }).addTo(map);
-    if (PROV) provMarker = L.marker(PROV, { icon: icon('pin-provider', '🚗', 36), zIndexOffset: 1000 }).addTo(map);
-
-    function fitAll() {
-      var pts = [START, END];
-      if (ME) pts.push(ME);
-      if (provMarker) pts.push(provMarker.getLatLng());
-      map.fitBounds(L.latLngBounds(pts), { paddingTopLeft:[50,70], paddingBottomRight:[50, 50 + BOTTOM_INSET], maxZoom: 16 });
-    }
-
-    function post(msg) { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(msg)); }
-
-    // Route from where the provider is NOW (or their start point) to their destination.
-    async function drawRoute(from) {
-      lastRouteAt = Date.now(); lastRouteFrom = from;
-      try {
-        var url = 'https://router.project-osrm.org/route/v1/driving/' + from[1] + ',' + from[0] + ';' + END[1] + ',' + END[0] + '?overview=full&geometries=geojson';
-        var res = await fetch(url); var data = await res.json();
-        if (data && data.code === 'Ok' && data.routes && data.routes[0]) {
-          var coords = data.routes[0].geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
-          if (routeLine) map.removeLayer(routeLine);
-          routeLine = L.polyline(coords, { color:'#FF751F', weight:5, opacity:0.9, lineJoin:'round', lineCap:'round' }).addTo(map);
-          return;
-        }
-      } catch (e) {}
-      if (routeLine) map.removeLayer(routeLine);
-      routeLine = L.polyline([from, END], { color:'#FF751F', weight:4, opacity:0.7, dashArray:'8,8' }).addTo(map);
-    }
-
-    window.updateProvider = function(lat, lng) {
-      var p = [lat, lng];
-      if (!provMarker) provMarker = L.marker(p, { icon: icon('pin-provider', '🚗', 36), zIndexOffset: 1000 }).addTo(map);
-      else provMarker.setLatLng(p);
-      var moved = lastRouteFrom ? map.distance(lastRouteFrom, p) : 99999;
-      if (Date.now() - lastRouteAt > 20000 && moved > 100) drawRoute(p);
-    };
-    window.setBottomInset = function(px) { BOTTOM_INSET = Math.max(0, px | 0); };
-    window.recenter = function() { fitAll(); };
-
-    drawRoute(PROV || START);
-    fitAll();
-    true;
-  </script>
-</body>
-</html>`;
-}
+  } catch { /* fall through */ }
+  return fallback;
+};
 
 export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClose, onRequest }: Props) {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
-  const webRef = useRef<WebView>(null);
-  const lastSentRef = useRef('');
+
+  const mapRef = useRef<MapView>(null);
 
   const [sheetHeight, setSheetHeight] = useState(330);
   const [profile, setProfile] = useState<{ photo: string | null } | null>(null);
   const [, setTick] = useState(0);
 
-  // keep "Updated 12s ago" / Live-vs-Stale fresh
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const lastRouteKey = useRef('');
+  const lastFitKey = useRef('');
+
   useEffect(() => {
     if (!visible) return;
     const t = setInterval(() => setTick((x) => x + 1), 10_000);
@@ -172,7 +103,7 @@ export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClo
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || !trip) { setProfile(null); lastSentRef.current = ''; return; }
+    if (!visible || !trip) { setProfile(null); return; }
     let active = true;
     (async () => {
       try {
@@ -196,30 +127,59 @@ export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClo
 
   const etaMin = distanceKm != null && live ? Math.max(1, Math.round((distanceKm / AVG_CITY_SPEED_KMH) * 60)) : null;
 
-  // Structural HTML (do NOT depend on the live fix, or the map reloads on every GPS tick)
-  const html = useMemo(() => {
-    if (!trip) return '';
-    return buildMapHtml(
-      trip.pickupCoords.lat || trip.pickupCoords.lng ? trip.pickupCoords : { lat: 10.3157, lng: 123.8854 },
-      trip.dropoffCoords.lat || trip.dropoffCoords.lng ? trip.dropoffCoords : { lat: 10.3157, lng: 123.8854 },
-      myCoords,
-      providerPos,
-      sheetHeight + insets.bottom,
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trip?.routeId, myCoords ? myCoords.lat.toFixed(3) : null, myCoords ? myCoords.lng.toFixed(3) : null, sheetHeight, insets.bottom]);
+  useEffect(() => {
+    if (!visible || !trip) { setRouteCoords([]); lastRouteKey.current = ''; return; }
+    const from = providerPos ?? trip.pickupCoords;
+    if (!from.lat && !from.lng) return;
+    const key = `${from.lat.toFixed(4)},${from.lng.toFixed(4)}->${trip.dropoffCoords.lat.toFixed(4)},${trip.dropoffCoords.lng.toFixed(4)}`;
+    if (key === lastRouteKey.current) return;
+    lastRouteKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(
+        { lat: from.lat, lng: from.lng },
+        { lat: trip.dropoffCoords.lat, lng: trip.dropoffCoords.lng },
+      );
+      if (!cancelled) setRouteCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [visible, trip?.routeId, providerPos?.lat, providerPos?.lng]);
 
   useEffect(() => {
-    if (!providerPos || !webRef.current) return;
-    const key = `${providerPos.lat.toFixed(6)},${providerPos.lng.toFixed(6)}`;
-    if (key === lastSentRef.current) return;
-    lastSentRef.current = key;
-    webRef.current.injectJavaScript(`window.updateProvider(${providerPos.lat}, ${providerPos.lng}); true;`);
-  }, [providerPos?.lat, providerPos?.lng]);
+    if (!visible || !trip) return;
+    const key = `${trip.routeId}-${sheetHeight}-${routeCoords.length > 0 ? 'r' : 'n'}`;
+    if (key === lastFitKey.current) return;
+    lastFitKey.current = key;
 
-  useEffect(() => {
-    webRef.current?.injectJavaScript(`window.setBottomInset(${sheetHeight + insets.bottom}); true;`);
-  }, [sheetHeight, insets.bottom]);
+    const pts: { latitude: number; longitude: number }[] = [
+      { latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng },
+      { latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng },
+    ];
+    if (providerPos) pts.push({ latitude: providerPos.lat, longitude: providerPos.lng });
+    if (myCoords) pts.push({ latitude: myCoords.lat, longitude: myCoords.lng });
+
+    const t = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(pts, {
+        edgePadding: { top: 140, right: 50, bottom: sheetHeight + insets.bottom + 40, left: 50 },
+        animated: true,
+      });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [visible, trip?.routeId, sheetHeight, routeCoords.length, providerPos?.lat, providerPos?.lng]);
+
+  const recenterMap = () => {
+    if (!trip) return;
+    const pts: { latitude: number; longitude: number }[] = [
+      { latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng },
+      { latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng },
+    ];
+    if (providerPos) pts.push({ latitude: providerPos.lat, longitude: providerPos.lng });
+    mapRef.current?.fitToCoordinates(pts, {
+      edgePadding: { top: 140, right: 50, bottom: sheetHeight + insets.bottom + 40, left: 50 },
+      animated: true,
+    });
+  };
 
   if (!trip) return null;
 
@@ -233,17 +193,68 @@ export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClo
       <View style={styles.container}>
         <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-        <WebView
-          ref={webRef}
-          originWhitelist={['*']}
-          source={{ html }}
+        <MapView
+          ref={mapRef}
+          provider={PROVIDER_GOOGLE}
           style={StyleSheet.absoluteFill}
-          scrollEnabled={false}
-          javaScriptEnabled
-          domStorageEnabled
-          androidLayerType="hardware"
-          mixedContentMode="always"
-        />
+          googleMapId={GOOGLE_MAP_ID}
+          userInterfaceStyle="light"
+          initialRegion={{
+            latitude: trip.pickupCoords.lat || 10.3157,
+            longitude: trip.pickupCoords.lng || 123.8854,
+            latitudeDelta: 0.05,
+            longitudeDelta: 0.05,
+          }}
+          showsUserLocation={false}
+          showsMyLocationButton={false}
+          showsCompass={false}
+          toolbarEnabled={false}
+        >
+          <Marker
+            coordinate={{ latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>S</Text>
+            </View>
+          </Marker>
+
+          <Marker
+            coordinate={{ latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            tracksViewChanges={false}
+          >
+            <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: '#111827', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>D</Text>
+            </View>
+          </Marker>
+
+          {routeCoords.length > 1 && (
+            <Polyline coordinates={routeCoords} strokeColor={ORANGE} strokeWidth={5} />
+          )}
+
+          {myCoords && (
+            <Marker
+              coordinate={{ latitude: myCoords.lat, longitude: myCoords.lng }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: '#2563EB', borderWidth: 3, borderColor: '#FFF' }} />
+            </Marker>
+          )}
+
+          {providerPos && (
+            <Marker
+              coordinate={{ latitude: providerPos.lat, longitude: providerPos.lng }}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#22C55E', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="car" size={18} color="#FFF" />
+              </View>
+            </Marker>
+          )}
+        </MapView>
 
         <View style={[styles.topBar, { top: insets.top + 10 }]}>
           <TouchableOpacity style={styles.circleBtn} onPress={onClose} activeOpacity={0.85}>
@@ -257,7 +268,7 @@ export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClo
 
         <TouchableOpacity
           style={[styles.fab, { bottom: sheetHeight + insets.bottom + 12 }]}
-          onPress={() => webRef.current?.injectJavaScript('window.recenter(); true;')}
+          onPress={recenterMap}
           activeOpacity={0.85}
         >
           <Ionicons name="locate" size={20} color={ORANGE} />
