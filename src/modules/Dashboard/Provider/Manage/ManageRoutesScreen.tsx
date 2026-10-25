@@ -7,11 +7,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { supabase } from '../../../../utils/supabase';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
+import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+
+// IMPORT THE MAP ID
+import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
 
 const ORANGE = '#FA7A25';
 
@@ -86,7 +89,6 @@ const reverseGeocodeCoordinates = async (lat: number, lng: number) => {
   };
 
   try {
-    // First attempt: expo-location
     const [addr] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
     if (addr) {
       const streetParts = [addr.name, addr.street].filter(Boolean);
@@ -99,18 +101,14 @@ const reverseGeocodeCoordinates = async (lat: number, lng: number) => {
       result.province = addr.region || 'Unknown';
       result.zip_code = addr.postalCode || '0000';
 
-      // If street address is still generic, try Nominatim as a fallback for better PH data
       if (result.barangay === 'Unknown' || result.city === 'Unknown') {
         throw new Error('Fallback to Nominatim');
       }
       return result;
     }
-  } catch (err) {
-    // Silently fall through to Nominatim
-  }
+  } catch (err) { }
 
   try {
-    // Second attempt: Nominatim (better for PH barangays)
     const response = await fetch(
       `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`,
       {
@@ -141,7 +139,7 @@ const reverseGeocodeCoordinates = async (lat: number, lng: number) => {
 };
 
 /* ==================================================================== */
-/* InteractiveMap — plain OSM light tiles                                */
+/* InteractiveMap — Native Google Maps                                  */
 /* ==================================================================== */
 const InteractiveMap = ({
   onLocationSelect,
@@ -149,109 +147,116 @@ const InteractiveMap = ({
   startName = 'Starting Point', endName = 'Destination',
   mode = 'view',
 }: any) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  
   const centerLat = startLat || endLat || 10.3157;
   const centerLng = startLng || endLng || 123.8854;
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-start { background: #3B82F6; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
-          .marker-end { background: #EF4444; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; z-index: 1000; }
-          .marker-temp { background: #F59E0B; border: 3px solid white; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: white; z-index: 999; }
-          .popup-content { padding: 4px; }
-          .popup-content h4 { margin: 0; font-size: 13px; font-weight: bold; color: #111827; }
-          .popup-content p { margin: 2px 0 0 0; font-size: 11px; color: #6B7280; }
-          .select-instruction { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); color: white; padding: 8px 16px; border-radius: 20px; font-size: 12px; z-index: 2000; text-align: center; white-space: nowrap; pointer-events: none; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        ${mode !== 'view' ? `<div class="select-instruction">Tap on the map to set ${mode === 'select_start' ? 'START' : 'END'} location</div>` : ''}
-        <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${centerLat}, ${centerLng}], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+  useEffect(() => {
+    if (!startLat || !startLng || !endLat || !endLng) { setCoords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: startLat, lng: startLng },
+        { lat: endLat, lng: endLng },
+      );
+      if (cancelled) return;
+      setCoords(line);
+      const t = setTimeout(() => {
+        mapRef.current?.fitToCoordinates(line, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: false,
+        });
+      }, 150);
+      return () => clearTimeout(t);
+    })();
+    return () => { cancelled = true; };
+  }, [startLat, startLng, endLat, endLng]);
 
-          var tempMarker = null;
-
-          ${startLat && startLng ? `
-            L.marker([${startLat}, ${startLng}], { icon: L.divIcon({className: 'marker-start', html: 'S', iconSize: [24, 24], iconAnchor: [12, 12]}) })
-              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${startName}</h4><p>Starting Point</p></div>');
-          ` : ''}
-          ${endLat && endLng ? `
-            L.marker([${endLat}, ${endLng}], { icon: L.divIcon({className: 'marker-end', html: 'E', iconSize: [24, 24], iconAnchor: [12, 12]}) })
-              .addTo(map).bindPopup('<div class="popup-content"><h4>📍 ${endName}</h4><p>Destination</p></div>');
-          ` : ''}
-
-          ${startLat && startLng && endLat && endLng ? `
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/' 
-              + ${startLng} + ',' + ${startLat} + ';' 
-              + ${endLng} + ',' + ${endLat} 
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-
-                  L.polyline(latlngs, {
-                    color: '#FA7A25', weight: 5, opacity: 0.85,
-                    lineJoin: 'round', lineCap: 'round'
-                  }).addTo(map);
-
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
-                    color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
-                  }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], {
-                  color: '#FA7A25', weight: 4, opacity: 0.6, dashArray: '8, 8'
-                }).addTo(map);
-                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-              });
-          ` : ''}
-
-          ${mode !== 'view' ? `
-            map.on('click', function(e) {
-              if (tempMarker) map.removeLayer(tempMarker);
-              tempMarker = L.marker([e.latlng.lat, e.latlng.lng], { icon: L.divIcon({className: 'marker-temp', html: '?', iconSize: [20, 20], iconAnchor: [10, 10]}) })
-                .addTo(map).bindPopup('<div class="popup-content"><p>📍 Selected location</p></div>').openPopup();
-              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'location_select', lat: e.latlng.lat, lng: e.latlng.lng }));
-            });
-          ` : ''}
-        </script>
-      </body>
-    </html>
-  `;
+  const fetchRoadCoords = async (
+    a: { lat: number; lng: number },
+    b: { lat: number; lng: number },
+  ): Promise<{ latitude: number; longitude: number }[]> => {
+    const fallback = [
+      { latitude: a.lat, longitude: a.lng },
+      { latitude: b.lat, longitude: b.lng },
+    ];
+    try {
+      const url =
+        `https://router.project-osrm.org/route/v1/driving/` +
+        `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+        return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+          latitude: c[1],
+          longitude: c[0],
+        }));
+      }
+    } catch { }
+    return fallback;
+  };
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={true}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-      useWebKit
-      onMessage={(event) => {
-        try {
-          const data = JSON.parse(event.nativeEvent.data);
-          if (data.type === 'location_select' && onLocationSelect) onLocationSelect(data.lat, data.lng);
-        } catch (error) {}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={StyleSheet.absoluteFill}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
+      initialRegion={{
+        latitude: centerLat,
+        longitude: centerLng,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
       }}
-    />
+      scrollEnabled={true}
+      zoomEnabled={true}
+      rotateEnabled={false}
+      pitchEnabled={false}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+      onPress={(e) => {
+        if (mode !== 'view' && onLocationSelect) {
+          onLocationSelect(e.nativeEvent.coordinate.latitude, e.nativeEvent.coordinate.longitude);
+        }
+      }}
+    >
+      {startLat && startLng && (
+        <Marker
+          coordinate={{ latitude: startLat, longitude: startLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+          title={startName}
+          description="Starting Point"
+        >
+          <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: '#3B82F6', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFF' }}>S</Text>
+          </View>
+        </Marker>
+      )}
+
+      {endLat && endLng && (
+        <Marker
+          coordinate={{ latitude: endLat, longitude: endLng }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+          title={endName}
+          description="Destination"
+        >
+          <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: '#EF4444', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 10, fontWeight: '800', color: '#FFF' }}>E</Text>
+          </View>
+        </Marker>
+      )}
+
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={5} />
+      )}
+    </MapView>
   );
 };
 
@@ -357,7 +362,6 @@ export default function ManageRoutesScreen() {
       let location = existing && existing.length > 0 ? existing[0] : null;
 
       if (!location) {
-        // Reverse geocode to get full address details
         const geoData = await reverseGeocodeCoordinates(lat, lng);
 
         const { data: newLoc, error } = await supabase.from('locations').insert({

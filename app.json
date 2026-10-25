@@ -3,6 +3,7 @@
     "name": "Pack-N-Ship",
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
+    "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "packnship",
@@ -59,7 +60,10 @@
               "scheme": "packnship"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -71,6 +75,7 @@
       "expo-web-browser",
       "expo-sqlite",
       "expo-status-bar",
+      "react-native-maps",
       "@react-native-community/datetimepicker",
       [
         "expo-location",
@@ -107,9 +112,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "54ddbcc8-9774-4a60-9f65-1b58fac28b3c"
+        "projectId": "c20eee31-affa-428f-aef1-efe3b47fce69"
       }
     },
-    "owner": "junjosephp"
+    "owner": "kenzozxc"
   }
 }

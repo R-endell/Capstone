@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -19,6 +19,9 @@ import { clearLocationFix } from '../../../services/locationService';
 import { useMemo } from 'react';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+
+// IMPORT THE MAP ID
+import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
@@ -78,7 +81,34 @@ const openNavigation = (lat: number | null | undefined, lng: number | null | und
 };
 
 /* ==================================================================== */
-/* TaskRouteMap — unchanged light tiles                                 */
+/* Route Map helper                                                     */
+/* ==================================================================== */
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
+};
+
+/* ==================================================================== */
+/* TaskRouteMap — Native Google Maps                                    */
 /* ==================================================================== */
 const TaskRouteMap = ({
   pickupLat, pickupLng,
@@ -93,103 +123,86 @@ const TaskRouteMap = ({
   zoom?: number;
   interactive?: boolean;
 }) => {
+  const mapRef = useRef<MapView>(null);
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  
   const hasPickup = pickupLat != null && pickupLng != null;
   const hasDropoff = dropoffLat != null && dropoffLng != null;
 
   const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
   const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
 
-  const dragging = interactive ? 'true' : 'false';
-  const touchZoom = interactive ? 'true' : 'false';
-  const scrollWheelZoom = interactive ? 'true' : 'false';
-  const doubleClickZoom = interactive ? 'true' : 'false';
-  const zoomControl = interactive ? 'true' : 'false';
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-pickup { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${hasPickup ? pickupLat : 'null'};
-          var pickupLng = ${hasPickup ? pickupLng : 'null'};
-          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
-          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
-
-          var map = L.map('map', {
-            zoomControl: ${zoomControl},
-            attributionControl: false,
-            dragging: ${dragging},
-            touchZoom: ${touchZoom},
-            scrollWheelZoom: ${scrollWheelZoom},
-            doubleClickZoom: ${doubleClickZoom},
-          }).setView([${centerLat}, ${centerLng}], ${zoom});
-
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
-
-          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-              });
-          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
-            map.setView([pickupLat, pickupLng], ${zoom});
-          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
-            map.setView([dropoffLat, dropoffLng], ${zoom});
-          }
-        </script>
-      </body>
-    </html>
-  `;
+  useEffect(() => {
+    if (!hasPickup || !hasDropoff) { setCoords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const line = await fetchRoadCoords(
+        { lat: pickupLat!, lng: pickupLng! },
+        { lat: dropoffLat!, lng: dropoffLng! },
+      );
+      if (cancelled) return;
+      setCoords(line);
+      const t = setTimeout(() => {
+        mapRef.current?.fitToCoordinates(line, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: false,
+        });
+      }, 150);
+      return () => clearTimeout(t);
+    })();
+    return () => { cancelled = true; };
+  }, [pickupLat, pickupLng, dropoffLat, dropoffLng, hasPickup, hasDropoff]);
 
   return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
+    <MapView
+      ref={mapRef}
+      provider={PROVIDER_GOOGLE}
+      style={StyleSheet.absoluteFill}
+      googleMapId={GOOGLE_MAP_ID}
+      userInterfaceStyle="light"
+      initialRegion={{
+        latitude: centerLat,
+        longitude: centerLng,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      }}
       scrollEnabled={interactive}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
+      zoomEnabled={interactive}
+      rotateEnabled={interactive}
+      pitchEnabled={interactive}
+      toolbarEnabled={false}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      {hasPickup && (
+        <Marker
+          coordinate={{ latitude: pickupLat!, longitude: pickupLng! }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>P</Text>
+          </View>
+        </Marker>
+      )}
+
+      {hasDropoff && (
+        <Marker
+          coordinate={{ latitude: dropoffLat!, longitude: dropoffLng! }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          tracksViewChanges={false}
+        >
+          <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: '#111827', borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#FFF' }}>D</Text>
+          </View>
+        </Marker>
+      )}
+
+      {coords.length > 1 && (
+        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
+      )}
+    </MapView>
   );
 };
 
@@ -270,6 +283,8 @@ const buildTaskInfo = (d: any) => {
     receiver,
     pickup: { ...pickup, lat: request?.pickup_location?.latitude ?? null, lng: request?.pickup_location?.longitude ?? null },
     dropoff: { ...dropoff, lat: request?.dropoff_location?.latitude ?? null, lng: request?.dropoff_location?.longitude ?? null },
+    pickupNote: (request?.pickup_note as string | null) || null,
+    dropoffNote: (request?.dropoff_note as string | null) || null,
     items,
     totalItems: items.length > 1 ? items.length : (qtyTotal || items.length),
     weightKg: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
@@ -315,8 +330,6 @@ const enrichDeliveries = async (list: any[]) => {
 /* ==================================================================== */
 /* Cancellation detection                                               */
 /* ==================================================================== */
-// Treat a delivery as cancelled when the request status is Cancelled,
-// OR when escrow / payment has been refunded (defensive — covers older rows).
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -480,7 +493,6 @@ export default function TaskScreen() {
     } catch (error) { console.error('Error fetching deliveries:', error); }
   };
 
-  // --- PING SENDER LOGIC ---
   const handlePingSender = async (delivery: any) => {
     const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
@@ -544,9 +556,6 @@ export default function TaskScreen() {
         .update({ delivery_status: 'In Transit' })
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
-
-      // Note: trg_log_pickup_status_history on qr_verifications automatically
-      // inserts the 'Picked up' row into delivery_status_history.
 
       const patchDelivery = (list: any[]) =>
         list.map(d => {
@@ -733,9 +742,6 @@ export default function TaskScreen() {
         .update({ dropoff_verified: true })
         .eq('delivery_id', deliveryId);
 
-      // Updating completed_at triggers trg_release_escrow and trg_log_delivery_status_history
-      // in Postgres, which atomically update delivery_requests, escrow_payments,
-      // transactions, escrow_transactions, provider_wallet (85%), and delivery_status_history.
       const { error: delError } = await supabase
         .from('deliveries')
         .update({ completed_at: now })
@@ -782,8 +788,6 @@ export default function TaskScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
-  // If the currently selected task becomes cancelled (or leaves the list),
-  // close any open task-scoped modals so we don't leave stale UI behind.
   useEffect(() => {
     if (selectedId == null) return;
     const stillActive = activeDeliveries.some(d => d.delivery_id === selectedId);
@@ -883,7 +887,6 @@ export default function TaskScreen() {
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
 
-  /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
@@ -1019,7 +1022,6 @@ export default function TaskScreen() {
     );
   };
 
-  /* ---------------------------- list view ---------------------------- */
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
@@ -1084,7 +1086,6 @@ export default function TaskScreen() {
     </View>
   );
 
-  /* --------------------------- detail view --------------------------- */
   const renderContactRow = (o: { role: string; name: string | null; phone: string | null; icon: string; onMessage?: () => void }) => (
     <View style={styles.contactRow}>
       <View style={styles.contactAvatar}>
@@ -1291,6 +1292,12 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>PICKUP</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
                     {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
+                    {!!info.pickupNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.pickupNote}</Text>
+                      </View>
+                    )}
 
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
@@ -1310,6 +1317,12 @@ export default function TaskScreen() {
                     <Text style={styles.eyebrow}>DROP-OFF</Text>
                     <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
                     {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
+                    {!!info.dropoffNote && (
+                      <View style={styles.sdNote}>
+                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                        <Text style={styles.sdNoteText}>{info.dropoffNote}</Text>
+                      </View>
+                    )}
 
                     <TouchableOpacity
                       style={styles.inlineNavigateBtn}
@@ -1948,6 +1961,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
   sdRouteSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 16 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
   inlineNavigateBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

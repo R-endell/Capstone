@@ -21,6 +21,8 @@ interface LocationInfo {
   address: string;
   latitude: number;
   longitude: number;
+  /** optional note for the driver (gate, floor, landmark...) */
+  note?: string;
 }
 
 export interface ScheduleState {

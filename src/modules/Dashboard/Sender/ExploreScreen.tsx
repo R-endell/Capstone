@@ -16,17 +16,14 @@ import {
 } from '../../../services/providerLiveService';
 import ProviderTrackModal, { TrackTrip } from './ProviderTrackModal';
 
-// expo-location is loaded lazily so the screen still works (showing every provider)
-// if the package isn't installed in the current dev build yet.
 let Location: any = null;
 try { Location = require('expo-location'); } catch { Location = null; }
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 
-/** Providers that left more than this long ago and are no longer online are hidden. */
 const HIDE_DEPARTED_AFTER_MIN = 180;
-const SEND_NOW_WINDOW_MIN = 60; // "leaving soon" window
+const SEND_NOW_WINDOW_MIN = 60;
 
 type Trip = {
   id: string;
@@ -49,12 +46,12 @@ type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'offline';
 type CardTrip = Trip & {
   fix: LiveFix | null;
   state: TripState;
-  distanceKm: number | null; // sender -> provider (live position when known, else their start point)
+  distanceKm: number | null;
 };
 
 type FilterState = {
   show: 'all' | 'onTheWay' | 'upcoming';
-  radiusKm: number | null; // null = any distance
+  radiusKm: number | null;
 };
 
 const DEFAULT_RADIUS_KM = 10;
@@ -110,7 +107,6 @@ export default function ExploreScreen() {
   const [myCoords, setMyCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locStatus, setLocStatus] = useState<LocStatus>('loading');
 
-  /* ------------------------------ data ------------------------------ */
   const fetchTrips = useCallback(async () => {
     try {
       const { data, error } = await supabase
@@ -182,7 +178,6 @@ export default function ExploreScreen() {
     }
   }, []);
 
-  // Reload + start listening for live provider movement while this tab is focused
   useFocusEffect(
     useCallback(() => {
       fetchTrips();
@@ -203,12 +198,10 @@ export default function ExploreScreen() {
     }, [fetchTrips, locateMe]),
   );
 
-  // Keep the labels ("Leaves in 12 mins") honest without refetching
   useEffect(() => { setNow(Date.now()); }, [trips]);
 
   const onRefresh = () => { setRefreshing(true); fetchTrips(); locateMe(); };
 
-  /* ------------------------ derived card data ------------------------ */
   const cardTrips = useMemo<CardTrip[]>(() => {
     const out: CardTrip[] = [];
     trips.forEach((t) => {
@@ -221,9 +214,8 @@ export default function ExploreScreen() {
       else if (t.isActive && mins <= 0) state = 'onRoad';
       else if (mins > 0 && mins <= SEND_NOW_WINDOW_MIN) state = 'soon';
       else if (mins > SEND_NOW_WINDOW_MIN) state = 'scheduled';
-      else state = 'offline'; // departed and no longer online
+      else state = 'offline';
 
-      // Not on their way any more -> not shown
       if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
       if (state === 'offline') return;
 
@@ -270,12 +262,10 @@ export default function ExploreScreen() {
     [trackRouteId, cardTrips],
   );
 
-  /* ---------------- request a delivery along a provider's way ---------------- */
   const requestAlongRoute = async (trip: TrackTrip) => {
     if (requesting) return;
     setRequesting(true);
     try {
-      // 1) Sender's current location = pickup
       let coords = myCoords;
       if (!coords) {
         await locateMe();
@@ -310,7 +300,6 @@ export default function ExploreScreen() {
         }
       } catch { /* keep default */ }
 
-      // 2) Start the normal "Send Package Now" flow with pickup + provider pre-filled
       scheduleDispatch({ type: 'RESET' });
       scheduleDispatch({ type: 'SET_MODE', payload: 'sendNow' });
       scheduleDispatch({
@@ -329,7 +318,6 @@ export default function ExploreScreen() {
     }
   };
 
-  /* ------------------------------ UI bits ------------------------------ */
   const stateBadge = (s: TripState) => {
     switch (s) {
       case 'live':
@@ -426,7 +414,6 @@ export default function ExploreScreen() {
     <View style={styles.headerContainer}>
       <Text style={styles.pageTitle}>Explore</Text>
 
-      {/* Booking entry points: same cards that used to live on Home */}
       <View style={styles.actionContainer}>
         <TouchableOpacity
           style={[styles.actionCard, styles.actionCardPrimary]}
@@ -592,7 +579,6 @@ export default function ExploreScreen() {
         />
       )}
 
-      {/* LIVE TRACK + REQUEST (no package details) */}
       <ProviderTrackModal
         visible={!!trackTrip}
         trip={trackTrip}
@@ -602,7 +588,6 @@ export default function ExploreScreen() {
         onRequest={requestAlongRoute}
       />
 
-      {/* FILTER MODAL */}
       <Modal visible={filterModalVisible} transparent animationType="fade" onRequestClose={() => setFilterModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <TouchableOpacity style={StyleSheet.absoluteFill} onPress={() => setFilterModalVisible(false)} activeOpacity={1} />

@@ -4,7 +4,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
   Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
@@ -73,7 +73,6 @@ const nowManilaNaive = (): string => {
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
-// Helper to format the departure time nicely
 const formatDepartureTime = (isoString: string | null | undefined) => {
   if (!isoString) return null;
   try {
@@ -97,9 +96,6 @@ interface ProviderRating {
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
 
-/* ==================================================================== */
-/* Local match notification                                            */
-/* ==================================================================== */
 const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
   try {
     await Notifications.scheduleNotificationAsync({
@@ -110,8 +106,6 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
         sound: 'default',
         ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
       },
-      // In recent Expo SDKs, trigger: null sometimes drops the notification.
-      // A 1-second delay trigger forces the OS to process it reliably.
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         seconds: 1,
@@ -123,9 +117,6 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
   }
 };
 
-/* ==================================================================== */
-/* Local cancellation / refund notification                            */
-/* ==================================================================== */
 const fireCancelNotification = async (opts: {
   requestId: number;
   amount?: number | null;
@@ -172,9 +163,6 @@ const fireCancelNotification = async (opts: {
   }
 };
 
-/* ==================================================================== */
-/* Push notification to the assigned provider on cancellation          */
-/* ==================================================================== */
 const notifyProviderOfCancellation = async (opts: {
   providerId: number | null | undefined;
   requestId: number;
@@ -212,7 +200,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
-  // departure time
   const [departureTime, setDepartureTime] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
@@ -245,7 +232,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ---- DOUBLE-TAP GUARD ----
   const proceedingRef = useRef(false);
   const proceedReturnToRef = useRef<number | null>(null);
   const [savingBooking, setSavingBooking] = useState(false);
@@ -330,7 +316,6 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, []);
 
-  // Re-enable the Proceed button ONLY when the user comes back to this screen
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
       if (proceedReturnToRef.current !== null) {
@@ -725,9 +710,7 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
-  // ---- DOUBLE-TAP SAFE ----
   const handleProceedToPayment = async () => {
-    // Hard synchronous guard: no awaits before this check
     if (proceedingRef.current) return;
     proceedingRef.current = true;
     setSavingBooking(true);
@@ -773,9 +756,6 @@ export default function BookingScreen({ route, navigation }: any) {
       const amount = pricing?.total ?? state.estimatedCost ?? 0;
 
       navigation.navigate('DeliveryPayment', { requestId, amount });
-      // NOTE: Do NOT clear proceedingRef here. It stays true until the
-      // user returns to this screen (handled by the focus listener above).
-      // setSavingBooking(false) will also happen on focus return.
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
       proceedingRef.current = false;
@@ -788,8 +768,6 @@ export default function BookingScreen({ route, navigation }: any) {
     if (cancellingRef.current) return;
     cancellingRef.current = true;
 
-    // Captured before the try block so the tail of this function knows
-    // whether the flow should end (paid → refund) or return to review (unpaid).
     let wasPaid = false;
     let refundSucceeded = false;
     let refundFailed = false;
@@ -818,8 +796,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
         cancelledAmount = Number(reqRow?.estimated_cost) || 0;
 
-        // Look up the assigned provider (if any) so we can push them
-        // a cancellation notice.
         const { data: deliveryRow } = await supabase
           .from('deliveries')
           .select('delivery_id, provider_id')
@@ -907,8 +883,6 @@ export default function BookingScreen({ route, navigation }: any) {
             );
           }
         } else {
-          // Unpaid booking — safe to hard-delete the request. Also delete
-          // the cargo_profile so we don't accumulate orphan cargo rows.
           const { data: cargoRow } = await supabase
             .from('delivery_requests')
             .select('cargo_id')
@@ -923,9 +897,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
       setResumeSubId(null);
 
-      // Fire the local notification on the sender's own phone so they
-      // have a persistent record of the cancellation/refund, even if
-      // they dismiss the Alert.
       if (cancelledRequestId != null) {
         fireCancelNotification({
           requestId: cancelledRequestId,
@@ -935,8 +906,6 @@ export default function BookingScreen({ route, navigation }: any) {
         });
       }
 
-      // Notify the provider (if one was assigned) that the sender
-      // cancelled — they may be en route to the pickup.
       if (cancelledProviderId && cancelledRequestId != null) {
         notifyProviderOfCancellation({
           providerId: cancelledProviderId,
@@ -951,9 +920,6 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
-      // ---------- THE FIX ----------
-      // A paid cancellation ends the flow. Do NOT return to 'review' with a
-      // live Proceed button — that's what was causing the duplicate row.
       if (wasPaid) {
         dispatch({ type: 'RESET' });
         setSavedRequestId(null);
@@ -963,7 +929,6 @@ export default function BookingScreen({ route, navigation }: any) {
         navigation.navigate('MainTabs');
         return;
       }
-      // -----------------------------
 
       setBookingState('review');
     } finally {
@@ -1046,93 +1011,17 @@ export default function BookingScreen({ route, navigation }: any) {
   const mapTopPad = Math.round(insets.top + 120);
   const mapBottomPad = 320;
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-          .marker-pickup { background: #F27024; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${pickupLat === null ? 'null' : pickupLat};
-          var pickupLng = ${pickupLng === null ? 'null' : pickupLng};
-          var dropoffLat = ${dropoffLat === null ? 'null' : dropoffLat};
-          var dropoffLng = ${dropoffLng === null ? 'null' : dropoffLng};
-
-          var centerLat = (pickupLat !== null) ? pickupLat : ((dropoffLat !== null) ? dropoffLat : 10.3157);
-          var centerLng = (pickupLng !== null) ? pickupLng : ((dropoffLng !== null) ? dropoffLng : 123.8854);
-
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 12);
-          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          var fitOpts = { paddingTopLeft: [40, ${mapTopPad}], paddingBottomRight: [40, ${mapBottomPad}], maxZoom: 15 };
-          var markers = [];
-          if (pickupLat !== null && pickupLng !== null) {
-            markers.push(L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map));
-          }
-          if (dropoffLat !== null && dropoffLng !== null) {
-            markers.push(L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map));
-          }
-
-          if (pickupLat !== null && pickupLng !== null && dropoffLat !== null && dropoffLng !== null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  var polyline = L.polyline(latlngs, {
-                    color: '#F27024', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round'
-                  }).addTo(map);
-                  map.fitBounds(polyline.getBounds(), fitOpts);
-                } else {
-                  var group = new L.featureGroup(markers);
-                  map.fitBounds(group.getBounds(), fitOpts);
-                }
-              })
-              .catch(function() {
-                var group = new L.featureGroup(markers);
-                map.fitBounds(group.getBounds(), fitOpts);
-              });
-          } else if (markers.length > 0) {
-            var group = new L.featureGroup(markers);
-            map.fitBounds(group.getBounds(), fitOpts);
-          }
-        </script>
-      </body>
-    </html>
-  `;
-
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <WebView
-        style={styles.map}
-        source={{ html: mapHtml }}
-        scrollEnabled={false}
-        javaScriptEnabled
-        domStorageEnabled
-        androidLayerType="hardware"
-        originWhitelist={['*']}
-        mixedContentMode="always"
+      <RoutePreviewMap
+        pickupLat={pickupLat}
+        pickupLng={pickupLng}
+        dropoffLat={dropoffLat}
+        dropoffLng={dropoffLng}
+        padTop={mapTopPad}
+        padBottom={mapBottomPad}
       />
 
       <View style={[styles.topOverlay, { top: insets.top + 8 }]}>
@@ -1175,7 +1064,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
 
-        {/* --- REVIEW STATE --- */}
         {bookingState === 'review' && (
           <Animated.View style={[styles.sheetCard, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1309,7 +1197,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- FINDING STATE --- */}
         {bookingState === 'finding' && (
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
             <View style={{ width: '100%', alignItems: 'center', paddingTop: 8 }}>
@@ -1435,7 +1322,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- MATCHED STATE --- */}
         {bookingState === 'matched' && matchFound && (
           <Animated.View style={[styles.sheetCardMatched, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1575,7 +1461,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- NO MATCH STATE --- */}
         {bookingState === 'no_match' && (
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
