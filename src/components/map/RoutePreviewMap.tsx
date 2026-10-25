@@ -3,10 +3,8 @@
 // route line in brand orange, from pickup to drop-off.
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, StyleProp, ViewStyle, Easing } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
-
-// 1. Import the Map ID from your utils folder
-import { GOOGLE_MAP_ID } from '../../utils/mapConfig';
+import MapView, { Marker, Polyline } from 'react-native-maps';
+import { MAP_PROPS } from '../../utils/mapConfig';
 
 export const BRAND_ORANGE = '#FF751F';   // same orange as the app logo / notification colour
 const DROPOFF_BLACK = '#111827';
@@ -174,9 +172,7 @@ export default function RoutePreviewMap({
   return (
     <MapView
       ref={mapRef}
-      provider={PROVIDER_GOOGLE}
-      userInterfaceStyle="light"
-      googleMapId={GOOGLE_MAP_ID} // <--- Map ID applied here
+      {...MAP_PROPS}
       style={[StyleSheet.absoluteFill, style]}
       initialRegion={{ ...initial, latitudeDelta: 0.06, longitudeDelta: 0.06 }}
       onMapReady={() => { if (road.length > 1) fit(road, false); }}

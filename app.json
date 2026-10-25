@@ -3,7 +3,6 @@
     "name": "Pack-N-Ship",
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
-    "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "packnship",
@@ -75,7 +74,13 @@
       "expo-web-browser",
       "expo-sqlite",
       "expo-status-bar",
-      "react-native-maps",
+      [
+        "react-native-maps",
+        {
+          "androidGoogleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg",
+          "iosGoogleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
+        }
+      ],
       "@react-native-community/datetimepicker",
       [
         "expo-location",

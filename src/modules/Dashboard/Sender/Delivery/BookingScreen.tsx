@@ -73,6 +73,7 @@ const nowManilaNaive = (): string => {
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
+// Helper to format the departure time nicely
 const formatDepartureTime = (isoString: string | null | undefined) => {
   if (!isoString) return null;
   try {
@@ -96,6 +97,9 @@ interface ProviderRating {
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
 
+/* ==================================================================== */
+/* Local match notification                                            */
+/* ==================================================================== */
 const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
   try {
     await Notifications.scheduleNotificationAsync({
@@ -106,6 +110,8 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
         sound: 'default',
         ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
       },
+      // In recent Expo SDKs, trigger: null sometimes drops the notification.
+      // A 1-second delay trigger forces the OS to process it reliably.
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         seconds: 1,
@@ -117,6 +123,9 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
   }
 };
 
+/* ==================================================================== */
+/* Local cancellation / refund notification                            */
+/* ==================================================================== */
 const fireCancelNotification = async (opts: {
   requestId: number;
   amount?: number | null;
@@ -163,6 +172,9 @@ const fireCancelNotification = async (opts: {
   }
 };
 
+/* ==================================================================== */
+/* Push notification to the assigned provider on cancellation          */
+/* ==================================================================== */
 const notifyProviderOfCancellation = async (opts: {
   providerId: number | null | undefined;
   requestId: number;
@@ -200,6 +212,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
+  // departure time
   const [departureTime, setDepartureTime] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
@@ -232,6 +245,7 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ---- DOUBLE-TAP GUARD ----
   const proceedingRef = useRef(false);
   const proceedReturnToRef = useRef<number | null>(null);
   const [savingBooking, setSavingBooking] = useState(false);
@@ -316,6 +330,7 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, []);
 
+  // Re-enable the Proceed button ONLY when the user comes back to this screen
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
       if (proceedReturnToRef.current !== null) {
@@ -710,7 +725,9 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
+  // ---- DOUBLE-TAP SAFE ----
   const handleProceedToPayment = async () => {
+    // Hard synchronous guard: no awaits before this check
     if (proceedingRef.current) return;
     proceedingRef.current = true;
     setSavingBooking(true);
@@ -756,6 +773,9 @@ export default function BookingScreen({ route, navigation }: any) {
       const amount = pricing?.total ?? state.estimatedCost ?? 0;
 
       navigation.navigate('DeliveryPayment', { requestId, amount });
+      // NOTE: Do NOT clear proceedingRef here. It stays true until the
+      // user returns to this screen (handled by the focus listener above).
+      // setSavingBooking(false) will also happen on focus return.
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Could not save your request. Please try again.');
       proceedingRef.current = false;
@@ -768,6 +788,8 @@ export default function BookingScreen({ route, navigation }: any) {
     if (cancellingRef.current) return;
     cancellingRef.current = true;
 
+    // Captured before the try block so the tail of this function knows
+    // whether the flow should end (paid → refund) or return to review (unpaid).
     let wasPaid = false;
     let refundSucceeded = false;
     let refundFailed = false;
@@ -796,6 +818,8 @@ export default function BookingScreen({ route, navigation }: any) {
 
         cancelledAmount = Number(reqRow?.estimated_cost) || 0;
 
+        // Look up the assigned provider (if any) so we can push them
+        // a cancellation notice.
         const { data: deliveryRow } = await supabase
           .from('deliveries')
           .select('delivery_id, provider_id')
@@ -883,6 +907,8 @@ export default function BookingScreen({ route, navigation }: any) {
             );
           }
         } else {
+          // Unpaid booking — safe to hard-delete the request. Also delete
+          // the cargo_profile so we don't accumulate orphan cargo rows.
           const { data: cargoRow } = await supabase
             .from('delivery_requests')
             .select('cargo_id')
@@ -897,6 +923,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
       setResumeSubId(null);
 
+      // Fire the local notification on the sender's own phone so they
+      // have a persistent record of the cancellation/refund, even if
+      // they dismiss the Alert.
       if (cancelledRequestId != null) {
         fireCancelNotification({
           requestId: cancelledRequestId,
@@ -906,6 +935,8 @@ export default function BookingScreen({ route, navigation }: any) {
         });
       }
 
+      // Notify the provider (if one was assigned) that the sender
+      // cancelled — they may be en route to the pickup.
       if (cancelledProviderId && cancelledRequestId != null) {
         notifyProviderOfCancellation({
           providerId: cancelledProviderId,
@@ -920,6 +951,9 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
+      // ---------- THE FIX ----------
+      // A paid cancellation ends the flow. Do NOT return to 'review' with a
+      // live Proceed button — that's what was causing the duplicate row.
       if (wasPaid) {
         dispatch({ type: 'RESET' });
         setSavedRequestId(null);
@@ -929,6 +963,7 @@ export default function BookingScreen({ route, navigation }: any) {
         navigation.navigate('MainTabs');
         return;
       }
+      // -----------------------------
 
       setBookingState('review');
     } finally {
@@ -1064,6 +1099,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
 
+        {/* --- REVIEW STATE --- */}
         {bookingState === 'review' && (
           <Animated.View style={[styles.sheetCard, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1197,6 +1233,7 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
+        {/* --- FINDING STATE --- */}
         {bookingState === 'finding' && (
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
             <View style={{ width: '100%', alignItems: 'center', paddingTop: 8 }}>
@@ -1322,6 +1359,7 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
+        {/* --- MATCHED STATE --- */}
         {bookingState === 'matched' && matchFound && (
           <Animated.View style={[styles.sheetCardMatched, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1461,6 +1499,7 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
+        {/* --- NO MATCH STATE --- */}
         {bookingState === 'no_match' && (
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />

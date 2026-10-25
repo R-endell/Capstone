@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -18,9 +18,7 @@ import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
-
-// 1. Import the Map ID from your utils folder
-import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
+import { MAP_PROPS } from '../../../utils/mapConfig';
 
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
@@ -364,10 +362,8 @@ const RouteMap = ({
   return (
     <MapView
       ref={mapRef}
-      provider={PROVIDER_GOOGLE}
+      {...MAP_PROPS}
       style={{ flex: 1 }}
-      googleMapId={GOOGLE_MAP_ID}
-      userInterfaceStyle="light"
       initialRegion={{
         latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
         longitude: startLng ?? endLng ?? DEFAULT_CENTER.longitude,
@@ -515,10 +511,8 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }
   return (
     <MapView
       ref={mapRef}
-      provider={PROVIDER_GOOGLE}
+      {...MAP_PROPS}
       style={{ flex: 1 }}
-      googleMapId={GOOGLE_MAP_ID}
-      userInterfaceStyle="light"
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
         longitude: provider?.lng ?? DEFAULT_CENTER.longitude,

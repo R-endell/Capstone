@@ -6,20 +6,24 @@ import {
   Keyboard, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
+import { MAP_PROPS } from '../../../../utils/mapConfig';
 
 const ORANGE = '#F27024';
 const BLACK = '#111827';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 
+/**
+ * Read from build config (EXPO_PUBLIC_GOOGLE_MAPS_API_KEY or the key already in
+ * app.json) — not hard-coded in source. Restrict the key in Google Cloud Console.
+ */
 const GOOGLE_MAPS_API_KEY: string =
   (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string | undefined) ||
   (Constants.expoConfig as any)?.android?.config?.googleMaps?.apiKey ||
@@ -32,7 +36,7 @@ const REJECTED_PLACE_TYPES = new Set(['route', 'street_address', 'postal_code', 
 const ZOOM_DELTA = 0.003;
 const SAME_SPOT_METERS = 8;
 const NEARBY_RADIUS_M = 200;
-const LABEL_SNAP_M = 60;
+const LABEL_SNAP_M = 60;         // a place this close to the pin is used as the pin's name
 
 type Coord = { latitude: number; longitude: number };
 type RecentEntry = { name: string; address: string; latitude: number; longitude: number; ts: number };
@@ -63,7 +67,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const isPickup = type === 'pickup';
-  const pinColor = isPickup ? ORANGE : BLACK;
+  const pinColor = isPickup ? ORANGE : BLACK;                       // drop-off pin is black
   const tint = isPickup ? 'rgba(242,112,36,0.09)' : 'rgba(17,24,39,0.06)';
 
   const mapRef = useRef<MapView>(null);
@@ -92,7 +96,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     () => ((isPickup ? state.pickupLocation : state.dropoffLocation) as any)?.note ?? '',
   );
   const [editingNote, setEditingNote] = useState(false);
-  const [kbH, setKbH] = useState(0);
+  const [kbH, setKbH] = useState(0);                                  // iOS only (Android resizes the window)
 
   const [structuredAddress, setStructuredAddress] = useState({
     street_address: '', barangay: '', city: '', province: '', zip_code: '',
@@ -110,6 +114,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const pinPulse = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
+  /* ------------------------------ animations ------------------------------ */
   useEffect(() => {
     Animated.timing(sheetAnim, { toValue: 1, duration: 450, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [sheetAnim]);
@@ -144,6 +149,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const animatePressIn = () => Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
   const animatePressOut = () => Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
 
+  /* ------------------------------ recents ------------------------------ */
   const loadRecents = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(RECENTS_KEY);
@@ -171,6 +177,9 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   useEffect(() => { loadRecents(); }, [loadRecents]);
 
+  /* ---------------------- address lookup (never moves the pin) ---------------------- */
+
+  /** Named places around the pin, closest first — shown as the "nearby" list. */
   const fetchNearby = async (coords: Coord): Promise<NearbyPlace[]> => {
     if (!HAS_API_KEY) return [];
     try {
@@ -254,6 +263,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return null;
   };
 
+  /** Fill in the address + nearby list for the pin at `coords`. Never moves the pin. */
   const resolveAt = useCallback(async (coords: Coord, label?: Label) => {
     const seq = ++resolveSeq.current;
     lastResolved.current = coords;
@@ -290,6 +300,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     resolveAt(coords, label);
   }, [resolveAt]);
 
+  /* ------------------------------ init ------------------------------ */
   useEffect(() => {
     if (type === 'dropoff' && initialCoords) {
       setMarkerCoord(initialCoords);
@@ -335,6 +346,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
+  /* ------------------------------ search (Places API New) ------------------------------ */
   const runSearch = useCallback(async (text: string) => {
     setSearchError(null);
     if (!text.trim()) { setSearchResults([]); return; }
@@ -403,6 +415,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     moveTo({ latitude: p.latitude, longitude: p.longitude }, { name: p.name, sub: p.address });
   };
 
+  /* ------------------------------ confirm ------------------------------ */
   const confirmLocation = () => {
     const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
     const locationInfo = {
@@ -428,6 +441,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
+  /* ------------------------------ map handlers ------------------------------ */
   const onPanDrag = () => {
     if (!isDraggingMap) setIsDraggingMap(true);
     if (editingNote) { Keyboard.dismiss(); setEditingNote(false); }
@@ -473,13 +487,12 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     <View style={[styles.container, { paddingBottom: kbH }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
+      {/* ============================== MAP AREA ============================== */}
       <View style={styles.mapArea}>
         <MapView
           ref={mapRef}
-          provider={PROVIDER_GOOGLE}
-          style={styles.mapArea}
-          googleMapId={GOOGLE_MAP_ID}
-          userInterfaceStyle="light"
+          {...MAP_PROPS}
+          style={StyleSheet.absoluteFill}
           initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
           onMapReady={() => setMapLoaded(true)}
           onPanDrag={onPanDrag}
@@ -500,6 +513,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         )}
 
+        {/* name bubble + pin, centred in the visible map */}
         <View style={styles.centerStack} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
             <TouchableOpacity style={styles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
@@ -535,6 +549,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </View>
 
+      {/* ============================== BOTTOM SHEET ============================== */}
       <Animated.View style={[styles.sheet, { opacity: sheetAnim }]}>
         <View style={styles.dragHandle} />
 
@@ -545,6 +560,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             nestedScrollEnabled
             showsVerticalScrollIndicator={false}
           >
+            {/* selected location */}
             <TouchableOpacity style={[styles.row, { backgroundColor: tint }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
               <View style={styles.rowIconCol}>
                 <View style={[styles.rowIcon, { backgroundColor: pinColor }]}>
@@ -560,6 +576,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               <Ionicons name="pencil" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
 
+            {/* nearby places */}
             {nearby.map(p => (
               <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
                 <View style={styles.rowIconCol}>
@@ -580,6 +597,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </ScrollView>
         )}
 
+        {/* note for the driver */}
         <View style={styles.noteBar}>
           {editingNote ? (
             <View style={styles.noteEditRow}>
@@ -633,6 +651,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
       </Animated.View>
 
+      {/* ============================== SEARCH OVERLAY ============================== */}
       {isSearching && (
         <View style={[styles.searchOverlay, { paddingTop: insets.top + 10 }]}>
           <View style={styles.searchModalHeader}>
