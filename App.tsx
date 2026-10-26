@@ -69,6 +69,9 @@ import ProviderMessagesScreen from './src/modules/Dashboard/Provider/MessagesScr
 import ManageVehicleScreen from './src/modules/Dashboard/Provider/Manage/ManageVehicleScreen';
 import ManageRoutesScreen from './src/modules/Dashboard/Provider/Manage/ManageRoutesScreen';
 
+// NEW: Provider Navigation Screen
+import ProviderNavigationScreen from './src/modules/Dashboard/Provider/ProviderNavigationScreen';
+
 // Delivery Features
 import { ScheduleProvider } from './src/modules/Dashboard/Sender/Delivery/ScheduleContext';
 import DropoffTypeScreen from './src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen';
@@ -83,7 +86,7 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
-// Support FAB  ← RE-ADDED
+// Support FAB
 import SupportFab from './src/components/SupportFab';
 
 // Canonical background matcher
@@ -92,6 +95,7 @@ import {
   stopBackgroundMatcher,
 } from './src/services/backgroundMatcher';
 import { setActiveRouteId } from './src/services/activeRouteStore';
+import { useTabBarHidden } from './src/services/tabBarVisibilityStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
@@ -114,8 +118,7 @@ export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
   ForgotPassword: undefined;
-  ResetPassword: { token_hash: string; type: string };
-  PermissionsPrompt: undefined;
+  ResetPassword: { token_hash: string; type: string; skipVerify?: boolean };  PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
   MainTabs: { screen?: keyof MainTabParamList; params?: any };
@@ -147,6 +150,7 @@ export type RootStackParamList = {
   LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
   VerifyEmail: { token_hash: string; type: string };
+  ProviderNavigation: { deliveryId: number };
 };
 
 export type MainTabParamList = {
@@ -384,6 +388,7 @@ function ProviderTabs() {
 function ProviderTabsInner() {
   const unreadCount = useUnreadMessages();
   const tabBarStyle = useTabBarStyle();
+  const tabBarHidden = useTabBarHidden();
   const { colors } = useTheme();
 
   return (
@@ -409,7 +414,8 @@ function ProviderTabsInner() {
           },
           tabBarActiveTintColor: '#F27024',
           tabBarInactiveTintColor: colors.textSecondary,
-          tabBarStyle,
+          tabBarStyle:
+            route.name === 'Jobs' && tabBarHidden ? { display: 'none' } : tabBarStyle,
           tabBarLabelStyle: {
             fontSize: 11,
             fontWeight: '500',
@@ -571,7 +577,6 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
   const forceDeactivatedLogout = async () => {
     if (handlingKickRef.current) return;
 
-    // Avoid firing duplicate alerts if LoginScreen is already handling the login attempt
     const currentRoute = getActiveRouteName();
     if (currentRoute === 'Login') return;
 
@@ -640,13 +645,11 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
 
       if (!isMounted || !userRow) return;
 
-      // Immediate check (e.g., on app resume or cold boot)
       if (userRow.is_active === false) {
         await forceDeactivatedLogout();
         return;
       }
 
-      // Subscribe to real-time updates on this user's row
       cleanupChannel();
       channelRef.current = supabase
         .channel(`user-active-guard-${userRow.user_id}-${Date.now()}`)
@@ -670,7 +673,6 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
 
     checkAndSubscribe();
 
-    // Re-bind when auth session changes (login / logout)
     const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT' || !session?.user) {
         cleanupChannel();
@@ -685,7 +687,6 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
       }
     });
 
-    // Re-check whenever app returns to foreground
     const appStateSub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
         checkAndSubscribe();
@@ -938,6 +939,17 @@ function AppInner() {
         <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
+
+        {/* NEW: Provider Navigation Screen */}
+        <Stack.Screen
+          name="ProviderNavigation"
+          component={ProviderNavigationScreen}
+          options={{
+            headerShown: false,
+            presentation: 'fullScreenModal',
+            animation: 'slide_from_bottom',
+          }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

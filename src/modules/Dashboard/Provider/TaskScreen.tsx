@@ -1,13 +1,14 @@
 // src/modules/Dashboard/Provider/TaskScreen.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Platform, Image, Linking, Share, BackHandler,
+  Dimensions, Image, Linking, Share, BackHandler,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
+import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
@@ -15,8 +16,8 @@ import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import { getProviderDeliveries } from '../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
+import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
-import { useMemo } from 'react';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
@@ -45,152 +46,6 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
     }
   } catch { /* keep fallback */ }
   return detail;
-};
-
-/* ==================================================================== */
-/* Navigation Helper (Google Maps / Apple Maps)                         */
-/* ==================================================================== */
-const openNavigation = (lat: number | null | undefined, lng: number | null | undefined, label: string) => {
-  if (lat == null || lng == null) {
-    Alert.alert('No coordinates', `No location coordinates found for ${label}.`);
-    return;
-  }
-
-  const destination = `${lat},${lng}`;
-  const encodedLabel = encodeURIComponent(label);
-
-  const scheme = Platform.select({
-    ios: `maps:0,0?q=${encodedLabel}@${destination}`,
-    android: `geo:0,0?q=${destination}(${encodedLabel})`,
-  });
-
-  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
-
-  if (scheme) {
-    Linking.openURL(scheme).catch(() => {
-      Linking.openURL(webUrl).catch(() => {
-        Alert.alert('Error', 'Could not open maps application.');
-      });
-    });
-  } else {
-    Linking.openURL(webUrl);
-  }
-};
-
-/* ==================================================================== */
-/* TaskRouteMap — unchanged light tiles                                 */
-/* ==================================================================== */
-const TaskRouteMap = ({
-  pickupLat, pickupLng,
-  dropoffLat, dropoffLng,
-  zoom = 12,
-  interactive = false,
-}: {
-  pickupLat?: number | null;
-  pickupLng?: number | null;
-  dropoffLat?: number | null;
-  dropoffLng?: number | null;
-  zoom?: number;
-  interactive?: boolean;
-}) => {
-  const hasPickup = pickupLat != null && pickupLng != null;
-  const hasDropoff = dropoffLat != null && dropoffLng != null;
-
-  const centerLat = hasPickup ? pickupLat : (hasDropoff ? dropoffLat : 10.3157);
-  const centerLng = hasPickup ? pickupLng : (hasDropoff ? dropoffLng : 123.8854);
-
-  const dragging = interactive ? 'true' : 'false';
-  const touchZoom = interactive ? 'true' : 'false';
-  const scrollWheelZoom = interactive ? 'true' : 'false';
-  const doubleClickZoom = interactive ? 'true' : 'false';
-  const zoomControl = interactive ? 'true' : 'false';
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #E5E7EB; }
-          .marker-pickup { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${hasPickup ? pickupLat : 'null'};
-          var pickupLng = ${hasPickup ? pickupLng : 'null'};
-          var dropoffLat = ${hasDropoff ? dropoffLat : 'null'};
-          var dropoffLng = ${hasDropoff ? dropoffLng : 'null'};
-
-          var map = L.map('map', {
-            zoomControl: ${zoomControl},
-            attributionControl: false,
-            dragging: ${dragging},
-            touchZoom: ${touchZoom},
-            scrollWheelZoom: ${scrollWheelZoom},
-            doubleClickZoom: ${doubleClickZoom},
-          }).setView([${centerLat}, ${centerLng}], ${zoom});
-
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          if (pickupLat != null && pickupLng != null) {
-            L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map);
-          }
-          if (dropoffLat != null && dropoffLng != null) {
-            L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map);
-          }
-
-          if (pickupLat != null && pickupLng != null && dropoffLat != null && dropoffLng != null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[pickupLat, pickupLng], [dropoffLat, dropoffLng]], { color: '#FF751F', weight: 4, opacity: 0.7, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[pickupLat, pickupLng], [dropoffLat, dropoffLng]]), { padding: [40, 40] });
-              });
-          } else if (pickupLat != null && pickupLng != null && dropoffLat == null) {
-            map.setView([pickupLat, pickupLng], ${zoom});
-          } else if (dropoffLat != null && dropoffLng != null && pickupLat == null) {
-            map.setView([dropoffLat, dropoffLng], ${zoom});
-          }
-        </script>
-      </body>
-    </html>
-  `;
-
-  return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={interactive}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
-  );
 };
 
 /* ==================================================================== */
@@ -264,12 +119,17 @@ const buildTaskInfo = (d: any) => {
   const qtyTotal = (Number(cargo?.small_box_qty) || 0) + (Number(cargo?.medium_box_qty) || 0) + (Number(cargo?.large_box_qty) || 0);
   const dims = [cargo?.cargo_length_cm, cargo?.cargo_width_cm, cargo?.cargo_height_cm];
   const sender = d?.sender || null;
+
+  // Extract more location info (Barangay/Road) from the location object if available
+  const pickupRoad = [request?.pickup_location?.road, request?.pickup_location?.barangay].filter(Boolean).join(', ');
+  const dropoffRoad = [request?.dropoff_location?.road, request?.dropoff_location?.barangay].filter(Boolean).join(', ');
+
   return {
     request,
     cargo,
     receiver,
-    pickup: { ...pickup, lat: request?.pickup_location?.latitude ?? null, lng: request?.pickup_location?.longitude ?? null },
-    dropoff: { ...dropoff, lat: request?.dropoff_location?.latitude ?? null, lng: request?.dropoff_location?.longitude ?? null },
+    pickup: { ...pickup, lat: request?.pickup_location?.latitude ?? null, lng: request?.pickup_location?.longitude ?? null, road: pickupRoad || pickup.sub },
+    dropoff: { ...dropoff, lat: request?.dropoff_location?.latitude ?? null, lng: request?.dropoff_location?.longitude ?? null, road: dropoffRoad || dropoff.sub },
     pickupNote: (request?.pickup_note as string | null) || null,
     dropoffNote: (request?.dropoff_note as string | null) || null,
     items,
@@ -317,8 +177,6 @@ const enrichDeliveries = async (list: any[]) => {
 /* ==================================================================== */
 /* Cancellation detection                                               */
 /* ==================================================================== */
-// Treat a delivery as cancelled when the request status is Cancelled,
-// OR when escrow / payment has been refunded (defensive — covers older rows).
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -372,6 +230,13 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
 /* ==================================================================== */
 /* TaskScreen                                                           */
 /* ==================================================================== */
+const BLUE = '#3B82F6';
+const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
+const BLACK = '#111827';
+const initials = (n?: string | null) =>
+  (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -387,7 +252,6 @@ export default function TaskScreen() {
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
-  // Ping state
   const [pingingId, setPingingId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
@@ -402,6 +266,7 @@ export default function TaskScreen() {
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mapModalVisible, setMapModalVisible] = useState(false);
+  const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
@@ -482,7 +347,6 @@ export default function TaskScreen() {
     } catch (error) { console.error('Error fetching deliveries:', error); }
   };
 
-  // --- PING SENDER LOGIC ---
   const handlePingSender = async (delivery: any) => {
     const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
@@ -546,9 +410,6 @@ export default function TaskScreen() {
         .update({ delivery_status: 'In Transit' })
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
-
-      // Note: trg_log_pickup_status_history on qr_verifications automatically
-      // inserts the 'Picked up' row into delivery_status_history.
 
       const patchDelivery = (list: any[]) =>
         list.map(d => {
@@ -735,9 +596,6 @@ export default function TaskScreen() {
         .update({ dropoff_verified: true })
         .eq('delivery_id', deliveryId);
 
-      // Updating completed_at triggers trg_release_escrow and trg_log_delivery_status_history
-      // in Postgres, which atomically update delivery_requests, escrow_payments,
-      // transactions, escrow_transactions, provider_wallet (85%), and delivery_status_history.
       const { error: delError } = await supabase
         .from('deliveries')
         .update({ completed_at: now })
@@ -784,8 +642,6 @@ export default function TaskScreen() {
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
-  // If the currently selected task becomes cancelled (or leaves the list),
-  // close any open task-scoped modals so we don't leave stale UI behind.
   useEffect(() => {
     if (selectedId == null) return;
     const stillActive = activeDeliveries.some(d => d.delivery_id === selectedId);
@@ -872,6 +728,19 @@ export default function TaskScreen() {
   };
 
   const allTasks = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries];
+  
+  const openRoute = (d: any) => {
+    const st = stageOf(d);
+    if (st !== 'pickup' && st !== 'transit') return;
+    const info = buildTaskInfo(d);
+    const t = st === 'pickup' ? info.pickup : info.dropoff;
+    if (t.lat == null || t.lng == null) {
+      Alert.alert('Route unavailable', `This order has no map coordinates for the ${st === 'pickup' ? 'pickup' : 'drop-off'} location.`);
+      return;
+    }
+    navigation.navigate('ProviderNavigation', { deliveryId: d.delivery_id });
+  };
+
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
   const tabCount = (t: 'active' | 'completed' | 'cancelled' | 'all') =>
     t === 'active' ? activeDeliveries.length
@@ -885,138 +754,162 @@ export default function TaskScreen() {
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
 
+  /* --------------------------- shared pieces --------------------------- */
+  const renderServicePill = (info: any) => (
+    <View style={styles.svcPill}>
+      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <Text style={styles.svcPillText}>{serviceLabel(info.request?.pickup_type)}</Text>
+    </View>
+  );
+
+  const renderStatusPill = (meta: any) => (
+    <View style={[styles.stPill, { backgroundColor: meta.bg }]}>
+      <View style={[styles.stDot, { backgroundColor: meta.fg }]} />
+      <Text style={[styles.stPillText, { color: meta.fg }]}>{meta.label.toUpperCase()}</Text>
+    </View>
+  );
+
+  const renderRoute = (info: any, opts: { notes?: boolean } = {}) => (
+    <View>
+      {[
+        { key: 'p', label: 'PICKUP', pt: info.pickup, color: ORANGE, note: info.pickupNote },
+        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: BLACK, note: info.dropoffNote },
+      ].map((r, i) => (
+        <View key={r.key} style={styles.rtRow}>
+          <View style={styles.rtRail}>
+            <View style={[styles.rtRing, { borderColor: r.color }]}><View style={[styles.rtRingDot, { backgroundColor: r.color }]} /></View>
+            {i === 0 && (
+              <View style={styles.rtDots}>
+                {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
+              </View>
+            )}
+          </View>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+            <Text style={styles.rtLabel}>{r.label}</Text>
+            <Text style={styles.rtMain} numberOfLines={1}>{r.pt.main}</Text>
+            
+            {/* Added location/road detail line */}
+            {!!r.pt.road && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                <Ionicons name="map-outline" size={12} color={colors.textMuted} />
+                <Text style={styles.rtSub} numberOfLines={1}>{r.pt.road}</Text>
+              </View>
+            )}
+
+            {opts.notes && !!r.note && (
+              <View style={styles.sdNote}>
+                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <Text style={styles.sdNoteText}>{r.note}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+
+  const renderMiniContact = (o: { role: string; name: string | null; phone: string | null; color: string }) => {
+    const handlePress = () => {
+      Alert.alert(
+        o.role,
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}`,
+        o.phone ? [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) }
+        ] : [{ text: 'OK' }]
+      );
+    };
+
+    return (
+      <TouchableOpacity style={styles.mcCard} onPress={handlePress} activeOpacity={0.7}>
+        <View style={[styles.mcAvatar, { backgroundColor: o.color }]}>
+          <Text style={styles.mcAvatarText}>{initials(o.name)}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.mcRole}>{o.role}</Text>
+          <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+        </View>
+        {!!o.phone && (
+          <TouchableOpacity 
+            style={styles.mcCall} 
+            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${o.phone}`); }} 
+            activeOpacity={0.8} 
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <Ionicons name="call" size={14} color={ORANGE} />
+          </TouchableOpacity>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  const cargoLabel = (info: any) =>
+    `${info.totalItems} ${info.items?.[0]?.size || (info.totalItems === 1 ? 'item' : 'items')}`;
+
   /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
     const stage = stageOf(d);
     const meta = statusMeta(stage);
-    const target = stage === 'pickup' ? info.pickup : info.dropoff;
     const isCancelled = stage === 'cancelled';
+    const active = stage === 'pickup' || stage === 'transit';
 
     return (
       <TouchableOpacity
         key={d.delivery_id}
-        style={[styles.card, stage === 'done' && styles.cardDone, isCancelled && styles.cardCancelled]}
+        style={[styles.oCard, !active && { opacity: 0.88 }]}
         onPress={() => setSelectedId(d.delivery_id)}
-        activeOpacity={0.9}
+        activeOpacity={0.92}
       >
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={styles.serviceBadge}>
-              <Text style={styles.serviceBadgeText}>{serviceLabel(info.request.pickup_type)}</Text>
-            </View>
-            <View style={[styles.statusBadge, { backgroundColor: meta.bg }]}>
-              <Ionicons name={meta.icon as any} size={12} color={meta.fg} />
-              <Text style={[styles.statusBadgeText, { color: meta.fg }]}>{meta.label}</Text>
-            </View>
+        <View style={styles.oPad}>
+          <View style={styles.oTopRow}>
+            {renderServicePill(info)}
+            {renderStatusPill(meta)}
           </View>
-          <View style={styles.itemsChip}>
-            <Ionicons name="cube-outline" size={12} color={colors.textSecondary} />
-            <Text style={styles.itemsChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
+
+          {renderRoute(info)}
+
+          <View style={styles.oContacts}>
+            {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE })}
+            {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE })}
           </View>
+          {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
         </View>
 
-        <Text style={styles.cardDate}>{dateLabel(info.request)}</Text>
-
-        <View style={styles.routeBox}>
-          <View style={styles.routeRow}>
-            <View style={styles.dotOrange} />
-            <Text style={styles.routeAddressText} numberOfLines={1}>{info.pickup.main}</Text>
+        <View style={styles.oFooter}>
+          <View style={styles.oChip}>
+            <Ionicons name="cube-outline" size={14} color={ORANGE} />
+            <Text style={styles.oChipText}>{cargoLabel(info)}</Text>
           </View>
-          <View style={styles.routeConnectorLine} />
-          <View style={styles.routeRow}>
-            <View style={styles.dotDark} />
-            <Text style={styles.routeAddressText} numberOfLines={1}>{info.dropoff.main}</Text>
-          </View>
-        </View>
-
-        {stage !== 'done' && !isCancelled && (
-          <View style={styles.nextStopRow}>
-            <View style={styles.nextStopIcon}>
-              <Ionicons name={stage === 'pickup' ? 'arrow-up-circle' : 'flag'} size={15} color={ORANGE} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.nextStopEyebrow}>NEXT · {stage === 'pickup' ? 'GO TO PICKUP' : 'GO TO DROP-OFF'}</Text>
-              <Text style={styles.nextStopMain} numberOfLines={1}>{target.main}</Text>
-            </View>
-          </View>
-        )}
-
-        {isCancelled && (
-          <View style={styles.cancelledNotice}>
-            <Ionicons name="information-circle-outline" size={15} color={colors.error} />
-            <Text style={styles.cancelledNoticeText}>This booking was cancelled by the sender.</Text>
-          </View>
-        )}
-
-        <View style={styles.cardChipRow}>
-          {info.weightKg != null && (
-            <View style={styles.infoChip}>
-              <Ionicons name="barbell-outline" size={12} color={colors.textSecondary} />
-              <Text style={styles.infoChipText}>{info.weightKg} kg</Text>
-            </View>
-          )}
           {info.fragile && (
-            <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
-              <Ionicons name="warning" size={12} color={colors.error} />
-              <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
+            <View style={styles.oChip}>
+              <Ionicons name="star-outline" size={14} color={ORANGE} />
+              <Text style={styles.oChipText}>Fragile</Text>
             </View>
           )}
-          {!!info.receiverName && (
-            <View style={styles.infoChip}>
-              <Ionicons name="person-outline" size={12} color={colors.textSecondary} />
-              <Text style={styles.infoChipText} numberOfLines={1}>{info.receiverName}</Text>
-            </View>
-          )}
+          <View style={{ flex: 1 }} />
+          <Text style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
+            {money(info.earnings)}
+          </Text>
         </View>
 
-        <View style={styles.cardFooter}>
-          <View>
-            <Text style={styles.footerLabel}>YOU EARN</Text>
-            <Text style={[styles.priceText, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
-              {money(info.earnings)}
-            </Text>
-          </View>
-          {stage === 'pickup' ? (
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity
-                style={[styles.actionBtn, { backgroundColor: colors.accentSoft, shadowColor: 'transparent' }]}
-                onPress={() => handlePingSender(d)}
-                disabled={pingingId === d.delivery_id}
-                activeOpacity={0.9}
-              >
-                {pingingId === d.delivery_id ? (
-                  <ActivityIndicator size="small" color={ORANGE} />
-                ) : (
-                  <>
-                    <Ionicons name="notifications" size={15} color={ORANGE} />
-                    <Text style={[styles.actionBtnText, { color: ORANGE }]}>Ping</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={() => openVerifyModal(d)} activeOpacity={0.9}>
-                <Ionicons name="qr-code-outline" size={15} color="#FFFFFF" />
-                <Text style={styles.actionBtnText}>Verify Pickup</Text>
-              </TouchableOpacity>
-            </View>
-          ) : stage === 'transit' ? (
-            <TouchableOpacity style={[styles.actionBtn, styles.actionBtnGreen]} onPress={() => openDeliveryOTPModal(d)} activeOpacity={0.9}>
-              <Ionicons name="shield-checkmark" size={15} color="#FFFFFF" />
-              <Text style={styles.actionBtnText}>Complete</Text>
+        {active && (
+          <View style={styles.oActions}>
+            <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
+              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : (
+                <>
+                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  <Text style={styles.oChatText}>Chat</Text>
+                </>
+              )}
             </TouchableOpacity>
-          ) : stage === 'done' ? (
-            <View style={styles.doneBadge}>
-              <Ionicons name="checkmark-circle" size={14} color={colors.success} />
-              <Text style={styles.doneBadgeText}>Delivered</Text>
-            </View>
-          ) : (
-            <View style={styles.cancelledBadge}>
-              <Ionicons name="close-circle" size={14} color={colors.error} />
-              <Text style={styles.cancelledBadgeText}>Cancelled</Text>
-            </View>
-          )}
-        </View>
+            <TouchableOpacity style={styles.oRouteBtn} onPress={() => openRoute(d)} activeOpacity={0.9}>
+              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <Text style={styles.oRouteText}>Start Route</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -1113,7 +1006,6 @@ export default function TaskScreen() {
   const renderDetailView = (d: any) => {
     const info = buildTaskInfo(d);
     const stage = stageOf(d);
-    const meta = statusMeta(stage);
     const code = trackingCode(info.request?.request_id ?? d.delivery_id);
     const target = stage === 'pickup' ? info.pickup : info.dropoff;
     const escrowStatus = String(d.escrow?.escrow_status || '');
@@ -1122,19 +1014,85 @@ export default function TaskScreen() {
       ? 'Released to your wallet'
       : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
     const isCancelled = stage === 'cancelled';
+    const active = stage === 'pickup' || stage === 'transit';
+    const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
+    const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : 0;
+    const currentStep = stage === 'done' ? -1 : stage === 'transit' ? 3 : 1;
+
+    const H = Dimensions.get('window').height;
+    const mapH = Math.round(H * 0.46);
+    const items: any[] = info.items || [];
+    const photos = items.filter((it: any) => !!it.photo && !failedPhotos[it.photo]);
+    const hintText = stage === 'pickup'
+      ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
+      : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, then enter the receiver’s 6-digit OTP.`;
 
     return (
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <Animated.View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
-          <TouchableOpacity onPress={() => setSelectedId(null)} style={styles.backCircleBtn} activeOpacity={0.8}>
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
-          </TouchableOpacity>
-          <Text style={styles.detailHeaderTitle}>Task Details</Text>
-          <View style={styles.headerSpacer} />
-        </Animated.View>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]} onPress={() => setSelectedId(null)} activeOpacity={0.85}>
+        <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]} onPress={() => setMapModalVisible(true)} activeOpacity={0.85}>
+        <Ionicons name="expand-outline" size={20} color={colors.textPrimary} />
+      </TouchableOpacity>
 
-        <ScrollView contentContainerStyle={styles.detailContainer} showsVerticalScrollIndicator={false}>
-          <Animated.View style={{ opacity: detailAnim }}>
+      <ScrollView
+        style={StyleSheet.absoluteFill}
+        contentContainerStyle={{ paddingBottom: active ? insets.bottom + 110 : insets.bottom + 40 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ height: mapH - 28 }}>
+          <View style={[styles.dMap, { height: mapH + 24, position: 'relative' }]}>
+            <RoutePreviewMap
+              pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
+              dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
+              padTop={insets.top + 70} padBottom={60}
+            />
+          </View>
+        </View>
+
+        <Animated.View style={[styles.dSheet, { opacity: detailAnim }]}>
+          <View style={styles.dHandle} />
+
+            <View style={styles.oTopRow}>
+              {renderServicePill(info)}
+              {renderStatusPill(statusMeta(stage))}
+            </View>
+
+            <View style={styles.dCodeRow}>
+              <Text style={styles.dCode} selectable numberOfLines={1}>#{code}</Text>
+              <TouchableOpacity onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.trackTextCopy}>
+                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
+              </TouchableOpacity>
+            </View>
+            {!!info.request?.scheduled_time && (
+              <Text style={styles.dWhen}>Scheduled · {formatDateTime(info.request.scheduled_time)}</Text>
+            )}
+
+            {!isCancelled && (
+              <View style={styles.stepper}>
+                {progressSteps.map((label, i) => {
+                  const done = i <= doneUpTo;
+                  const current = i === currentStep;
+                  const reached = done || current;
+                  return (
+                    <View key={label} style={styles.stepCol}>
+                      <View style={styles.stepLineRow}>
+                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
+                          {done ? <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                            : current ? <View style={styles.stepDotInner} /> : null}
+                        </View>
+                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: ORANGE }]} />
+                      </View>
+                      <Text style={[styles.stepLabel, reached && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
@@ -1147,98 +1105,7 @@ export default function TaskScreen() {
                   </Text>
                 </View>
               </View>
-            ) : stage !== 'done' ? (
-              <View style={styles.nextCard}>
-                <View style={styles.nextTop}>
-                  <View style={styles.nextIcon}>
-                    <Ionicons name={stage === 'pickup' ? 'qr-code' : 'shield-checkmark'} size={22} color={ORANGE} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.nextEyebrow}>STEP {stage === 'pickup' ? 1 : 2} OF 2 · {meta.label.toUpperCase()}</Text>
-                    <Text style={styles.nextTitle}>{stage === 'pickup' ? 'Pick up the package' : 'Deliver to the receiver'}</Text>
-                  </View>
-                </View>
-
-                <View style={styles.nextLocBox}>
-                  <Text style={styles.nextLocLabel}>{stage === 'pickup' ? 'GO TO PICKUP' : 'GO TO DROP-OFF'}</Text>
-                  <Text style={styles.nextLocMain} numberOfLines={2}>{target.main}</Text>
-                  {!!target.sub && <Text style={styles.nextLocSub} numberOfLines={2}>{target.sub}</Text>}
-
-                  <TouchableOpacity
-                    style={styles.navigateBtn}
-                    onPress={() => openNavigation(target.lat, target.lng, target.main)}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="navigate" size={16} color={ORANGE} />
-                    <Text style={styles.navigateBtnText}>Navigate with Google Maps</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.nextChipRow}>
-                    <View style={styles.nextChip}>
-                      <Ionicons name={/door/i.test(info.request?.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color="#FFFFFF" />
-                      <Text style={styles.nextChipText}>{serviceLabel(info.request?.pickup_type)}</Text>
-                    </View>
-                    <View style={styles.nextChip}>
-                      <Ionicons name="cube-outline" size={12} color="#FFFFFF" />
-                      <Text style={styles.nextChipText}>{info.totalItems} {info.totalItems === 1 ? 'item' : 'items'}</Text>
-                    </View>
-                    {info.fragile && (
-                      <View style={[styles.nextChip, { backgroundColor: colors.error }]}>
-                        <Ionicons name="warning" size={12} color="#FFFFFF" />
-                        <Text style={styles.nextChipText}>Fragile</Text>
-                      </View>
-                    )}
-                  </View>
-                </View>
-
-                <View style={styles.nextSteps}>
-                  {(stage === 'pickup'
-                    ? [
-                        'Go to the pickup address and meet the sender.',
-                        `Check the package${info.fragile ? ' — it is fragile, handle with care' : ''}.`,
-                        'Tap “Verify Pickup”, then scan the sender’s QR code or enter their 4-digit PIN.',
-                      ]
-                    : [
-                        `Bring the package to the drop-off and ${/door/i.test(info.request?.pickup_type || '') ? 'hand it over at the door' : 'hand it over at the curb or entrance'}.`,
-                        'Ask the receiver for their 6-digit OTP.',
-                        'Tap “Complete Delivery” and enter the OTP to finish and get paid.',
-                      ]
-                  ).map((t, i) => (
-                    <View key={i} style={styles.nextStepRow}>
-                      <View style={styles.nextStepNum}><Text style={styles.nextStepNumText}>{i + 1}</Text></View>
-                      <Text style={styles.nextStepText}>{t}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                {stage === 'pickup' && (
-                  <TouchableOpacity
-                    style={[styles.nextPrimaryBtn, { backgroundColor: 'rgba(255,255,255,0.2)', marginTop: 12 }]}
-                    onPress={() => handlePingSender(d)}
-                    disabled={pingingId === d.delivery_id}
-                    activeOpacity={0.9}
-                  >
-                    {pingingId === d.delivery_id ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <>
-                        <Ionicons name="notifications" size={18} color="#FFFFFF" />
-                        <Text style={[styles.nextPrimaryText, { color: '#FFFFFF' }]}>Ping Sender (On my way)</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={[styles.nextPrimaryBtn, { marginTop: 10 }]}
-                  onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={19} color={ORANGE} />
-                  <Text style={styles.nextPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete Delivery'}</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
+            ) : stage === 'done' ? (
               <View style={styles.doneCard}>
                 <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
@@ -1249,275 +1116,112 @@ export default function TaskScreen() {
                   </Text>
                 </View>
               </View>
+            ) : (
+              <View style={styles.dHint}>
+                <Ionicons name="information-circle" size={18} color={ORANGE} />
+                <Text style={styles.dHintText}>{hintText}</Text>
+              </View>
             )}
 
-            <View style={styles.trackTextRow}>
-              <Text style={styles.trackTextLabel}>Tracking ID</Text>
-              <Text style={styles.trackTextId} selectable numberOfLines={1}>#{code}</Text>
-              <TouchableOpacity
-                onPress={() => copyTracking(code)}
-                activeOpacity={0.7}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                style={styles.trackTextCopy}
-              >
-                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
-                <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
+            <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
+
+            <View style={styles.oContacts}>
+              {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE })}
+              {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE })}
+            </View>
+
+            {stage === 'pickup' && (
+              <TouchableOpacity style={[styles.mSoftBtn, { marginTop: 14, flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
+                {pingingId === d.delivery_id ? (
+                  <ActivityIndicator size="small" color={ORANGE} />
+                ) : (
+                  <>
+                    <Ionicons name="notifications" size={16} color={ORANGE} />
+                    <Text style={styles.mSoftText}>Let sender know I’m on my way</Text>
+                  </>
+                )}
               </TouchableOpacity>
-            </View>
+            )}
 
-            <View style={[styles.sdCard, { padding: 0, overflow: 'hidden' }]}>
-              <TouchableOpacity style={styles.sdMap} activeOpacity={0.9} onPress={() => setMapModalVisible(true)}>
-                <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-                  <TaskRouteMap
-                    pickupLat={info.pickup.lat}
-                    pickupLng={info.pickup.lng}
-                    dropoffLat={info.dropoff.lat}
-                    dropoffLng={info.dropoff.lng}
-                    zoom={12}
-                    interactive={false}
-                  />
+            {photos.length > 0 && (
+              <>
+                <View style={styles.dSecHead}>
+                  <Ionicons name="images-outline" size={17} color={ORANGE} />
+                  <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
-                <View style={styles.mapTapHint}>
-                  <Text style={styles.mapTapHintText}>Full map</Text>
-                  <Ionicons name="expand-outline" size={11} color="#FFFFFF" />
-                </View>
-              </TouchableOpacity>
-
-              <View style={styles.sdRoutePad}>
-                <View style={styles.sdRouteRow}>
-                  <View style={styles.sdRouteRail}>
-                    <View style={styles.sdPinPickup}><Text style={styles.sdPinLetter}>P</Text></View>
-                    <View style={styles.sdRailLine} />
-                  </View>
-                  <View style={styles.sdRouteText}>
-                    <Text style={styles.eyebrow}>PICKUP</Text>
-                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.pickup.main}</Text>
-                    {!!info.pickup.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.pickup.sub}</Text>}
-                    {!!info.pickupNote && (
-                      <View style={styles.sdNote}>
-                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
-                        <Text style={styles.sdNoteText}>{info.pickupNote}</Text>
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.inlineNavigateBtn}
-                      onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
-                      <Text style={styles.inlineNavigateText}>Navigate</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+                  {photos.map((it: any, i: number) => (
+                    <TouchableOpacity key={i} activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)}>
+                      <Image
+                        source={{ uri: it.photo }}
+                        style={styles.dPhoto}
+                        resizeMode="cover"
+                        onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
+                      />
                     </TouchableOpacity>
-                  </View>
-                </View>
-                <View style={styles.sdRouteRow}>
-                  <View style={styles.sdRouteRail}>
-                    <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
-                  </View>
-                  <View style={[styles.sdRouteText, { paddingBottom: 0 }]}>
-                    <Text style={styles.eyebrow}>DROP-OFF</Text>
-                    <Text style={styles.sdRouteMain} numberOfLines={2}>{info.dropoff.main}</Text>
-                    {!!info.dropoff.sub && <Text style={styles.sdRouteSub} numberOfLines={2}>{info.dropoff.sub}</Text>}
-                    {!!info.dropoffNote && (
-                      <View style={styles.sdNote}>
-                        <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
-                        <Text style={styles.sdNoteText}>{info.dropoffNote}</Text>
-                      </View>
-                    )}
+                  ))}
+                </ScrollView>
+              </>
+            )}
 
-                    <TouchableOpacity
-                      style={styles.inlineNavigateBtn}
-                      onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="navigate-outline" size={14} color={ORANGE} />
-                      <Text style={styles.inlineNavigateText}>Navigate</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
+            <View style={styles.dSecHead}>
+              <Ionicons name="cube-outline" size={17} color={ORANGE} />
+              <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
-
-            <View style={styles.sdCard}>
-              <View style={styles.sdCardHeader}>
-                <View style={styles.sdCardHeaderIcon}><Ionicons name="people-outline" size={15} color={ORANGE} /></View>
-                <Text style={styles.sdCardTitle}>Contacts</Text>
+            {items.some((it: any) => !!it.description) && (
+              <View style={{ gap: 4, marginBottom: 10 }}>
+                {items.map((it: any, i: number) => !!it.description && (
+                  <Text key={i} style={styles.dItemText} numberOfLines={2}>
+                    {items.length > 1 ? `${i + 1}. ` : ''}{it.description}
+                  </Text>
+                ))}
               </View>
-              {renderContactRow({
-                role: 'SENDER · PICKUP', name: info.senderName, phone: info.senderPhone, icon: 'person-outline',
-                onMessage: () => messageSender(d),
-              })}
-              <View style={styles.contactDivider} />
-              {renderContactRow({
-                role: 'RECEIVER · DROP-OFF', name: info.receiverName, phone: info.receiverPhone, icon: 'person',
-              })}
-            </View>
-
-            <View style={styles.sdCard}>
-              <View style={styles.sdCardHeader}>
-                <View style={styles.sdCardHeaderIcon}><Ionicons name="cube-outline" size={15} color={ORANGE} /></View>
-                <Text style={styles.sdCardTitle}>Package details</Text>
+            )}
+            <View style={styles.tileGrid}>
+              <View style={styles.tile}><Text style={styles.tileLabel}>CARGO SIZE</Text><Text style={styles.tileValue}>{cargoLabel(info)}</Text></View>
+              <View style={styles.tile}><Text style={styles.tileLabel}>WEIGHT</Text><Text style={styles.tileValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text></View>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>HANDLING</Text>
+                <Text style={[styles.tileValue, info.fragile && { color: ORANGE }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
               </View>
-
-              <View style={styles.statsRow}>
-                <View style={styles.stat}>
-                  <Text style={styles.statLabel}>ITEMS</Text>
-                  <Text style={styles.statValue}>{info.totalItems}</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statLabel}>WEIGHT</Text>
-                  <Text style={styles.statValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text>
-                </View>
-                <View style={styles.statDivider} />
-                <View style={styles.stat}>
-                  <Text style={styles.statLabel}>FRAGILE</Text>
-                  <Text style={[styles.statValue, info.fragile && { color: colors.error }]}>{info.fragile ? 'Yes' : 'No'}</Text>
-                </View>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>{isCancelled ? 'EARNINGS' : 'YOU EARN'}</Text>
+                <Text style={[styles.tileValue, { color: isCancelled ? colors.textMuted : colors.success }, isCancelled && { textDecorationLine: 'line-through' }]}>{money(info.earnings)}</Text>
               </View>
-
               {!!info.dims && (
-                <View style={styles.noteRow}>
-                  <Ionicons name="resize-outline" size={15} color={colors.textSecondary} />
-                  <Text style={styles.noteText}>Size {info.dims}</Text>
-                </View>
+                <View style={styles.tile}><Text style={styles.tileLabel}>DIMENSIONS</Text><Text style={styles.tileValue}>{info.dims}</Text></View>
               )}
-
-              <View style={[styles.handlingBox, info.fragile && styles.handlingBoxWarn]}>
-                <Ionicons
-                  name={info.fragile ? 'warning' : 'information-circle-outline'}
-                  size={16}
-                  color={info.fragile ? colors.error : ORANGE}
-                />
-                <Text style={[styles.handlingText, info.fragile && { color: colors.error }]}>
-                  {info.fragile ? 'Fragile — handle with care and keep upright. ' : ''}
-                  {/door/i.test(info.request?.pickup_type || '')
-                    ? 'Door-to-door: collect from and hand over at the door.'
-                    : 'Curb-side: collect from and hand over at the curb or entrance.'}
-                </Text>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>PAYMENT</Text>
+                <Text style={[styles.tileValue, released && { color: colors.success }]} numberOfLines={2}>{isCancelled ? 'Refunded to sender' : paymentLabel}</Text>
               </View>
-
-              {info.items.map((it: any, i: number) => {
-                const ok = !!it.photo && !failedPhotos[it.photo];
-                return (
-                  <View key={i} style={styles.itemBlock}>
-                    {ok ? (
-                      <TouchableOpacity activeOpacity={0.92} onPress={() => setPhotoPreview(it.photo)} style={styles.itemPhotoWrap}>
-                        <Image
-                          source={{ uri: it.photo }}
-                          style={styles.itemPhoto}
-                          resizeMode="cover"
-                          onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
-                        />
-                        <View style={styles.enlargeHint}><Ionicons name="expand-outline" size={12} color="#FFFFFF" /></View>
-                      </TouchableOpacity>
-                    ) : (
-                      <View style={styles.itemNoPhoto}>
-                        <Ionicons name="image-outline" size={18} color={colors.textMuted} />
-                        <Text style={styles.itemNoPhotoText}>{it.photo ? "Photo couldn't be loaded" : 'No photo provided'}</Text>
-                      </View>
-                    )}
-                    <View style={styles.itemInfoRow}>
-                      <View style={{ flex: 1 }}>
-                        {info.items.length > 1 && <Text style={styles.eyebrow}>ITEM {i + 1}</Text>}
-                        <Text style={styles.itemTitle} numberOfLines={3}>{it.description}</Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                        {!!it.size && <View style={styles.infoChip}><Text style={styles.infoChipText}>{it.size}</Text></View>}
-                        {it.fragile && (
-                          <View style={[styles.infoChip, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
-                            <Ionicons name="warning" size={11} color={colors.error} />
-                            <Text style={[styles.infoChipText, { color: colors.error }]}>Fragile</Text>
-                          </View>
-                        )}
-                      </View>
-                    </View>
-                  </View>
-                );
-              })}
-            </View>
-
-            <View style={styles.sdCard}>
-              <View style={styles.sdCardHeader}>
-                <View style={styles.sdCardHeaderIcon}><Ionicons name="time-outline" size={15} color={ORANGE} /></View>
-                <Text style={styles.sdCardTitle}>Delivery timeline</Text>
-              </View>
-              <View style={styles.tlRow}>
-                <Ionicons name="checkmark-circle" size={20} color={ORANGE} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.tlTitle}>Accepted</Text>
-                  <Text style={styles.tlSub}>{d.accepted_at ? formatDateTime(d.accepted_at) : '—'}</Text>
-                </View>
-              </View>
-              <View style={styles.tlRow}>
-                <Ionicons
-                  name={stage !== 'pickup' && !isCancelled ? 'checkmark-circle' : 'ellipse-outline'}
-                  size={20}
-                  color={stage !== 'pickup' && !isCancelled ? ORANGE : colors.border}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, (stage === 'pickup' || isCancelled) && { color: colors.textMuted }]}>Package picked up</Text>
-                  <Text style={styles.tlSub}>
-                    {isCancelled ? 'Booking cancelled before pickup' : stage !== 'pickup' ? 'Verified with sender QR / PIN' : 'Waiting for pickup verification'}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.tlRow}>
-                <Ionicons
-                  name={stage === 'done' ? 'checkmark-circle' : isCancelled ? 'close-circle' : 'ellipse-outline'}
-                  size={20}
-                  color={stage === 'done' ? ORANGE : isCancelled ? colors.error : colors.border}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, stage !== 'done' && { color: isCancelled ? colors.error : colors.textMuted }]}>
-                    {isCancelled ? 'Cancelled' : 'Delivered'}
-                  </Text>
-                  <Text style={styles.tlSub}>
-                    {isCancelled
-                      ? 'The sender cancelled this booking.'
-                      : stage === 'done' && d.completed_at
-                        ? formatDateTime(d.completed_at)
-                        : d.estimated_eta ? `Estimated arrival ${formatDateTime(d.estimated_eta)}` : 'Awaiting delivery'}
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.sdCard}>
-              <View style={styles.sdCardHeader}>
-                <View style={styles.sdCardHeaderIcon}><Ionicons name="wallet-outline" size={15} color={ORANGE} /></View>
-                <Text style={styles.sdCardTitle}>Earnings</Text>
-              </View>
-              <View style={styles.payRow}>
-                <Text style={styles.payLabel}>Payment type</Text>
-                <View style={styles.payValueRow}>
-                  <Ionicons name="shield-checkmark-outline" size={15} color={colors.textSecondary} />
-                  <Text style={styles.payValue}>Escrow payment</Text>
-                </View>
-              </View>
-
-              <View style={styles.payRow}>
-                <Text style={styles.payLabel}>Payout method</Text>
-                <PaymentMethodBadge provider={d.escrow?.payment_method} />
-              </View>
-
-              <View style={styles.payRow}>
-                <Text style={styles.payLabel}>Payment status</Text>
-                <View style={[styles.payChip, released && styles.payChipDone, isCancelled && styles.payChipCancelled]}>
-                  <Text style={[styles.payChipText, released && styles.payChipTextDone, isCancelled && styles.payChipTextCancelled]}>
-                    {isCancelled ? 'Refunded to sender' : paymentLabel}
-                  </Text>
-                </View>
-              </View>
-              <View style={[styles.sdTotalBox, isCancelled && { backgroundColor: colors.textMuted }]}>
-                <Text style={styles.sdTotalLabel}>{isCancelled ? 'Earnings' : 'You earn'}</Text>
-                <Text style={[styles.sdTotalValue, isCancelled && { textDecorationLine: 'line-through' }]}>
-                  {money(info.earnings)}
-                </Text>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>PAYOUT</Text>
+                <View style={{ marginTop: 2, alignSelf: 'flex-start' }}><PaymentMethodBadge provider={d.escrow?.payment_method} /></View>
               </View>
             </View>
           </Animated.View>
         </ScrollView>
+
+        {active && (
+          <View style={[styles.dBar, { paddingBottom: 12 }]}>
+            <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
+              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
+              <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+              <Text style={styles.mSoftText}>Navigate</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.mPrimaryBtn, { flex: 1.4 }]}
+              onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
+              activeOpacity={0.9}
+            >
+              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color="#FFFFFF" />
+              <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -1599,16 +1303,27 @@ export default function TaskScreen() {
     return (
       <Modal visible={mapModalVisible} animationType="slide" onRequestClose={() => setMapModalVisible(false)}>
         <View style={{ flex: 1, backgroundColor: colors.background }}>
-          <View style={StyleSheet.absoluteFill}>
-            <TaskRouteMap
-              pickupLat={info.pickup.lat}
-              pickupLng={info.pickup.lng}
-              dropoffLat={info.dropoff.lat}
-              dropoffLng={info.dropoff.lng}
-              zoom={12}
-              interactive
-            />
-          </View>
+          {(() => {
+            const st = stageOf(selectedTask);
+            const t = st === 'pickup' ? info.pickup : info.dropoff;
+            return (st === 'pickup' || st === 'transit') && t.lat != null && t.lng != null ? (
+              <NavigationMap
+                interactive
+                showGuidance={false}
+                target={{ latitude: t.lat, longitude: t.lng }}
+                targetLabel={st === 'pickup' ? 'P' : 'D'}
+                onInfo={setNavInfo}
+                style={{ bottom: 150 + insets.bottom }}
+                padTop={20} padBottom={30}
+              />
+            ) : (
+              <RoutePreviewMap
+                pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
+                dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
+                padTop={100} padBottom={260}
+              />
+            );
+          })()}
           <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
             <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
@@ -1620,13 +1335,6 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>PICKUP</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.pickup.main}</Text>
               </View>
-              <TouchableOpacity
-                style={styles.mapModalNavigateBtn}
-                onPress={() => openNavigation(info.pickup.lat, info.pickup.lng, info.pickup.main)}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="navigate" size={18} color="#FFF" />
-              </TouchableOpacity>
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
@@ -1635,14 +1343,21 @@ export default function TaskScreen() {
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
-              <TouchableOpacity
-                style={styles.mapModalNavigateBtn}
-                onPress={() => openNavigation(info.dropoff.lat, info.dropoff.lng, info.dropoff.main)}
-                activeOpacity={0.85}
-              >
-                <Ionicons name="navigate" size={18} color="#FFF" />
-              </TouchableOpacity>
             </View>
+            {(() => {
+              const st = stageOf(selectedTask);
+              if (st !== 'pickup' && st !== 'transit') return null;
+              return (
+                <TouchableOpacity
+                  style={[styles.actionBtn, { justifyContent: 'center', marginTop: 14, paddingVertical: 14 }]}
+                  onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
+                  activeOpacity={0.9}
+                >
+                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  <Text style={styles.actionBtnText}>Open Route</Text>
+                </TouchableOpacity>
+              );
+            })()}
           </View>
         </View>
       </Modal>
@@ -1727,9 +1442,28 @@ export default function TaskScreen() {
     </Modal>
   );
 
+  const navSessionId = useNavigationSession();
   const broadcastingDelivery = useMemo(() => {
-    return activeDeliveries.find((d: any) => stageOf(d) === 'transit') ?? null;
-  }, [activeDeliveries]);
+    const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit');
+    if (inTransit) return inTransit;
+    if (navSessionId == null) return null;
+    return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;
+  }, [activeDeliveries, navSessionId]);
+
+  const broadcastIdRef = useRef<number | null>(null);
+  const pickupBroadcastRef = useRef<number | null>(null);
+  useEffect(() => {
+    broadcastIdRef.current = broadcastingDelivery?.delivery_id ?? null;
+    const cur = broadcastingDelivery && stageOf(broadcastingDelivery) === 'pickup' ? broadcastingDelivery.delivery_id : null;
+    const prev = pickupBroadcastRef.current;
+    pickupBroadcastRef.current = cur;
+    if (prev == null || prev === cur) return;
+    const d = activeDeliveries.find((x: any) => x.delivery_id === prev);
+    if (!d || stageOf(d) !== 'pickup') return;
+    setTimeout(() => {
+      if (broadcastIdRef.current !== prev) clearLocationFix(prev).catch(() => {});
+    }, 1500);
+  }, [broadcastingDelivery, activeDeliveries]);
 
   useProviderLocationBroadcast({
     deliveryId: broadcastingDelivery?.delivery_id ?? null,
@@ -1849,6 +1583,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
   actionBtnGreen: { backgroundColor: c.success, shadowColor: c.success },
+  openRoutePill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: ORANGE, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
+  openRoutePillText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
   actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
   doneBadge: {
     flexDirection: 'row', alignItems: 'center',
@@ -1905,28 +1641,117 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   nextTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   nextIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
-  nextEyebrow: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
+  nextEyebrow: { fontSize: 13, fontWeight: '700', color: '#FFE4D2', marginTop: 2 },
+  nextNote: { fontSize: 12, fontStyle: 'italic', color: '#FFF1E6', marginTop: 8, lineHeight: 17 },
+  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
+  stepCol: { flex: 1, alignItems: 'center' },
+  stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
+  stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
+  stepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
+  stepDotCurrent: { borderColor: ORANGE },
+  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
+  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepLabelOn: { color: c.textPrimary },
+  mCard: { backgroundColor: c.card, borderRadius: 18, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: c.border },
+  mCardMuted: { opacity: 0.85 },
+  mCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  mStatus: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  mStatusDot: { width: 8, height: 8, borderRadius: 4 },
+  mStatusText: { fontSize: 13, fontWeight: '800' },
+  mPrice: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  mRoute: { flexDirection: 'row', gap: 12 },
+  mRail: { alignItems: 'center', paddingTop: 3, paddingBottom: 3 },
+  mRailLine: { flex: 1, width: 2, backgroundColor: c.divider, marginVertical: 3, minHeight: 10 },
+  mAddrOn: { color: c.textPrimary, fontWeight: '800' },
+  mWhen: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  mNextLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  mNextMain: { fontSize: 17, fontWeight: '900', color: c.textPrimary, marginTop: 2, letterSpacing: -0.2 },
+  mThen: { fontSize: 13, color: c.textSecondary, fontWeight: '600', marginTop: 4 },
+  mMeta: { fontSize: 12, color: c.textMuted, fontWeight: '600', marginTop: 12 },
+  mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
+  mActionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 },
+  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
+  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  mIconBtn: { width: 46, height: 46, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
+  mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  heroCard: { backgroundColor: c.card, borderRadius: 20, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: c.border },
+  heroTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  heroEyebrow: { fontSize: 11, fontWeight: '800', color: ORANGE, letterSpacing: 1 },
+  heroEta: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
+  heroMain: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, marginTop: 8 },
+  heroSub: { fontSize: 13, color: c.textSecondary, marginTop: 3, lineHeight: 18 },
+  heroHint: { fontSize: 12, color: c.textMuted, fontWeight: '600', marginTop: 12, lineHeight: 17 },
+  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  stDot: { width: 7, height: 7, borderRadius: 4 },
+  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  rtRow: { flexDirection: 'row', gap: 14 },
+  rtRail: { alignItems: 'center', width: 26 },
+  rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
+  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
+  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtText: { flex: 1 },
+  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
+  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
+  oPad: { padding: 16 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
+  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
+  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
+  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14 },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  dMap: { overflow: 'hidden' },
+  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
+  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
+  dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
+  dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
+  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
+  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 4 },
+  dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
+  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
+  dSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
+  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
+  dItemText: { fontSize: 14, color: c.textSecondary, lineHeight: 20 },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
+  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
+  dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  btnRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  nextSecondaryBtn: { flex: 1, marginTop: 10, backgroundColor: 'rgba(255,255,255,0.2)' },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pkgThumb: { width: 56, height: 56, borderRadius: 12, backgroundColor: c.background },
+  pkgThumbEmpty: { alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.divider },
+  moreBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, marginBottom: 14 },
+  moreBtnText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
+  nextHint: { fontSize: 13, lineHeight: 19, color: '#FFFFFF', fontWeight: '600', marginTop: 14 },
   nextTitle: { fontSize: 18, fontWeight: '900', color: '#FFFFFF', letterSpacing: -0.3, marginTop: 2 },
   nextLocBox: { backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 16, padding: 14, marginTop: 14 },
-  nextLocLabel: { fontSize: 10, fontWeight: '800', color: '#FFE4D2', letterSpacing: 1 },
   nextLocMain: { fontSize: 16, fontWeight: '900', color: '#FFFFFF', marginTop: 4, letterSpacing: -0.2 },
   nextLocSub: { fontSize: 12, color: '#FFF1E6', marginTop: 2, lineHeight: 17 },
-
-  navigateBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, backgroundColor: '#FFFFFF', borderRadius: 12,
-    paddingVertical: 12, marginTop: 12,
-  },
-  navigateBtnText: { color: ORANGE, fontSize: 13, fontWeight: '900' },
 
   nextChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   nextChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(255,255,255,0.22)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
   nextChipText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
-  nextSteps: { marginTop: 14, gap: 10 },
-  nextStepRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  nextStepNum: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  nextStepNumText: { fontSize: 12, fontWeight: '900', color: ORANGE },
-  nextStepText: { flex: 1, fontSize: 13, lineHeight: 19, color: '#FFFFFF', fontWeight: '600' },
   trackTextRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4, marginBottom: 14 },
   trackTextLabel: { fontSize: 12, fontWeight: '700', color: c.textMuted },
   trackTextId: { flex: 1, fontSize: 16, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2 },
@@ -1946,7 +1771,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
   doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
 
-  sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
+  sdMap: { width: '100%', height: 120, backgroundColor: '#F3F4F6' },
   mapTapHint: {
     position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
@@ -1965,13 +1790,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
-  inlineNavigateBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
-    backgroundColor: c.accentSoft, alignSelf: 'flex-start', marginTop: 8,
-    borderWidth: 1, borderColor: c.border,
-  },
-  inlineNavigateText: { fontSize: 12, fontWeight: '800', color: ORANGE },
 
   sdCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
   sdCardHeaderIcon: { width: 28, height: 28, borderRadius: 14, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
@@ -2047,12 +1865,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
 
-  mapModalNavigateBtn: {
-    width: 44, height: 44, borderRadius: 22,
-    backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
-  },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
