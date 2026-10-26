@@ -27,6 +27,8 @@ export interface DeliveryRequest {
   estimated_cost: number;
   emergency_flag: boolean;
   sender_id: number;
+  preferred_provider_id?: number | null;
+  preferred_route_id?: number | null;
   pickup_location: Location;
   dropoff_location: Location;
 }
@@ -43,6 +45,7 @@ export interface NearbyRequestResult {
   pickupDistToCorridorKm: number;
   dropoffDistToCorridorKm: number;
   extraDetourKm: number;
+  isDirectRequest?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,27 +179,45 @@ export async function getPendingRequests(): Promise<any[]> {
       '*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)',
     )
     .eq('delivery_status', 'Pending')
-    .eq('payment_status', 'held');
-  return data || [];
+    .order('created_at', { ascending: false });
+
+  // Include requests where payment is held OR a preferred provider was explicitly selected
+  return (data || []).filter(
+    (r: any) =>
+      r.payment_status === 'held' ||
+      r.escrow_status === 'held' ||
+      r.preferred_provider_id != null,
+  );
 }
 
-async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
+async function getActiveProviderRoutes(targetRouteId?: number | null): Promise<ProviderRoute[]> {
   const pastDay = new Date();
   pastDay.setHours(pastDay.getHours() - 24);
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('provider_routes')
     .select(
       '*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*), provider:users!provider_id(is_active, is_online)',
-    )
-    .gte('departure_time', pastDay.toISOString());
+    );
+
+  if (targetRouteId) {
+    query = query.eq('route_id', targetRouteId);
+  } else {
+    query = query.gte('departure_time', pastDay.toISOString());
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error('Error fetching provider routes:', error);
     return [];
   }
 
-  return (data || []).filter((r: any) => r.provider?.is_active !== false && r.provider?.is_online === true);
+  if (targetRouteId) {
+    return (data || []) as ProviderRoute[];
+  }
+
+  return (data || []).filter((r: any) => r.provider?.is_active !== false);
 }
 
 /* ------------------------------------------------------------------ */
@@ -212,24 +233,49 @@ export async function findMatches(
 ): Promise<MatchResult[]> {
   const [pendingRequests, providerRoutes] = await Promise.all([
     getPendingRequests(),
-    getActiveProviderRoutes(),
+    getActiveProviderRoutes(routeId),
   ]);
 
   const routesToCheck = routeId
     ? providerRoutes.filter((r) => r.route_id === routeId)
     : providerRoutes;
 
+  // Exclude requests that already have a delivery record
+  const reqIds = pendingRequests.map((r: any) => r.request_id);
+  const { data: existingDeliveries } = reqIds.length > 0
+    ? await supabase.from('deliveries').select('request_id').in('request_id', reqIds)
+    : { data: [] };
+  const takenIds = new Set((existingDeliveries || []).map((d: any) => d.request_id));
+
   const matches: MatchResult[] = [];
   const nowIso = new Date().toISOString();
   if (DEBUG_MATCH) console.log(`[match] ${pendingRequests.length} pending request(s), ${routesToCheck.length} route(s)`);
 
   for (const request of pendingRequests) {
+    if (takenIds.has(request.request_id)) continue;
     if (!request.pickup_location || !request.dropoff_location) continue;
 
     const isSendNow = !request.scheduled_time;
     const effectiveRequestTime = request.scheduled_time || nowIso;
 
     for (const route of routesToCheck) {
+      // Never match a provider with their own sender request
+      if (Number(request.sender_id) === Number(route.provider_id)) continue;
+
+      // If the sender specifically chose a preferred provider, ONLY match that provider
+      if (request.preferred_provider_id != null) {
+        if (Number(request.preferred_provider_id) === Number(route.provider_id)) {
+          matches.push({ request, route, matchScore: 100 });
+        }
+        continue;
+      }
+
+      // Standard open request: require provider to be online
+      const providerInfo: any = (route as any).provider;
+      if (providerInfo && providerInfo.is_online === false && !routeId) {
+        continue;
+      }
+
       const tag = `req ${request.request_id} × route ${route.route_id}`;
       if (!route.start_location || !route.end_location) {
         if (DEBUG_MATCH) console.log(`[match] ${tag}: route has no start/end location`);
@@ -263,7 +309,7 @@ export async function findMatches(
 }
 
 /* ------------------------------------------------------------------ */
-/* getNearbyUnmatchedRequests — nearby sender routes close to provider */
+/* getNearbyUnmatchedRequests — nearby & direct requests for provider  */
 /* ------------------------------------------------------------------ */
 const MAX_PICKUP_CORRIDOR_KM = 8;   // Pickup must be within 8 km of provider's route line
 const MAX_DROPOFF_CORRIDOR_KM = 12; // Drop-off must be within 12 km of provider's route line
@@ -321,9 +367,7 @@ export async function getNearbyUnmatchedRequests(
       }
     }
 
-    if (candidateRoutes.length === 0) return [];
-
-    // 2. Fetch all open Pending requests with payment held
+    // 2. Fetch all open Pending requests
     const pendingRequests = await getPendingRequests();
     if (pendingRequests.length === 0) return [];
 
@@ -339,7 +383,15 @@ export async function getNearbyUnmatchedRequests(
 
     for (const req of pendingRequests) {
       if (takenIds.has(req.request_id)) continue;
-      if (req.sender_id === providerId) continue;
+      if (Number(req.sender_id) === Number(providerId)) continue;
+
+      // If this request was sent to a specific preferred provider, hide it from all other providers
+      if (
+        req.preferred_provider_id != null &&
+        Number(req.preferred_provider_id) !== Number(providerId)
+      ) {
+        continue;
+      }
 
       const pu = req.pickup_location;
       const dr = req.dropoff_location;
@@ -347,12 +399,42 @@ export async function getNearbyUnmatchedRequests(
         continue;
       }
 
+      const isDirectToThisProvider =
+        req.preferred_provider_id != null &&
+        Number(req.preferred_provider_id) === Number(providerId);
+
+      // If direct to this provider and they have a preferred_route_id, make sure that route is checked
+      const preferredRouteInAll = req.preferred_route_id
+        ? allProviderRoutes.find((r) => Number(r.route_id) === Number(req.preferred_route_id))
+        : null;
+
+      let routesForThisReq =
+        preferredRouteInAll && !candidateRoutes.some((r) => r.route_id === preferredRouteInAll.route_id)
+          ? [preferredRouteInAll, ...candidateRoutes]
+          : [...candidateRoutes];
+
+      // Even if the provider has no active route in candidateRoutes yet, synthesize one for direct requests
+      if (isDirectToThisProvider && routesForThisReq.length === 0) {
+        routesForThisReq = [
+          {
+            route_id: req.preferred_route_id || fallbackRouteId,
+            provider_id: providerId,
+            vehicle_id: fallbackVehicleId,
+            departure_time: req.scheduled_time || new Date().toISOString(),
+            start_location: pu,
+            end_location: dr,
+          },
+        ];
+      }
+
+      if (routesForThisReq.length === 0) continue;
+
       let bestMatch: NearbyRequestResult | null = null;
 
-      for (const route of candidateRoutes) {
-        const s = route.start_location;
-        const e = route.end_location;
-        if (!s || !e || s.latitude == null || s.longitude == null || e.latitude == null || e.longitude == null) {
+      for (const route of routesForThisReq) {
+        const s = route.start_location || pu;
+        const e = route.end_location || dr;
+        if (s.latitude == null || s.longitude == null || e.latitude == null || e.longitude == null) {
           continue;
         }
 
@@ -374,7 +456,10 @@ export async function getNearbyUnmatchedRequests(
           Number(e.longitude),
         );
 
-        if (pickupDist <= MAX_PICKUP_CORRIDOR_KM && dropoffDist <= MAX_DROPOFF_CORRIDOR_KM) {
+        if (
+          isDirectToThisProvider ||
+          (pickupDist <= MAX_PICKUP_CORRIDOR_KM && dropoffDist <= MAX_DROPOFF_CORRIDOR_KM)
+        ) {
           const directDist = calculateDistance(s.latitude, s.longitude, e.latitude, e.longitude);
           const detourTotal =
             calculateDistance(s.latitude, s.longitude, pu.latitude, pu.longitude) +
@@ -386,9 +471,10 @@ export async function getNearbyUnmatchedRequests(
             bestMatch = {
               request: req,
               route,
-              pickupDistToCorridorKm: pickupDist,
-              dropoffDistToCorridorKm: dropoffDist,
-              extraDetourKm,
+              pickupDistToCorridorKm: Number.isFinite(pickupDist) ? pickupDist : 0,
+              dropoffDistToCorridorKm: Number.isFinite(dropoffDist) ? dropoffDist : 0,
+              extraDetourKm: Number.isFinite(extraDetourKm) ? extraDetourKm : 0,
+              isDirectRequest: isDirectToThisProvider,
             };
           }
         }
@@ -399,8 +485,13 @@ export async function getNearbyUnmatchedRequests(
       }
     }
 
-    // Sort by closest pickup to provider's route
-    results.sort((a, b) => a.pickupDistToCorridorKm - b.pickupDistToCorridorKm);
+    // Sort direct preferred requests first, then by closest pickup to provider's route
+    results.sort((a, b) => {
+      const aDirect = a.isDirectRequest ? 0 : 1;
+      const bDirect = b.isDirectRequest ? 0 : 1;
+      if (aDirect !== bDirect) return aDirect - bDirect;
+      return a.pickupDistToCorridorKm - b.pickupDistToCorridorKm;
+    });
     return results;
   } catch (error) {
     console.error('Error fetching nearby unmatched requests:', error);
@@ -530,7 +621,7 @@ export function startBackgroundMatcher() {
 
   const handleIncoming = async (row: any) => {
     if (row.delivery_status !== 'Pending') return;
-    if (row.payment_status !== 'held') return;
+    if (row.payment_status !== 'held' && row.preferred_provider_id == null) return;
 
     const routeId = await getActiveRouteId();
     if (!routeId) return;
@@ -546,9 +637,31 @@ export function startBackgroundMatcher() {
         .maybeSingle();
 
       const providerInfo: any = Array.isArray(route?.provider) ? route.provider[0] : route?.provider;
-      if (!route || providerInfo?.auth_id !== authUser.id || providerInfo?.is_active === false || !providerInfo?.is_online) {
+      if (!route || providerInfo?.auth_id !== authUser.id || providerInfo?.is_active === false) {
         return;
       }
+
+      // If this request has a preferred_provider_id for a different provider, ignore it
+      if (
+        row.preferred_provider_id != null &&
+        Number(row.preferred_provider_id) !== Number(route.provider_id)
+      ) {
+        return;
+      }
+
+      if (
+        row.preferred_provider_id != null &&
+        Number(row.preferred_provider_id) === Number(route.provider_id)
+      ) {
+        Alert.alert(
+          '📦 New Route Delivery Request!',
+          'A sender requested a delivery directly along your route. Open the Jobs or Tasks tab to accept it.',
+          [{ text: 'Got it', style: 'default' }],
+        );
+        return;
+      }
+
+      if (!providerInfo?.is_online) return;
 
       const proposals = await autoMatchAndCreateDeliveries(routeId);
       const matchesThisRequest = proposals.some(

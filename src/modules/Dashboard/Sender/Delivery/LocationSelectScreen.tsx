@@ -6,7 +6,7 @@ import {
   Keyboard, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Region } from 'react-native-maps';
+import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,13 +17,19 @@ import { MAP_PROPS } from '../../../../utils/mapConfig';
 
 const ORANGE = '#F27024';
 const BLACK = '#111827';
+const GREEN = '#16A34A';
+const RED = '#DC2626';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 
 /**
- * Read from build config (EXPO_PUBLIC_GOOGLE_MAPS_API_KEY or the key already in
- * app.json) — not hard-coded in source. Restrict the key in Google Cloud Console.
+ * Strict road-level accuracy:
+ * Pin MUST be within 45 meters of the provider's road polyline between Point A and Point B.
+ * If it is off by 100m, it will be rejected as disaligned.
  */
+const MAX_ROUTE_CORRIDOR_METERS = 45;
+const ENDPOINT_OVERSHOOT_TOLERANCE_M = 25;
+
 const GOOGLE_MAPS_API_KEY: string =
   (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string | undefined) ||
   (Constants.expoConfig as any)?.android?.config?.googleMaps?.apiKey ||
@@ -36,7 +42,7 @@ const REJECTED_PLACE_TYPES = new Set(['route', 'street_address', 'postal_code', 
 const ZOOM_DELTA = 0.003;
 const SAME_SPOT_METERS = 8;
 const NEARBY_RADIUS_M = 200;
-const LABEL_SNAP_M = 60;         // a place this close to the pin is used as the pin's name
+const LABEL_SNAP_M = 60;
 
 type Coord = { latitude: number; longitude: number };
 type RecentEntry = { name: string; address: string; latitude: number; longitude: number; ts: number };
@@ -58,6 +64,150 @@ const metersBetween = (a: Coord, b: Coord) => {
 };
 const fmtDist = (m: number) => (m < 1000 ? `${Math.max(1, Math.round(m))} m` : `${(m / 1000).toFixed(1)} km`);
 
+function pointToSegmentInfo(p: Coord, v: Coord, w: Coord) {
+  const refLatRad = ((v.latitude + w.latitude) * 0.5 * Math.PI) / 180;
+  const cosLat = Math.cos(refLatRad);
+  const mPerDegLat = 111132.92;
+  const mPerDegLng = 111412.84 * cosLat;
+
+  const vx = 0;
+  const vy = 0;
+  const wx = (w.longitude - v.longitude) * mPerDegLng;
+  const wy = (w.latitude - v.latitude) * mPerDegLat;
+  const px = (p.longitude - v.longitude) * mPerDegLng;
+  const py = (p.latitude - v.latitude) * mPerDegLat;
+
+  const l2 = wx * wx + wy * wy;
+  if (l2 === 0) {
+    const dist = Math.hypot(px - vx, py - vy);
+    return {
+      distanceMeters: dist,
+      clampedT: 0,
+      rawT: 0,
+      segLengthMeters: 0,
+      projectedCoord: v,
+    };
+  }
+
+  const rawT = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2;
+  const clampedT = Math.max(0, Math.min(1, rawT));
+  const projX = vx + clampedT * (wx - vx);
+  const projY = vy + clampedT * (wy - vy);
+  const distanceMeters = Math.hypot(px - projX, py - projY);
+  const segLengthMeters = Math.sqrt(l2);
+
+  const projectedCoord: Coord = {
+    latitude: v.latitude + clampedT * (w.latitude - v.latitude),
+    longitude: v.longitude + clampedT * (w.longitude - v.longitude),
+  };
+
+  return { distanceMeters, clampedT, rawT, segLengthMeters, projectedCoord };
+}
+
+function evaluateRouteAlignment(
+  point: Coord,
+  pointA: Coord,
+  pointB: Coord,
+  polyline: Coord[],
+) {
+  const path = polyline.length >= 2 ? polyline : [pointA, pointB];
+
+  // Check endpoint overshoot on first and last segments
+  const firstSeg = pointToSegmentInfo(point, path[0], path[Math.min(1, path.length - 1)]);
+  const lastSeg = pointToSegmentInfo(point, path[Math.max(0, path.length - 2)], path[path.length - 1]);
+  const abInfo = pointToSegmentInfo(point, pointA, pointB);
+
+  const distToA = metersBetween(point, pointA);
+  const distToB = metersBetween(point, pointB);
+
+  const beforePointA =
+    (abInfo.rawT < 0 && firstSeg.rawT < 0) && distToA > ENDPOINT_OVERSHOOT_TOLERANCE_M;
+  const afterPointB =
+    (abInfo.rawT > 1 && lastSeg.rawT > 1) && distToB > ENDPOINT_OVERSHOOT_TOLERANCE_M;
+
+  let minDistance = Infinity;
+  let totalRouteLen = 0;
+  const segLengths: number[] = [];
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const len = metersBetween(path[i], path[i + 1]);
+    segLengths.push(len);
+    totalRouteLen += len;
+  }
+
+  let bestDistanceAlong = 0;
+  let accLen = 0;
+  let nearestCoordOnRoute: Coord = pointA;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const info = pointToSegmentInfo(point, path[i], path[i + 1]);
+    if (info.distanceMeters < minDistance) {
+      minDistance = info.distanceMeters;
+      bestDistanceAlong = accLen + info.clampedT * segLengths[i];
+      nearestCoordOnRoute = info.projectedCoord;
+    }
+    accLen += segLengths[i];
+  }
+
+  const progress = totalRouteLen > 0 ? bestDistanceAlong / totalRouteLen : abInfo.clampedT;
+
+  if (beforePointA) {
+    return {
+      aligned: false,
+      distanceMeters: minDistance,
+      progress,
+      nearestCoordOnRoute: pointA,
+      reason: 'Selected location is behind Point A. You must select a location strictly between Point A and Point B.',
+    };
+  }
+
+  if (afterPointB) {
+    return {
+      aligned: false,
+      distanceMeters: minDistance,
+      progress,
+      nearestCoordOnRoute: pointB,
+      reason: 'Selected location is beyond Point B. You must select a location strictly between Point A and Point B.',
+    };
+  }
+
+  if (minDistance > MAX_ROUTE_CORRIDOR_METERS) {
+    return {
+      aligned: false,
+      distanceMeters: minDistance,
+      progress,
+      nearestCoordOnRoute,
+      reason: `Selected pin is ${fmtDist(minDistance)} off the route (max ${MAX_ROUTE_CORRIDOR_METERS}m). Place the pin directly on the orange route line between Point A and Point B.`,
+    };
+  }
+
+  return {
+    aligned: true,
+    distanceMeters: minDistance,
+    progress,
+    nearestCoordOnRoute,
+    reason: null,
+  };
+}
+
+const fetchOsrmRoute = async (a: Coord, b: Coord): Promise<Coord[]> => {
+  const fallback = [a, b];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.longitude},${a.latitude};${b.longitude},${b.latitude}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall back to straight line */ }
+  return fallback;
+};
+
 export default function LocationSelectScreen({ route, navigation }: any) {
   const { type, initialCoords } = route.params;
   const { state, dispatch } = useSchedule();
@@ -67,8 +217,36 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const isPickup = type === 'pickup';
-  const pinColor = isPickup ? ORANGE : BLACK;                       // drop-off pin is black
+  const pinColor = isPickup ? ORANGE : BLACK;
   const tint = isPickup ? 'rgba(242,112,36,0.09)' : 'rgba(17,24,39,0.06)';
+
+  const preferredRoute = state.preferredRoute ?? null;
+  const hasPreferredRoute = !!(
+    preferredRoute &&
+    preferredRoute.pickupCoords?.lat &&
+    preferredRoute.pickupCoords?.lng &&
+    preferredRoute.dropoffCoords?.lat &&
+    preferredRoute.dropoffCoords?.lng
+  );
+
+  const routePointA: Coord | null = useMemo(
+    () =>
+      hasPreferredRoute && preferredRoute
+        ? { latitude: preferredRoute.pickupCoords.lat, longitude: preferredRoute.pickupCoords.lng }
+        : null,
+    [hasPreferredRoute, preferredRoute],
+  );
+
+  const routePointB: Coord | null = useMemo(
+    () =>
+      hasPreferredRoute && preferredRoute
+        ? { latitude: preferredRoute.dropoffCoords.lat, longitude: preferredRoute.dropoffCoords.lng }
+        : null,
+    [hasPreferredRoute, preferredRoute],
+  );
+
+  const [providerRouteCoords, setProviderRouteCoords] = useState<Coord[]>([]);
+  const hasShownRouteOverview = useRef(false);
 
   const mapRef = useRef<MapView>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -77,9 +255,20 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const lastResolved = useRef<Coord | null>(null);
   const lastPoiTap = useRef(0);
 
-  const [markerCoord, setMarkerCoord] = useState<Coord>({
-    latitude: initialCoords?.latitude || 10.3157,
-    longitude: initialCoords?.longitude || 123.8854,
+  const [markerCoord, setMarkerCoord] = useState<Coord>(() => {
+    const existingLoc = isPickup ? state.pickupLocation : state.dropoffLocation;
+    if (state.isEdit && existingLoc?.latitude && existingLoc?.longitude) {
+      return { latitude: existingLoc.latitude, longitude: existingLoc.longitude };
+    }
+    if (hasPreferredRoute && preferredRoute) {
+      return isPickup
+        ? { latitude: preferredRoute.pickupCoords.lat, longitude: preferredRoute.pickupCoords.lng }
+        : { latitude: preferredRoute.dropoffCoords.lat, longitude: preferredRoute.dropoffCoords.lng };
+    }
+    return {
+      latitude: initialCoords?.latitude || 10.3157,
+      longitude: initialCoords?.longitude || 123.8854,
+    };
   });
   const markerRef = useRef(markerCoord);
   markerRef.current = markerCoord;
@@ -96,7 +285,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     () => ((isPickup ? state.pickupLocation : state.dropoffLocation) as any)?.note ?? '',
   );
   const [editingNote, setEditingNote] = useState(false);
-  const [kbH, setKbH] = useState(0);                                  // iOS only (Android resizes the window)
+  const [kbH, setKbH] = useState(0);
 
   const [structuredAddress, setStructuredAddress] = useState({
     street_address: '', barangay: '', city: '', province: '', zip_code: '',
@@ -113,6 +302,96 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const pinBounce = useRef(new Animated.Value(0)).current;
   const pinPulse = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
+
+  /* ------------------ Fetch Provider Route Polyline ------------------ */
+  useEffect(() => {
+    if (!routePointA || !routePointB) {
+      setProviderRouteCoords([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchOsrmRoute(routePointA, routePointB);
+      if (!cancelled) setProviderRouteCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [routePointA, routePointB]);
+
+  /* ------------------ Fit Map to Provider Route First ------------------ */
+  const fitProviderRoute = useCallback(() => {
+    if (!mapRef.current || !routePointA || !routePointB) return;
+    const pts = providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB];
+    mapRef.current.fitToCoordinates(pts, {
+      edgePadding: { top: insets.top + 120, right: 55, bottom: 80, left: 55 },
+      animated: true,
+    });
+  }, [routePointA, routePointB, providerRouteCoords, insets.top]);
+
+  useEffect(() => {
+    if (!mapLoaded || !hasPreferredRoute || !routePointA || !routePointB) return;
+    if (hasShownRouteOverview.current) return;
+    hasShownRouteOverview.current = true;
+
+    const t = setTimeout(() => {
+      fitProviderRoute();
+    }, 250);
+    return () => clearTimeout(t);
+  }, [mapLoaded, hasPreferredRoute, routePointA, routePointB, fitProviderRoute]);
+
+  /* ------------------ Evaluate Route Alignment Live ------------------ */
+  const routeAlignment = useMemo(() => {
+    if (!hasPreferredRoute || !routePointA || !routePointB) {
+      return {
+        aligned: true,
+        distanceMeters: 0,
+        progress: 0,
+        nearestCoordOnRoute: markerCoord,
+        reason: null as string | null,
+      };
+    }
+    const baseCheck = evaluateRouteAlignment(markerCoord, routePointA, routePointB, providerRouteCoords);
+    if (!baseCheck.aligned) return baseCheck;
+
+    if (!isPickup && state.pickupLocation) {
+      const pickupCoord: Coord = {
+        latitude: state.pickupLocation.latitude,
+        longitude: state.pickupLocation.longitude,
+      };
+      const pickupCheck = evaluateRouteAlignment(pickupCoord, routePointA, routePointB, providerRouteCoords);
+      const distFromPickup = metersBetween(pickupCoord, markerCoord);
+
+      if (distFromPickup < 30) {
+        return {
+          aligned: false,
+          distanceMeters: baseCheck.distanceMeters,
+          progress: baseCheck.progress,
+          nearestCoordOnRoute: routePointB,
+          reason: 'Drop-off location cannot be the same as the pickup location.',
+        };
+      }
+
+      if (baseCheck.progress < pickupCheck.progress - 0.01) {
+        return {
+          aligned: false,
+          distanceMeters: baseCheck.distanceMeters,
+          progress: baseCheck.progress,
+          nearestCoordOnRoute: routePointB,
+          reason:
+            'Drop-off is disaligned with the provider’s direction (Point A → Point B). Please select a drop-off point further toward Point B than your pickup.',
+        };
+      }
+    }
+
+    return baseCheck;
+  }, [
+    hasPreferredRoute,
+    routePointA,
+    routePointB,
+    markerCoord,
+    providerRouteCoords,
+    isPickup,
+    state.pickupLocation,
+  ]);
 
   /* ------------------------------ animations ------------------------------ */
   useEffect(() => {
@@ -177,9 +456,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   useEffect(() => { loadRecents(); }, [loadRecents]);
 
-  /* ---------------------- address lookup (never moves the pin) ---------------------- */
-
-  /** Named places around the pin, closest first — shown as the "nearby" list. */
+  /* ---------------------- address lookup ---------------------- */
   const fetchNearby = async (coords: Coord): Promise<NearbyPlace[]> => {
     if (!HAS_API_KEY) return [];
     try {
@@ -263,7 +540,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return null;
   };
 
-  /** Fill in the address + nearby list for the pin at `coords`. Never moves the pin. */
   const resolveAt = useCallback(async (coords: Coord, label?: Label) => {
     const seq = ++resolveSeq.current;
     lastResolved.current = coords;
@@ -300,8 +576,30 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     resolveAt(coords, label);
   }, [resolveAt]);
 
+  const snapPinToRoute = useCallback(() => {
+    if (!hasPreferredRoute) return;
+    const target = routeAlignment.nearestCoordOnRoute;
+    if (target) moveTo(target);
+  }, [hasPreferredRoute, routeAlignment.nearestCoordOnRoute, moveTo]);
+
   /* ------------------------------ init ------------------------------ */
   useEffect(() => {
+    const existingLoc = isPickup ? state.pickupLocation : state.dropoffLocation;
+    if (state.isEdit && existingLoc?.latitude && existingLoc?.longitude) {
+      const target = { latitude: existingLoc.latitude, longitude: existingLoc.longitude };
+      setMarkerCoord(target);
+      resolveAt(target, existingLoc.address ? { name: existingLoc.address.split(',')[0], sub: existingLoc.address } : undefined);
+      return;
+    }
+
+    if (hasPreferredRoute && routePointA && routePointB) {
+      const target = isPickup ? routePointA : routePointB;
+      const defaultLabel = isPickup ? preferredRoute?.pickup : preferredRoute?.dropoff;
+      setMarkerCoord(target);
+      resolveAt(target, defaultLabel ? { name: defaultLabel.split(',')[0], sub: defaultLabel } : undefined);
+      return;
+    }
+
     if (type === 'dropoff' && initialCoords) {
       setMarkerCoord(initialCoords);
       resolveAt(initialCoords);
@@ -346,7 +644,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------ search (Places API New) ------------------------------ */
+  /* ------------------------------ search ------------------------------ */
   const runSearch = useCallback(async (text: string) => {
     setSearchError(null);
     if (!text.trim()) { setSearchResults([]); return; }
@@ -417,6 +715,20 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   /* ------------------------------ confirm ------------------------------ */
   const confirmLocation = () => {
+    if (hasPreferredRoute && !routeAlignment.aligned) {
+      Alert.alert(
+        'Location Disaligned With Route',
+        routeAlignment.reason ||
+          `The selected location is outside the provider’s route between Point A and Point B (must be within ${MAX_ROUTE_CORRIDOR_METERS}m of the route line).`,
+        [
+          { text: 'Snap Pin to Route', onPress: snapPinToRoute },
+          { text: 'View Full Route', onPress: fitProviderRoute },
+          { text: 'Cancel', style: 'cancel' },
+        ],
+      );
+      return;
+    }
+
     const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
     const locationInfo = {
       address: fullAddress,
@@ -434,7 +746,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
     if (type === 'pickup') {
       dispatch({ type: 'SET_PICKUP_LOCATION', payload: locationInfo });
-      navigation.navigate('DropoffLocation', { type: 'dropoff', initialCoords: markerCoord });
+      navigation.navigate('DropoffLocation', { type: 'dropoff', initialCoords: routePointB ?? markerCoord });
     } else {
       dispatch({ type: 'SET_DROPOFF_LOCATION', payload: locationInfo });
       navigation.navigate('Booking', { mode });
@@ -483,6 +795,20 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
+  // Filter nearby places when on a provider's route so only places strictly within the 45m route corridor are suggested
+  const alignedNearby = useMemo(() => {
+    if (!hasPreferredRoute || !routePointA || !routePointB) return nearby;
+    return nearby.filter(p => {
+      const check = evaluateRouteAlignment(
+        { latitude: p.latitude, longitude: p.longitude },
+        routePointA,
+        routePointB,
+        providerRouteCoords,
+      );
+      return check.aligned;
+    });
+  }, [nearby, hasPreferredRoute, routePointA, routePointB, providerRouteCoords]);
+
   return (
     <View style={[styles.container, { paddingBottom: kbH }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
@@ -505,11 +831,132 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           toolbarEnabled={false}
           rotateEnabled={false}
           pitchEnabled={false}
-        />
+        >
+          {hasPreferredRoute && routePointA && routePointB && (
+            <>
+              <Polyline
+                coordinates={providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB]}
+                strokeColor={routeAlignment.aligned ? ORANGE : RED}
+                strokeWidth={6}
+                tappable
+                onPress={(e: any) => {
+                  const c = e.nativeEvent?.coordinate;
+                  if (c) moveTo({ latitude: c.latitude, longitude: c.longitude });
+                }}
+              />
+
+              <Marker
+                coordinate={routePointA}
+                anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
+                onPress={() =>
+                  moveTo(routePointA, {
+                    name: preferredRoute?.pickup?.split(',')[0] || 'Point A',
+                    sub: preferredRoute?.pickup || '',
+                  })
+                }
+              >
+                <View style={styles.routeEndpointMarkerA}>
+                  <Text style={styles.routeEndpointText}>A</Text>
+                </View>
+              </Marker>
+
+              <Marker
+                coordinate={routePointB}
+                anchor={{ x: 0.5, y: 0.5 }}
+                tracksViewChanges={false}
+                onPress={() =>
+                  moveTo(routePointB, {
+                    name: preferredRoute?.dropoff?.split(',')[0] || 'Point B',
+                    sub: preferredRoute?.dropoff || '',
+                  })
+                }
+              >
+                <View style={styles.routeEndpointMarkerB}>
+                  <Text style={styles.routeEndpointText}>B</Text>
+                </View>
+              </Marker>
+            </>
+          )}
+
+          {!isPickup && state.pickupLocation && (
+            <Marker
+              coordinate={{
+                latitude: state.pickupLocation.latitude,
+                longitude: state.pickupLocation.longitude,
+              }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              tracksViewChanges={false}
+            >
+              <View style={styles.confirmedPickupMarker}>
+                <Ionicons name="cube" size={12} color="#FFFFFF" />
+              </View>
+            </Marker>
+          )}
+        </MapView>
 
         {!mapLoaded && (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator size="large" color={ORANGE} />
+          </View>
+        )}
+
+        {/* Provider Route Banner & Alignment Status */}
+        {hasPreferredRoute && preferredRoute && (
+          <View style={[styles.routeBannerWrapper, { top: insets.top + 66 }]} pointerEvents="box-none">
+            <View
+              style={[
+                styles.routeBanner,
+                !routeAlignment.aligned && styles.routeBannerError,
+              ]}
+            >
+              <View style={styles.routeBannerTop}>
+                <View
+                  style={[
+                    styles.routeStatusBadge,
+                    { backgroundColor: routeAlignment.aligned ? 'rgba(22,163,74,0.14)' : 'rgba(220,38,38,0.14)' },
+                  ]}
+                >
+                  <Ionicons
+                    name={routeAlignment.aligned ? 'checkmark-circle' : 'alert-circle'}
+                    size={15}
+                    color={routeAlignment.aligned ? GREEN : RED}
+                  />
+                  <Text
+                    style={[
+                      styles.routeStatusText,
+                      { color: routeAlignment.aligned ? GREEN : RED },
+                    ]}
+                  >
+                    {routeAlignment.aligned
+                      ? `On Route (${fmtDist(routeAlignment.distanceMeters)} from line)`
+                      : `Disaligned · ${fmtDist(routeAlignment.distanceMeters)} off route`}
+                  </Text>
+                </View>
+
+                {!routeAlignment.aligned ? (
+                  <TouchableOpacity style={styles.snapRouteBtn} onPress={snapPinToRoute} activeOpacity={0.85}>
+                    <Ionicons name="magnet-outline" size={14} color="#FFFFFF" />
+                    <Text style={styles.snapRouteBtnText}>Snap to Route</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={styles.fitRouteBtn} onPress={fitProviderRoute} activeOpacity={0.85}>
+                    <Ionicons name="git-branch-outline" size={14} color={ORANGE} />
+                    <Text style={styles.fitRouteBtnText}>Show Route</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <Text style={styles.routeCorridorText} numberOfLines={1}>
+                A: {preferredRoute.pickup.split(',')[0]} → B: {preferredRoute.dropoff.split(',')[0]}
+              </Text>
+
+              {!routeAlignment.aligned && !!routeAlignment.reason && (
+                <Text style={styles.routeErrorSub} numberOfLines={2}>
+                  {routeAlignment.reason}
+                </Text>
+              )}
+            </View>
           </View>
         )}
 
@@ -526,11 +973,30 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
           <View style={styles.pinContainer} pointerEvents="none">
             <Animated.View style={[styles.pinWrapper, { transform: [{ translateY: pinTranslateY }, { scale: pinScale }] }]}>
-              <Animated.View style={[styles.pinHalo, { backgroundColor: pinColor, transform: [{ scale: pulseScale }], opacity: pulseOpacity }]} />
-              <View style={[styles.pinDot, { backgroundColor: pinColor }]}>
+              <Animated.View
+                style={[
+                  styles.pinHalo,
+                  {
+                    backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor,
+                    transform: [{ scale: pulseScale }],
+                    opacity: pulseOpacity,
+                  },
+                ]}
+              />
+              <View
+                style={[
+                  styles.pinDot,
+                  { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                ]}
+              >
                 <View style={styles.pinDotInner} />
               </View>
-              <View style={[styles.pinStem, { backgroundColor: pinColor }]} />
+              <View
+                style={[
+                  styles.pinStem,
+                  { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                ]}
+              />
             </Animated.View>
             <View style={styles.pinShadow} />
           </View>
@@ -543,6 +1009,16 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         >
           <Ionicons name="arrow-back" size={22} color="#111827" />
         </TouchableOpacity>
+
+        {hasPreferredRoute && (
+          <TouchableOpacity
+            style={[styles.fitRouteFab, { bottom: 96 }]}
+            onPress={fitProviderRoute}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="map-outline" size={22} color={ORANGE} />
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity style={styles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
           {locating ? <ActivityIndicator size="small" color="#111827" /> : <Ionicons name="locate" size={24} color="#111827" />}
@@ -560,10 +1036,50 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             nestedScrollEnabled
             showsVerticalScrollIndicator={false}
           >
-            {/* selected location */}
+            {hasPreferredRoute && routePointA && routePointB && preferredRoute && (
+              <View style={styles.quickEndpointsRow}>
+                <TouchableOpacity
+                  style={styles.quickEndpointChip}
+                  activeOpacity={0.85}
+                  onPress={() =>
+                    moveTo(routePointA, {
+                      name: preferredRoute.pickup.split(',')[0] || 'Point A',
+                      sub: preferredRoute.pickup,
+                    })
+                  }
+                >
+                  <View style={[styles.quickDot, { backgroundColor: ORANGE }]} />
+                  <Text style={styles.quickEndpointText} numberOfLines={1}>
+                    Point A: {preferredRoute.pickup.split(',')[0]}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickEndpointChip}
+                  activeOpacity={0.85}
+                  onPress={() =>
+                    moveTo(routePointB, {
+                      name: preferredRoute.dropoff.split(',')[0] || 'Point B',
+                      sub: preferredRoute.dropoff,
+                    })
+                  }
+                >
+                  <View style={[styles.quickDot, { backgroundColor: BLACK }]} />
+                  <Text style={styles.quickEndpointText} numberOfLines={1}>
+                    Point B: {preferredRoute.dropoff.split(',')[0]}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <TouchableOpacity style={[styles.row, { backgroundColor: tint }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
               <View style={styles.rowIconCol}>
-                <View style={[styles.rowIcon, { backgroundColor: pinColor }]}>
+                <View
+                  style={[
+                    styles.rowIcon,
+                    { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                  ]}
+                >
                   <Ionicons name="location" size={18} color="#FFFFFF" />
                 </View>
               </View>
@@ -576,8 +1092,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               <Ionicons name="pencil" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
 
-            {/* nearby places */}
-            {nearby.map(p => (
+            {alignedNearby.map(p => (
               <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
                 <View style={styles.rowIconCol}>
                   <View style={styles.rowIconMuted}>
@@ -591,13 +1106,18 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 </View>
               </TouchableOpacity>
             ))}
-            {nearby.length === 0 && (
-              <Text style={styles.emptyNearby}>{busy ? 'Looking for nearby places...' : 'No named places nearby. Drag the map or search.'}</Text>
+            {alignedNearby.length === 0 && (
+              <Text style={styles.emptyNearby}>
+                {busy
+                  ? 'Looking for nearby places...'
+                  : hasPreferredRoute
+                    ? 'Drag the pin directly along the orange route line between Point A and Point B.'
+                    : 'No named places nearby. Drag the map or search.'}
+              </Text>
             )}
           </ScrollView>
         )}
 
-        {/* note for the driver */}
         <View style={styles.noteBar}>
           {editingNote ? (
             <View style={styles.noteEditRow}>
@@ -636,7 +1156,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
         <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
           <TouchableOpacity
-            style={[styles.confirmBtn, busy && { opacity: 0.6 }]}
+            style={[
+              styles.confirmBtn,
+              hasPreferredRoute && !routeAlignment.aligned && styles.confirmBtnDisaligned,
+              busy && { opacity: 0.6 },
+            ]}
             onPress={() => { Keyboard.dismiss(); confirmLocation(); }}
             onPressIn={animatePressIn}
             onPressOut={animatePressOut}
@@ -644,7 +1168,13 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             disabled={busy}
           >
             <Text style={styles.confirmBtnText}>
-              {busy ? 'Updating...' : isPickup ? 'Confirm pickup' : 'Confirm drop-off'}
+              {busy
+                ? 'Updating...'
+                : hasPreferredRoute && !routeAlignment.aligned
+                  ? 'Disaligned · Tap to Snap to Route'
+                  : isPickup
+                    ? 'Confirm pickup'
+                    : 'Confirm drop-off'}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -721,10 +1251,74 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.card },
   mapArea: { flex: 1, backgroundColor: '#F5F5F5', overflow: 'hidden' },
-
   loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
-
-  /* bubble + pin stack. Pin = 24 dot + 8 stem = 32px; its tip sits on the map centre. */
+  routeEndpointMarkerA: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
+  },
+  routeEndpointMarkerB: {
+    width: 28, height: 28, borderRadius: 14, backgroundColor: BLACK,
+    borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
+  },
+  routeEndpointText: { fontSize: 12, fontWeight: '900', color: '#FFFFFF' },
+  confirmedPickupMarker: {
+    width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE,
+    borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+  },
+  routeBannerWrapper: {
+    position: 'absolute', left: 16, right: 16, zIndex: 6,
+  },
+  routeBanner: {
+    backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10,
+    borderWidth: 1.5, borderColor: 'rgba(22,163,74,0.35)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.14, shadowRadius: 8, elevation: 5,
+  },
+  routeBannerError: {
+    borderColor: RED, backgroundColor: '#FEF2F2',
+  },
+  routeBannerTop: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+  },
+  routeStatusBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, flexShrink: 1,
+  },
+  routeStatusText: { fontSize: 12, fontWeight: '800', flexShrink: 1 },
+  fitRouteBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
+    backgroundColor: 'rgba(242,112,36,0.12)',
+  },
+  fitRouteBtnText: { fontSize: 11, fontWeight: '800', color: ORANGE },
+  snapRouteBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
+    backgroundColor: RED,
+  },
+  snapRouteBtnText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
+  routeCorridorText: {
+    fontSize: 12, fontWeight: '700', color: '#374151', marginTop: 6,
+  },
+  routeErrorSub: {
+    fontSize: 11, fontWeight: '600', color: RED, marginTop: 4, lineHeight: 15,
+  },
+  fitRouteFab: {
+    position: 'absolute', right: 16, width: 52, height: 52, borderRadius: 14, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
+  },
+  quickEndpointsRow: {
+    flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10,
+  },
+  quickEndpointChip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
+    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8,
+  },
+  quickDot: { width: 8, height: 8, borderRadius: 4 },
+  quickEndpointText: { flex: 1, fontSize: 12, fontWeight: '700', color: c.textPrimary },
   centerStack: {
     position: 'absolute', left: 0, right: 0, top: '50%',
     marginTop: -(32 + 8 + 42), height: 42 + 8 + 32,
@@ -748,7 +1342,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
   pinShadow: { position: 'absolute', bottom: -2, width: 8, height: 3, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.25)' },
-
   iconBtn: {
     position: 'absolute', left: 16, width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFFFFF',
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
@@ -759,8 +1352,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
   },
-
-  /* sheet */
   sheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 22, borderTopRightRadius: 22, marginTop: -22,
@@ -777,8 +1368,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rowText: { flex: 1 },
   rowTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
   rowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  emptyNearby: { textAlign: 'center', fontSize: 12, color: c.textMuted, paddingVertical: 14 },
-
+  emptyNearby: { textAlign: 'center', fontSize: 12, color: c.textMuted, paddingVertical: 14, paddingHorizontal: 20 },
   noteBar: { borderTopWidth: 1, borderTopColor: c.divider, paddingHorizontal: 20, paddingVertical: 14 },
   noteRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   noteText: { flex: 1, fontSize: 16, fontWeight: '700' },
@@ -786,15 +1376,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   noteInput: { flex: 1, fontSize: 15, color: c.textPrimary, minHeight: 40, maxHeight: 90, padding: 0, paddingTop: 8, textAlignVertical: 'top' },
   noteDone: { fontSize: 15, fontWeight: '800', marginTop: 8 },
   noteCount: { fontSize: 10, color: c.textMuted, textAlign: 'right', marginTop: 4 },
-
   confirmBtn: {
     marginHorizontal: 20, backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
+  confirmBtnDisaligned: {
+    backgroundColor: RED, shadowColor: RED,
+  },
   confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
-
-  /* search overlay */
   searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.background, zIndex: 20 },
   searchModalHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
   searchBackBtn: {

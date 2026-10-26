@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Delivery/ScheduleContext.tsx
 import React, { createContext, useContext, useReducer } from 'react';
 
 // ---- Types ----
@@ -25,6 +26,13 @@ interface LocationInfo {
   note?: string;
 }
 
+export interface PreferredRouteInfo {
+  pickup: string;
+  dropoff: string;
+  pickupCoords: { lat: number; lng: number };
+  dropoffCoords: { lat: number; lng: number };
+}
+
 export interface ScheduleState {
   receiver: null;
   dropoffType: DropoffType;
@@ -47,6 +55,7 @@ export interface ScheduleState {
   preferredProviderId?: number | null;
   preferredRouteId?: number | null;
   preferredProviderName?: string | null;
+  preferredRoute?: PreferredRouteInfo | null;
 }
 
 type Action =
@@ -60,10 +69,18 @@ type Action =
   | { type: 'SET_DROPOFF_LOCATION'; payload: LocationInfo }
   | { type: 'SET_ESTIMATED_COST'; payload: number }
   | { type: 'RESET' }
-  | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> } 
+  | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> }
   | { type: 'SET_EXPLORE_PICKUP'; payload: LocationInfo | null }
   | { type: 'SET_EXPLORE_DROPOFF'; payload: LocationInfo | null }
-  | { type: 'SET_PREFERRED_PROVIDER'; payload: { providerId: number; routeId: number; name?: string | null } | null };
+  | {
+      type: 'SET_PREFERRED_PROVIDER';
+      payload: {
+        providerId: number;
+        routeId: number;
+        name?: string | null;
+        route?: PreferredRouteInfo | null;
+      } | null;
+    };
 
 const initialState: ScheduleState = {
   dropoffType: null,
@@ -80,7 +97,8 @@ const initialState: ScheduleState = {
   preferredProviderId: null,
   preferredRouteId: null,
   preferredProviderName: null,
-  receiver: null
+  preferredRoute: null,
+  receiver: null,
 };
 
 function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
@@ -118,8 +136,15 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
             preferredProviderId: action.payload.providerId,
             preferredRouteId: action.payload.routeId,
             preferredProviderName: action.payload.name ?? null,
+            preferredRoute: action.payload.route ?? null,
           }
-        : { ...state, preferredProviderId: null, preferredRouteId: null, preferredProviderName: null };
+        : {
+            ...state,
+            preferredProviderId: null,
+            preferredRouteId: null,
+            preferredProviderName: null,
+            preferredRoute: null,
+          };
     default:
       return state;
   }

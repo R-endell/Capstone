@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useSchedule } from '../Sender/Delivery/ScheduleContext';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { useUser } from '../../../utils/userContext';
 import {
   LiveFix, fetchLiveFixes, subscribeLiveFixes, isFixFresh,
 } from '../../../services/providerLiveService';
@@ -53,6 +54,7 @@ type Trip = {
   departureTime: Date;
   vehicleType: string;
   maxWeightKg: number | null;
+  routeFrequency: string;
 };
 
 type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'offline';
@@ -107,6 +109,7 @@ export default function ExploreScreen() {
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
   const { dispatch: scheduleDispatch } = useSchedule();
+  const { user } = useUser();
 
   const [trips, setTrips] = useState<Trip[]>([]);
   const [fixes, setFixes] = useState<Record<number, LiveFix>>({});
@@ -123,7 +126,24 @@ export default function ExploreScreen() {
 
   const fetchTrips = useCallback(async () => {
     try {
-      const { data, error } = await supabase
+      // Use user_id from UserContext first; fallback to auth lookup if context is still loading
+      let myUserId: number | null = user?.user_id != null ? Number(user.user_id) : null;
+      if (myUserId == null) {
+        const { data: authData } = await supabase.auth.getUser();
+        const authId = authData?.user?.id;
+        if (authId) {
+          const { data: userRow } = await supabase
+            .from('users')
+            .select('user_id')
+            .eq('auth_id', authId)
+            .maybeSingle();
+          if (userRow?.user_id != null) {
+            myUserId = Number(userRow.user_id);
+          }
+        }
+      }
+
+      let query = supabase
         .from('provider_routes')
         .select(`
           route_id, departure_time, route_frequency, provider_id,
@@ -134,39 +154,58 @@ export default function ExploreScreen() {
         `)
         .order('departure_time', { ascending: true });
 
+      // Exclude the current user's own provider routes
+      if (myUserId != null) {
+        query = query.neq('provider_id', myUserId);
+      }
+
+      const { data, error } = await query;
+
       if (error) throw error;
 
-      const mapped: Trip[] = (data || []).map((r: any) => {
-        const provider = r.provider || {};
-        const vehicle = r.vehicle || {};
-        const start = r.start_location || {};
-        const end = r.end_location || {};
-        const dep = r.departure_time ? new Date(r.departure_time) : new Date();
+      const mapped: Trip[] = (data || [])
+        .filter((r: any) => myUserId == null || Number(r.provider_id) !== myUserId)
+        .filter((r: any) => {
+          // Filter out expired one-time/custom routes
+          const freq = (r.route_frequency || '').trim().toLowerCase();
+          if (freq === 'one-time' || freq === 'custom') {
+            const dep = r.departure_time ? new Date(r.departure_time) : new Date();
+            if (dep.getTime() < Date.now()) return false;
+          }
+          return true;
+        })
+        .map((r: any) => {
+          const provider = r.provider || {};
+          const vehicle = r.vehicle || {};
+          const start = r.start_location || {};
+          const end = r.end_location || {};
+          const dep = r.departure_time ? new Date(r.departure_time) : new Date();
 
-        const startSplit = splitAddress(start.street_address);
-        const endSplit = splitAddress(end.street_address);
-        const startSub = [start.barangay, start.city].filter(Boolean).join(', ') || startSplit.sub;
-        const endSub = [end.barangay, end.city].filter(Boolean).join(', ') || endSplit.sub;
+          const startSplit = splitAddress(start.street_address);
+          const endSplit = splitAddress(end.street_address);
+          const startSub = [start.barangay, start.city].filter(Boolean).join(', ') || startSplit.sub;
+          const endSub = [end.barangay, end.city].filter(Boolean).join(', ') || endSplit.sub;
 
-        return {
-          id: String(r.route_id),
-          routeId: r.route_id,
-          providerId: r.provider_id,
-          name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
-          isActive: !!provider.is_active,
-          rating: 4.9,
-          pickup: start.street_address || 'Starting point',
-          dropoff: end.street_address || 'Destination',
-          pickupSub: startSub,
-          dropoffSub: endSub,
-          pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },
-          dropoffCoords: { lat: Number(end.latitude) || 0, lng: Number(end.longitude) || 0 },
-          timeLabel: formatTimeLabel(dep),
-          departureTime: dep,
-          vehicleType: vehicle.vehicle_type || 'Vehicle',
-          maxWeightKg: vehicle.max_weight_kg != null ? Number(vehicle.max_weight_kg) : null,
-        };
-      });
+          return {
+            id: String(r.route_id),
+            routeId: r.route_id,
+            providerId: Number(r.provider_id),
+            name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
+            isActive: !!provider.is_active,
+            rating: 4.9,
+            pickup: start.street_address || 'Starting point',
+            dropoff: end.street_address || 'Destination',
+            pickupSub: startSub,
+            dropoffSub: endSub,
+            pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },
+            dropoffCoords: { lat: Number(end.latitude) || 0, lng: Number(end.longitude) || 0 },
+            timeLabel: formatTimeLabel(dep),
+            departureTime: dep,
+            vehicleType: vehicle.vehicle_type || 'Vehicle',
+            maxWeightKg: vehicle.max_weight_kg != null ? Number(vehicle.max_weight_kg) : null,
+            routeFrequency: r.route_frequency || 'Daily',
+          };
+        });
 
       setTrips(mapped);
       setFixes(await fetchLiveFixes(mapped.map((t) => t.providerId)));
@@ -177,7 +216,7 @@ export default function ExploreScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [user?.user_id]);
 
   const locateMe = useCallback(async () => {
     if (!Location) { setLocStatus('unavailable'); return; }
@@ -225,8 +264,18 @@ export default function ExploreScreen() {
   const onRefresh = () => { setRefreshing(true); fetchTrips(); locateMe(); };
 
   const cardTrips = useMemo<CardTrip[]>(() => {
+    const myUserId = user?.user_id != null ? Number(user.user_id) : null;
     const out: CardTrip[] = [];
     trips.forEach((t) => {
+      // Never show the route if the logged-in user is the provider of that route
+      if (myUserId != null && t.providerId === myUserId) return;
+
+      // Filter out expired one-time/custom routes dynamically
+      const freq = (t.routeFrequency || '').trim().toLowerCase();
+      if (freq === 'one-time' || freq === 'custom') {
+        if (t.departureTime.getTime() < now) return;
+      }
+
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
       const mins = minutesUntil(t.departureTime, now);
@@ -256,7 +305,7 @@ export default function ExploreScreen() {
       });
     });
     return out;
-  }, [trips, fixes, now, myCoords]);
+  }, [trips, fixes, now, myCoords, user?.user_id]);
 
   const filteredTrips = useMemo(() => {
     const list = cardTrips.filter((t) => {
@@ -288,21 +337,14 @@ export default function ExploreScreen() {
     if (requesting) return;
     setRequesting(true);
     try {
-      let coords = myCoords;
-      if (!coords) {
-        await locateMe();
-        coords = myCoords;
-      }
-      if (!coords && Location) {
-        try {
-          const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          coords = { lat: p.coords.latitude, lng: p.coords.longitude };
-        } catch { /* handled below */ }
-      }
-      if (!coords) {
+      const startCoords = trip.pickupCoords?.lat && trip.pickupCoords?.lng
+        ? trip.pickupCoords
+        : myCoords;
+
+      if (!startCoords) {
         Alert.alert(
           'Location needed',
-          'Turn on location so we can use your current position as the pickup point.',
+          'Turn on location so we can set up your pickup point along this route.',
           [
             { text: 'Cancel', style: 'cancel' },
             { text: 'Open settings', onPress: () => Linking.openSettings() },
@@ -311,26 +353,29 @@ export default function ExploreScreen() {
         return;
       }
 
-      let address = 'My current location';
-      try {
-        if (Location) {
-          const [a] = await Location.reverseGeocodeAsync({ latitude: coords.lat, longitude: coords.lng });
-          if (a) {
-            const parts = [a.street || a.name, a.district || a.subregion, a.city, a.region].filter(Boolean);
-            if (parts.length) address = parts.join(', ');
-          }
-        }
-      } catch { /* keep default */ }
-
       scheduleDispatch({ type: 'RESET' });
       scheduleDispatch({ type: 'SET_MODE', payload: 'sendNow' });
       scheduleDispatch({
         type: 'SET_PICKUP_LOCATION',
-        payload: { address, latitude: coords.lat, longitude: coords.lng },
+        payload: {
+          address: trip.pickup || 'Point A along route',
+          latitude: startCoords.lat,
+          longitude: startCoords.lng,
+        },
       });
       scheduleDispatch({
         type: 'SET_PREFERRED_PROVIDER',
-        payload: { providerId: trip.providerId, routeId: trip.routeId, name: trip.name },
+        payload: {
+          providerId: trip.providerId,
+          routeId: trip.routeId,
+          name: trip.name,
+          route: {
+            pickup: trip.pickup,
+            dropoff: trip.dropoff,
+            pickupCoords: trip.pickupCoords,
+            dropoffCoords: trip.dropoffCoords,
+          },
+        },
       });
 
       setTrackRouteId(null);
@@ -483,7 +528,10 @@ export default function ExploreScreen() {
       <View style={styles.actionContainer}>
         <TouchableOpacity
           style={[styles.actionCard, styles.actionCardPrimary]}
-          onPress={() => navigation.navigate('DropoffType', { mode: 'sendNow' })}
+          onPress={() => {
+            scheduleDispatch({ type: 'RESET' });
+            navigation.navigate('DropoffType', { mode: 'sendNow' });
+          }}
           activeOpacity={0.85}
         >
           <View style={[styles.actionIconContainer, styles.actionIconPrimary]}>
@@ -504,7 +552,10 @@ export default function ExploreScreen() {
 
         <TouchableOpacity
           style={[styles.actionCard, styles.actionCardSecondary]}
-          onPress={() => navigation.navigate('DropoffType', { mode: 'schedule' })}
+          onPress={() => {
+            scheduleDispatch({ type: 'RESET' });
+            navigation.navigate('DropoffType', { mode: 'schedule' });
+          }}
           activeOpacity={0.85}
         >
           <View style={styles.actionIconContainer}>
