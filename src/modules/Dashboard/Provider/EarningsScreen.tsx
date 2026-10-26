@@ -760,7 +760,11 @@ export default function EarningsScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+            {/* Same concept as detail sheet: flexGrow so no dead space above the Done button */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ flexGrow: 1, paddingBottom: 8 }}
+            >
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
                   <Ionicons name={headIcon} size={26} color={headColor} />
@@ -879,7 +883,8 @@ export default function EarningsScreen() {
               : (renderWithdrawalItem as any)
           }
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContent}
+          // flexGrow:1 keeps the list stretched when content is short — no stub empty space above the last item
+          contentContainerStyle={[styles.listContent, { flexGrow: 1 }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
           ListHeaderComponent={
             <>
@@ -1109,7 +1114,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   transactionAmount: { fontSize: 16, fontWeight: '800', letterSpacing: -0.5 },
   penaltyText: { fontSize: 11, color: c.error, fontWeight: '600', marginTop: 4 },
 
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   emptyIconCircle: {
     width: 72, height: 72, borderRadius: 36, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
@@ -1121,7 +1126,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 18, maxHeight: '92%',
+    paddingHorizontal: 20, paddingTop: 18, maxHeight: '92%', flexGrow: 1,
   },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },

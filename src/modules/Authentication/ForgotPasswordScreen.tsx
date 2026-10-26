@@ -23,13 +23,11 @@ export default function ForgotPasswordScreen() {
   const { colors, isDark, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // --- Form State ---
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState('');
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // --- OTP State ---
   const [step, setStep] = useState<'email' | 'otp'>('email');
   const [otpCode, setOtpCode] = useState('');
   const [verifyingOtp, setVerifyingOtp] = useState(false);
@@ -109,7 +107,6 @@ export default function ForgotPasswordScreen() {
 
       if (error) throw error;
 
-      // Session is now established. Navigate to ResetPassword and tell it to skip verification.
       navigation.navigate('ResetPassword', { token_hash: '', type: 'recovery', skipVerify: true });
     } catch (err: any) {
       Alert.alert('Verification Failed', err.message || 'The code is invalid or has expired.');
@@ -145,9 +142,7 @@ export default function ForgotPasswordScreen() {
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
-              
               {step === 'email' ? (
-                /* --- EMAIL INPUT STATE --- */
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
@@ -187,7 +182,6 @@ export default function ForgotPasswordScreen() {
                   </TouchableOpacity>
                 </>
               ) : (
-                /* --- OTP VERIFICATION STATE --- */
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
