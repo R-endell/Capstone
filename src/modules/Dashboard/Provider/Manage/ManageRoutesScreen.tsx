@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, Modal, StatusBar,
   Alert, ActivityIndicator, ScrollView, Platform, Animated, Easing,
-  TextInput, Keyboard, Dimensions
+  TextInput,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,7 +16,9 @@ import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
 
-const ORANGE = '#FA7A25';
+const ORANGE = '#FF751F';
+const BLUE = '#3B82F6';
+const BLACK = '#111827';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 5;
 const ZOOM_DELTA = 0.003;
@@ -51,6 +53,12 @@ type Coord = { latitude: number; longitude: number };
 /* ==================================================================== */
 /* Helpers                                                              */
 /* ==================================================================== */
+const splitAddress = (full?: string | null) => {
+  if (!full) return { main: 'Selected location', sub: '' };
+  const parts = full.split(', ');
+  return { main: parts[0], sub: parts.slice(1).join(', ') };
+};
+
 const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -73,7 +81,7 @@ const parseNaiveIsoString = (isoString: string) => {
 };
 
 export const isRouteExpired = (route: { route_frequency: string; departure_time: string }): boolean => {
-  const freq = (route.route_frequency || '').toLowerCase();
+  const freq = (route.route_frequency || '').trim().toLowerCase();
   if (freq === 'one-time' || freq === 'custom') {
     const dt = parseNaiveIsoString(route.departure_time);
     return dt.getTime() < Date.now();
@@ -83,7 +91,7 @@ export const isRouteExpired = (route: { route_frequency: string; departure_time:
 
 const nextWeekday = (weekday: number, from = new Date()): Date => {
   const d = new Date(from);
-  const diff = (weekday - d.getDay() + 7) % 7 || 7;
+  const diff = (weekday - d.getDay() + 7) % 7;
   d.setDate(d.getDate() + diff);
   return d;
 };
@@ -91,6 +99,7 @@ const nextWeekday = (weekday: number, from = new Date()): Date => {
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
 type Frequency = typeof FREQUENCIES[number];
+type RouteTab = 'active' | 'expired';
 
 const metersBetween = (a: Coord, b: Coord) => {
   const R = 6371000;
@@ -141,10 +150,10 @@ const reverseGeocodeCoordinates = async (lat: number, lng: number) => {
 /* ==================================================================== */
 /* Location Picker Modal (Drag-to-select)                               */
 /* ==================================================================== */
-const LocationPickerModal = ({ 
-  visible, onClose, onSelect, initialCoords, title, pinColor 
-}: { 
-  visible: boolean, onClose: () => void, onSelect: (loc: any) => void, initialCoords?: Coord | null, title: string, pinColor: string 
+const LocationPickerModal = ({
+  visible, onClose, onSelect, initialCoords, title, pinColor,
+}: {
+  visible: boolean; onClose: () => void; onSelect: (loc: any) => void; initialCoords?: Coord | null; title: string; pinColor: string;
 }) => {
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
@@ -158,7 +167,6 @@ const LocationPickerModal = ({
   const [isDragging, setIsDragging] = useState(false);
   const [structuredAddress, setStructuredAddress] = useState({ street_address: '', barangay: '', city: '', province: '', zip_code: '' });
 
-  // Search State
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [recents, setRecents] = useState<any[]>([]);
@@ -197,7 +205,7 @@ const LocationPickerModal = ({
     } catch { }
   };
 
-  const resolveAt = async (coords: Coord, label?: { name: string, sub: string }) => {
+  const resolveAt = async (coords: Coord, label?: { name: string; sub: string }) => {
     lastResolved.current = coords;
     setBusy(true);
     if (label) { setAddressName(label.name); setAddressSub(label.sub); }
@@ -212,7 +220,7 @@ const LocationPickerModal = ({
     setBusy(false);
   };
 
-  const moveTo = (coords: Coord, label?: { name: string, sub: string }) => {
+  const moveTo = (coords: Coord, label?: { name: string; sub: string }) => {
     if (settleTimer.current) clearTimeout(settleTimer.current);
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
@@ -244,8 +252,7 @@ const LocationPickerModal = ({
     onSelect({
       latitude: markerCoord.latitude,
       longitude: markerCoord.longitude,
-      street_address: addressName,
-      ...structuredAddress
+      ...structuredAddress,
     });
     saveRecent({ name: addressName, address: addressSub, latitude: markerCoord.latitude, longitude: markerCoord.longitude });
   };
@@ -256,8 +263,7 @@ const LocationPickerModal = ({
     <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
       <View style={{ flex: 1, backgroundColor: '#fff' }}>
         <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
-        
-        {/* Map Area */}
+
         <View style={{ flex: 1 }}>
           <MapView
             ref={mapRef}
@@ -272,7 +278,6 @@ const LocationPickerModal = ({
             toolbarEnabled={false}
           />
 
-          {/* Center Pin */}
           <View style={{ position: 'absolute', top: '50%', left: 0, right: 0, alignItems: 'center', marginTop: -60 }} pointerEvents="box-none">
             <View style={{ backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4, marginBottom: 8, maxWidth: '80%' }}>
               <Text style={{ fontWeight: '800', color: '#111827', fontSize: 14 }} numberOfLines={1}>{addressName}</Text>
@@ -283,7 +288,6 @@ const LocationPickerModal = ({
             </Animated.View>
           </View>
 
-          {/* Header Controls */}
           <View style={{ position: 'absolute', top: insets.top + 10, left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between' }}>
             <TouchableOpacity onPress={onClose} style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.2, elevation: 4 }}>
               <Ionicons name="arrow-back" size={24} color="#111827" />
@@ -298,7 +302,6 @@ const LocationPickerModal = ({
           </TouchableOpacity>
         </View>
 
-        {/* Bottom Sheet */}
         <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: insets.bottom + 20, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 10, elevation: 10 }}>
           <Text style={{ fontSize: 18, fontWeight: '800', color: '#111827' }}>{title}</Text>
           <Text style={{ fontSize: 14, color: '#6B7280', marginTop: 4, marginBottom: 20 }}>{busy ? 'Finding address...' : addressSub}</Text>
@@ -307,7 +310,6 @@ const LocationPickerModal = ({
           </TouchableOpacity>
         </View>
 
-        {/* Search Overlay */}
         {isSearching && (
           <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: '#fff', paddingTop: insets.top + 10 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#E5E7EB' }}>
@@ -345,8 +347,7 @@ const LocationPickerModal = ({
 
 /* ==================================================================== */
 /* Main Component                                                       */
-/* ==================================================================== */type RouteTab = 'active' | 'expired';
-
+/* ==================================================================== */
 export default function ManageRoutesScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -357,12 +358,9 @@ export default function ManageRoutesScreen() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-
-  const [modalVisible, setModalVisible] = useState(false);
-  const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<RouteTab>('active');
 
-  // Form State
   const [modalVisible, setModalVisible] = useState(false);
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
   const [selectedFrequency, setSelectedFrequency] = useState<Frequency>('Daily');
@@ -370,16 +368,29 @@ export default function ManageRoutesScreen() {
   const [departureTime, setDepartureTime] = useState(new Date());
   const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
-  
+
   const [startLocation, setStartLocation] = useState<LocationType | null>(null);
   const [endLocation, setEndLocation] = useState<LocationType | null>(null);
 
-  // Picker State
   const [pickerVisible, setPickerVisible] = useState(false);
   const [pickerType, setPickerType] = useState<'start' | 'end'>('start');
 
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+
+  const headerAnim = useRef(new Animated.Value(0)).current;
+  const contentAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animate = (v: Animated.Value, delay: number, duration = 600) =>
+      Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
+    Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
+  }, [headerAnim, contentAnim]);
+
+  const fadeUp = (value: Animated.Value, distance = 24) => ({
+    opacity: value,
+    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
+  });
 
   const fetchUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -410,7 +421,7 @@ export default function ManageRoutesScreen() {
 
   useFocusEffect(useCallback(() => { fetchRoutes(); }, []));
 
-  // Partition routes into Active vs Expired
+  // Partition routes into Active and Expired
   const { activeRoutes, expiredRoutes } = useMemo(() => {
     const active: Route[] = [];
     const expired: Route[] = [];
@@ -429,7 +440,7 @@ export default function ManageRoutesScreen() {
   const handleLocationSelect = async (locData: any, type: 'start' | 'end') => {
     try {
       const { data: existing } = await supabase.from('locations').select('*').eq('latitude', locData.latitude).eq('longitude', locData.longitude).limit(1);
-      
+
       let location = existing && existing.length > 0 ? existing[0] : null;
 
       if (!location) {
@@ -442,14 +453,14 @@ export default function ManageRoutesScreen() {
           latitude: locData.latitude,
           longitude: locData.longitude,
         }).select('*').single();
-        
+
         if (error) throw error;
         location = newLoc;
       }
 
       if (type === 'start') setStartLocation(location);
       else setEndLocation(location);
-      
+
       setPickerVisible(false);
     } catch (err) {
       console.error(err);
@@ -459,9 +470,13 @@ export default function ManageRoutesScreen() {
 
   const computeEffectiveDate = (): Date => {
     if (selectedFrequency === 'Daily') {
-      const d = new Date(); d.setHours(0, 0, 0, 0); return d;
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d;
     }
-    if (selectedFrequency === 'Weekly') return nextWeekday(selectedWeekday);
+    if (selectedFrequency === 'Weekly') {
+      return nextWeekday(selectedWeekday);
+    }
     return departureDate;
   };
 
@@ -470,11 +485,41 @@ export default function ManageRoutesScreen() {
       return Alert.alert('Required', 'Please fill all fields');
     }
 
+    const now = new Date();
     const effectiveDate = computeEffectiveDate();
-    const combined = new Date(effectiveDate.getFullYear(), effectiveDate.getMonth(), effectiveDate.getDate(), departureTime.getHours(), departureTime.getMinutes());
+    const combined = new Date(
+      effectiveDate.getFullYear(),
+      effectiveDate.getMonth(),
+      effectiveDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes(),
+      0,
+      0,
+    );
 
-    if (selectedFrequency === 'One-time' || selectedFrequency === 'Custom') {
-      if (combined < new Date()) return Alert.alert('Invalid Time', 'You cannot schedule a route in the past.');
+    const isSameDayAsToday =
+      effectiveDate.getFullYear() === now.getFullYear() &&
+      effectiveDate.getMonth() === now.getMonth() &&
+      effectiveDate.getDate() === now.getDate();
+
+    if (selectedFrequency === 'Daily') {
+      if (combined.getTime() < now.getTime()) {
+        return Alert.alert(
+          'Invalid Time',
+          `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Please pick a departure time that has not passed yet today.`,
+        );
+      }
+    } else if (selectedFrequency === 'Weekly') {
+      if (isSameDayAsToday && combined.getTime() < now.getTime()) {
+        return Alert.alert(
+          'Invalid Time',
+          `That time has already passed for today (${WEEKDAY_LABELS[selectedWeekday]}). Please choose a later time or another day.`,
+        );
+      }
+    } else {
+      if (combined.getTime() < now.getTime()) {
+        return Alert.alert('Invalid Time', 'You cannot schedule a route in the past. Please select a valid future date and time.');
+      }
     }
 
     setSubmitting(true);
@@ -513,12 +558,14 @@ export default function ManageRoutesScreen() {
   };
 
   const handleDelete = (route: Route) => {
-    Alert.alert('Delete Route', 'Are you sure?', [
+    Alert.alert('Delete Route', 'Are you sure you want to delete this route?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
+      {
+        text: 'Delete', style: 'destructive', onPress: async () => {
           await supabase.from('provider_routes').delete().eq('route_id', route.route_id);
           setRoutes(prev => prev.filter(r => r.route_id !== route.route_id));
-      }},
+        },
+      },
     ]);
   };
 
@@ -527,9 +574,14 @@ export default function ManageRoutesScreen() {
     const dt = parseNaiveIsoString(route.departure_time);
     const expired = isRouteExpired(route);
 
-    // If rescheduling an expired route, default the date picker to today
-    const baseDate = expired ? new Date() : dt;
-    setDepartureDate(baseDate); setDepartureTime(dt); setSelectedWeekday(baseDate.getDay());
+    // If rescheduling an expired route, default date/time to 15 minutes from now
+    const defaultFuture = new Date(Date.now() + 15 * 60 * 1000);
+    const baseDate = expired ? defaultFuture : dt;
+    const baseTime = expired ? defaultFuture : dt;
+
+    setDepartureDate(baseDate);
+    setDepartureTime(baseTime);
+    setSelectedWeekday(baseDate.getDay());
 
     const freq = (route.route_frequency || 'Daily') as Frequency;
     setSelectedFrequency(FREQUENCIES.includes(freq) ? freq : 'Daily');
@@ -545,12 +597,17 @@ export default function ManageRoutesScreen() {
   };
 
   const resetForm = () => {
-    setSelectedFrequency('Daily'); setDepartureDate(new Date()); setDepartureTime(new Date());
-    setSelectedWeekday(new Date().getDay()); setSelectedVehicleId(null);
-    setStartLocation(null); setEndLocation(null); setEditingRoute(null);
+    const initial = new Date(Date.now() + 15 * 60 * 1000);
+    setSelectedFrequency('Daily');
+    setDepartureDate(initial);
+    setDepartureTime(initial);
+    setSelectedWeekday(initial.getDay());
+    setSelectedVehicleId(null);
+    setStartLocation(null);
+    setEndLocation(null);
+    setEditingRoute(null);
   };
 
-  // Preview Map for Modal
   const [previewCoords, setPreviewCoords] = useState<Coord[]>([]);
   useEffect(() => {
     if (!startLocation || !endLocation) { setPreviewCoords([]); return; }
@@ -562,91 +619,137 @@ export default function ManageRoutesScreen() {
         if (data?.routes?.[0]?.geometry?.coordinates) {
           setPreviewCoords(data.routes[0].geometry.coordinates.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })));
         } else {
-          setPreviewCoords([{latitude: startLocation.latitude, longitude: startLocation.longitude}, {latitude: endLocation.latitude, longitude: endLocation.longitude}]);
+          setPreviewCoords([{ latitude: startLocation.latitude, longitude: startLocation.longitude }, { latitude: endLocation.latitude, longitude: endLocation.longitude }]);
         }
       } catch {
-        setPreviewCoords([{latitude: startLocation.latitude, longitude: startLocation.longitude}, {latitude: endLocation.latitude, longitude: endLocation.longitude}]);
+        setPreviewCoords([{ latitude: startLocation.latitude, longitude: startLocation.longitude }, { latitude: endLocation.latitude, longitude: endLocation.longitude }]);
       }
     })();
   }, [startLocation, endLocation]);
 
+  const frequencyMeta = (freq: string, expired = false) => {
+    if (expired) {
+      return { label: 'Expired', bg: colors.errorBg, fg: colors.error };
+    }
+    switch (freq) {
+      case 'Daily':
+        return { label: 'Daily', bg: colors.successBg, fg: colors.success };
+      case 'Weekly':
+        return { label: 'Weekly', bg: colors.accentSoft, fg: ORANGE };
+      case 'One-time':
+        return { label: 'One-Time', bg: colors.warningBg, fg: colors.warning };
+      default:
+        return { label: freq || 'Custom', bg: 'rgba(59,130,246,0.14)', fg: BLUE };
+    }
+  };
+
+  /* ==================================================================== */
+  /* Route Card — TaskScreen style (oCard)                                */
+  /* ==================================================================== */
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
     const expired = isRouteExpired(item);
-
-    const freqColor = expired
-      ? { bg: colors.errorBg, fg: colors.error }
-      : item.route_frequency === 'Daily' ? { bg: isDark ? '#0F2744' : '#DBEAFE', fg: isDark ? '#93C5FD' : '#2563EB' } :
-        item.route_frequency === 'Weekly' ? { bg: isDark ? '#231542' : '#EDE9FE', fg: isDark ? '#C4B5FD' : '#7C3AED' } :
-        item.route_frequency === 'One-time' ? { bg: isDark ? '#2A1F0A' : '#FEF3C7', fg: isDark ? '#FCD34D' : '#D97706' } :
-        { bg: colors.divider, fg: colors.textSecondary };
-
-    const freqLabel = (() => {
-      const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const scheduleText = (() => {
       if (item.route_frequency === 'Daily') return `Every day · ${timeStr}`;
       if (item.route_frequency === 'Weekly') return `Every ${WEEKDAY_LABELS[dt.getDay()]} · ${timeStr}`;
       return `${dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · ${timeStr}`;
     })();
 
+    const meta = frequencyMeta(item.route_frequency, expired);
+    const startSplit = splitAddress(item.start_location?.street_address);
+    const endSplit = splitAddress(item.end_location?.street_address);
+    const startRoad = [item.start_location?.barangay, item.start_location?.city].filter(Boolean).join(', ') || startSplit.sub;
+    const endRoad = [item.end_location?.barangay, item.end_location?.city].filter(Boolean).join(', ') || endSplit.sub;
+
     return (
-      <View style={[styles.routeCard, expired && styles.routeCardExpired]}>
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={[styles.routeIconBox, expired && { backgroundColor: colors.errorBg }]}>
-              <Ionicons name={expired ? 'time-outline' : 'map-outline'} size={20} color={expired ? colors.error : ORANGE} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.routeDate}>{freqLabel}</Text>
-              <Text style={styles.routeTime}>
-                {item.route_frequency}{expired ? ' · Passed' : ''}
+      <TouchableOpacity
+        style={[styles.oCard, expired && styles.oCardExpired]}
+        activeOpacity={0.92}
+        onPress={() => handleEdit(item)}
+      >
+        <View style={styles.oPad}>
+          {/* Top Row: Vehicle Pill + Frequency Pill */}
+          <View style={styles.oTopRow}>
+            <View style={styles.svcPill}>
+              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <Text style={styles.svcPillText}>
+                {item.vehicle ? item.vehicle.vehicle_type : 'Vehicle'}
               </Text>
             </View>
-          </View>
-          <View style={[styles.frequencyBadge, { backgroundColor: freqColor.bg }]}>
-            <Text style={[styles.frequencyText, { color: freqColor.fg }]}>
-              {expired ? 'EXPIRED' : item.route_frequency}
-            </Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.routeDate}>{freqLabel}</Text>
-            <Text style={styles.routeTime}>{item.route_frequency}</Text>
-          </View>
-          <View style={styles.frequencyBadge}><Text style={styles.frequencyText}>{item.route_frequency}</Text></View>
-        </View>
-
-        <View style={styles.timeline}>
-          <View style={styles.timelineItem}>
-            <View style={styles.timelineIconWrapper}><View style={styles.blueDot} /><View style={styles.timelineLine} /></View>
-            <View style={styles.timelineText}>
-              <Text style={styles.timelineLabel}>START</Text>
-              <Text style={styles.timelineAddress} numberOfLines={1}>{item.start_location?.street_address || 'N/A'}</Text>
+            <View style={[styles.stPill, { backgroundColor: meta.bg }]}>
+              <View style={[styles.stDot, { backgroundColor: meta.fg }]} />
+              <Text style={[styles.stPillText, { color: meta.fg }]}>{meta.label.toUpperCase()}</Text>
             </View>
           </View>
-          <View style={styles.timelineItem}>
-            <View style={styles.timelineIconWrapper}><Ionicons name="location" size={16} color={colors.error} /></View>
-            <View style={styles.timelineText}>
-              <Text style={[styles.timelineLabel, { color: colors.error }]}>END</Text>
-              <Text style={styles.timelineAddress} numberOfLines={1}>{item.end_location?.street_address || 'N/A'}</Text>
+
+          {/* Route Section: Ring + Dotted Line Rail */}
+          <View>
+            {[
+              { key: 'p', label: 'STARTING POINT', main: startSplit.main, road: startRoad, color: ORANGE },
+              { key: 'd', label: 'DESTINATION', main: endSplit.main, road: endRoad, color: BLACK },
+            ].map((r, i) => (
+              <View key={r.key} style={styles.rtRow}>
+                <View style={styles.rtRail}>
+                  <View style={[styles.rtRing, { borderColor: r.color }]}>
+                    <View style={[styles.rtRingDot, { backgroundColor: r.color }]} />
+                  </View>
+                  {i === 0 && (
+                    <View style={styles.rtDots}>
+                      {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
+                    </View>
+                  )}
+                </View>
+                <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+                  <Text style={styles.rtLabel}>{r.label}</Text>
+                  <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
+                  {!!r.road && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                      <Ionicons name="map-outline" size={12} color={colors.textMuted} />
+                      <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* Footer Row: Schedule + Plate Number */}
+        <View style={styles.oFooter}>
+          <View style={styles.oChip}>
+            <Ionicons name="time-outline" size={14} color={expired ? colors.error : ORANGE} />
+            <Text style={styles.oChipText}>{scheduleText}</Text>
+          </View>
+          {item.vehicle?.plate_number && (
+            <View style={styles.oChip}>
+              <Ionicons name="pricetag-outline" size={14} color={ORANGE} />
+              <Text style={styles.oChipText}>{item.vehicle.plate_number}</Text>
             </View>
-          </View>
+          )}
+          <View style={{ flex: 1 }} />
         </View>
 
-        {item.vehicle && (
-          <View style={styles.vehicleRow}>
-            <Ionicons name="car-sport-outline" size={14} color={colors.textSecondary} />
-            <Text style={styles.vehicleText}>{item.vehicle.vehicle_type} · {item.vehicle.plate_number}</Text>
-          </View>
-        )}
-
-        <View style={styles.cardFooter}>
-          <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)}>
-            <Ionicons name={expired ? 'calendar-outline' : 'create-outline'} size={14} color={ORANGE} /><Text style={styles.editBtnText}>{expired ? 'Reschedule' : 'Edit'}</Text>
+        {/* Actions Row: Delete + Edit / Reschedule Route */}
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oDeleteBtn}
+            onPress={() => handleDelete(item)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="trash-outline" size={16} color={colors.error} />
+            <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)}>
-            <Ionicons name="trash-outline" size={14} color={colors.error} /><Text style={styles.deleteBtnText}>Delete</Text>
+          <TouchableOpacity
+            style={styles.oRouteBtn}
+            onPress={() => handleEdit(item)}
+            activeOpacity={0.9}
+          >
+            <Ionicons name={expired ? 'calendar-outline' : 'create-outline'} size={16} color="#FFFFFF" />
+            <Text style={styles.oRouteText}>{expired ? 'Reschedule' : 'Edit Route'}</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -654,17 +757,22 @@ export default function ManageRoutesScreen() {
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+      <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Manage Routes</Text>
-        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd}>
+        <View style={{ flex: 1, paddingLeft: 14 }}>
+          <Text style={styles.headerTitle}>Manage Routes</Text>
+          <Text style={styles.headerSubtitle}>
+            {activeRoutes.length} active · {expiredRoutes.length} expired
+          </Text>
+        </View>
+        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
           <Ionicons name="add" size={22} color="#FFFFFF" />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
-      {/* Active / Expired Segmented Tab Bar */}
+      {/* Active vs Expired Tab Bar */}
       <View style={styles.tabContainer}>
         <TouchableOpacity
           style={[styles.tabButton, activeTab === 'active' && styles.tabButtonActive]}
@@ -703,40 +811,37 @@ export default function ManageRoutesScreen() {
           <Text style={styles.loadingText}>Loading routes...</Text>
         </View>
       ) : displayedRoutes.length === 0 ? (
-        <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
+        <Animated.View style={[styles.emptyContainer, fadeUp(contentAnim, 20)]}>
           <View style={styles.emptyIconCircle}>
             <Ionicons
               name={activeTab === 'active' ? 'map-outline' : 'time-outline'}
-              size={40}
+              size={32}
               color={ORANGE}
             />
           </View>
           <Text style={styles.emptyTitle}>
             {activeTab === 'active' ? 'No active routes' : 'No expired routes'}
           </Text>
-          <Text style={styles.emptySubtitle}>
+          <Text style={styles.emptySubtext}>
             {activeTab === 'active'
-              ? 'Add a travel route so you can be matched with packages on your way.'
+              ? 'Add your regular travel routes so senders along your way can book deliveries with you.'
               : 'One-time or custom routes that have passed their departure time will appear here.'}
           </Text>
           {activeTab === 'active' && (
-            <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd}>
+            <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
               <Ionicons name="add-circle" size={18} color="#FFFFFF" />
               <Text style={styles.emptyAddBtnText}>Add Route</Text>
             </TouchableOpacity>
           )}
         </Animated.View>
       ) : (
-        <Animated.View style={{ flex: 1, opacity: listAnim }}>
+        <Animated.View style={{ flex: 1, opacity: contentAnim }}>
           <FlatList
-            data={routes}
-            keyExtractor={(i) => i.route_id.toString()}
+            data={displayedRoutes}
+            keyExtractor={i => i.route_id.toString()}
             renderItem={renderRouteCard}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
-            refreshing={loading}
-            onRefresh={fetchRoutes}
-            ListFooterComponent={<View style={{ height: 40 }} />}
           />
         </Animated.View>
       )}
@@ -745,6 +850,7 @@ export default function ManageRoutesScreen() {
       <Modal animationType="slide" transparent visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
+            <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color={colors.textPrimary} />
@@ -753,19 +859,26 @@ export default function ManageRoutesScreen() {
               <View style={{ width: 40 }} />
             </View>
 
-            <ScrollView contentContainerStyle={styles.modalScrollContent}>
-              
+            <ScrollView contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
               {/* Route Locations */}
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Route Locations</Text>
                 <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('start'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: '#3B82F6' }]}><Ionicons name="radio-button-on" size={14} color="#FFF" /></View>
-                  <Text style={styles.locationSelectorText} numberOfLines={1}>{startLocation ? startLocation.street_address : 'Set Starting Point'}</Text>
+                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: ORANGE }]}>
+                    <Ionicons name="radio-button-on" size={14} color="#FFF" />
+                  </View>
+                  <Text style={styles.locationSelectorText} numberOfLines={1}>
+                    {startLocation ? startLocation.street_address : 'Set Starting Point'}
+                  </Text>
                 </TouchableOpacity>
                 <View style={{ height: 10 }} />
                 <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('end'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: colors.error }]}><Ionicons name="location" size={14} color="#FFF" /></View>
-                  <Text style={styles.locationSelectorText} numberOfLines={1}>{endLocation ? endLocation.street_address : 'Set Destination'}</Text>
+                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: BLACK }]}>
+                    <Ionicons name="location" size={14} color="#FFF" />
+                  </View>
+                  <Text style={styles.locationSelectorText} numberOfLines={1}>
+                    {endLocation ? endLocation.street_address : 'Set Destination'}
+                  </Text>
                 </TouchableOpacity>
               </View>
 
@@ -791,8 +904,14 @@ export default function ManageRoutesScreen() {
                 <Text style={styles.inputLabel}>Route Frequency</Text>
                 <View style={styles.frequencyOptions}>
                   {FREQUENCIES.map(freq => (
-                    <TouchableOpacity key={freq} style={[styles.frequencyOption, selectedFrequency === freq && styles.frequencyOptionSelected]} onPress={() => setSelectedFrequency(freq)}>
-                      <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>{freq}</Text>
+                    <TouchableOpacity
+                      key={freq}
+                      style={[styles.frequencyOption, selectedFrequency === freq && styles.frequencyOptionSelected]}
+                      onPress={() => setSelectedFrequency(freq)}
+                    >
+                      <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>
+                        {freq}
+                      </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -801,12 +920,40 @@ export default function ManageRoutesScreen() {
               {/* Date/Time */}
               {selectedFrequency === 'Daily' ? (
                 <View style={styles.formGroup}>
-                  <Text style={styles.inputLabel}>Departure Time</Text>
+                  <Text style={styles.inputLabel}>Departure Time (Today)</Text>
                   <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
                     <Ionicons name="time-outline" size={16} color={ORANGE} />
                     <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </TouchableOpacity>
-                  {showTimePicker && <DateTimePicker value={departureTime} mode="time" onChange={(e, t) => { setShowTimePicker(Platform.OS === 'ios'); if (t) setDepartureTime(t); }} />}
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={departureTime}
+                      mode="time"
+                      onChange={(e, t) => {
+                        setShowTimePicker(Platform.OS === 'ios');
+                        if (e.type === 'set' && t) {
+                          const now = new Date();
+                          const candidate = new Date(
+                            now.getFullYear(),
+                            now.getMonth(),
+                            now.getDate(),
+                            t.getHours(),
+                            t.getMinutes(),
+                            0,
+                            0,
+                          );
+                          if (candidate.getTime() < now.getTime()) {
+                            Alert.alert(
+                              'Invalid Time',
+                              `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You cannot select a time that has already passed today.`,
+                            );
+                            return;
+                          }
+                          setDepartureTime(t);
+                        }
+                      }}
+                    />
+                  )}
                 </View>
               ) : selectedFrequency === 'Weekly' ? (
                 <View style={styles.formGroup}>
@@ -823,7 +970,16 @@ export default function ManageRoutesScreen() {
                     <Ionicons name="time-outline" size={16} color={ORANGE} />
                     <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </TouchableOpacity>
-                  {showTimePicker && <DateTimePicker value={departureTime} mode="time" onChange={(e, t) => { setShowTimePicker(Platform.OS === 'ios'); if (t) setDepartureTime(t); }} />}
+                  {showTimePicker && (
+                    <DateTimePicker
+                      value={departureTime}
+                      mode="time"
+                      onChange={(e, t) => {
+                        setShowTimePicker(Platform.OS === 'ios');
+                        if (e.type === 'set' && t) setDepartureTime(t);
+                      }}
+                    />
+                  )}
                 </View>
               ) : (
                 <View style={styles.dateTimeRow}>
@@ -833,7 +989,17 @@ export default function ManageRoutesScreen() {
                       <Ionicons name="calendar-outline" size={16} color={ORANGE} />
                       <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
                     </TouchableOpacity>
-                    {showDatePicker && <DateTimePicker value={departureDate} mode="date" minimumDate={new Date()} onChange={(e, d) => { setShowDatePicker(Platform.OS === 'ios'); if (d) setDepartureDate(d); }} />}
+                    {showDatePicker && (
+                      <DateTimePicker
+                        value={departureDate}
+                        mode="date"
+                        minimumDate={new Date()}
+                        onChange={(e, d) => {
+                          setShowDatePicker(Platform.OS === 'ios');
+                          if (e.type === 'set' && d) setDepartureDate(d);
+                        }}
+                      />
+                    )}
                   </View>
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Time</Text>
@@ -841,7 +1007,16 @@ export default function ManageRoutesScreen() {
                       <Ionicons name="time-outline" size={16} color={ORANGE} />
                       <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                     </TouchableOpacity>
-                    {showTimePicker && <DateTimePicker value={departureTime} mode="time" onChange={(e, t) => { setShowTimePicker(Platform.OS === 'ios'); if (t) setDepartureTime(t); }} />}
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        onChange={(e, t) => {
+                          setShowTimePicker(Platform.OS === 'ios');
+                          if (e.type === 'set' && t) setDepartureTime(t);
+                        }}
+                      />
+                    )}
                   </View>
                 </View>
               )}
@@ -851,9 +1026,15 @@ export default function ManageRoutesScreen() {
                 <Text style={styles.inputLabel}>Vehicle</Text>
                 <View style={styles.vehicleOptions}>
                   {vehicles.map(v => (
-                    <TouchableOpacity key={v.vehicle_id} style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]} onPress={() => setSelectedVehicleId(v.vehicle_id)}>
+                    <TouchableOpacity
+                      key={v.vehicle_id}
+                      style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
+                      onPress={() => setSelectedVehicleId(v.vehicle_id)}
+                    >
                       <Ionicons name="car-sport" size={14} color={selectedVehicleId === v.vehicle_id ? '#FFF' : colors.textSecondary} />
-                      <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>{v.plate_number}</Text>
+                      <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
+                        {v.plate_number}
+                      </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -874,7 +1055,7 @@ export default function ManageRoutesScreen() {
         onSelect={(loc) => handleLocationSelect(loc, pickerType)}
         initialCoords={pickerType === 'start' ? (startLocation ? { latitude: startLocation.latitude, longitude: startLocation.longitude } : undefined) : (endLocation ? { latitude: endLocation.latitude, longitude: endLocation.longitude } : undefined)}
         title={pickerType === 'start' ? 'Starting Point' : 'Destination'}
-        pinColor={pickerType === 'start' ? '#3B82F6' : '#EF4444'}
+        pinColor={pickerType === 'start' ? ORANGE : BLACK}
       />
     </View>
   );
@@ -882,88 +1063,180 @@ export default function ManageRoutesScreen() {
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 16, backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  headerAddBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
-  
-  listContent: { padding: 20 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginTop: 16 },
-  emptyAddBtn: { marginTop: 20, backgroundColor: ORANGE, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20 },
-  emptyAddBtnText: { color: '#FFF', fontWeight: '700' },
-
-  routeCard: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16, paddingLeft: 20, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3, shadowRadius: 8, elevation: 2,
-    borderWidth: 1, borderColor: c.border, overflow: 'hidden', position: 'relative',
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingBottom: 16,
+    backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border,
   },
-  cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
-  routeIconBox: { width: 46, height: 46, borderRadius: 14, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  routeDate: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
-  routeTime: { fontSize: 16, color: c.textPrimary, fontWeight: '800', marginTop: 2 },
-  frequencyBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12 },
-  frequencyText: { fontSize: 10, fontWeight: '800', color: c.textSecondary },
+  backBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: c.border,
+  },
+  headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
+  headerSubtitle: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 1 },
+  headerAddBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+  },
 
-  timeline: { marginBottom: 12 },
-  timelineItem: { flexDirection: 'row', marginBottom: 8 },
-  timelineIconWrapper: { width: 22, alignItems: 'center', marginRight: 10, zIndex: 2 },
-  blueDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 3, borderColor: '#3B82F6' },
-  timelineLine: { width: 1, height: 22, backgroundColor: c.border },
-  timelineText: { flex: 1 },
-  timelineLabel: { fontSize: 9, fontWeight: '800', color: '#3B82F6', letterSpacing: 1, marginBottom: 2 },
-  timelineAddress: { fontSize: 13, fontWeight: '600', color: c.textPrimary },
+  tabContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginTop: 14,
+    marginBottom: 4,
+    padding: 4,
+    backgroundColor: c.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: c.border,
+    gap: 6,
+  },
+  tabButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  tabButtonActive: {
+    backgroundColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  tabButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: c.textSecondary,
+  },
+  tabButtonTextActive: {
+    color: '#FFFFFF',
+  },
 
-  vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.background, padding: 8, borderRadius: 8, marginBottom: 12 },
-  vehicleText: { fontSize: 11, fontWeight: '600', color: c.textSecondary },
-  cardFooter: { flexDirection: 'row', gap: 10 },
-  editBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.accentSoft, padding: 10, borderRadius: 12, gap: 6 },
-  editBtnText: { color: ORANGE, fontSize: 13, fontWeight: '700' },
-  deleteBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.errorBg, padding: 10, borderRadius: 12, gap: 6 },
-  deleteBtnText: { color: c.error, fontSize: 13, fontWeight: '700' },
+  listContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 60 },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
+  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
+  emptyIconCircle: {
+    width: 68, height: 68, borderRadius: 34,
+    backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
+    marginBottom: 14, borderWidth: 1, borderColor: c.border,
+  },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
+  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19, marginBottom: 20 },
+  emptyAddBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: ORANGE, paddingHorizontal: 22, paddingVertical: 13, borderRadius: 14,
+  },
+  emptyAddBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+
+  /* TaskScreen Card & Route Styles */
+  oCard: {
+    backgroundColor: c.card, borderRadius: 22, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+  },
+  oCardExpired: {
+    opacity: 0.88,
+  },
+  oPad: { padding: 16 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  svcPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+  },
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  stPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
+  },
+  stDot: { width: 7, height: 7, borderRadius: 4 },
+  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+
+  rtRow: { flexDirection: 'row', gap: 14 },
+  rtRail: { alignItems: 'center', width: 26 },
+  rtRing: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 3,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
+  },
+  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
+  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtText: { flex: 1 },
+  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
+  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+
+  oFooter: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+    backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14,
+    borderTopWidth: 1, borderTopColor: c.divider,
+  },
+  oChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
+  },
+  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oDeleteBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: c.errorBg, borderRadius: 14, paddingVertical: 14,
+  },
+  oDeleteText: { color: c.error, fontSize: 14, fontWeight: '800' },
+  oRouteBtn: {
+    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
+  },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+
+  /* Modal Styles */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
   modalContainer: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 8, maxHeight: '94%', flex: 1 },
+  modalHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 6, marginBottom: 6 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
   modalCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
+  modalTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   modalScrollContent: { padding: 20, paddingBottom: 40 },
 
   modalMapContainer: { height: 160, borderRadius: 16, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: c.border },
-  
+
   locationSelectorBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: c.border, gap: 12 },
-  locSelectorIcon: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  locationSelectorText: { flex: 1, fontWeight: '600', color: c.textPrimary },
+  locSelectorIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
+  locationSelectorText: { flex: 1, fontWeight: '700', color: c.textPrimary, fontSize: 14 },
 
   formGroup: { marginBottom: 20 },
-  inputLabel: { marginBottom: 8, fontWeight: '700', color: c.textPrimary, fontSize: 12 },
+  inputLabel: { marginBottom: 8, fontWeight: '800', color: c.textPrimary, fontSize: 12, letterSpacing: 0.3 },
   frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  frequencyOption: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 22, borderWidth: 1.5, borderColor: c.border },
-  frequencyOptionSelected: { backgroundColor: ORANGE, borderColor: ORANGE },
+  frequencyOption: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card },
+  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
   frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
-  frequencyOptionTextSelected: { color: '#FFF' },
+  frequencyOptionTextSelected: { color: ORANGE, fontWeight: '800' },
 
   weekdayRow: { flexDirection: 'row', gap: 6 },
-  weekdayChip: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5, borderColor: c.border, alignItems: 'center' },
+  weekdayChip: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5, borderColor: c.border, alignItems: 'center', backgroundColor: c.card },
   weekdayChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
   weekdayChipText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
   weekdayChipTextActive: { color: '#FFF' },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   inputGroup: { flex: 1 },
-  dateTimeButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 14, padding: 12 },
-  dateTimeValue: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
+  dateTimeButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 14, padding: 14 },
+  dateTimeValue: { fontSize: 14, color: c.textPrimary, fontWeight: '700' },
 
   vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  vehicleOption: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 22, borderWidth: 1.5, borderColor: c.border },
+  vehicleOption: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, borderColor: c.border },
   vehicleOptionActive: { backgroundColor: ORANGE, borderColor: ORANGE },
   vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
   vehicleOptionTextActive: { color: '#FFF' },
 
-  submitBtn: { backgroundColor: ORANGE, padding: 16, borderRadius: 16, alignItems: 'center' },
-  submitBtnText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  submitBtn: { backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 14, alignItems: 'center', marginTop: 6 },
+  submitBtnText: { color: '#FFF', fontSize: 15, fontWeight: '900' },
 });

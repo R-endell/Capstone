@@ -1,14 +1,15 @@
 // src/services/matchingService.ts
 import { supabase } from '../utils/supabase';
-import { getActiveRouteId } from './activeRouteStore';
+import { getActiveRouteId, setActiveRouteId } from './activeRouteStore';
 import { Alert } from 'react-native';
-import { setActiveRouteId } from './activeRouteStore';
 
 export interface Location {
   latitude: number;
   longitude: number;
   location_id?: number;
   street_address?: string;
+  road?: string;
+  barangay?: string;
 }
 
 export interface ProviderRoute {
@@ -36,10 +37,18 @@ export interface MatchResult {
   matchScore: number;
 }
 
+export interface NearbyRequestResult {
+  request: any;
+  route: ProviderRoute;
+  pickupDistToCorridorKm: number;
+  dropoffDistToCorridorKm: number;
+  extraDetourKm: number;
+}
+
 /* ------------------------------------------------------------------ */
-/* Distance helper                                                     */
+/* Distance helpers                                                    */
 /* ------------------------------------------------------------------ */
-function calculateDistance(
+export function calculateDistance(
   lat1: number | string,
   lon1: number | string,
   lat2: number | string,
@@ -66,23 +75,53 @@ function calculateDistance(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/**
+ * Shortest distance (in km) from point P to line segment A -> B
+ */
+export function distanceToSegmentKm(
+  pLat: number,
+  pLng: number,
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): number {
+  const latScale = 111.32;
+  const lngScale = 111.32 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+
+  const ax = 0;
+  const ay = 0;
+  const bx = (bLng - aLng) * lngScale;
+  const by = (bLat - aLat) * latScale;
+  const px = (pLng - aLng) * lngScale;
+  const py = (pLat - aLat) * latScale;
+
+  const segLenSq = bx * bx + by * by;
+  if (segLenSq === 0) {
+    return calculateDistance(pLat, pLng, aLat, aLng);
+  }
+
+  let t = (px * bx + py * by) / segLenSq;
+  t = Math.max(0, Math.min(1, t));
+
+  const projLat = aLat + t * (bLat - aLat);
+  const projLng = aLng + t * (bLng - aLng);
+
+  return calculateDistance(pLat, pLng, projLat, projLng);
+}
+
 /* ------------------------------------------------------------------ */
 /* Route Detour Logic                                                  */
 /* ------------------------------------------------------------------ */
-/**
- * Instead of forcing the package to be exactly on the provider's straight line,
- * we calculate if the provider can make a reasonable detour to pick it up.
- */
 function isReasonableDetour(
   start: Location,
   end: Location,
   pickup: Location,
   dropoff: Location,
-  maxDetourMultiplier: number = 1.5, // route can only be 50% longer than direct
+  maxDetourMultiplier: number = 1.5,
 ): boolean {
   const directDist = calculateDistance(start.latitude, start.longitude, end.latitude, end.longitude);
-  
-  // If the direct route is super short (e.g. 500m), don't match cross-city packages
+
   if (directDist < 1) return false;
 
   const leg1 = calculateDistance(start.latitude, start.longitude, pickup.latitude, pickup.longitude);
@@ -91,22 +130,14 @@ function isReasonableDetour(
 
   const detourDist = leg1 + leg2 + leg3;
 
-  // Package cannot be insanely far from the provider's start/end points
-  if (leg1 > 5 || leg3 > 5) return false; 
+  if (leg1 > 5 || leg3 > 5) return false;
 
-  // The total trip with the package must not be absurdly longer than the direct trip
-  return detourDist <= (directDist * maxDetourMultiplier);
+  return detourDist <= directDist * maxDetourMultiplier;
 }
 
 /* ------------------------------------------------------------------ */
 /* Time helpers (Manila, UTC+8)                                        */
 /* ------------------------------------------------------------------ */
-/**
- * Turn a DB timestamp into a real instant.
- *  - "2026-10-26T03:00:00Z" / "...+00:00" / "...+08:00"  -> respected as-is
- *  - "2026-10-26 11:00:00" (no zone, what scheduled_time is saved as) -> Manila time (+08:00)
- * Independent of the phone's own time zone.
- */
 const toInstant = (input: string | Date | null | undefined): Date | null => {
   if (!input) return null;
   if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
@@ -130,7 +161,6 @@ function isSameDay(time1: string | null | undefined, time2: string | null | unde
   return !!d1 && !!d2 && d1 === d2;
 }
 
-/** minutes from `from` to `to` (positive = `to` is later) */
 const minutesBetween = (from: string | Date, to: string | Date): number | null => {
   const a = toInstant(from), b = toInstant(to);
   return a && b ? (b.getTime() - a.getTime()) / 60000 : null;
@@ -173,7 +203,6 @@ async function getActiveProviderRoutes(): Promise<ProviderRoute[]> {
 /* findMatches — read-only match query                                 */
 /* ------------------------------------------------------------------ */
 const SEND_NOW_MAX_LOOKAHEAD_MINUTES = 180;
-// a route that left up to this long ago is still on the road and can take a send-now package
 const SEND_NOW_GRACE_PAST_MINUTES = 120;
 const DEBUG_MATCH = __DEV__;
 const SCHEDULED_WINDOW_MINUTES = 240;
@@ -207,20 +236,17 @@ export async function findMatches(
         continue;
       }
 
-      // 1. Spatial check (reasonable detour)
       if (!isReasonableDetour(route.start_location, route.end_location, request.pickup_location, request.dropoff_location)) {
         if (DEBUG_MATCH) console.log(`[match] ${tag}: rejected by detour/distance`);
         continue;
       }
 
-      // 2. Same day (Manila)
       if (!isSameDay(effectiveRequestTime, route.departure_time)) {
         if (DEBUG_MATCH) console.log(`[match] ${tag}: different day (${effectiveRequestTime} vs ${route.departure_time})`);
         continue;
       }
 
-      // 3. Time window
-      const diff = minutesBetween(effectiveRequestTime, route.departure_time); // + = route leaves later
+      const diff = minutesBetween(effectiveRequestTime, route.departure_time);
       if (diff == null) continue;
       const ok = isSendNow
         ? diff >= -SEND_NOW_GRACE_PAST_MINUTES && diff <= SEND_NOW_MAX_LOOKAHEAD_MINUTES
@@ -234,6 +260,152 @@ export async function findMatches(
     }
   }
   return matches;
+}
+
+/* ------------------------------------------------------------------ */
+/* getNearbyUnmatchedRequests — nearby sender routes close to provider */
+/* ------------------------------------------------------------------ */
+const MAX_PICKUP_CORRIDOR_KM = 8;   // Pickup must be within 8 km of provider's route line
+const MAX_DROPOFF_CORRIDOR_KM = 12; // Drop-off must be within 12 km of provider's route line
+
+export async function getNearbyUnmatchedRequests(
+  providerId: number,
+): Promise<NearbyRequestResult[]> {
+  try {
+    const activeRouteId = await getActiveRouteId();
+
+    // 1. Load provider's routes
+    const { data: providerRoutesRaw } = await supabase
+      .from('provider_routes')
+      .select(
+        '*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*)',
+      )
+      .eq('provider_id', providerId)
+      .order('created_at', { ascending: false });
+
+    const allProviderRoutes = (providerRoutesRaw || []) as ProviderRoute[];
+
+    // Prioritize current active route; fallback to most recent route
+    let candidateRoutes: ProviderRoute[] = [];
+    if (activeRouteId) {
+      const found = allProviderRoutes.find((r) => r.route_id === activeRouteId);
+      if (found) candidateRoutes.push(found);
+    }
+    if (candidateRoutes.length === 0 && allProviderRoutes.length > 0) {
+      candidateRoutes.push(allProviderRoutes[0]);
+    }
+
+    // Also include active delivery routes if provider has an active task
+    const { data: activeDelivs } = await supabase
+      .from('deliveries')
+      .select(
+        '*, delivery_requests:request_id(*, pickup_location:pickup_location_id(*), dropoff_location:dropoff_location_id(*))',
+      )
+      .eq('provider_id', providerId)
+      .is('completed_at', null);
+
+    const fallbackRouteId = candidateRoutes[0]?.route_id ?? allProviderRoutes[0]?.route_id ?? 0;
+    const fallbackVehicleId = candidateRoutes[0]?.vehicle_id ?? allProviderRoutes[0]?.vehicle_id ?? 0;
+
+    for (const d of activeDelivs || []) {
+      const req = d.delivery_requests;
+      if (req?.pickup_location?.latitude != null && req?.dropoff_location?.latitude != null) {
+        candidateRoutes.push({
+          route_id: d.route_id || fallbackRouteId,
+          provider_id: providerId,
+          vehicle_id: d.vehicle_id || fallbackVehicleId,
+          departure_time: req.scheduled_time || new Date().toISOString(),
+          start_location: req.pickup_location,
+          end_location: req.dropoff_location,
+        });
+      }
+    }
+
+    if (candidateRoutes.length === 0) return [];
+
+    // 2. Fetch all open Pending requests with payment held
+    const pendingRequests = await getPendingRequests();
+    if (pendingRequests.length === 0) return [];
+
+    const reqIds = pendingRequests.map((r: any) => r.request_id);
+    const { data: existingDeliveries } = await supabase
+      .from('deliveries')
+      .select('request_id')
+      .in('request_id', reqIds);
+
+    const takenIds = new Set((existingDeliveries || []).map((d: any) => d.request_id));
+
+    const results: NearbyRequestResult[] = [];
+
+    for (const req of pendingRequests) {
+      if (takenIds.has(req.request_id)) continue;
+      if (req.sender_id === providerId) continue;
+
+      const pu = req.pickup_location;
+      const dr = req.dropoff_location;
+      if (!pu || !dr || pu.latitude == null || pu.longitude == null || dr.latitude == null || dr.longitude == null) {
+        continue;
+      }
+
+      let bestMatch: NearbyRequestResult | null = null;
+
+      for (const route of candidateRoutes) {
+        const s = route.start_location;
+        const e = route.end_location;
+        if (!s || !e || s.latitude == null || s.longitude == null || e.latitude == null || e.longitude == null) {
+          continue;
+        }
+
+        const pickupDist = distanceToSegmentKm(
+          Number(pu.latitude),
+          Number(pu.longitude),
+          Number(s.latitude),
+          Number(s.longitude),
+          Number(e.latitude),
+          Number(e.longitude),
+        );
+
+        const dropoffDist = distanceToSegmentKm(
+          Number(dr.latitude),
+          Number(dr.longitude),
+          Number(s.latitude),
+          Number(s.longitude),
+          Number(e.latitude),
+          Number(e.longitude),
+        );
+
+        if (pickupDist <= MAX_PICKUP_CORRIDOR_KM && dropoffDist <= MAX_DROPOFF_CORRIDOR_KM) {
+          const directDist = calculateDistance(s.latitude, s.longitude, e.latitude, e.longitude);
+          const detourTotal =
+            calculateDistance(s.latitude, s.longitude, pu.latitude, pu.longitude) +
+            calculateDistance(pu.latitude, pu.longitude, dr.latitude, dr.longitude) +
+            calculateDistance(dr.latitude, dr.longitude, e.latitude, e.longitude);
+          const extraDetourKm = Math.max(0, detourTotal - directDist);
+
+          if (!bestMatch || pickupDist < bestMatch.pickupDistToCorridorKm) {
+            bestMatch = {
+              request: req,
+              route,
+              pickupDistToCorridorKm: pickupDist,
+              dropoffDistToCorridorKm: dropoffDist,
+              extraDetourKm,
+            };
+          }
+        }
+      }
+
+      if (bestMatch) {
+        results.push(bestMatch);
+      }
+    }
+
+    // Sort by closest pickup to provider's route
+    results.sort((a, b) => a.pickupDistToCorridorKm - b.pickupDistToCorridorKm);
+    return results;
+  } catch (error) {
+    console.error('Error fetching nearby unmatched requests:', error);
+    return [];
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,7 +623,7 @@ export async function getMatchingStats(providerId: number) {
           : '0',
     };
   } catch (error) {
-    console.error('Error getting matching stats:', error);  
+    console.error('Error getting matching stats:', error);
     return null;
   }
 }

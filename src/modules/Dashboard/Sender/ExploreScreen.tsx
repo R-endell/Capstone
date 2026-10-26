@@ -21,9 +21,20 @@ try { Location = require('expo-location'); } catch { Location = null; }
 
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
+const BLUE = '#3B82F6';
+const BLACK = '#111827';
 
 const HIDE_DEPARTED_AFTER_MIN = 180;
 const SEND_NOW_WINDOW_MIN = 60;
+
+const initials = (n?: string | null) =>
+  (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
+const splitAddress = (full?: string | null) => {
+  if (!full) return { main: 'Selected location', sub: '' };
+  const parts = full.split(', ');
+  return { main: parts[0], sub: parts.slice(1).join(', ') };
+};
 
 type Trip = {
   id: string;
@@ -34,11 +45,14 @@ type Trip = {
   rating: number;
   pickup: string;
   dropoff: string;
+  pickupSub: string;
+  dropoffSub: string;
   pickupCoords: { lat: number; lng: number };
   dropoffCoords: { lat: number; lng: number };
   timeLabel: string;
   departureTime: Date;
   vehicleType: string;
+  maxWeightKg: number | null;
 };
 
 type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'offline';
@@ -129,6 +143,11 @@ export default function ExploreScreen() {
         const end = r.end_location || {};
         const dep = r.departure_time ? new Date(r.departure_time) : new Date();
 
+        const startSplit = splitAddress(start.street_address);
+        const endSplit = splitAddress(end.street_address);
+        const startSub = [start.barangay, start.city].filter(Boolean).join(', ') || startSplit.sub;
+        const endSub = [end.barangay, end.city].filter(Boolean).join(', ') || endSplit.sub;
+
         return {
           id: String(r.route_id),
           routeId: r.route_id,
@@ -138,11 +157,14 @@ export default function ExploreScreen() {
           rating: 4.9,
           pickup: start.street_address || 'Starting point',
           dropoff: end.street_address || 'Destination',
+          pickupSub: startSub,
+          dropoffSub: endSub,
           pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },
           dropoffCoords: { lat: Number(end.latitude) || 0, lng: Number(end.longitude) || 0 },
           timeLabel: formatTimeLabel(dep),
           departureTime: dep,
           vehicleType: vehicle.vehicle_type || 'Vehicle',
+          maxWeightKg: vehicle.max_weight_kg != null ? Number(vehicle.max_weight_kg) : null,
         };
       });
 
@@ -323,86 +345,130 @@ export default function ExploreScreen() {
       case 'live':
         return { label: 'On the way · Live', color: colors.success, bg: colors.successBg, icon: 'navigate' as const };
       case 'onRoad':
-        return { label: 'On the way', color: '#0284C7', bg: isDark ? '#0C2130' : '#E0F2FE', icon: 'car-sport-outline' as const };
+        return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'car-sport-outline' as const };
       case 'soon':
         return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'time-outline' as const };
       default:
-        return { label: 'Scheduled', color: '#2563EB', bg: isDark ? '#0F2744' : '#DBEAFE', icon: 'calendar-outline' as const };
+        return { label: 'Scheduled', color: BLUE, bg: 'rgba(59,130,246,0.14)', icon: 'calendar-outline' as const };
     }
   };
 
+  /* ==================================================================== */
+  /* Providers Near You Card — TaskScreen style (oCard)                  */
+  /* ==================================================================== */
   const renderTripCard = ({ item }: { item: CardTrip }) => {
     const badge = stateBadge(item.state);
+    const pickupMain = splitAddress(item.pickup).main;
+    const dropoffMain = splitAddress(item.dropoff).main;
+
     return (
-      <TouchableOpacity style={styles.pcCard} activeOpacity={0.9} onPress={() => setTrackRouteId(item.routeId)}>
-        <View style={styles.pcHeader}>
-          <View style={styles.pcHeaderLeft}>
-            <View style={styles.pcTypeBadge}>
-              <Text style={styles.pcTypeText} numberOfLines={1}>{item.vehicleType}</Text>
+      <TouchableOpacity
+        style={styles.oCard}
+        activeOpacity={0.92}
+        onPress={() => setTrackRouteId(item.routeId)}
+      >
+        <View style={styles.oPad}>
+          {/* Top Row: Vehicle Pill + Status Pill */}
+          <View style={styles.oTopRow}>
+            <View style={styles.svcPill}>
+              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <Text style={styles.svcPillText} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
-            <View style={[styles.pcStatusBadge, { backgroundColor: badge.bg }]}>
-              <Ionicons name={badge.icon} size={12} color={badge.color} />
-              <Text style={[styles.pcStatusText, { color: badge.color }]} numberOfLines={1}>{badge.label}</Text>
+            <View style={[styles.stPill, { backgroundColor: badge.bg }]}>
+              <View style={[styles.stDot, { backgroundColor: badge.color }]} />
+              <Text style={[styles.stPillText, { color: badge.color }]}>{badge.label.toUpperCase()}</Text>
             </View>
           </View>
-          {item.distanceKm !== null && (
-            <View style={styles.pcDistChip}>
-              <Ionicons name="location-outline" size={12} color={colors.textSecondary} />
-              <Text style={styles.pcDistText}>{formatKm(item.distanceKm)} away</Text>
+
+          {/* Route Section: Ring + Dotted Line Rail */}
+          <View>
+            {[
+              { key: 'p', label: 'STARTING POINT', main: pickupMain, road: item.pickupSub, color: ORANGE },
+              { key: 'd', label: 'DESTINATION', main: dropoffMain, road: item.dropoffSub, color: BLACK },
+            ].map((r, i) => (
+              <View key={r.key} style={styles.rtRow}>
+                <View style={styles.rtRail}>
+                  <View style={[styles.rtRing, { borderColor: r.color }]}>
+                    <View style={[styles.rtRingDot, { backgroundColor: r.color }]} />
+                  </View>
+                  {i === 0 && (
+                    <View style={styles.rtDots}>
+                      {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
+                    </View>
+                  )}
+                </View>
+                <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+                  <Text style={styles.rtLabel}>{r.label}</Text>
+                  <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
+                  {!!r.road && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                      <Ionicons name="map-outline" size={12} color={colors.textMuted} />
+                      <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            ))}
+          </View>
+
+          {/* Mini Contact Row: Courier Identity + Rating */}
+          <View style={styles.oContacts}>
+            <View style={styles.mcCard}>
+              <View style={[styles.mcAvatar, { backgroundColor: BLUE }]}>
+                <Text style={styles.mcAvatarText}>{initials(item.name)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.mcRole}>COURIER PARTNER</Text>
+                <Text style={styles.mcName} numberOfLines={1}>{item.name}</Text>
+              </View>
+              <View style={styles.mcRatingBadge}>
+                <Ionicons name="star" size={13} color={colors.warning} />
+                <Text style={styles.mcRatingText}>{item.rating}</Text>
+              </View>
             </View>
+          </View>
+        </View>
+
+        {/* Footer Row: Departure Time + Capacity + Distance */}
+        <View style={styles.oFooter}>
+          <View style={styles.oChip}>
+            <Ionicons
+              name={item.state === 'scheduled' ? 'calendar-outline' : 'time-outline'}
+              size={14}
+              color={ORANGE}
+            />
+            <Text style={styles.oChipText} numberOfLines={1}>{item.timeLabel}</Text>
+          </View>
+          {item.maxWeightKg != null && (
+            <View style={styles.oChip}>
+              <Ionicons name="cube-outline" size={14} color={ORANGE} />
+              <Text style={styles.oChipText}>{item.maxWeightKg} kg</Text>
+            </View>
+          )}
+          <View style={{ flex: 1 }} />
+          {item.distanceKm !== null && (
+            <Text style={styles.oDistPrice}>{formatKm(item.distanceKm)}</Text>
           )}
         </View>
 
-        <View style={styles.pcRouteBox}>
-          <View style={styles.pcRouteRow}>
-            <View style={styles.pcDotOrange} />
-            <Text style={styles.pcRouteText} numberOfLines={1}>{item.pickup}</Text>
-          </View>
-          <View style={styles.pcConnector} />
-          <View style={styles.pcRouteRow}>
-            <View style={styles.pcDotDark} />
-            <Text style={styles.pcRouteText} numberOfLines={1}>{item.dropoff}</Text>
-          </View>
-        </View>
-
-        <View style={styles.pcContextRow}>
-          <View style={styles.pcDateBox}>
-            <Ionicons
-              name={item.state === 'scheduled' ? 'calendar-outline' : 'timer-outline'}
-              size={13}
-              color={colors.textSecondary}
-            />
-            <Text style={styles.pcContextText} numberOfLines={1}>{item.timeLabel}</Text>
-          </View>
-          <View style={styles.pcProviderPill}>
-            <Ionicons name="car-sport" size={13} color={colors.success} />
-            <Text style={styles.pcProviderText} numberOfLines={1}>{item.name}</Text>
-          </View>
-        </View>
-
-        <View style={styles.pcFooter}>
-          <View style={styles.pcRating}>
-            <Ionicons name="star" size={14} color={colors.warning} />
-            <Text style={styles.pcRatingText}>{item.rating}</Text>
-          </View>
-          <View style={styles.pcButtons}>
-            <TouchableOpacity
-              style={styles.pcTrackBtn}
-              onPress={() => setTrackRouteId(item.routeId)}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="navigate-outline" size={14} color="#FFFFFF" />
-              <Text style={styles.pcBtnText}>Track</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.pcRequestBtn}
-              onPress={() => requestAlongRoute(item)}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="paper-plane-outline" size={14} color="#FFFFFF" />
-              <Text style={styles.pcBtnText}>Request</Text>
-            </TouchableOpacity>
-          </View>
+        {/* Bottom Actions: Track + Request Delivery */}
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oChatBtn}
+            onPress={() => setTrackRouteId(item.routeId)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="navigate-outline" size={16} color={ORANGE} />
+            <Text style={styles.oChatText}>Track</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.oRouteBtn}
+            onPress={() => requestAlongRoute(item)}
+            activeOpacity={0.9}
+          >
+            <Ionicons name="paper-plane" size={16} color="#FFFFFF" />
+            <Text style={styles.oRouteText}>Request Delivery</Text>
+          </TouchableOpacity>
         </View>
       </TouchableOpacity>
     );
@@ -734,61 +800,83 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  /* Provider card: same look as the delivery cards on the Activity tab */
-  pcCard: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 8, elevation: 2,
-    borderWidth: 1, borderColor: c.border,
+  /* ================================================================== */
+  /* Providers Near You Card — TaskScreen style (oCard)                 */
+  /* ================================================================== */
+  svcPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
   },
-  pcHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  pcHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8, flexShrink: 1 },
-  pcTypeBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, flexShrink: 1 },
-  pcTypeText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
-  pcStatusBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4, flexShrink: 1 },
-  pcStatusText: { fontSize: 11, fontWeight: '800' },
-  pcDistChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.background,
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: c.divider,
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  stPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
   },
-  pcDistText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
+  stDot: { width: 7, height: 7, borderRadius: 4 },
+  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
 
-  pcRouteBox: {
-    backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
-    marginBottom: 12, borderWidth: 1, borderColor: c.divider,
+  rtRow: { flexDirection: 'row', gap: 14 },
+  rtRail: { alignItems: 'center', width: 26 },
+  rtRing: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 3,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
   },
-  pcRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  pcDotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  pcDotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary },
-  pcConnector: { width: 2, height: 10, backgroundColor: c.border, marginLeft: 3, marginVertical: 3 },
-  pcRouteText: { fontSize: 14, fontWeight: '600', color: c.textPrimary, flex: 1 },
+  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
+  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtText: { flex: 1 },
+  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
+  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
 
-  pcContextRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
-  pcDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5, flexShrink: 1 },
-  pcContextText: { fontSize: 12, color: c.textSecondary, fontWeight: '600', flexShrink: 1 },
-  pcProviderPill: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.successBg,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 5,
-    borderWidth: 1, borderColor: c.success, flexShrink: 1,
+  oCard: {
+    backgroundColor: c.card, borderRadius: 22, marginBottom: 14,
+    borderWidth: 1, borderColor: c.border, overflow: 'hidden',
   },
-  pcProviderText: { fontSize: 11, fontWeight: '700', color: c.success },
+  oPad: { padding: 16 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  mcCard: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.background, borderRadius: 14,
+    borderWidth: 1, borderColor: c.divider, padding: 10,
+  },
+  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
+  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  mcRatingBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 10,
+  },
+  mcRatingText: { fontSize: 12, fontWeight: '800', color: c.textPrimary },
 
-  pcFooter: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
+  oFooter: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14,
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
-  pcRating: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  pcRatingText: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  pcButtons: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pcTrackBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#7C3AED',
-    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, gap: 6,
+  oChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
   },
-  pcRequestBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
-    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, gap: 6,
+  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+  oDistPrice: { fontSize: 16, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oChatBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14,
   },
-  pcBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
+  oRouteBtn: {
+    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
+  },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
 
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },
   emptyText: { fontSize: 16, fontWeight: '600', color: c.textSecondary, marginTop: 12 },

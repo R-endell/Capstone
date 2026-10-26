@@ -15,7 +15,6 @@ import {
   Image,
   Animated,
   Easing,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,7 +25,8 @@ import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+const ORANGE = '#FF751F';
+const BLUE = '#3B82F6';
 
 interface Vehicle {
   vehicle_id: number;
@@ -256,7 +256,7 @@ export default function ManageVehicleScreen() {
       if (error) throw error;
 
       Alert.alert('Success', editingVehicle ? 'Vehicle updated successfully!' : 'Vehicle added successfully!', [
-        { text: 'OK', onPress: () => { resetForm(); setModalVisible(false); fetchVehicles(); } }
+        { text: 'OK', onPress: () => { resetForm(); setModalVisible(false); fetchVehicles(); } },
       ]);
     } catch (error: any) {
       console.error('Submit error:', error);
@@ -279,7 +279,7 @@ export default function ManageVehicleScreen() {
             setVehicles(prev => prev.filter(v => v.vehicle_id !== vehicle.vehicle_id));
             Alert.alert('Success', 'Vehicle deleted successfully');
           } catch (error: any) { console.error('Delete error:', error); Alert.alert('Error', error.message || 'Failed to delete vehicle'); }
-        }
+        },
       },
     ]);
   };
@@ -331,72 +331,102 @@ export default function ManageVehicleScreen() {
     outputRange: [0.95, 1],
   });
 
+  /* ==================================================================== */
+  /* Vehicle Card — TaskScreen style (oCard + tileGrid)                   */
+  /* ==================================================================== */
   const renderVehicleItem = ({ item }: { item: Vehicle }) => {
     const isVerified = item.verification_status === 'Verified';
     const isPending = item.verification_status === 'Pending';
-    const isRejected = item.verification_status === 'Rejected';
 
     const statusBg = isVerified ? colors.successBg : isPending ? colors.warningBg : colors.errorBg;
     const statusColor = isVerified ? colors.success : isPending ? colors.warning : colors.error;
-    const statusIcon: any = isVerified ? 'checkmark-circle' : isPending ? 'time' : 'close-circle';
 
     return (
-      <View style={styles.card}>
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <View style={styles.vehicleIconBox}>
-              <Ionicons name="car-sport" size={22} color={ORANGE} />
+      <TouchableOpacity
+        style={styles.oCard}
+        activeOpacity={0.92}
+        onPress={() => handleEdit(item)}
+      >
+        <View style={styles.oPad}>
+          {/* Top Row: Vehicle Type Pill + Verification Status Pill */}
+          <View style={styles.oTopRow}>
+            <View style={styles.svcPill}>
+              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <Text style={styles.svcPillText}>{item.vehicle_type}</Text>
+            </View>
+            <View style={[styles.stPill, { backgroundColor: statusBg }]}>
+              <View style={[styles.stDot, { backgroundColor: statusColor }]} />
+              <Text style={[styles.stPillText, { color: statusColor }]}>
+                {item.verification_status.toUpperCase()}
+              </Text>
+            </View>
+          </View>
+
+          {/* Plate Number Hero */}
+          <View style={styles.plateHeroRow}>
+            <View style={styles.plateIconCircle}>
+              <Ionicons name="car-sport" size={20} color={ORANGE} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.vehicleBrand} numberOfLines={1}>{item.vehicle_type}</Text>
-              <View style={styles.plateRow}>
-                <Ionicons name="pricetag-outline" size={12} color={colors.textSecondary} />
-                <Text style={styles.vehiclePlate}>{item.plate_number}</Text>
-              </View>
+              <Text style={styles.rtLabel}>PLATE NUMBER</Text>
+              <Text style={styles.plateHeroText}>{item.plate_number}</Text>
             </View>
           </View>
 
-          <View style={[styles.statusBadge, { backgroundColor: statusBg }]}>
-            <Ionicons name={statusIcon} size={12} color={statusColor} />
-            <Text style={[styles.statusText, { color: statusColor }]}>
-              {item.verification_status}
-            </Text>
+          {/* Specs Grid (TaskScreen tileGrid style) */}
+          <View style={styles.tileGrid}>
+            <View style={styles.tile}>
+              <Text style={styles.tileLabel}>MAX WEIGHT</Text>
+              <Text style={styles.tileValue}>{item.max_weight_kg} kg</Text>
+            </View>
+            <View style={styles.tile}>
+              <Text style={styles.tileLabel}>MAX VOLUME</Text>
+              <Text style={styles.tileValue}>{item.max_volume_liters} L</Text>
+            </View>
+            <View style={[styles.tile, { width: '100%' }]}>
+              <Text style={styles.tileLabel}>CARGO DIMENSIONS</Text>
+              <Text style={styles.tileValue}>
+                {item.cargo_length_cm} × {item.cargo_width_cm} × {item.cargo_height_cm} cm
+              </Text>
+            </View>
           </View>
         </View>
 
-        <View style={styles.specsRow}>
-          <View style={styles.specItem}>
-            <Ionicons name="water-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>{item.max_volume_liters}</Text>
-            <Text style={styles.specLabel}>Liters</Text>
-          </View>
-          <View style={styles.specDivider} />
-          <View style={styles.specItem}>
-            <Ionicons name="barbell-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>{item.max_weight_kg}</Text>
-            <Text style={styles.specLabel}>kg</Text>
-          </View>
-          <View style={styles.specDivider} />
-          <View style={styles.specItem}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
-            <Text style={styles.specValue}>
-              {item.cargo_length_cm}×{item.cargo_width_cm}×{item.cargo_height_cm}
+        {/* Footer Row: OR/CR Document Status */}
+        <View style={styles.oFooter}>
+          <View style={styles.oChip}>
+            <Ionicons
+              name={item.vehicle_doc ? 'document-attach-outline' : 'alert-circle-outline'}
+              size={14}
+              color={item.vehicle_doc ? ORANGE : colors.textMuted}
+            />
+            <Text style={styles.oChipText}>
+              {item.vehicle_doc ? 'OR/CR Document Attached' : 'No OR/CR Document'}
             </Text>
-            <Text style={styles.specLabel}>cm</Text>
           </View>
+          <View style={{ flex: 1 }} />
         </View>
 
-        <View style={styles.cardFooter}>
-          <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)} activeOpacity={0.85}>
-            <Ionicons name="create-outline" size={14} color={ORANGE} />
-            <Text style={styles.editBtnText}>Edit</Text>
+        {/* Bottom Actions: Delete + Edit Vehicle */}
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oDeleteBtn}
+            onPress={() => handleDelete(item)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="trash-outline" size={16} color={colors.error} />
+            <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)} activeOpacity={0.85}>
-            <Ionicons name="trash-outline" size={14} color={colors.error} />
-            <Text style={styles.deleteBtnText}>Delete</Text>
+          <TouchableOpacity
+            style={styles.oRouteBtn}
+            onPress={() => handleEdit(item)}
+            activeOpacity={0.9}
+          >
+            <Ionicons name="create-outline" size={16} color="#FFFFFF" />
+            <Text style={styles.oRouteText}>Edit Vehicle</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -415,7 +445,7 @@ export default function ManageVehicleScreen() {
           </Text>
         </View>
         <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-          <Ionicons name="add" size={22} color={ORANGE} />
+          <Ionicons name="add" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
 
@@ -427,7 +457,7 @@ export default function ManageVehicleScreen() {
       ) : vehicles.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
           <View style={styles.emptyIconCircle}>
-            <Ionicons name="car-outline" size={40} color={ORANGE} />
+            <Ionicons name="car-outline" size={34} color={ORANGE} />
           </View>
           <Text style={styles.emptyTitle}>No vehicles yet</Text>
           <Text style={styles.emptySubtitle}>
@@ -461,6 +491,7 @@ export default function ManageVehicleScreen() {
       >
         <View style={styles.modalOverlay}>
           <Animated.View style={[styles.modalContainer, { transform: [{ scale: modalScale }], opacity: modalAnim }]}>
+            <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn} activeOpacity={0.85}>
                 <Ionicons name="close" size={20} color={colors.textPrimary} />
@@ -659,30 +690,29 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderColor: c.border,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 22,
     fontWeight: '800',
     color: c.textPrimary,
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
   },
   headerSubtitle: {
     fontSize: 13,
     color: c.textSecondary,
     fontWeight: '500',
+    marginTop: 1,
   },
   headerAddBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: c.accentSoft,
+    backgroundColor: ORANGE,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: ORANGE,
   },
 
   listContent: {
     paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingTop: 16,
     paddingBottom: 40,
   },
   loadingContainer: {
@@ -705,13 +735,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 40,
   },
   emptyIconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     backgroundColor: c.accentSoft,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: c.border,
   },
   emptyTitle: {
     fontSize: 18,
@@ -723,9 +755,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontSize: 13,
     color: c.textSecondary,
     textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 24,
-    lineHeight: 18,
+    marginTop: 6,
+    marginBottom: 20,
+    lineHeight: 19,
   },
   emptyAddBtn: {
     flexDirection: 'row',
@@ -733,164 +765,175 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: ORANGE,
     paddingHorizontal: 22,
     paddingVertical: 13,
-    borderRadius: 24,
+    borderRadius: 14,
     gap: 8,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
   },
   emptyAddBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    fontWeight: '800',
   },
 
-  card: {
+  /* TaskScreen Card & Tile Grid Styles */
+  oCard: {
     backgroundColor: c.card,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3,
-    shadowRadius: 8,
-    elevation: 2,
+    borderRadius: 22,
+    marginBottom: 14,
     borderWidth: 1,
     borderColor: c.border,
+    overflow: 'hidden',
   },
-  cardHeader: {
+  oPad: { padding: 16 },
+  oTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    marginBottom: 16,
   },
-  cardHeaderLeft: {
+  svcPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    flex: 1,
-    marginRight: 8,
-  },
-  vehicleIconBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    backgroundColor: c.accentSoft,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  vehicleBrand: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: c.textPrimary,
-    letterSpacing: -0.2,
-  },
-  plateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 3,
-  },
-  vehiclePlate: {
-    fontSize: 12,
-    color: c.textSecondary,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(59,130,246,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(59,130,246,0.35)',
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-    gap: 4,
+    paddingVertical: 6,
+    borderRadius: 8,
   },
-  statusText: {
-    fontSize: 11,
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  stPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  stDot: { width: 7, height: 7, borderRadius: 4 },
+  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+
+  plateHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
+  plateIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: c.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rtLabel: {
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    color: c.textMuted,
+    letterSpacing: 0.8,
+  },
+  plateHeroText: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: c.textPrimary,
+    letterSpacing: 0.5,
+    marginTop: 1,
   },
 
-  specsRow: {
+  tileGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  tile: {
+    width: '48%',
+    flexGrow: 1,
     backgroundColor: c.background,
-    borderRadius: 12,
-    paddingVertical: 12,
-    marginBottom: 14,
     borderWidth: 1,
     borderColor: c.divider,
+    borderRadius: 14,
+    padding: 12,
   },
-  specItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 3,
-  },
-  specValue: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: c.textPrimary,
-    letterSpacing: -0.2,
-  },
-  specLabel: {
+  tileLabel: {
     fontSize: 10,
-    color: c.textSecondary,
-    fontWeight: '600',
-    letterSpacing: 0.3,
+    fontWeight: '800',
+    color: c.textMuted,
+    letterSpacing: 0.8,
   },
-  specDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: c.border,
+  tileValue: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: c.textPrimary,
+    marginTop: 4,
   },
 
-  cardFooter: {
+  oFooter: {
     flexDirection: 'row',
-    gap: 10,
-    paddingTop: 12,
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: c.background,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     borderTopWidth: 1,
     borderTopColor: c.divider,
   },
-  editBtn: {
-    flex: 1,
+  oChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: c.accentSoft,
-    paddingVertical: 10,
-    borderRadius: 12,
     gap: 6,
+    backgroundColor: c.card,
     borderWidth: 1,
-    borderColor: ORANGE,
+    borderColor: c.border,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
-  editBtnText: {
-    color: ORANGE,
+  oChipText: {
     fontSize: 13,
     fontWeight: '700',
-    letterSpacing: 0.2,
-  },
-  deleteBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: c.errorBg,
-    paddingVertical: 10,
-    borderRadius: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: c.error,
-  },
-  deleteBtnText: {
-    color: c.error,
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    color: c.textPrimary,
   },
 
+  oActions: {
+    flexDirection: 'row',
+    gap: 10,
+    padding: 14,
+    borderTopWidth: 1,
+    borderTopColor: c.divider,
+  },
+  oDeleteBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: c.errorBg,
+    borderRadius: 14,
+    paddingVertical: 14,
+  },
+  oDeleteText: {
+    color: c.error,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  oRouteBtn: {
+    flex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: ORANGE,
+    borderRadius: 14,
+    paddingVertical: 14,
+  },
+  oRouteText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+
+  /* Modal Styles */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.55)',
@@ -902,11 +945,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderTopRightRadius: 28,
     paddingTop: 8,
     maxHeight: '94%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.15 : 0.5,
-    shadowRadius: 20,
-    elevation: 12,
+  },
+  modalHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: c.border,
+    marginTop: 6,
+    marginBottom: 6,
   },
   modalHeader: {
     flexDirection: 'row',
@@ -926,7 +973,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
   },
   modalTitle: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '800',
     color: c.textPrimary,
     letterSpacing: -0.2,
@@ -939,11 +986,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   formSection: { marginBottom: 20 },
   sectionLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
     color: c.textPrimary,
     marginBottom: 10,
-    letterSpacing: 0.2,
+    letterSpacing: 0.3,
   },
   typeGridScroll: {
     paddingRight: 20,
@@ -958,28 +1005,26 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderColor: c.border,
   },
   typeBtnActive: {
-    backgroundColor: ORANGE,
+    backgroundColor: c.accentSoft,
     borderColor: ORANGE,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 3,
   },
   typeBtnText: {
     fontSize: 13,
     color: c.textSecondary,
     fontWeight: '700',
   },
-  typeBtnTextActive: { color: '#FFFFFF' },
+  typeBtnTextActive: {
+    color: ORANGE,
+    fontWeight: '800',
+  },
 
   formField: { marginBottom: 18 },
   inputLabel: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
     color: c.textPrimary,
     marginBottom: 8,
-    letterSpacing: 0.2,
+    letterSpacing: 0.3,
   },
   inputLabelSmall: {
     fontSize: 11,
@@ -991,8 +1036,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: c.card,
-    borderWidth: 1.5,
+    backgroundColor: c.background,
+    borderWidth: 1,
     borderColor: c.border,
     borderRadius: 14,
   },
@@ -1009,8 +1054,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontWeight: '600',
   },
   textInputCompact: {
-    backgroundColor: c.card,
-    borderWidth: 1.5,
+    backgroundColor: c.background,
+    borderWidth: 1,
     borderColor: c.border,
     borderRadius: 12,
     paddingVertical: 12,
@@ -1117,24 +1162,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: ORANGE,
     paddingVertical: 16,
-    borderRadius: 16,
+    borderRadius: 14,
     marginTop: 12,
     gap: 8,
-    shadowColor: ORANGE,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 5,
   },
   submitBtnDisabled: {
     backgroundColor: c.textMuted,
-    shadowOpacity: 0,
-    elevation: 0,
   },
   submitBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    fontWeight: '900',
   },
 });
