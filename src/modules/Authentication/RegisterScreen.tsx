@@ -12,10 +12,11 @@ import * as Location from 'expo-location';
 import { decode } from 'base64-arraybuffer';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { GOOGLE_MAP_ID } from '../../utils/mapConfig';
 
 const ORANGE = '#F27024';
 const COOLDOWN_SECONDS = 60;
@@ -50,7 +51,7 @@ export default function RegisterScreen() {
   const [isMapVisible, setIsMapVisible] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [mapCenter, setMapCenter] = useState({ lat: 10.3157, lng: 123.8854 }); // Default to Cebu
-  const mapWebViewRef = useRef<WebView>(null);
+  const mapRef = useRef<MapView>(null);
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -147,17 +148,6 @@ export default function RegisterScreen() {
   };
 
   // --- MAP LOGIC ---
-  const handleMapMessage = async (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'MOVE_END' && data.latitude && data.longitude) {
-        setMapCenter({ lat: data.latitude, lng: data.longitude });
-      }
-    } catch (error) {
-      console.warn('Map message error:', error);
-    }
-  };
-
   const handleLocateMe = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -169,13 +159,14 @@ export default function RegisterScreen() {
       const newCoords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
       
       setMapCenter(newCoords);
-      if (mapWebViewRef.current) {
-        mapWebViewRef.current.injectJavaScript(`
-          if (window.map) {
-            window.map.setView([${newCoords.lat}, ${newCoords.lng}], 16);
-          }
-          true;
-        `);
+      
+      if (mapRef.current) {
+        mapRef.current.animateToRegion({
+          latitude: newCoords.lat,
+          longitude: newCoords.lng,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }, 500);
       }
     } catch {
       Alert.alert('Error', 'Could not fetch your current location.');
@@ -226,37 +217,6 @@ export default function RegisterScreen() {
       setIsGeocoding(false);
     }
   };
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', { zoomControl: false }).setView([${mapCenter.lat}, ${mapCenter.lng}], 16);
-          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-
-          window.map.on('moveend', function() {
-            var center = window.map.getCenter();
-            window.ReactNativeWebView.postMessage(JSON.stringify({
-              type: 'MOVE_END',
-              latitude: center.lat,
-              longitude: center.lng
-            }));
-          });
-        </script>
-      </body>
-    </html>
-  `;
 
   // --- SIGN UP ---
   const handleSignUp = async () => {
@@ -525,7 +485,7 @@ export default function RegisterScreen() {
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
-                      <Image source={require('../../../assets/Pack-N-Ship-Logo2.png')} style={styles.logoImage} resizeMode="contain" />
+                      <Image source={require('../../../assets/appiconfinal2.png')} style={styles.logoImage} resizeMode="contain" />
                       <Text style={styles.brandText}>Pack-<Text style={styles.brandTextOrange}>N-Ship</Text></Text>
                     </View>
                     <Text style={styles.header}>Create Account</Text>
@@ -620,17 +580,25 @@ export default function RegisterScreen() {
       {/* MAP MODAL */}
       <Modal visible={isMapVisible} animationType="slide" transparent={false}>
         <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <WebView
-            ref={mapWebViewRef}
-            originWhitelist={['*']}
-            source={{ html: mapHtml }}
-            style={{ flex: 1, backgroundColor: 'transparent' }}
-            onMessage={handleMapMessage}
-            androidLayerType="hardware"
-            overScrollMode="never"
-            bounces={false}
-            javaScriptEnabled
-            domStorageEnabled
+          <MapView
+            ref={mapRef}
+            provider={PROVIDER_GOOGLE}
+            style={{ flex: 1 }}
+            googleMapId={GOOGLE_MAP_ID}
+            userInterfaceStyle="light"
+            initialRegion={{
+              latitude: mapCenter.lat,
+              longitude: mapCenter.lng,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }}
+            onRegionChangeComplete={(region) => {
+              setMapCenter({ lat: region.latitude, lng: region.longitude });
+            }}
+            showsUserLocation={true}
+            showsMyLocationButton={false}
+            showsCompass={false}
+            toolbarEnabled={false}
           />
           
           <View style={styles.mapPinContainer} pointerEvents="none">
@@ -694,8 +662,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
-  logoImage: { width: 54, height: 54 },
-  brandText: { fontSize: 22, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3 },
+  logoImage: { width: 64, height: 64 },
+  brandText: { fontSize: 25, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3, marginLeft: -12 },
   brandTextOrange: { color: ORANGE },
   header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
   subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },

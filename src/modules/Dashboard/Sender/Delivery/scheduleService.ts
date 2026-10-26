@@ -120,6 +120,12 @@ function formatScheduledTimeForDB(val: Date | string | null | undefined): string
   return null;
 }
 
+/** Trim a driver note and cap it at 200 characters; empty -> null. */
+function cleanNote(v: unknown): string | null {
+  const t = typeof v === 'string' ? v.trim().slice(0, 200) : '';
+  return t.length ? t : null;
+}
+
 async function resolveRateIdForDropoffType(dropoffType?: string | null): Promise<number> {
   const isDoorToDoor = /door/i.test(String(dropoffType || ''));
   const { data: rate } = await supabase
@@ -269,6 +275,8 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
       rate_id: resolvedRateId,
       sender_id: dbUserId,
       cargo_id: cargo!.cargo_id,
+      pickup_note: cleanNote(pickup?.note),
+      dropoff_note: cleanNote(dropoff?.note),
     })
     .select()
     .single();
@@ -375,6 +383,8 @@ export async function updateScheduleInDB(
 
       receiver_id: receiverId,
       receiver_phone: receiverPhone,
+      pickup_note: cleanNote(pickup?.note),
+      dropoff_note: cleanNote(dropoff?.note),
     })
     .eq('request_id', existingIds.requestId);
 }

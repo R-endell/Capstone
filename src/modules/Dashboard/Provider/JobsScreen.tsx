@@ -1,13 +1,13 @@
 // src/modules/Dashboard/Provider/JobsScreen.tsx
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Image, TouchableOpacity, Switch,
+  View, Text, StyleSheet, Image, TouchableOpacity,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
-  Animated, Easing, Linking, StatusBar, FlatList, Pressable,
+  Animated, Easing, Linking, StatusBar, FlatList, Pressable, Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { WebView } from 'react-native-webview';
+import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -18,10 +18,15 @@ import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { MAP_PROPS } from '../../../utils/mapConfig';
+import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
+import { isRouteExpired } from './Manage/ManageRoutesScreen';
 
 const ORANGE = '#FF751F';
+const GREEN = '#10B981';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 interface Location {
   location_id?: number;
@@ -79,6 +84,8 @@ interface JobRequest {
   estimated_cost: number;
   pickup: JobPlace;
   dropoff: JobPlace;
+  pickupNote: string | null;
+  dropoffNote: string | null;
   items: JobItem[];
   totalItems: number;
   weightKg: number | null;
@@ -110,6 +117,13 @@ const parseNaiveIsoString = (s: string): Date => {
     parseInt(parts[3], 10),
     parseInt(parts[4], 10),
   );
+};
+
+const nextWeekday = (weekday: number, from = new Date()): Date => {
+  const d = new Date(from);
+  const diff = (weekday - d.getDay() + 7) % 7;
+  d.setDate(d.getDate() + diff);
+  return d;
 };
 
 const randToken = (len = 16) => {
@@ -244,6 +258,8 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
     estimated_cost: Number(r.estimated_cost) || 0,
     pickup: { ...pu, lat: r.pickup_location?.latitude ?? null, lng: r.pickup_location?.longitude ?? null },
     dropoff: { ...dr, lat: r.dropoff_location?.latitude ?? null, lng: r.dropoff_location?.longitude ?? null },
+    pickupNote: r.pickup_note || null,
+    dropoffNote: r.dropoff_note || null,
     items,
     totalItems: Array.isArray(itemsJson) && itemsJson.length > 0 ? itemsJson.length : (boxTotal || 1),
     weightKg: Number(cargo?.total_weight_kg) || null,
@@ -255,223 +271,278 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
 };
 
 /* ==================================================================== */
-/* RouteMap — plain OpenStreetMap light tiles only                      */
+/* Map helpers                                                          */
 /* ==================================================================== */
-const RouteMap = ({ startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E' }: any) => {
-  const lat = startLat ?? endLat ?? 10.3157;
-  const lng = startLng ?? endLng ?? 123.8854;
+const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
 
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-          .marker-start { background: #FF751F; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
-          .marker-end { background: #111827; border: 3px solid white; border-radius: 50%; width: 24px; height: 24px; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var map = L.map('map', { zoomControl: false, attributionControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false }).setView([${lat}, ${lng}], 13);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const mapStyles = StyleSheet.create({
+  mkDot: {
+    width: 26, height: 26, borderRadius: 13,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+  },
+  mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
+  zoneBadge: {
+    backgroundColor: '#FFFFFF', borderRadius: 10,
+    paddingHorizontal: 7, paddingVertical: 2,
+    borderWidth: 1, borderColor: '#FFD2B0',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15, shadowRadius: 2, elevation: 1,
+  },
+  zoneBadgeText: { fontSize: 10, fontWeight: '800', color: '#9A4A12' },
+  meMarker: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  meHalo: {
+    position: 'absolute', width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,117,31,0.25)',
+  },
+  meDot: {
+    position: 'absolute', left: 11, top: 11,
+    width: 22, height: 22, borderRadius: 11,
+    backgroundColor: '#FF751F', borderWidth: 3, borderColor: '#FFFFFF',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35, shadowRadius: 4, elevation: 3,
+  },
+  meArrowWrap: { position: 'absolute', width: 44, height: 44 },
+  meArrow: {
+    position: 'absolute', left: 17, top: -4,
+    width: 0, height: 0,
+    borderLeftWidth: 5, borderRightWidth: 5, borderBottomWidth: 10,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
+    borderBottomColor: '#FF751F',
+  },
+});
 
-          ${startLat && startLng ? `
-            L.marker([${startLat},${startLng}], { icon: L.divIcon({className: 'marker-start', html: '${startLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
-          ${endLat && endLng ? `
-            L.marker([${endLat},${endLng}], { icon: L.divIcon({className: 'marker-end', html: '${endLabel}', iconSize: [24, 24], iconAnchor: [12, 12]}) }).addTo(map);
-          ` : ''}
-
-          ${startLat && startLng && endLat && endLng ? `
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + ${startLng} + ',' + ${startLat} + ';'
-              + ${endLng} + ',' + ${endLat}
-              + '?overview=full&geometries=geojson';
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  L.polyline(latlngs, { color: '#FF751F', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round' }).addTo(map);
-                  map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] });
-                } else {
-                  L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                  map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-                }
-              })
-              .catch(function() {
-                L.polyline([[${startLat},${startLng}], [${endLat},${endLng}]], { color: '#FF751F', weight: 4, opacity: 0.6, dashArray: '8, 8' }).addTo(map);
-                map.fitBounds(L.latLngBounds([[${startLat},${startLng}], [${endLat},${endLng}]]), { padding: [40, 40] });
-              });
-          ` : ''}
-        </script>
-      </body>
-    </html>
-  `;
-
-  return (
-    <WebView
-      originWhitelist={['*']}
-      source={{ html: mapHtml }}
-      style={{ flex: 1, backgroundColor: 'transparent' }}
-      scrollEnabled={false}
-      androidLayerType="hardware"
-      javaScriptEnabled
-      domStorageEnabled
-    />
-  );
+const fetchRoadCoords = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<{ latitude: number; longitude: number }[]> => {
+  const fallback = [
+    { latitude: a.lat, longitude: a.lng },
+    { latitude: b.lat, longitude: b.lng },
+  ];
+  try {
+    const url =
+      `https://router.project-osrm.org/route/v1/driving/` +
+      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
+      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+        latitude: c[1],
+        longitude: c[0],
+      }));
+    }
+  } catch { /* fall through */ }
+  return fallback;
 };
 
 /* ==================================================================== */
-/* ProviderMap — plain OpenStreetMap light tiles only                   */
+/* ProviderMap                                                          */
 /* ==================================================================== */
-const PROVIDER_MAP_HTML = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <style>
-      html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #EEF0F2; }
-      .me { position: relative; width: 44px; height: 44px; }
-      .me .halo { position: absolute; left: 0; top: 0; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,117,31,0.25); animation: pulse 2s ease-out infinite; }
-      .me .dot { position: absolute; left: 11px; top: 11px; width: 22px; height: 22px; border-radius: 50%; background: #FF751F; border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
-      .me .head { position: absolute; left: 0; top: 0; width: 44px; height: 44px; }
-      .me .head:after { content: ''; position: absolute; left: 17px; top: -4px; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 10px solid #FF751F; }
-      @keyframes pulse { 0% { transform: scale(0.5); opacity: 0.9; } 100% { transform: scale(1.5); opacity: 0; } }
-      .mk { width: 26px; height: 26px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; font: 700 11px sans-serif; color: #fff; }
-      .mk.p { background: #FF751F; } .mk.d { background: #111827; } .mk.s { background: #3B82F6; } .mk.e { background: #EF4444; }
-      .zone { background: #fff; border-radius: 10px; padding: 2px 7px; font: 800 10px sans-serif; color: #9A4A12; border: 1px solid #FFD2B0; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
-    </style>
-  </head>
-  <body>
-    <div id="map"></div>
-    <script>
-      var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([10.3157, 123.8854], 14);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, online = true }: any) => {
+  const mapRef = useRef<MapView>(null);
+  const haloAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!online) { haloAnim.setValue(0); return; }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(haloAnim, { toValue: 1, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
+        Animated.timing(haloAnim, { toValue: 0, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [online, haloAnim]);
+  const haloScale = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.3] });
+  const haloOpacity = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [orderCoords, setOrderCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
-      var meMarker = null;
-      var routeLayer = L.layerGroup().addTo(map);
-      var orderLayer = L.layerGroup().addTo(map);
-      var demandLayer = L.layerGroup().addTo(map);
-      var firstFix = true, lastTick = 0, routeKey = '', orderKey = '', demandKey = '';
-
-      function meIcon(h) {
-        var head = (h === null || h === undefined || isNaN(h)) ? '' : '<div class="head" style="transform: rotate(' + h + 'deg)"></div>';
-        return L.divIcon({ className: '', html: '<div class="me"><div class="halo"></div>' + head + '<div class="dot"></div></div>', iconSize: [44, 44], iconAnchor: [22, 22] });
-      }
-      function mk(cls, t) {
-        return L.divIcon({ className: '', html: '<div class="mk ' + cls + '">' + t + '</div>', iconSize: [26, 26], iconAnchor: [13, 13] });
-      }
-      function drawRoad(layer, a, b, style) {
-        var url = 'https://router.project-osrm.org/route/v1/driving/' + a.lng + ',' + a.lat + ';' + b.lng + ',' + b.lat + '?overview=full&geometries=geojson';
-        fetch(url).then(function (r) { return r.json(); }).then(function (d) {
-          if (d.code === 'Ok' && d.routes && d.routes.length) {
-            var pts = d.routes[0].geometry.coordinates.map(function (c) { return [c[1], c[0]]; });
-            L.polyline(pts, style).addTo(layer);
-          } else {
-            L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
-          }
-        }).catch(function () {
-          L.polyline([[a.lat, a.lng], [b.lat, b.lng]], Object.assign({ dashArray: '8, 8' }, style)).addTo(layer);
-        });
-      }
-      function fit(points, padBottom) {
-        if (!points.length) return;
-        if (points.length === 1) { map.setView(points[0], 16); return; }
-        map.fitBounds(L.latLngBounds(points), { paddingTopLeft: [30, 170], paddingBottomRight: [30, padBottom || 260], maxZoom: 16 });
-      }
-
-      window.updateState = function (s) {
-        try {
-          var me = s.provider ? [s.provider.lat, s.provider.lng] : null;
-          if (me) {
-            if (!meMarker) meMarker = L.marker(me, { icon: meIcon(s.provider.heading), zIndexOffset: 1000 }).addTo(map);
-            else { meMarker.setLatLng(me); meMarker.setIcon(meIcon(s.provider.heading)); }
-          }
-
-          var rk = s.route ? [s.route.start.lat, s.route.start.lng, s.route.end.lat, s.route.end.lng].join(',') : '';
-          if (rk !== routeKey) {
-            routeKey = rk; routeLayer.clearLayers();
-            if (s.route) {
-              L.marker([s.route.start.lat, s.route.start.lng], { icon: mk('s', 'S') }).addTo(routeLayer);
-              L.marker([s.route.end.lat, s.route.end.lng], { icon: mk('e', 'E') }).addTo(routeLayer);
-              drawRoad(routeLayer, s.route.start, s.route.end, { color: '#3B82F6', weight: 5, opacity: 0.7 });
-            }
-          }
-
-          var ok = s.order ? [s.order.pickup.lat, s.order.pickup.lng, s.order.dropoff.lat, s.order.dropoff.lng].join(',') : '';
-          if (ok !== orderKey) {
-            orderKey = ok; orderLayer.clearLayers();
-            if (s.order) {
-              L.marker([s.order.pickup.lat, s.order.pickup.lng], { icon: mk('p', 'P') }).addTo(orderLayer);
-              L.marker([s.order.dropoff.lat, s.order.dropoff.lng], { icon: mk('d', 'D') }).addTo(orderLayer);
-              drawRoad(orderLayer, s.order.pickup, s.order.dropoff, { color: '#FF751F', weight: 6, opacity: 0.9 });
-              if (me) L.polyline([me, [s.order.pickup.lat, s.order.pickup.lng]], { color: '#111827', weight: 3, opacity: 0.5, dashArray: '6, 8' }).addTo(orderLayer);
-              var pts = [[s.order.pickup.lat, s.order.pickup.lng], [s.order.dropoff.lat, s.order.dropoff.lng]];
-              if (me) pts.push(me);
-              fit(pts, s.padBottom);
-            } else if (me) {
-              map.setView(me, 15);
-            }
-          }
-
-          var dk = (s.demand && me) ? me[0].toFixed(2) + ',' + me[1].toFixed(2) : '';
-          if (dk !== demandKey) {
-            demandKey = dk; demandLayer.clearLayers();
-            if (dk) {
-              var zones = [[0.007, 0.005, 1, '1.8x'], [-0.006, 0.008, 0.6, '1.4x'], [0.004, -0.009, 0.8, '1.6x'], [-0.008, -0.005, 0.3, '1.1x']];
-              zones.forEach(function (z) {
-                var c = [me[0] + z[0], me[1] + z[1]];
-                L.circle(c, { radius: 450 + z[2] * 300, color: '#FF751F', weight: 1, fillColor: '#FF751F', fillOpacity: 0.1 + z[2] * 0.2 }).addTo(demandLayer);
-                L.marker(c, { icon: L.divIcon({ className: '', html: '<div class="zone">' + z[3] + ' demand</div>', iconSize: [78, 18], iconAnchor: [39, 9] }) }).addTo(demandLayer);
-              });
-            }
-          }
-
-          if (firstFix && me && !s.order) { firstFix = false; map.setView(me, 15); }
-          if (s.tick !== lastTick) { lastTick = s.tick; if (me) map.setView(me, 16, { animate: true }); }
-        } catch (e) {}
-      };
-    </script>
-  </body>
-</html>
-`;
-
-const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom }: any) => {
-  const ref = useRef<WebView>(null);
-  const [ready, setReady] = useState(false);
-  const payload = JSON.stringify({ provider, route, order, demand, tick: recenterTick, padBottom });
+  const lastRouteKey = useRef('');
+  const lastOrderKey = useRef('');
+  const lastFitKey = useRef('');
+  const firstFix = useRef(true);
 
   useEffect(() => {
-    if (!ready) return;
-    ref.current?.injectJavaScript(`window.updateState && window.updateState(${payload}); true;`);
-  }, [ready, payload]);
+    if (!route) { setRouteCoords([]); lastRouteKey.current = ''; return; }
+    const key = `${route.start.lat},${route.start.lng},${route.end.lat},${route.end.lng}`;
+    if (key === lastRouteKey.current) return;
+    lastRouteKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(route.start, route.end);
+      if (!cancelled) setRouteCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng]);
+
+  useEffect(() => {
+    if (!order) { setOrderCoords([]); lastOrderKey.current = ''; return; }
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastOrderKey.current) return;
+    lastOrderKey.current = key;
+
+    let cancelled = false;
+    (async () => {
+      const coords = await fetchRoadCoords(order.pickup, order.dropoff);
+      if (!cancelled) setOrderCoords(coords);
+    })();
+    return () => { cancelled = true; };
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  useEffect(() => {
+    if (!order) return;
+    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (key === lastFitKey.current) return;
+    lastFitKey.current = key;
+
+    const pts: { latitude: number; longitude: number }[] = [
+      { latitude: order.pickup.lat, longitude: order.pickup.lng },
+      { latitude: order.dropoff.lat, longitude: order.dropoff.lng },
+    ];
+    if (provider) pts.push({ latitude: provider.lat, longitude: provider.lng });
+
+    const t = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(pts, {
+        edgePadding: { top: 120, right: 70, bottom: padBottom || 260, left: 30 },
+        animated: true,
+      });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+
+  useEffect(() => {
+    if (!provider || order) return;
+    if (!firstFix.current) return;
+    firstFix.current = false;
+
+    const t = setTimeout(() => {
+      mapRef.current?.animateToRegion(
+        { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
+        500,
+      );
+    }, 150);
+    return () => clearTimeout(t);
+  }, [provider?.lat, provider?.lng, order]);
+
+  useEffect(() => {
+    if (!recenterTick || !provider) return;
+    mapRef.current?.animateToRegion(
+      { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+      400,
+    );
+  }, [recenterTick]);
+
+  const demandZones = provider && demand
+    ? [
+        { dLat: 0.007, dLng: 0.005, mult: 1.8, label: '1.8x' },
+        { dLat: -0.006, dLng: 0.008, mult: 1.4, label: '1.4x' },
+        { dLat: 0.004, dLng: -0.009, mult: 1.6, label: '1.6x' },
+        { dLat: -0.008, dLng: -0.005, mult: 1.1, label: '1.1x' },
+      ]
+    : [];
 
   return (
-    <WebView
-      ref={ref}
-      originWhitelist={['*']}
-      source={{ html: PROVIDER_MAP_HTML }}
-      style={{ flex: 1, backgroundColor: '#EEF0F2' }}
-      javaScriptEnabled
-      domStorageEnabled
-      androidLayerType="hardware"
-      onLoadEnd={() => setReady(true)}
-    />
+    <MapView
+      ref={mapRef}
+      {...MAP_PROPS}
+      style={{ flex: 1 }}
+      initialRegion={{
+        latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
+        longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
+        latitudeDelta: 0.03,
+        longitudeDelta: 0.03,
+      }}
+      showsUserLocation={false}
+      showsMyLocationButton={false}
+      showsCompass={false}
+      toolbarEnabled={false}
+    >
+      {demandZones.map((z, i) => {
+        const center = { latitude: provider.lat + z.dLat, longitude: provider.lng + z.dLng };
+        return (
+          <React.Fragment key={`dz-${i}`}>
+            <Circle center={center} radius={450 + z.mult * 300} strokeColor="rgba(255,117,31,0.9)" strokeWidth={1} fillColor="rgba(255,117,31,0.25)" />
+            <Marker coordinate={center} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+              <View style={mapStyles.zoneBadge}>
+                <Text style={mapStyles.zoneBadgeText}>{z.label} demand</Text>
+              </View>
+            </Marker>
+          </React.Fragment>
+        );
+      })}
+
+      {route && (
+        <>
+          <Marker coordinate={{ latitude: route.start.lat, longitude: route.start.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[mapStyles.mkDot, { backgroundColor: '#3B82F6' }]}>
+              <Text style={mapStyles.mkDotText}>S</Text>
+            </View>
+          </Marker>
+          <Marker coordinate={{ latitude: route.end.lat, longitude: route.end.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[mapStyles.mkDot, { backgroundColor: '#EF4444' }]}>
+              <Text style={mapStyles.mkDotText}>E</Text>
+            </View>
+          </Marker>
+          {routeCoords.length > 1 && (
+            <Polyline coordinates={routeCoords} strokeColor="#3B82F6" strokeWidth={4} />
+          )}
+        </>
+      )}
+
+      {order && (
+        <>
+          <Marker coordinate={{ latitude: order.pickup.lat, longitude: order.pickup.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+              <Text style={mapStyles.mkDotText}>P</Text>
+            </View>
+          </Marker>
+          <Marker coordinate={{ latitude: order.dropoff.lat, longitude: order.dropoff.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+              <Text style={mapStyles.mkDotText}>D</Text>
+            </View>
+          </Marker>
+          {orderCoords.length > 1 && (
+            <Polyline coordinates={orderCoords} strokeColor={ORANGE} strokeWidth={5} />
+          )}
+          {provider && (
+            <Polyline
+              coordinates={[
+                { latitude: provider.lat, longitude: provider.lng },
+                { latitude: order.pickup.lat, longitude: order.pickup.lng },
+              ]}
+              strokeColor="#111827"
+              strokeWidth={2}
+              lineDashPattern={[6, 8]}
+            />
+          )}
+        </>
+      )}
+
+      {provider && (
+        <Marker coordinate={{ latitude: provider.lat, longitude: provider.lng }} anchor={{ x: 0.5, y: 0.5 }} flat tracksViewChanges>
+          <View style={mapStyles.meMarker}>
+            <Animated.View style={[mapStyles.meHalo, !online && { backgroundColor: 'rgba(100,116,139,0.22)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
+            {provider.heading != null && (
+              <View style={[mapStyles.meArrowWrap, { transform: [{ rotate: `${provider.heading}deg` }] }]}>
+                <View style={mapStyles.meArrow} />
+              </View>
+            )}
+            <View style={[mapStyles.meDot, !online && { backgroundColor: '#64748B' }]} />
+          </View>
+        </Marker>
+      )}
+    </MapView>
   );
 };
 
-/* ==================================================================== */
-/* JobsScreen                                                           */
-/* ==================================================================== */
+const BLUE = '#3B82F6';
+const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
+
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -488,11 +559,12 @@ export default function JobsScreen() {
 
   const [requests, setRequests] = useState<JobRequest[]>([]);
   const [checkingMatches, setCheckingMatches] = useState(false);
-  const [selectedRequest, setSelectedRequest] = useState<JobRequest | null>(null);
-  const selectedIdRef = useRef<number | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
+
+  // Full-screen details for an offer
+  const [detailRequestId, setDetailRequestId] = useState<number | null>(null);
 
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
 
@@ -503,10 +575,13 @@ export default function JobsScreen() {
 
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
   const [offerSecondsLeft, setOfferSecondsLeft] = useState(OFFER_SECONDS);
+  const [todayStats, setTodayStats] = useState<{ count: number; earned: number; rating: number | null }>({ count: 0, earned: 0, rating: null });
 
   const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
   const [departureDate, setDepartureDate] = useState(new Date());
+  const [departureTime, setDepartureTime] = useState(new Date());
+  const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
@@ -526,12 +601,47 @@ export default function JobsScreen() {
   const contentAnim = useRef(new Animated.Value(0)).current;
   const onlinePulse = useRef(new Animated.Value(0)).current;
   const bellPulse = useRef(new Animated.Value(0)).current;
+  const signal = useRef(new Animated.Value(0)).current;
+  const dotBlink = useRef(new Animated.Value(0)).current;
+  const shine = useRef(new Animated.Value(0)).current;
+  const modeAnim = useRef(new Animated.Value(0)).current;
+  const modeFade = useRef(new Animated.Value(1)).current;
+  const swapAnim = useRef(new Animated.Value(0)).current;
+  const [ctaW, setCtaW] = useState(320);
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
     Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
   }, [headerAnim, contentAnim]);
+
+  useEffect(() => {
+    Animated.timing(modeAnim, { toValue: isOnline ? 1 : 0, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
+    modeFade.setValue(0);
+    Animated.timing(modeFade, { toValue: 1, duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [isOnline, modeAnim, modeFade]);
+
+  useEffect(() => {
+    if (!isOnline) { signal.setValue(0); dotBlink.setValue(0); return; }
+    const ring = Animated.loop(Animated.timing(signal, { toValue: 1, duration: 2000, easing: Easing.out(Easing.ease), useNativeDriver: true }));
+    const blink = Animated.loop(Animated.sequence([
+      Animated.timing(dotBlink, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      Animated.timing(dotBlink, { toValue: 0, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+    ]));
+    ring.start(); blink.start();
+    return () => { ring.stop(); blink.stop(); };
+  }, [isOnline, signal, dotBlink]);
+
+  useEffect(() => {
+    if (isOnline) { shine.setValue(0); return; }
+    const sweep = Animated.loop(Animated.sequence([
+      Animated.timing(shine, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      Animated.delay(1500),
+      Animated.timing(shine, { toValue: 0, duration: 0, useNativeDriver: true }),
+    ]));
+    sweep.start();
+    return () => sweep.stop();
+  }, [isOnline, shine]);
 
   useEffect(() => {
     if (!isOnline) return;
@@ -555,8 +665,6 @@ export default function JobsScreen() {
     pulse.start();
     return () => pulse.stop();
   }, [bellPulse]);
-
-  useEffect(() => { selectedIdRef.current = selectedRequest?.request_id ?? null; }, [selectedRequest]);
 
   const loadNotifs = useCallback(async () => {
     if (!providerId) return;
@@ -621,7 +729,6 @@ export default function JobsScreen() {
     catch (e) { console.warn('mark read failed', e); }
   };
 
-  // ---- NEW: shared routing ----
   const handleNotifPress = async (n: Notif) => {
     await markNotifRead(n);
     setNotifModalOpen(false);
@@ -639,16 +746,63 @@ export default function JobsScreen() {
     }
   };
 
+  const loadTodayStats = async (pid: number) => {
+    try {
+      const start = new Date(); start.setHours(0, 0, 0, 0);
+      const { data } = await supabase
+        .from('deliveries')
+        .select('completed_at, delivery_requests:request_id(estimated_cost)')
+        .eq('provider_id', pid)
+        .gte('completed_at', start.toISOString());
+      const rows: any[] = data || [];
+      const earned = rows.reduce((sum, r) => {
+        const dr = Array.isArray(r.delivery_requests) ? r.delivery_requests[0] : r.delivery_requests;
+        return sum + (Number(dr?.estimated_cost) || 0);
+      }, 0);
+      let rating: number | null = null;
+      try {
+        const { data: rv } = await supabase.from('ratings_reviews').select('rating').eq('reviewee_id', pid);
+        const list: any[] = rv || [];
+        if (list.length > 0) rating = list.reduce((a, r) => a + (Number(r.rating) || 0), 0) / list.length;
+      } catch { /* no ratings yet */ }
+      setTodayStats({ count: rows.length, earned, rating });
+    } catch { /* keep zeros */ }
+  };
+
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData, error } = await supabase.from('users').select('user_id, is_active').eq('auth_id', user.id).single();
+      const { data: userData, error } = await supabase.from('users').select('user_id, is_online').eq('auth_id', user.id).single();
       if (error) throw error;
       setProviderId(userData.user_id);
-      setIsOnline(userData.is_active || false);
+      setIsOnline(!!(userData as any).is_online);
+      void loadTodayStats(userData.user_id);
       return userData.user_id;
     } catch { return null; }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      setTabBarHidden(!loading && !isOnline);
+      return () => setTabBarHidden(false);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOnline, loading]),
+  );
+
+  const goToTasks = () => {
+    try {
+      let cur: any = navigation;
+      while (cur) {
+        const names: string[] = cur.getState?.()?.routeNames || [];
+        const match = names.find(n => /task/i.test(n));
+        if (match) { cur.navigate(match); return; }
+        cur = cur.getParent?.();
+      }
+      navigation.navigate('MainTabs', { screen: 'Tasks' });
+    } catch {
+      navigation.goBack();
+    }
   };
 
   const goToManageRoutes = () => {
@@ -722,19 +876,10 @@ export default function JobsScreen() {
         return created;
       };
 
-      const startLoc = await resolveLocation(
-        curLat,
-        curLng,
-        `Current Location (${curLat.toFixed(4)}, ${curLng.toFixed(4)})`,
-      );
-
+      const startLoc = await resolveLocation(curLat, curLng, `Current Location (${curLat.toFixed(4)}, ${curLng.toFixed(4)})`);
       const endLat = curLat + 0.03;
       const endLng = curLng + 0.03;
-      const endLoc = await resolveLocation(
-        endLat,
-        endLng,
-        `Destination (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`,
-      );
+      const endLoc = await resolveLocation(endLat, endLng, `Destination (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`);
 
       const nowIso = toNaiveIsoString(new Date());
       const { data: simpleRoute, error: simpleErr } = await supabase
@@ -818,15 +963,26 @@ export default function JobsScreen() {
             vehicle: vehMap.get(r.vehicle_id),
           }));
         }
-      } else { list = data as Route[]; }
+      } else {
+        list = data as Route[];
+      }
 
-      setRoutes(list);
+      // Filter out expired One-time / Custom routes from JobsScreen
+      const validRoutes = list.filter((r) => !isRouteExpired(r));
+
+      setRoutes(validRoutes);
       const savedId = await getActiveRouteId();
-      const restored = savedId ? list.find((r) => r.route_id === savedId) : null;
+      const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
-      if (restored) { setActiveRoute(restored); }
-      else if (list.length > 0) { setActiveRoute(list[0]); await setActiveRouteId(list[0].route_id); }
-      else { setActiveRoute(null); await setActiveRouteId(null); }
+      if (restored) {
+        setActiveRoute(restored);
+      } else if (validRoutes.length > 0) {
+        setActiveRoute(validRoutes[0]);
+        await setActiveRouteId(validRoutes[0].route_id);
+      } else {
+        setActiveRoute(null);
+        await setActiveRouteId(null);
+      }
     } catch (e) { console.error('fetchRoutes error:', e); }
   };
 
@@ -838,6 +994,7 @@ export default function JobsScreen() {
       .select(`
         request_id, pickup_type, scheduled_time, created_at, estimated_cost,
         delivery_status, sender_id, receiver_id, receiver_phone,
+        pickup_note, dropoff_note,
         cargo:cargo_id ( * ),
         pickup_location:locations!delivery_requests_pickup_location_id_fkey ( * ),
         dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( * ),
@@ -866,7 +1023,11 @@ export default function JobsScreen() {
   };
 
   const refreshMatches = async () => {
-    if (!activeRoute) { setRequests([]); setRefreshing(false); return; }
+    if (!activeRoute || isRouteExpired(activeRoute)) {
+      setRequests([]);
+      setRefreshing(false);
+      return;
+    }
     try {
       setCheckingMatches(true);
       const matches = await findMatches(activeRoute.route_id);
@@ -887,12 +1048,6 @@ export default function JobsScreen() {
       }
 
       setRequests(hydrated);
-
-      if (selectedIdRef.current && !hydrated.some(r => r.request_id === selectedIdRef.current)) {
-        selectedIdRef.current = null;
-        setSelectedRequest(null);
-        Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
-      }
     } catch (e) { console.warn('refreshMatches error:', e); }
     finally { setCheckingMatches(false); setRefreshing(false); }
   };
@@ -907,7 +1062,7 @@ export default function JobsScreen() {
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   useEffect(() => {
-    if (!isOnline || !activeRoute) { setRequests([]); setSelectedRequest(null); return; }
+    if (!isOnline || !activeRoute) { setRequests([]); return; }
     refreshMatches();
     const channel = supabase
       .channel(`jobs-realtime-${Date.now()}`)
@@ -922,17 +1077,19 @@ export default function JobsScreen() {
     if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
     if (online) {
-      let currentRoute = activeRoute;
+      let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
           await setActiveRouteId(currentRoute.route_id);
-        } else { currentRoute = await createQuickRoute(pid); }
+        } else {
+          currentRoute = await createQuickRoute(pid);
+        }
       }
       if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route. Please try again.'); return; }
 
-      await supabase.from('users').update({ is_active: true }).eq('user_id', pid);
+      await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
       setIsOnline(true);
       setTimeout(refreshMatches, 200);
     } else {
@@ -940,9 +1097,10 @@ export default function JobsScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
-            await supabase.from('users').update({ is_active: false }).eq('user_id', pid);
+            await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
             setIsOnline(false);
             setRequests([]);
+            void loadTodayStats(pid);
           },
         },
       ]);
@@ -952,7 +1110,36 @@ export default function JobsScreen() {
   const openConfirmSheet = (route: Route) => {
     setPendingRoute(route);
     const dt = parseNaiveIsoString(route.departure_time);
-    setDepartureDate(dt);
+    const now = new Date();
+    const freq = (route.route_frequency || '').trim();
+
+    if (freq === 'Daily') {
+      const todayAtStoredTime = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        dt.getHours(),
+        dt.getMinutes(),
+        0,
+        0,
+      );
+      // If the saved daily time has already passed today, default the picker to current time
+      const initialTime = todayAtStoredTime.getTime() < now.getTime() ? now : todayAtStoredTime;
+      setDepartureDate(now);
+      setDepartureTime(initialTime);
+      setSelectedWeekday(now.getDay());
+    } else if (freq === 'Weekly') {
+      const wDay = dt.getDay();
+      setSelectedWeekday(wDay);
+      setDepartureDate(nextWeekday(wDay, now));
+      setDepartureTime(dt);
+    } else {
+      const validFuture = dt.getTime() < now.getTime() ? now : dt;
+      setDepartureDate(validFuture);
+      setDepartureTime(validFuture);
+      setSelectedWeekday(validFuture.getDay());
+    }
+
     setShowDatePicker(false);
     setShowTimePicker(false);
     setConfirmSheetVisible(true);
@@ -960,9 +1147,61 @@ export default function JobsScreen() {
 
   const confirmDeparture = async () => {
     if (!pendingRoute || !providerId) return;
+
+    const now = new Date();
+    const freq = (pendingRoute.route_frequency || '').trim();
+
+    let effectiveDate = new Date(departureDate);
+    if (freq === 'Daily') {
+      effectiveDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (freq === 'Weekly') {
+      effectiveDate = nextWeekday(selectedWeekday, now);
+    }
+
+    const combined = new Date(
+      effectiveDate.getFullYear(),
+      effectiveDate.getMonth(),
+      effectiveDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes(),
+      0,
+      0,
+    );
+
+    const isSameDayAsToday =
+      effectiveDate.getFullYear() === now.getFullYear() &&
+      effectiveDate.getMonth() === now.getMonth() &&
+      effectiveDate.getDate() === now.getDate();
+
+    if (freq === 'Daily') {
+      if (combined.getTime() < now.getTime()) {
+        Alert.alert(
+          'Invalid Time',
+          `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Please choose a departure time that has not passed yet today.`,
+        );
+        return;
+      }
+    } else if (freq === 'Weekly') {
+      if (isSameDayAsToday && combined.getTime() < now.getTime()) {
+        Alert.alert(
+          'Invalid Time',
+          `That time has already passed for today (${WEEKDAY_LABELS[selectedWeekday]}). Please choose a later time or another day.`,
+        );
+        return;
+      }
+    } else {
+      if (combined.getTime() < now.getTime()) {
+        Alert.alert('Invalid Time', 'You cannot schedule a departure in the past. Please choose a valid future date and time.');
+        return;
+      }
+    }
+
     try {
-      const departureValue = toNaiveIsoString(departureDate);
-      const { error: updateErr } = await supabase.from('provider_routes').update({ departure_time: departureValue }).eq('route_id', pendingRoute.route_id);
+      const departureValue = toNaiveIsoString(combined);
+      const { error: updateErr } = await supabase
+        .from('provider_routes')
+        .update({ departure_time: departureValue })
+        .eq('route_id', pendingRoute.route_id);
       if (updateErr) throw updateErr;
 
       const { data: fullRoute } = await supabase
@@ -978,7 +1217,8 @@ export default function JobsScreen() {
 
       setActiveRoute(fullRoute as Route);
       await setActiveRouteId(pendingRoute.route_id);
-      await supabase.from('users').update({ is_active: true }).eq('user_id', providerId);
+      await fetchRoutes(providerId);
+      await supabase.from('users').update({ is_online: true }).eq('user_id', providerId);
       setIsOnline(true);
 
       setConfirmSheetVisible(false);
@@ -1044,7 +1284,7 @@ export default function JobsScreen() {
     if (!currentOffer) return;
     setOfferSecondsLeft(OFFER_SECONDS);
     const t = setInterval(() => {
-      setOfferSecondsLeft(sec => (selectedIdRef.current ? sec : sec - 1));
+      setOfferSecondsLeft(sec => sec - 1);
     }, 1000);
     return () => clearInterval(t);
   }, [currentOffer?.request_id]);
@@ -1076,8 +1316,6 @@ export default function JobsScreen() {
       const { data: existing } = await supabase.from('deliveries').select('delivery_id').eq('request_id', req.request_id).limit(1);
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
-        selectedIdRef.current = null;
-        setSelectedRequest(null);
         refreshMatches();
         return;
       }
@@ -1113,8 +1351,7 @@ export default function JobsScreen() {
         });
       }
 
-      selectedIdRef.current = null;
-      setSelectedRequest(null);
+      setDetailRequestId(null);
       setDismissedIds(prev => [...prev, req.request_id]);
       refreshMatches();
       if (!goToTaskTab()) {
@@ -1134,224 +1371,302 @@ export default function JobsScreen() {
     ]);
   };
 
-  const fadeUp = (value: Animated.Value, distance = 24) => ({
-    opacity: value,
-    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
-  });
-
   const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
-  const pulseOpacity = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
   const bellScale = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
   const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
 
   const markFailed = (uri: string) => setFailedPhotos(prev => ({ ...prev, [uri]: true }));
 
-  /* --------------------------- request details --------------------------- */
-  const renderRequestDetail = (r: JobRequest) => {
+  /* ----------------------- shared request pieces ----------------------- */
+  const SCREEN_H = Dimensions.get('window').height;
+
+  const distancesFor = (o: JobRequest) => {
+    const me = myLoc;
+    const toPickupKm = me && o.pickup.lat != null && o.pickup.lng != null
+      ? roadKm(me.lat, me.lng, o.pickup.lat, o.pickup.lng) : null;
+    const tripKm = o.pickup.lat != null && o.pickup.lng != null && o.dropoff.lat != null && o.dropoff.lng != null
+      ? roadKm(o.pickup.lat, o.pickup.lng, o.dropoff.lat, o.dropoff.lng) : null;
+    const etaMin = toPickupKm != null ? Math.max(1, Math.round((toPickupKm / 25) * 60)) : null;
+    return { toPickupKm, tripKm, etaMin };
+  };
+
+  const renderServicePill = (r: JobRequest) => (
+    <View style={styles.svcPill}>
+      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <Text style={styles.svcPillText}>{serviceLabel(r.pickup_type)}</Text>
+    </View>
+  );
+
+  const renderRingRoute = (r: JobRequest, notes = false) => (
+    <View>
+      {[
+        { key: 'p', label: 'PICKUP', pt: r.pickup, color: BLUE, note: r.pickupNote },
+        { key: 'd', label: 'DROP-OFF', pt: r.dropoff, color: RED, note: r.dropoffNote },
+      ].map((x, i) => (
+        <View key={x.key} style={styles.rtRow}>
+          <View style={styles.rtRail}>
+            <View style={[styles.rtRing, { borderColor: x.color }]}><View style={[styles.rtRingDot, { backgroundColor: x.color }]} /></View>
+            {i === 0 && (
+              <View style={styles.rtDots}>
+                {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
+              </View>
+            )}
+          </View>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+            <Text style={styles.rtLabel}>{x.label}</Text>
+            <Text style={styles.rtMain} numberOfLines={1}>{x.pt.main}</Text>
+            {!!x.pt.sub && <Text style={styles.rtSub} numberOfLines={1}>{x.pt.sub}</Text>}
+            {notes && !!x.note && (
+              <View style={styles.routeNote}>
+                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <Text style={styles.routeNoteText}>{x.note}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+
+  const renderPeople = (r: JobRequest) => (
+    <View style={styles.mcRow}>
+      {[
+        { role: 'SENDER', name: r.senderName || 'Sender', color: BLUE },
+        { role: 'RECEIVER', name: r.receiverName || 'Receiver', color: PURPLE },
+      ].map(p => (
+        <View key={p.role} style={styles.mcCard}>
+          <View style={[styles.mcAvatar, { backgroundColor: p.color }]}>
+            <Text style={styles.mcAvatarText}>{(p.name.split(' ').filter(Boolean).slice(0, 2).map((w: string) => w[0]).join('') || '?').toUpperCase()}</Text>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.mcRole}>{p.role}</Text>
+            <Text style={styles.mcName} numberOfLines={1}>{p.name}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+
+  /* ----------------------- full-screen package details ----------------------- */
+  const renderFullDetails = () => {
+    const o = detailRequestId != null ? requests.find(r => r.request_id === detailRequestId) : null;
+    if (!o) return null;
+
+    const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
+    const localOnly = o.items.some(i => i.localOnly && !i.photo);
     const cap = activeRoute?.vehicle?.max_weight_kg;
-    const fits = r.weightKg != null && cap ? r.weightKg <= cap : null;
-    const senderInitial = (r.senderName || 'S').charAt(0).toUpperCase();
+    const fits = o.weightKg != null && cap ? o.weightKg <= cap : null;
+    const hasNotes = !!o.pickupNote || !!o.dropoffNote;
+    const { toPickupKm, tripKm, etaMin } = distancesFor(o);
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <View style={[styles.detailHeader, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+        {/* header bar */}
+        <View
+          style={{
+            flexDirection: 'row', alignItems: 'center',
+            paddingHorizontal: 12, paddingTop: insets.top + 6, paddingBottom: 12,
+            backgroundColor: colors.card,
+            borderBottomWidth: 1, borderBottomColor: colors.divider,
+          }}
+        >
           <TouchableOpacity
-            style={styles.detailBack}
-            onPress={() => { selectedIdRef.current = null; setSelectedRequest(null); }}
-            activeOpacity={0.8}
+            onPress={() => setDetailRequestId(null)}
+            style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}
+            activeOpacity={0.7}
           >
-            <Ionicons name="arrow-back" size={18} color="#FFFFFF" />
+            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.detailHeaderTitle}>Request Details</Text>
-          <View style={{ width: 38 }} />
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={styles.dCode}>{requestCode(o.request_id)}</Text>
+            <Text style={styles.dWhen}>{whenLabel(o)}</Text>
+          </View>
+          <View style={{ width: 40 }} />
         </View>
 
+        {/* Scrollable Content */}
         <ScrollView
-          style={{ backgroundColor: colors.background }}
-          contentContainerStyle={[styles.detailScroll, { paddingBottom: 130 }]}
+          style={{ flex: 1 }}
+          contentContainerStyle={{ padding: 16, paddingBottom: 100 + insets.bottom }}
           showsVerticalScrollIndicator={false}
         >
+          {/* Route card */}
           <View style={styles.card}>
-            <Text style={styles.eyebrow}>REQUEST ID</Text>
-            <Text style={styles.bigId}>{requestCode(r.request_id)}</Text>
-            <View style={[styles.chipRow, { marginTop: 14 }]}>
+            <View style={styles.oTopRow}>
+              {renderServicePill(o)}
               <View style={styles.chipSolid}>
                 <Ionicons name="flash" size={11} color="#FFFFFF" />
-                <Text style={styles.chipSolidText}>NEW MATCH</Text>
-              </View>
-              <View style={styles.chip}>
-                <Ionicons name={/door/i.test(r.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color={colors.textSecondary} />
-                <Text style={styles.chipText}>{serviceLabel(r.pickup_type)}</Text>
-              </View>
-              <View style={styles.chip}>
-                <Ionicons name="calendar-outline" size={12} color={colors.textSecondary} />
-                <Text style={styles.chipText}>{whenLabel(r)}</Text>
+                <Text style={styles.chipSolidText}>MATCHED</Text>
               </View>
             </View>
+            {renderRingRoute(o, true)}
           </View>
 
+          {/* Earnings card */}
           <View style={styles.earnCard}>
             <Text style={styles.earnLabel}>YOU EARN</Text>
-            <Text style={styles.earnValue}>{money(r.estimated_cost)}</Text>
+            <Text style={styles.earnValue}>{money(o.estimated_cost)}</Text>
             <View style={styles.earnNote}>
-              <Ionicons name="shield-checkmark-outline" size={14} color="#FFE4D2" />
+              <Ionicons name="shield-checkmark-outline" size={15} color="#FFFFFF" />
               <Text style={styles.earnNoteText}>
                 Held in escrow once you accept, then released to your wallet when the receiver confirms delivery.
               </Text>
             </View>
           </View>
 
+          {/* Trip summary */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
-              <View style={styles.cardHeaderIcon}><Ionicons name="cube" size={14} color={ORANGE} /></View>
-              <Text style={styles.cardTitle}>Package</Text>
+              <View style={styles.cardHeaderIcon}>
+                <Ionicons name="navigate-outline" size={15} color={ORANGE} />
+              </View>
+              <Text style={styles.cardTitle}>Trip Summary</Text>
             </View>
-
-            <View style={styles.statsRow}>
-              <View style={styles.stat}>
-                <Text style={styles.statLabel}>ITEMS</Text>
-                <Text style={styles.statValue}>{r.totalItems}</Text>
+            <View style={styles.tileGrid}>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>TO PICKUP</Text>
+                <Text style={styles.tileValue}>
+                  {toPickupKm != null ? `${toPickupKm.toFixed(1)} km${etaMin != null ? ` · ${etaMin} min` : ''}` : '—'}
+                </Text>
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statLabel}>WEIGHT</Text>
-                <Text style={styles.statValue}>{r.weightKg != null ? `${r.weightKg} kg` : '—'}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.stat}>
-                <Text style={styles.statLabel}>FRAGILE</Text>
-                <Text style={[styles.statValue, r.fragile && { color: colors.error }]}>{r.fragile ? 'Yes' : 'No'}</Text>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>TRIP</Text>
+                <Text style={styles.tileValue}>{tripKm != null ? `${tripKm.toFixed(1)} km` : '—'}</Text>
               </View>
             </View>
+          </View>
 
-            {(r.dims || fits !== null) && (
-              <View style={styles.noteList}>
-                {!!r.dims && (
-                  <View style={styles.noteRow}>
-                    <Ionicons name="resize-outline" size={14} color={colors.textSecondary} />
-                    <Text style={styles.noteText}>Size {r.dims}</Text>
-                  </View>
-                )}
-                {fits !== null && (
-                  <View style={styles.noteRow}>
-                    <Ionicons name={fits ? 'checkmark-circle' : 'alert-circle'} size={14} color={fits ? ORANGE : colors.error} />
-                    <Text style={[styles.noteText, !fits && { color: colors.error }]}>
-                      {fits ? `Within your vehicle capacity (${cap} kg)` : `Heavier than your vehicle capacity (${cap} kg)`}
+          {/* Photos */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardHeaderIcon}>
+                <Ionicons name="images-outline" size={15} color={ORANGE} />
+              </View>
+              <Text style={styles.cardTitle}>Package Photos</Text>
+            </View>
+            {photos.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+                {photos.map((uri, idx) => (
+                  <TouchableOpacity key={`${uri}-${idx}`} activeOpacity={0.9} onPress={() => setPreviewPhoto(uri)}>
+                    <Image source={{ uri }} style={styles.dPhoto} resizeMode="cover" onError={() => markFailed(uri)} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={styles.offerNoPhoto}>
+                <Ionicons name="image-outline" size={18} color={colors.warning} />
+                <Text style={styles.offerNoPhotoText}>
+                  {localOnly
+                    ? "The sender's package photo wasn't uploaded, so it can't be shown."
+                    : "The sender didn't add a photo of this package."}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Package details */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardHeaderIcon}>
+                <Ionicons name="cube-outline" size={15} color={ORANGE} />
+              </View>
+              <Text style={styles.cardTitle}>Package Details</Text>
+            </View>
+            {o.items.some(i => !!i.description) && (
+              <View style={{ gap: 4, marginBottom: 10 }}>
+                {o.items.map((it, i) =>
+                  !!it.description ? (
+                    <Text key={i} style={styles.dItemText} numberOfLines={2}>
+                      {o.items.length > 1 ? `${i + 1}. ` : ''}
+                      {it.description}
+                      {it.boxes ? `  ·  ${it.boxes}` : ''}
                     </Text>
-                  </View>
+                  ) : null,
                 )}
               </View>
             )}
-
-            {r.items.map((it, i) => {
-              const ok = !!it.photo && !failedPhotos[it.photo];
-              return (
-                <View key={i} style={styles.itemBlock}>
-                  {ok ? (
-                    <TouchableOpacity activeOpacity={0.92} onPress={() => setPreviewPhoto(it.photo!)} style={styles.itemPhotoWrap}>
-                      <Image source={{ uri: it.photo! }} style={styles.itemPhoto} resizeMode="cover" onError={() => markFailed(it.photo!)} />
-                      <View style={styles.enlargeHint}><Ionicons name="expand-outline" size={12} color="#FFFFFF" /></View>
-                    </TouchableOpacity>
-                  ) : (
-                    <View style={styles.itemNoPhoto}>
-                      <Ionicons name="image-outline" size={18} color={colors.textMuted} />
-                      <Text style={styles.itemNoPhotoText}>
-                        {it.photo ? "Photo couldn't be loaded" : it.localOnly ? "The sender's photo wasn't uploaded" : 'No photo provided'}
-                      </Text>
-                    </View>
-                  )}
-                  <View style={styles.itemInfoRow}>
-                    <View style={{ flex: 1 }}>
-                      {r.items.length > 1 && <Text style={styles.eyebrow}>ITEM {i + 1}</Text>}
-                      <Text style={styles.itemTitle} numberOfLines={3}>{it.description}</Text>
-                      {!!it.boxes && <Text style={styles.itemSub}>{it.boxes}</Text>}
-                    </View>
-                    <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                      {!!it.size && <View style={styles.chip}><Text style={styles.chipText}>{it.size}</Text></View>}
-                      {it.fragile && (
-                        <View style={[styles.chip, styles.chipWarn]}>
-                          <Ionicons name="warning" size={11} color={colors.error} />
-                          <Text style={[styles.chipText, { color: colors.error }]}>Fragile</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-
-          <View style={[styles.card, { padding: 0, overflow: 'hidden' }]}>
-            <View style={styles.detailMap} pointerEvents="none">
-              <RouteMap
-                key={`req-${r.request_id}`}
-                startLat={r.pickup.lat}
-                startLng={r.pickup.lng}
-                endLat={r.dropoff.lat}
-                endLng={r.dropoff.lng}
-                startLabel="P"
-                endLabel="D"
-              />
-            </View>
-            <View style={styles.routePad}>
-              <View style={styles.routeRow}>
-                <View style={styles.rail}>
-                  <View style={styles.pinPickup}><View style={styles.pinPickupInner} /></View>
-                  <View style={styles.railLine} />
-                </View>
-                <View style={styles.routeText}>
-                  <Text style={styles.eyebrow}>PICKUP</Text>
-                  <Text style={styles.routeMain} numberOfLines={2}>{r.pickup.main}</Text>
-                  {!!r.pickup.sub && <Text style={styles.routeSub} numberOfLines={2}>{r.pickup.sub}</Text>}
-                </View>
+            <View style={styles.tileGrid}>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>CARGO SIZE</Text>
+                <Text style={styles.tileValue}>
+                  {o.totalItems} {o.items[0]?.size || (o.totalItems === 1 ? 'item' : 'items')}
+                </Text>
               </View>
-              <View style={styles.routeRow}>
-                <View style={styles.rail}>
-                  <View style={styles.pinDropoff}><Ionicons name="location" size={10} color="#FFFFFF" /></View>
-                </View>
-                <View style={[styles.routeText, { paddingBottom: 0 }]}>
-                  <Text style={styles.eyebrow}>DROP-OFF</Text>
-                  <Text style={styles.routeMain} numberOfLines={2}>{r.dropoff.main}</Text>
-                  {!!r.dropoff.sub && <Text style={styles.routeSub} numberOfLines={2}>{r.dropoff.sub}</Text>}
-                </View>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>WEIGHT</Text>
+                <Text style={styles.tileValue}>{o.weightKg != null ? `${o.weightKg} kg` : '—'}</Text>
               </View>
+              <View style={styles.tile}>
+                <Text style={styles.tileLabel}>HANDLING</Text>
+                <Text style={[styles.tileValue, o.fragile && { color: ORANGE }]}>
+                  {o.fragile ? 'Fragile' : 'Standard'}
+                </Text>
+              </View>
+              {!!o.dims && (
+                <View style={styles.tile}>
+                  <Text style={styles.tileLabel}>DIMENSIONS</Text>
+                  <Text style={styles.tileValue}>{o.dims}</Text>
+                </View>
+              )}
+              {fits !== null && (
+                <View style={styles.tile}>
+                  <Text style={styles.tileLabel}>YOUR VEHICLE</Text>
+                  <Text style={[styles.tileValue, { color: fits ? colors.success : colors.error }]} numberOfLines={2}>
+                    {fits ? `Fits (${cap} kg max)` : `Too heavy (${cap} kg max)`}
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
 
+          {/* Notes */}
+          {hasNotes && (
+            <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderIcon}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={15} color={ORANGE} />
+                </View>
+                <Text style={styles.cardTitle}>Notes</Text>
+              </View>
+              {!!o.pickupNote && (
+                <View style={[styles.routeNote, { marginBottom: 6 }]}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                  <Text style={styles.routeNoteText}>Pickup: {o.pickupNote}</Text>
+                </View>
+              )}
+              {!!o.dropoffNote && (
+                <View style={styles.routeNote}>
+                  <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                  <Text style={styles.routeNoteText}>Drop-off: {o.dropoffNote}</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* People */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
-              <View style={styles.cardHeaderIcon}><Ionicons name="people" size={14} color={ORANGE} /></View>
+              <View style={styles.cardHeaderIcon}>
+                <Ionicons name="people-outline" size={15} color={ORANGE} />
+              </View>
               <Text style={styles.cardTitle}>People</Text>
             </View>
-            <View style={styles.personRow}>
-              <View style={styles.avatar}><Text style={styles.avatarText}>{senderInitial}</Text></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>SENDER</Text>
-                <Text style={styles.personName} numberOfLines={1}>{r.senderName}</Text>
-              </View>
-            </View>
-            <View style={styles.personDivider} />
-            <View style={styles.personRow}>
-              <View style={[styles.avatar, styles.avatarSoft]}>
-                <Ionicons name="person" size={16} color={ORANGE} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>RECEIVER</Text>
-                <Text style={styles.personName} numberOfLines={1}>{r.receiverName || 'Receiver'}</Text>
-              </View>
-            </View>
-            <Text style={styles.privacyNote}>Contact details are shared once you accept the delivery.</Text>
+            {renderPeople(o)}
+            <Text style={styles.privacyNote}>
+              Contact details are shared once you accept the delivery.
+            </Text>
           </View>
         </ScrollView>
 
-        <View style={styles.acceptBar}>
+        {/* Fixed accept bar */}
+        <View style={[styles.acceptBar, { paddingBottom: Math.max(16, insets.bottom) }]}>
           <View>
             <Text style={styles.eyebrow}>YOU EARN</Text>
-            <Text style={styles.acceptPrice}>{money(r.estimated_cost)}</Text>
+            <Text style={styles.acceptPrice}>{money(o.estimated_cost)}</Text>
           </View>
           <TouchableOpacity
             style={[styles.acceptBtn, accepting && { opacity: 0.7 }]}
-            onPress={() => acceptRequest(r)}
+            onPress={() => acceptRequest(o)}
             disabled={accepting}
             activeOpacity={0.9}
           >
@@ -1369,127 +1684,127 @@ export default function JobsScreen() {
     );
   };
 
-  /* ------------------------------ main view ------------------------------ */
+  /* ------------------------------ offer popup (summary only) ------------------------------ */
   const renderOfferPopup = (o: JobRequest) => {
-    const me = myLoc;
-    const toPickupKm = me && o.pickup.lat != null && o.pickup.lng != null
-      ? roadKm(me.lat, me.lng, o.pickup.lat, o.pickup.lng) : null;
-    const tripKm = o.pickup.lat != null && o.pickup.lng != null && o.dropoff.lat != null && o.dropoff.lng != null
-      ? roadKm(o.pickup.lat, o.pickup.lng, o.dropoff.lat, o.dropoff.lng) : null;
-    const etaMin = toPickupKm != null ? Math.max(1, Math.round((toPickupKm / 25) * 60)) : null;
     const pct = Math.max(0, Math.min(100, (offerSecondsLeft / OFFER_SECONDS) * 100));
+    const SHEET_H = Math.round(SCREEN_H * 0.48);
 
     return (
-      <View style={styles.offerSheet}>
+      <View
+        style={{
+          height: SHEET_H,
+          backgroundColor: colors.card,
+          borderTopLeftRadius: 28,
+          borderTopRightRadius: 28,
+          overflow: 'hidden',
+          borderTopWidth: 1,
+          borderColor: colors.border,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.18,
+          shadowRadius: 16,
+          elevation: 16,
+        }}
+      >
+        {/* timer bar */}
         <View style={styles.offerTimerTrack}>
-          <View style={[styles.offerTimerFill, { width: `${pct}%` as any }, offerSecondsLeft <= 10 && { backgroundColor: colors.error }]} />
+          <View
+            style={[
+              styles.offerTimerFill,
+              { width: `${pct}%` as any },
+              offerSecondsLeft <= 10 && { backgroundColor: colors.error },
+            ]}
+          />
         </View>
 
-        <View style={styles.offerTopRow}>
-          <View style={styles.chipSolid}>
-            <Ionicons name="flash" size={11} color="#FFFFFF" />
-            <Text style={styles.chipSolidText}>NEW MATCH</Text>
-          </View>
-          {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
-          <View style={{ flex: 1 }} />
-          <View style={styles.offerTimerPill}>
-            <Ionicons name="timer-outline" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} />
-            <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>{Math.max(0, offerSecondsLeft)}s</Text>
-          </View>
-        </View>
-
-        <View style={styles.offerMainRow}>
-          <View>
-            <Text style={styles.eyebrow}>YOU EARN</Text>
-            <Text style={styles.offerPrice}>{money(o.estimated_cost)}</Text>
-          </View>
-          <View style={{ alignItems: 'flex-end' }}>
-            <Text style={styles.offerCode}>{requestCode(o.request_id)}</Text>
-            <View style={[styles.chip, { marginTop: 6 }]}>
-              <Ionicons name={/door/i.test(o.pickup_type || '') ? 'home-outline' : 'walk-outline'} size={12} color={colors.textSecondary} />
-              <Text style={styles.chipText}>{serviceLabel(o.pickup_type)}</Text>
+        {/* Main Content */}
+        <View style={{ flex: 1, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 90 + insets.bottom }}>
+          {/* Top Row: Badge & Timer */}
+          <View style={styles.oTopRow}>
+            {renderServicePill(o)}
+            <View style={styles.chipSolid}>
+              <Ionicons name="flash" size={11} color="#FFFFFF" />
+              <Text style={styles.chipSolidText}>NEW MATCH</Text>
             </View>
-          </View>
-        </View>
-
-        <View style={styles.offerStatsRow}>
-          <View style={styles.offerStat}>
-            <Text style={styles.offerStatValue}>{toPickupKm != null ? `${toPickupKm.toFixed(1)} km` : '—'}</Text>
-            <Text style={styles.offerStatLabel}>{etaMin != null ? `to pickup · ~${etaMin} min` : 'to pickup'}</Text>
-          </View>
-          <View style={styles.offerStatDivider} />
-          <View style={styles.offerStat}>
-            <Text style={styles.offerStatValue}>{tripKm != null ? `${tripKm.toFixed(1)} km` : '—'}</Text>
-            <Text style={styles.offerStatLabel}>trip distance</Text>
-          </View>
-          <View style={styles.offerStatDivider} />
-          <View style={styles.offerStat}>
-            <Text style={styles.offerStatValue}>{o.totalItems} · {o.weightKg != null ? `${o.weightKg}kg` : '—'}</Text>
-            <Text style={styles.offerStatLabel}>{o.fragile ? 'items · fragile' : 'items · weight'}</Text>
-          </View>
-        </View>
-
-        {(() => {
-          const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
-          const localOnly = o.items.some(i => i.localOnly && !i.photo);
-          if (photos.length > 0) {
-            return (
-              <View style={styles.offerPhotoBlock}>
-                <View style={styles.offerPhotoHeader}>
-                  <Text style={styles.eyebrow}>PACKAGE PHOTOS</Text>
-                  <Text style={styles.offerPhotoHint}>Tap to enlarge</Text>
-                </View>
-                <View style={styles.offerPhotoRow}>
-                  {photos.slice(0, 4).map((uri, idx) => (
-                    <TouchableOpacity key={`${uri}-${idx}`} style={styles.offerThumbWrap} onPress={() => setPreviewPhoto(uri)} activeOpacity={0.85}>
-                      <Image source={{ uri }} style={styles.offerThumb} resizeMode="cover" onError={() => markFailed(uri)} />
-                      {idx === 3 && photos.length > 4 && (
-                        <View style={styles.offerThumbMore}><Text style={styles.offerThumbMoreText}>+{photos.length - 4}</Text></View>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-            );
-          }
-          return (
-            <View style={styles.offerNoPhoto}>
-              <Ionicons name="image-outline" size={18} color={colors.warning} />
-              <Text style={styles.offerNoPhotoText}>
-                {localOnly
-                  ? "The sender's package photo wasn't uploaded, so it can't be shown. Check the package details before accepting."
-                  : "The sender didn't add a photo of this package. Check the package details before accepting."}
+            {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
+            <View style={{ flex: 1 }} />
+            <View style={styles.offerTimerPill}>
+              <Ionicons
+                name="timer-outline"
+                size={13}
+                color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary}
+              />
+              <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
+                {Math.max(0, offerSecondsLeft)}s
               </Text>
             </View>
-          );
-        })()}
+          </View>
 
-        <View style={styles.offerRoute}>
-          <View style={styles.reqRouteRow}>
-            <View style={styles.pinPickup}><View style={styles.pinPickupInner} /></View>
-            <Text style={styles.offerRouteText} numberOfLines={1}>{o.pickup.main}</Text>
+          {/* Total Pay Row */}
+          <View style={[styles.offerMainRow, { marginTop: 8 }]}>
+            <View>
+              <Text style={styles.eyebrow}>TOTAL PAY</Text>
+              <Text style={styles.offerPrice}>{money(o.estimated_cost)}</Text>
+            </View>
+            <Text style={styles.offerCode}>{requestCode(o.request_id)}</Text>
           </View>
-          <View style={styles.reqRouteLine} />
-          <View style={styles.reqRouteRow}>
-            <View style={styles.pinDropoff}><Ionicons name="location" size={10} color="#FFFFFF" /></View>
-            <Text style={styles.offerRouteText} numberOfLines={1}>{o.dropoff.main}</Text>
+
+          {/* Route Section */}
+          <View style={{ marginTop: 14 }}>
+            {renderRingRoute(o)}
           </View>
+
+          {/* View Details Button */}
+          <TouchableOpacity
+            style={[styles.viewDetailsBtn, { marginTop: 16 }]}
+            onPress={() => setDetailRequestId(o.request_id)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="document-text-outline" size={18} color={ORANGE} />
+            <Text style={styles.viewDetailsText}>View Full Details</Text>
+            <Ionicons name="chevron-forward" size={16} color={ORANGE} />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.offerBtnRow}>
-          <TouchableOpacity style={styles.declineBtn} onPress={() => dismissOffer(o.request_id)} disabled={accepting} activeOpacity={0.85}>
+        {/* Fixed Footer */}
+        <View
+          style={[
+            styles.offerBtnRow,
+            {
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              paddingHorizontal: 18,
+              paddingTop: 12,
+              paddingBottom: 16,
+              backgroundColor: colors.card,
+              borderTopWidth: 1,
+              borderTopColor: colors.divider,
+            },
+          ]}
+        >
+          <TouchableOpacity
+            style={[styles.declineBtn, { flex: 1 }]}
+            onPress={() => dismissOffer(o.request_id)}
+            disabled={accepting}
+            activeOpacity={0.85}
+          >
             <Ionicons name="close" size={18} color={colors.error} />
             <Text style={styles.declineBtnText}>Decline</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.offerAcceptBtn, accepting && { opacity: 0.7 }]}
+            style={[styles.offerAcceptBtn, { flex: 1 }, accepting && { opacity: 0.7 }]}
             onPress={() => {
               if (o.items.some(i => i.photo)) { doAccept(o); return; }
-              Alert.alert('No package photo', "You can't see what this package looks like. Review the details first, or accept anyway.", [
-                { text: 'Review details', onPress: () => { selectedIdRef.current = o.request_id; setSelectedRequest(o); } },
-                { text: 'Accept anyway', onPress: () => doAccept(o) },
-                { text: 'Cancel', style: 'cancel' },
-              ]);
+              Alert.alert(
+                'No package photo',
+                "You can't see what this package looks like. Accept anyway?",
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Accept anyway', onPress: () => doAccept(o) },
+                ],
+              );
             }}
             disabled={accepting}
             activeOpacity={0.9}
@@ -1504,103 +1819,138 @@ export default function JobsScreen() {
             )}
           </TouchableOpacity>
         </View>
-
-        <TouchableOpacity
-          style={styles.offerDetailsLink}
-          onPress={() => { selectedIdRef.current = o.request_id; setSelectedRequest(o); }}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.offerDetailsText}>View package details</Text>
-          <Ionicons name="chevron-forward" size={14} color={ORANGE} />
-        </TouchableOpacity>
       </View>
     );
   };
 
   const renderBottomPanel = () => {
     const dismissedCount = isOnline ? requests.length - offers.length : 0;
-
     const startAddr = splitAddress(activeRoute?.start_location?.street_address);
     const endAddr = splitAddress(activeRoute?.end_location?.street_address);
 
+    const OFF = { title: '#E2E8F0', sub: '#94A3B8', label: '#64748B' };
+    const panelBg = modeAnim.interpolate({ inputRange: [0, 1], outputRange: ['#232A3B', colors.card] });
+    const ringScale = signal.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.3] });
+    const ringOpacity = signal.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
+    const dotOpacity = dotBlink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.4] });
+    const swapRotate = swapAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+    const shineX = shine.interpolate({ inputRange: [0, 1], outputRange: [-ctaW, ctaW] });
+
+    const onSwap = () => {
+      swapAnim.setValue(0);
+      Animated.timing(swapAnim, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start(() => swapAnim.setValue(0));
+      setRoutePickerVisible(true);
+    };
+
     return (
-      <View style={styles.bottomPanel}>
-        <View style={styles.onlineToggleRow}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <Animated.View style={[
-              styles.liveDotBig,
-              { backgroundColor: isOnline ? colors.success : colors.textMuted },
-              isOnline && { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
-            ]} />
-            <View>
-              <Text style={styles.panelTitle}>{isOnline ? 'You are online' : 'You are offline'}</Text>
-              <Text style={styles.panelSub}>
-                {checkingMatches ? 'Looking for matches...' : isOnline ? 'Waiting for requests...' : 'Go online to receive requests'}
-              </Text>
+      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? colors.border : 'rgba(255,255,255,0.05)', paddingBottom: 22 + (isOnline ? 0 : insets.bottom) }]}>
+        <View style={[styles.dashBar, { backgroundColor: isOnline ? ORANGE : 'rgba(100,116,139,0.35)' }]} />
+
+        <Animated.View style={{ opacity: modeFade }}>
+          <View style={styles.dashHead}>
+            <View style={styles.dashHeadLeft}>
+              <View style={[styles.liveBadge, isOnline ? styles.liveBadgeOn : styles.liveBadgeOff]}>
+                {isOnline && (
+                  <Animated.View style={[styles.liveRing, { transform: [{ scale: ringScale }], opacity: ringOpacity }]} />
+                )}
+                <View style={[styles.liveCore, !isOnline && { opacity: 0.25 }]} />
+              </View>
+              <View>
+                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>{isOnline ? 'You’re online' : 'You’re offline'}</Text>
+                <Text style={[styles.dashSub, !isOnline && { color: OFF.sub }]}>
+                  {isOnline ? (checkingMatches ? 'Looking for matches...' : 'Looking for offers') : 'Ready when you are'}
+                </Text>
+              </View>
+            </View>
+            <View style={[styles.statusPill, isOnline ? styles.statusPillOn : styles.statusPillOff]}>
+              <Animated.View style={[styles.statusPillDot, { backgroundColor: isOnline ? GREEN : '#64748B' }, isOnline && { opacity: dotOpacity }]} />
+              <Text style={[styles.statusPillText, { color: isOnline ? GREEN : OFF.sub }]}>{isOnline ? 'ACTIVE' : 'PAUSED'}</Text>
             </View>
           </View>
-          <Switch
-            trackColor={{ false: colors.border, true: ORANGE }}
-            thumbColor="#FFFFFF"
-            ios_backgroundColor={colors.border}
-            onValueChange={toggleOnlineStatus}
-            value={isOnline}
-          />
-        </View>
 
-        <View style={styles.panelDivider} />
-
-        <View style={styles.vehicleRow}>
-          <View style={styles.vehicleIconBox}>
-            <Ionicons name="car-sport" size={22} color={ORANGE} />
+          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider } : styles.routeBlockOff]}>
+            <View style={[styles.vehicleChip, isOnline ? { backgroundColor: 'rgba(255,117,31,0.10)' } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
+              <Text style={{ fontSize: 22 }}>🚐</Text>
+              <Animated.View
+                style={[
+                  styles.vehicleDot,
+                  { backgroundColor: isOnline ? GREEN : '#475569', borderColor: isOnline ? colors.card : '#232A3B' },
+                  isOnline && { transform: [{ scale: pulseScale }] },
+                ]}
+              />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>{isOnline ? 'ACTIVE ROUTE' : 'SAVED ROUTE'}</Text>
+              {activeRoute ? (
+                <>
+                  <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
+                    {startAddr.main} <Text style={{ color: isOnline ? ORANGE : OFF.label, fontWeight: '900' }}>→</Text> {endAddr.main}
+                  </Text>
+                  {!!startAddr.sub && <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>{startAddr.sub}</Text>}
+                </>
+              ) : (
+                <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>No active route — tap ⇄ to select or create one</Text>
+              )}
+            </View>
+            <TouchableOpacity
+              style={[styles.swapBtn, isOnline ? { backgroundColor: colors.card, borderColor: colors.border } : styles.swapBtnOff]}
+              onPress={onSwap}
+              activeOpacity={0.85}
+            >
+              <Animated.View style={{ transform: [{ rotate: swapRotate }] }}>
+                <Ionicons name="swap-horizontal" size={18} color={isOnline ? colors.textPrimary : OFF.sub} />
+              </Animated.View>
+            </TouchableOpacity>
           </View>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <Text style={styles.vehicleNameText}>
-              {activeRoute?.vehicle?.vehicle_type || (activeRoute ? 'Active Route' : 'No Active Route')}
-            </Text>
-            {activeRoute ? (
-              <>
-                <Text style={styles.vehiclePlateText} numberOfLines={1}>
-                  <Text style={{ fontWeight: '800', color: colors.textPrimary }}>
-                    {startAddr.main}
-                  </Text>
-                  {' → '}
-                  <Text style={{ fontWeight: '800', color: colors.textPrimary }}>
-                    {endAddr.main}
-                  </Text>
-                </Text>
-                {startAddr.sub && (
-                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }} numberOfLines={1}>
-                    {startAddr.sub}
-                  </Text>
-                )}
-              </>
-            ) : (
-              <Text style={styles.vehiclePlateText} numberOfLines={1}>
-                Tap to select or create a route
+
+          {isOnline ? null : (
+            <View>
+              <Text style={styles.ctaHelper}>
+                Come back online to keep earning. Your route and vehicle are <Text style={{ color: ORANGE, fontWeight: '800' }}>ready to go</Text>.
               </Text>
-            )}
-          </View>
-          <TouchableOpacity style={styles.changeBtn} onPress={() => setRoutePickerVisible(true)} activeOpacity={0.85}>
-            <Text style={styles.changeBtnText}>{activeRoute ? 'Change' : 'Select route'}</Text>
-          </TouchableOpacity>
-        </View>
+              <TouchableOpacity
+                style={styles.ctaBtn}
+                onPress={() => toggleOnlineStatus(true)}
+                activeOpacity={0.9}
+                onLayout={e => setCtaW(e.nativeEvent.layout.width)}
+              >
+                <Animated.View pointerEvents="none" style={[styles.ctaShineWrap, { transform: [{ translateX: shineX }] }]}><View style={styles.ctaShine} /></Animated.View>
+                <Text style={styles.ctaText}>Go Online Now</Text>
+                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
 
-        {dismissedCount > 0 && (
-          <TouchableOpacity style={styles.reopenRow} onPress={() => setDismissedIds([])} activeOpacity={0.85}>
-            <Ionicons name="flash" size={14} color={ORANGE} />
-            <Text style={styles.reopenText}>{dismissedCount} matched {dismissedCount === 1 ? 'order' : 'orders'} dismissed</Text>
-            <Text style={styles.reopenLink}>Show again</Text>
-          </TouchableOpacity>
-        )}
+              <View style={styles.statsGrid}>
+                <View style={styles.statCard}>
+                  <Text style={styles.statVal}>{todayStats.count}</Text>
+                  <Text style={styles.statLbl}>TODAY</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Text style={[styles.statVal, { color: ORANGE }]}>{money(todayStats.earned).replace('.00', '')}</Text>
+                  <Text style={styles.statLbl}>EARNED</Text>
+                </View>
+                <View style={styles.statCard}>
+                  <Text style={styles.statVal}>{todayStats.rating != null ? `${todayStats.rating.toFixed(1)}★` : '—'}</Text>
+                  <Text style={styles.statLbl}>RATING</Text>
+                </View>
+              </View>
+            </View>
+          )}
 
-        {locDenied && (
-          <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
-            <Ionicons name="location-outline" size={16} color={colors.warning} />
-            <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+          {dismissedCount > 0 && (
+            <TouchableOpacity style={styles.reopenRow} onPress={() => setDismissedIds([])} activeOpacity={0.85}>
+              <Ionicons name="flash" size={14} color={ORANGE} />
+              <Text style={styles.reopenText}>{dismissedCount} matched {dismissedCount === 1 ? 'order' : 'orders'} dismissed</Text>
+              <Text style={styles.reopenLink}>Show again</Text>
+            </TouchableOpacity>
+          )}
+          {locDenied && (
+            <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
+              <Ionicons name="location-outline" size={16} color={colors.warning} />
+              <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
+            </TouchableOpacity>
+          )}
+        </Animated.View>
+      </Animated.View>
     );
   };
 
@@ -1632,38 +1982,73 @@ export default function JobsScreen() {
           route={mapRoute}
           order={mapOrder}
           demand={showDemand}
+          online={isOnline}
           recenterTick={recenterTick}
-          padBottom={currentOffer ? 480 : 200}
+          padBottom={currentOffer ? Math.round(SCREEN_H * 0.48) + 30 : 200}
         />
 
-        <View style={[styles.mapTools, { top: insets.top + 20 }]} pointerEvents="box-none">
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(18,23,36,0.55)', opacity: modeAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
+        />
+
+        {!isOnline && (
+          <TouchableOpacity
+            style={[styles.offlineBack, { top: insets.top + 16 }]}
+            onPress={goToTasks}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="chevron-back" size={22} color="#E2E8F0" />
+          </TouchableOpacity>
+        )}
+
+        <View style={[styles.mapTools, { top: insets.top + 16 }]} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
-            <TouchableOpacity style={styles.mapToolBtn} onPress={handleOpenNotifs} activeOpacity={0.85} hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}>
-              <Ionicons name="notifications-outline" size={20} color={colors.textPrimary} />
+            <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={handleOpenNotifs} activeOpacity={0.85}>
+              <Ionicons name="notifications" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
               {unreadCount > 0 && (
-                <View style={styles.mapToolBadge}>
+                <View style={[styles.mapToolBadge, !isOnline && { backgroundColor: '#64748B', borderColor: '#1A1F2B' }]}>
                   {unreadCount <= 9 && (<Text style={styles.mapToolBadgeText}>{unreadCount}</Text>)}
                 </View>
               )}
             </TouchableOpacity>
           </Animated.View>
+          <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={goToManageRoutes} activeOpacity={0.85}>
+            <Ionicons name="settings-sharp" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+          </TouchableOpacity>
+          <View style={{ height: 4 }} />
+          <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
+            <Ionicons name="locate" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+          </TouchableOpacity>
 
-          <TouchableOpacity style={styles.mapToolBtn} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
-            <Ionicons name="locate" size={20} color={colors.textPrimary} />
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.mapToolBtn, showDemand && styles.mapToolBtnActive]} onPress={() => setShowDemand(d => !d)} activeOpacity={0.85}>
-            <Ionicons name="flame" size={20} color={showDemand ? '#FFFFFF' : ORANGE} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.mapToolBtn} onPress={() => { setRefreshing(true); refreshMatches(); }} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[styles.mapToolBtn, showDemand && isOnline && styles.mapToolBtnActive, !isOnline && styles.mapToolBtnOff]}
+            onPress={() => {
+              if (!isOnline) return;
+              setShowDemand(d => !d);
+              setRefreshing(true);
+              refreshMatches();
+            }}
+            activeOpacity={0.85}
+          >
             {refreshing || checkingMatches ? (
-              <ActivityIndicator size="small" color={ORANGE} />
+              <ActivityIndicator size="small" color={showDemand ? '#FFFFFF' : ORANGE} />
             ) : (
-              <Ionicons name="refresh" size={20} color={colors.textPrimary} />
+              <Ionicons name="flame" size={20} color={showDemand ? '#FFFFFF' : ORANGE} />
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.mapToolBtn, styles.sosBtn]} onPress={triggerSOS} activeOpacity={0.85}>
-            <Ionicons name="shield" size={20} color="#FFFFFF" />
-          </TouchableOpacity>
+
+          <View style={!isOnline && styles.toolDim} pointerEvents={isOnline ? 'auto' : 'none'}>
+            <TouchableOpacity style={[styles.mapToolBtn, styles.sosBtn, !isOnline && { backgroundColor: '#475569', borderColor: '#475569' }]} onPress={triggerSOS} activeOpacity={0.85}>
+              <Ionicons name="shield" size={20} color={isOnline ? '#FFFFFF' : '#94A3B8'} />
+            </TouchableOpacity>
+          </View>
+
+          {isOnline && (
+            <TouchableOpacity style={[styles.mapToolBtn, styles.powerBtn, { width: 50, height: 50, borderRadius: 25 }]} onPress={() => toggleOnlineStatus(false)} activeOpacity={0.85}>
+              <Ionicons name="power" size={24} color="#EF4444" />
+            </TouchableOpacity>
+          )}
         </View>
 
         <Animated.View style={[styles.bottomWrap, { opacity: contentAnim }]} pointerEvents="box-none">
@@ -1741,7 +2126,6 @@ export default function JobsScreen() {
           <View style={{ width: 32 }} />
         </View>
         <View style={{ flex: 1 }}>
-          {/* NEW: role="provider" so routing works consistently */}
           <NotificationsList embedded role="provider" />
         </View>
       </View>
@@ -1761,7 +2145,9 @@ export default function JobsScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
-      {selectedRequest ? renderRequestDetail(selectedRequest) : renderMain()}
+
+      {/* full-screen details overlay OR main dashboard */}
+      {detailRequestId != null ? renderFullDetails() : renderMain()}
 
       {renderNotifModal()}
       {renderFullListModal()}
@@ -1771,7 +2157,7 @@ export default function JobsScreen() {
           <View style={styles.routePickerSheet}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Select a Route</Text>
+              <Text style={styles.routePickerTitle}>Select an Active Route</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {providerId && (
                   <TouchableOpacity
@@ -1787,12 +2173,7 @@ export default function JobsScreen() {
                   </TouchableOpacity>
                 )}
 
-                <TouchableOpacity
-                  style={styles.addRouteHeaderBtn}
-                  onPress={goToManageRoutes}
-                  activeOpacity={0.85}
-                  hitSlop={8}
-                >
+                <TouchableOpacity style={styles.addRouteHeaderBtn} onPress={goToManageRoutes} activeOpacity={0.85} hitSlop={8}>
                   <Ionicons name="add" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
 
@@ -1805,9 +2186,9 @@ export default function JobsScreen() {
             {routes.length === 0 ? (
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
-                <Text style={styles.routePickerEmptyTitle}>No routes created yet</Text>
+                <Text style={styles.routePickerEmptyTitle}>No active routes available</Text>
                 <Text style={styles.routePickerEmptySub}>
-                  Create an on-demand route now, or set up a scheduled route in Manage Routes.
+                  Create an on-demand route now, or set up / reschedule a route in Manage Routes.
                 </Text>
                 <TouchableOpacity
                   style={styles.createQuickRouteBtn}
@@ -1823,11 +2204,7 @@ export default function JobsScreen() {
                   <Text style={styles.createQuickRouteBtnText}>Create Quick Route</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.emptyManageRouteBtn}
-                  onPress={goToManageRoutes}
-                  activeOpacity={0.85}
-                >
+                <TouchableOpacity style={styles.emptyManageRouteBtn} onPress={goToManageRoutes} activeOpacity={0.85}>
                   <Ionicons name="map-outline" size={16} color={ORANGE} />
                   <Text style={styles.emptyManageRouteText}>Manage Routes</Text>
                 </TouchableOpacity>
@@ -1837,6 +2214,14 @@ export default function JobsScreen() {
                 {routes.map((r) => {
                   const isSelected = activeRoute?.route_id === r.route_id;
                   const rDate = parseNaiveIsoString(r.departure_time);
+                  const timeStr = rDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  const scheduleLabel =
+                    r.route_frequency === 'Daily'
+                      ? `Every day · ${timeStr}`
+                      : r.route_frequency === 'Weekly'
+                        ? `Every ${WEEKDAY_LABELS[rDate.getDay()]} · ${timeStr}`
+                        : `${rDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${timeStr}`;
+
                   const startAddr = splitAddress(r.start_location?.street_address);
                   const endAddr = splitAddress(r.end_location?.street_address);
 
@@ -1851,7 +2236,7 @@ export default function JobsScreen() {
                           {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
                         </Text>
                         <Text style={styles.routeOptionAddr} numberOfLines={1}>
-                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
+                          {scheduleLabel} · {r.route_frequency}
                         </Text>
                       </View>
                       {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
@@ -1865,12 +2250,20 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
+      {/* Confirm Departure Sheet — Matches ManageRoutesScreen Frequency Rules */}
       <Modal visible={confirmSheetVisible} transparent animationType="slide" onRequestClose={() => setConfirmSheetVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+              <View>
+                <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+                {!!pendingRoute?.route_frequency && (
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 }}>
+                    {pendingRoute.route_frequency} Route
+                  </Text>
+                )}
+              </View>
               <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
                 <Ionicons name="close" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
@@ -1890,50 +2283,126 @@ export default function JobsScreen() {
                   </View>
                 </View>
 
-                <View style={styles.dateTimeRow}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Date</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
-                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
-                    </TouchableOpacity>
-                    {showDatePicker && (
-                      <DateTimePicker
-                        value={departureDate} mode="date" display="default"
-                        minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
-                        onChange={(e, d) => {
-                          if (Platform.OS === 'android') setShowDatePicker(false);
-                          if (e.type === 'set' && d) {
-                            const merged = new Date(d);
-                            merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Time</Text>
+                {pendingRoute.route_frequency === 'Daily' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Departure Time (Today)</Text>
                     <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
                       <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
                     </TouchableOpacity>
                     {showTimePicker && (
                       <DateTimePicker
-                        value={departureDate} mode="time" display="default"
+                        value={departureTime}
+                        mode="time"
+                        display="default"
                         onChange={(e, t) => {
                           if (Platform.OS === 'android') setShowTimePicker(false);
                           if (e.type === 'set' && t) {
-                            const merged = new Date(departureDate);
-                            merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
+                            const now = new Date();
+                            const candidate = new Date(
+                              now.getFullYear(),
+                              now.getMonth(),
+                              now.getDate(),
+                              t.getHours(),
+                              t.getMinutes(),
+                              0,
+                              0,
+                            );
+                            if (candidate.getTime() < now.getTime()) {
+                              Alert.alert(
+                                'Invalid Time',
+                                `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You cannot pick a time that has already passed today.`,
+                              );
+                              return;
+                            }
+                            setDepartureTime(t);
                           }
                         }}
                       />
                     )}
                   </View>
-                </View>
+                ) : pendingRoute.route_frequency === 'Weekly' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Repeats on</Text>
+                    <View style={styles.weekdayRow}>
+                      {WEEKDAY_LABELS.map((label, idx) => (
+                        <TouchableOpacity
+                          key={label}
+                          style={[styles.weekdayChip, selectedWeekday === idx && styles.weekdayChipActive]}
+                          onPress={() => setSelectedWeekday(idx)}
+                        >
+                          <Text style={[styles.weekdayChipText, selectedWeekday === idx && styles.weekdayChipTextActive]}>
+                            {label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <View style={{ height: 12 }} />
+                    <Text style={styles.inputLabel}>Departure Time</Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        display="default"
+                        onChange={(e, t) => {
+                          if (Platform.OS === 'android') setShowTimePicker(false);
+                          if (e.type === 'set' && t) setDepartureTime(t);
+                        }}
+                      />
+                    )}
+                  </View>
+                ) : (
+                  <View style={styles.dateTimeRow}>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Date</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
+                      </TouchableOpacity>
+                      {showDatePicker && (
+                        <DateTimePicker
+                          value={departureDate}
+                          mode="date"
+                          display="default"
+                          minimumDate={new Date()}
+                          onChange={(e, d) => {
+                            if (Platform.OS === 'android') setShowDatePicker(false);
+                            if (e.type === 'set' && d) setDepartureDate(d);
+                          }}
+                        />
+                      )}
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Time</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                        <Ionicons name="time-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>
+                          {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </TouchableOpacity>
+                      {showTimePicker && (
+                        <DateTimePicker
+                          value={departureTime}
+                          mode="time"
+                          display="default"
+                          onChange={(e, t) => {
+                            if (Platform.OS === 'android') setShowTimePicker(false);
+                            if (e.type === 'set' && t) setDepartureTime(t);
+                          }}
+                        />
+                      )}
+                    </View>
+                  </View>
+                )}
 
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#1E40AF'} />
@@ -1985,114 +2454,77 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
 
   bottomWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
+  offlineBack: { position: 'absolute', left: 14, width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(30,38,54,0.88)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', zIndex: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
+  mapToolBtnOff: { backgroundColor: 'rgba(30,38,54,0.88)', borderColor: 'rgba(255,255,255,0.05)' },
+  toolDim: { opacity: 0.35 },
 
-  bottomPanel: {
-    backgroundColor: c.card,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 20, paddingTop: 24,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
-    shadowRadius: 16, elevation: 16,
-    borderTopWidth: 1, borderColor: c.border,
-  },
-  onlineToggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  liveDotBig: { width: 12, height: 12, borderRadius: 6 },
-  panelTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  panelSub: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
-  panelDivider: { height: 1, backgroundColor: c.divider, marginVertical: 18 },
-  locWarnBottom: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16,
-    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
-    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10,
-  },
-  locWarnText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.warning },
-
-  reopenRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14,
-    backgroundColor: c.background, borderRadius: 14,
-    paddingHorizontal: 14, paddingVertical: 12,
-    borderWidth: 1, borderColor: c.border,
-  },
-  reopenText: { flex: 1, fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  reopenLink: { fontSize: 13, fontWeight: '800', color: ORANGE },
-
-  vehicleRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  vehicleIconBox: {
-    width: 44, height: 44, borderRadius: 14, backgroundColor: c.accentSoft,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  vehicleNameText: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  vehiclePlateText: { fontSize: 13, color: c.textSecondary, marginTop: 2, fontWeight: '600' },
-  changeBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: c.accentSoft },
-  changeBtnText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
-
-  offerSheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 26, borderTopRightRadius: 26,
-    paddingHorizontal: 16, paddingBottom: 14, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
-    shadowRadius: 16, elevation: 16,
-    borderTopWidth: 1, borderColor: c.border,
-  },
-  offerTimerTrack: { height: 5, backgroundColor: c.border, marginHorizontal: -16 },
-  offerTimerFill: { height: '100%', backgroundColor: ORANGE },
-  offerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14 },
-  offerCount: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
-  offerTimerPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.divider, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
-  },
-  offerTimerText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
-  offerMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12 },
-  offerPrice: { fontSize: 32, fontWeight: '900', color: c.textPrimary, letterSpacing: -1, marginTop: 2 },
-  offerCode: { fontSize: 13, fontWeight: '800', color: c.textMuted },
-  offerStatsRow: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    borderRadius: 16, paddingVertical: 12, marginTop: 12,
-    borderWidth: 1, borderColor: c.border,
-  },
-  offerStat: { flex: 1, alignItems: 'center' },
-  offerStatValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary },
-  offerStatLabel: { fontSize: 10, fontWeight: '700', color: c.textSecondary, marginTop: 2 },
-  offerStatDivider: { width: 1, height: 28, backgroundColor: c.border },
-  offerPhotoBlock: { marginTop: 14 },
-  offerPhotoHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
-  offerPhotoHint: { fontSize: 10, fontWeight: '700', color: c.textMuted },
-  offerPhotoRow: { flexDirection: 'row', gap: 8 },
-  offerThumbWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider, borderWidth: 1, borderColor: c.border },
-  offerThumb: { width: '100%', height: '100%' },
-  offerThumbMore: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(17,24,39,0.6)', alignItems: 'center', justifyContent: 'center' },
-  offerThumbMoreText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
-  offerNoPhoto: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
-    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
-    borderRadius: 12, padding: 12,
-  },
-  offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.warning, fontWeight: '600' },
-  offerRoute: { marginTop: 14 },
-  offerRouteText: { flex: 1, fontSize: 14, fontWeight: '700', color: c.textPrimary },
-  offerBtnRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  declineBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 15, borderRadius: 16, backgroundColor: c.errorBg,
-    borderWidth: 1, borderColor: c.error,
-  },
-  declineBtnText: { fontSize: 15, fontWeight: '800', color: c.error },
-  offerAcceptBtn: {
-    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 15, borderRadius: 16, backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
-  },
-  offerAcceptText: { fontSize: 16, fontWeight: '900', color: '#FFFFFF' },
-  offerDetailsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingTop: 12 },
-  offerDetailsText: { fontSize: 12, fontWeight: '800', color: ORANGE },
-
-  container: { flex: 1, backgroundColor: c.background },
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
-  loadingText: { color: c.textSecondary, fontWeight: '600' },
-
-  detailScroll: { padding: 16 },
+  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 18 },
+  dashBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
+  dashHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  dashHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  liveBadge: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  liveBadgeOn: { backgroundColor: GREEN, shadowColor: GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 4 },
+  liveBadgeOff: { backgroundColor: '#475569' },
+  liveRing: { position: 'absolute', top: -4, left: -4, right: -4, bottom: -4, borderRadius: 25, borderWidth: 2, borderColor: GREEN },
+  liveCore: { width: 10, height: 10, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.85)' },
+  dashTitle: { fontSize: 17, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.4 },
+  dashSub: { fontSize: 12, fontWeight: '600', color: c.textSecondary, marginTop: 2 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  statusPillOn: { backgroundColor: 'rgba(16,185,129,0.12)' },
+  statusPillOff: { backgroundColor: 'rgba(100,116,139,0.15)' },
+  statusPillDot: { width: 6, height: 6, borderRadius: 3 },
+  statusPillText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
+  routeBlock: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, borderRadius: 18, borderWidth: 1, marginBottom: 14 },
+  routeBlockOff: { backgroundColor: 'rgba(15,20,32,0.6)', borderColor: 'rgba(255,255,255,0.04)' },
+  vehicleChip: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  vehicleDot: { position: 'absolute', top: -2, right: -2, width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
+  routeLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 0.8, color: c.textMuted },
+  routeTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3, letterSpacing: -0.2 },
+  routeDetail: { fontSize: 11.5, fontWeight: '600', color: c.textSecondary, marginTop: 3 },
+  swapBtn: { width: 44, height: 44, borderRadius: 14, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  swapBtnOff: { backgroundColor: 'rgba(30,38,54,0.8)', borderColor: 'rgba(255,255,255,0.06)' },
+  powerBtn: { borderColor: 'rgba(239,68,68,0.35)' },
+  ctaHelper: { fontSize: 12, fontWeight: '600', color: '#94A3B8', lineHeight: 18, paddingHorizontal: 2, marginBottom: 12 },
+  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 16, backgroundColor: ORANGE, overflow: 'hidden', shadowColor: ORANGE, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
+  ctaShineWrap: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 90 },
+  ctaShine: { flex: 1, backgroundColor: 'rgba(255,255,255,0.3)', transform: [{ skewX: '-20deg' }] },
+  ctaText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900', letterSpacing: -0.2 },
+  statsGrid: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  statCard: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(15,20,32,0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
+  statVal: { fontSize: 16, fontWeight: '900', color: '#E2E8F0', letterSpacing: -0.3 },
+  statLbl: { fontSize: 9, fontWeight: '800', color: '#64748B', letterSpacing: 0.6, marginTop: 4 },
+  reopenRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingVertical: 8 },
+  reopenText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textSecondary },
+  reopenLink: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  locWarnBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 6 },
+  locWarnText: { fontSize: 12, fontWeight: '600', color: c.warning },
+  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
+  rtRow: { flexDirection: 'row', gap: 14 },
+  rtRail: { alignItems: 'center', width: 26 },
+  rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
+  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
+  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtText: { flex: 1 },
+  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
+  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  mcRow: { flexDirection: 'row', gap: 10 },
+  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
+  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
+  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
+  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
+  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
+  dItemText: { fontSize: 14, color: c.textSecondary, lineHeight: 20 },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
+  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
 
   card: {
     backgroundColor: c.card, borderRadius: 20, padding: 16, marginBottom: 14,
@@ -2108,43 +2540,14 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
-  chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: c.divider,
-  },
-  chipText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
-  chipWarn: { backgroundColor: c.errorBg },
   chipSolid: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: ORANGE,
   },
   chipSolidText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5 },
-  pinPickup: {
-    width: 18, height: 18, borderRadius: 9, backgroundColor: c.accentSoft,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  pinPickupInner: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  pinDropoff: {
-    width: 18, height: 18, borderRadius: 9, backgroundColor: ORANGE,
-    alignItems: 'center', justifyContent: 'center',
-  },
-
-  detailMap: { height: 190, backgroundColor: '#EEF0F2' },
-  routePad: { padding: 16 },
-
-  detailHeader: {
-    backgroundColor: ORANGE, flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12,
-  },
-  detailBack: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  detailHeaderTitle: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
-  bigId: { fontSize: 26, fontWeight: '900', color: c.textPrimary, marginTop: 6, letterSpacing: 0.5 },
-
+  routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
+  privacyNote: { marginTop: 14, fontSize: 11, color: c.textMuted, fontWeight: '600' },
   earnCard: { backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14 },
   earnLabel: { color: '#FFE4D2', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   earnValue: { color: '#FFFFFF', fontSize: 34, fontWeight: '900', marginTop: 4 },
@@ -2154,55 +2557,24 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, lineHeight: 16, fontWeight: '600' },
 
-  statsRow: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 14, paddingVertical: 12 },
-  stat: { flex: 1, alignItems: 'center', gap: 4 },
-  statLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  statValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
-  statDivider: { width: 1, backgroundColor: c.border },
-  noteList: { marginTop: 12, gap: 8 },
-  noteRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  noteText: { fontSize: 12, color: c.textSecondary, fontWeight: '600', flex: 1 },
-
-  itemBlock: { marginTop: 14, borderTopWidth: 1, borderTopColor: c.divider, paddingTop: 14 },
-  itemPhotoWrap: { borderRadius: 16, overflow: 'hidden', backgroundColor: c.divider },
-  itemPhoto: { width: '100%', height: 200 },
-  enlargeHint: {
-    position: 'absolute', right: 10, bottom: 10, width: 28, height: 28, borderRadius: 14,
-    backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center',
-  },
-  itemNoPhoto: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background,
-    borderRadius: 14, padding: 14, borderWidth: 1, borderColor: c.border, borderStyle: 'dashed',
-  },
-  itemNoPhotoText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
-  itemInfoRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  itemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
-  itemSub: { fontSize: 12, color: c.textSecondary, marginTop: 3 },
-
-  routeRow: { flexDirection: 'row', gap: 12 },
-  rail: { alignItems: 'center', width: 18 },
-  railLine: { flex: 1, width: 2, backgroundColor: c.border, marginVertical: 4, borderRadius: 1 },
-  routeText: { flex: 1, paddingBottom: 16 },
-  routeMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
-  routeSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
-
-  personRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatar: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: ORANGE,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  avatarSoft: { backgroundColor: c.accentSoft },
-  avatarText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
-  personName: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
-  personDivider: { height: 1, backgroundColor: c.divider, marginVertical: 12 },
-  privacyNote: { marginTop: 14, fontSize: 11, color: c.textMuted, fontWeight: '600' },
-
   acceptBar: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 16,
-    borderTopWidth: 1, borderTopColor: c.border,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: c.card,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 10,
   },
   acceptPrice: { fontSize: 22, fontWeight: '900', color: ORANGE, marginTop: 2 },
   acceptBtn: {
@@ -2211,6 +2583,59 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+
+  offerTimerTrack: { height: 5, backgroundColor: c.border },
+  offerTimerFill: { height: '100%', backgroundColor: ORANGE },
+  offerCount: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
+  offerTimerPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.divider, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
+  },
+  offerTimerText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
+  offerMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12 },
+  offerPrice: { fontSize: 32, fontWeight: '900', color: c.textPrimary, letterSpacing: -1, marginTop: 2 },
+  offerCode: { fontSize: 13, fontWeight: '800', color: c.textMuted },
+  offerNoPhoto: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
+    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+    borderRadius: 12, padding: 12,
+  },
+  offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.warning, fontWeight: '600' },
+  offerBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: c.divider,
+  },
+  declineBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    paddingVertical: 15, borderRadius: 16, backgroundColor: c.errorBg,
+    borderWidth: 1, borderColor: c.error,
+  },
+  declineBtnText: { fontSize: 15, fontWeight: '800', color: c.error },
+  offerAcceptBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 15, borderRadius: 16, backgroundColor: ORANGE,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  offerAcceptText: { fontSize: 16, fontWeight: '900', color: '#FFFFFF' },
+
+  viewDetailsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 18,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: c.accentSoft,
+    borderWidth: 1.5,
+    borderColor: ORANGE,
+  },
+  viewDetailsText: { fontSize: 14, fontWeight: '800', color: ORANGE },
+
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  loadingText: { color: c.textSecondary, fontWeight: '600' },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
@@ -2264,9 +2689,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routeOptionSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
   routeOptionAddr: { fontSize: 10, color: c.textMuted, marginTop: 2 },
 
-  reqRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  reqRouteLine: { width: 1, height: 12, backgroundColor: c.border, marginLeft: 8.5, marginVertical: 3 },
-
   confirmSheet: {
     backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
     paddingHorizontal: 20, paddingTop: 10,
@@ -2279,6 +2701,15 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   confirmDot: { width: 8, height: 8, borderRadius: 4 },
   confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: c.textPrimary },
   confirmRouteLine: { width: 1, height: 14, backgroundColor: c.border, marginLeft: 3.5, marginVertical: 4 },
+
+  weekdayRow: { flexDirection: 'row', gap: 6 },
+  weekdayChip: {
+    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5,
+    borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
+  },
+  weekdayChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  weekdayChipText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
+  weekdayChipTextActive: { color: '#FFF' },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
   inputGroup: { flex: 1 },

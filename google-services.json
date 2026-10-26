@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "563575217573",
+    "firebase_url": "https://pinakagwapojun-default-rtdb.firebaseio.com",
+    "project_id": "pinakagwapojun",
+    "storage_bucket": "pinakagwapojun.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:563575217573:android:80b5d99fef79f54070dc4c",
+        "android_client_info": {
+          "package_name": "com.rendelljames.Capstone"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAKWEfQ5tAH6P_B8pmsQiCPva-bTO-sfL4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

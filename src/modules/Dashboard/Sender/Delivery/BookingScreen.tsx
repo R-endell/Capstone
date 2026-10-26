@@ -4,7 +4,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
   Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
@@ -16,6 +16,8 @@ import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { notifyUser } from '../../../../services/pushService';
 
 const { height } = Dimensions.get('window');
+// Bottom sheets never grow past this, so the map above always stays visible.
+const SHEET_MAX_H = Math.round(height * 0.5);
 const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
@@ -1020,18 +1022,9 @@ export default function BookingScreen({ route, navigation }: any) {
     return unsubscribe;
   }, [navigation, route.params?.pickedReceiver]);
 
-  const parseAddress = (fullAddress: string | undefined) => {
-    if (!fullAddress) return { main: 'Selected Location', sub: 'Coordinates' };
-    const parts = fullAddress.split(', ');
-    return { main: parts[0], sub: parts.slice(1).join(', ') || fullAddress };
-  };
-
   const viewPickupLocation = resumeInfo?.pickupLocation ?? state.pickupLocation;
   const viewDropoffLocation = resumeInfo?.dropoffLocation ?? state.dropoffLocation;
   const displayCost: number | undefined = resumeInfo?.estimatedCost ?? state.estimatedCost;
-
-  const pickup = parseAddress(viewPickupLocation?.address);
-  const dropoff = parseAddress(viewDropoffLocation?.address);
 
   const pickupLat = viewPickupLocation?.latitude ?? null;
   const pickupLng = viewPickupLocation?.longitude ?? null;
@@ -1043,96 +1036,20 @@ export default function BookingScreen({ route, navigation }: any) {
     transform: [{ translateY: sheetAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
   };
 
-  const mapTopPad = Math.round(insets.top + 120);
-  const mapBottomPad = 320;
-
-  const mapHtml = `
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <style>
-          body { margin: 0; padding: 0; }
-          #map { height: 100vh; width: 100vw; background: #E5E7EB; }
-          .marker-pickup { background: #F27024; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-          .marker-dropoff { background: #111827; border: 3px solid white; border-radius: 50%; width: 22px; height: 22px; box-shadow: 0 2px 8px rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 900; color: white; }
-        </style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script>
-          var pickupLat = ${pickupLat === null ? 'null' : pickupLat};
-          var pickupLng = ${pickupLng === null ? 'null' : pickupLng};
-          var dropoffLat = ${dropoffLat === null ? 'null' : dropoffLat};
-          var dropoffLng = ${dropoffLng === null ? 'null' : dropoffLng};
-
-          var centerLat = (pickupLat !== null) ? pickupLat : ((dropoffLat !== null) ? dropoffLat : 10.3157);
-          var centerLng = (pickupLng !== null) ? pickupLng : ((dropoffLng !== null) ? dropoffLng : 123.8854);
-
-          var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([centerLat, centerLng], 12);
-          L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-
-          var pickupIcon = L.divIcon({ className: '', html: '<div class="marker-pickup">P</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-          var dropoffIcon = L.divIcon({ className: '', html: '<div class="marker-dropoff">D</div>', iconSize: [22, 22], iconAnchor: [11, 11] });
-
-          var fitOpts = { paddingTopLeft: [40, ${mapTopPad}], paddingBottomRight: [40, ${mapBottomPad}], maxZoom: 15 };
-          var markers = [];
-          if (pickupLat !== null && pickupLng !== null) {
-            markers.push(L.marker([pickupLat, pickupLng], { icon: pickupIcon }).addTo(map));
-          }
-          if (dropoffLat !== null && dropoffLng !== null) {
-            markers.push(L.marker([dropoffLat, dropoffLng], { icon: dropoffIcon }).addTo(map));
-          }
-
-          if (pickupLat !== null && pickupLng !== null && dropoffLat !== null && dropoffLng !== null) {
-            var osrmUrl = 'https://router.project-osrm.org/route/v1/driving/'
-              + pickupLng + ',' + pickupLat + ';'
-              + dropoffLng + ',' + dropoffLat
-              + '?overview=full&geometries=geojson';
-
-            fetch(osrmUrl)
-              .then(function(res) { return res.json(); })
-              .then(function(data) {
-                if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-                  var coords = data.routes[0].geometry.coordinates;
-                  var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
-                  var polyline = L.polyline(latlngs, {
-                    color: '#F27024', weight: 5, opacity: 0.85, lineJoin: 'round', lineCap: 'round'
-                  }).addTo(map);
-                  map.fitBounds(polyline.getBounds(), fitOpts);
-                } else {
-                  var group = new L.featureGroup(markers);
-                  map.fitBounds(group.getBounds(), fitOpts);
-                }
-              })
-              .catch(function() {
-                var group = new L.featureGroup(markers);
-                map.fitBounds(group.getBounds(), fitOpts);
-              });
-          } else if (markers.length > 0) {
-            var group = new L.featureGroup(markers);
-            map.fitBounds(group.getBounds(), fitOpts);
-          }
-        </script>
-      </body>
-    </html>
-  `;
+  const mapTopPad = Math.round(insets.top + 70);
+  const mapBottomPad = SHEET_MAX_H + 16;
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <WebView
-        style={styles.map}
-        source={{ html: mapHtml }}
-        scrollEnabled={false}
-        javaScriptEnabled
-        domStorageEnabled
-        androidLayerType="hardware"
-        originWhitelist={['*']}
-        mixedContentMode="always"
+      <RoutePreviewMap
+        pickupLat={pickupLat}
+        pickupLng={pickupLng}
+        dropoffLat={dropoffLat}
+        dropoffLng={dropoffLng}
+        padTop={mapTopPad}
+        padBottom={mapBottomPad}
       />
 
       <View style={[styles.topOverlay, { top: insets.top + 8 }]}>
@@ -1140,147 +1057,138 @@ export default function BookingScreen({ route, navigation }: any) {
           <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
-        <View style={styles.pillsContainer}>
-          <View style={styles.routeCard}>
-            <View style={styles.routeRow}>
-              <View style={styles.routeIconSlot}>
-                <View style={styles.pillIconPickup}>
-                  <View style={styles.pillIconPickupInner} />
-                </View>
-              </View>
-              <View style={styles.pillTextContainer}>
-                <Text style={styles.pillLabel}>PICKUP</Text>
-                <Text numberOfLines={1}>
-                  <Text style={styles.pillMainText}>{pickup.main}</Text>
-                  <Text style={styles.pillSubText}>{pickup.sub ? `  ${pickup.sub}` : ''}</Text>
-                </Text>
-              </View>
-            </View>
-            <View style={styles.routeDivider} />
-            <View style={styles.routeRow}>
-              <View style={styles.routeIconSlot}>
-                <Ionicons name="location" size={18} color={colors.error} />
-              </View>
-              <View style={styles.pillTextContainer}>
-                <Text style={[styles.pillLabel, { color: colors.error }]}>DROPOFF</Text>
-                <Text numberOfLines={1}>
-                  <Text style={styles.pillMainText}>{dropoff.main}</Text>
-                  <Text style={styles.pillSubText}>{dropoff.sub ? `  ${dropoff.sub}` : ''}</Text>
-                </Text>
-              </View>
-            </View>
-          </View>
-        </View>
       </View>
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
 
         {/* --- REVIEW STATE --- */}
         {bookingState === 'review' && (
-          <Animated.View style={[styles.sheetCard, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <Animated.View style={[styles.sheetCard, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
-            <View style={styles.sheetTitleRow}>
-              <View style={styles.sheetIconBox}>
-                <Ionicons name="person-outline" size={18} color={ORANGE} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sheetHeaderTitle}>Recipient & Delivery</Text>
-                <Text style={styles.sheetHeaderSub}>
-                  {mode === 'sendNow' ? 'Send now · Immediate pickup' : 'Scheduled delivery'}
-                </Text>
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.receiverCard, !receiver && styles.receiverCardEmpty]}
-              onPress={handleSelectReceiver}
-              activeOpacity={0.85}
-              disabled={savingBooking}
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              bounces={false}
             >
-              <View style={[styles.receiverIconBox, receiver ? styles.receiverIconBoxFilled : styles.receiverIconBoxEmpty]}>
-                <Ionicons name={receiver ? 'person' : 'person-add-outline'} size={18} color={receiver ? '#FFFFFF' : ORANGE} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.receiverLabel}>DESIGNATED RECEIVER</Text>
-                {receiver ? (
-                  <>
-                    <Text style={styles.receiverName} numberOfLines={1}>
-                      {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
-                    </Text>
-                    <Text style={styles.receiverPhone} numberOfLines={1}>
-                      {receiver.receiver_phone || receiver.phone_number || '—'}
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.receiverPlaceholder}>Tap to select receiver</Text>
-                    <Text style={styles.receiverHelper}>Who will receive this package?</Text>
-                  </>
-                )}
-              </View>
-              <Ionicons name={receiver ? 'create-outline' : 'chevron-forward'} size={18} color={receiver ? colors.textSecondary : ORANGE} />
-            </TouchableOpacity>
+            <View style={styles.rvHeader}>
+              <Text style={styles.rvTitle}>Review & pay</Text>
+            </View>
 
-            {receiver && (
-              <View style={styles.otpInfoBanner}>
-                <Ionicons name="qr-code-outline" size={14} color="#7C3AED" />
-                <Text style={styles.otpInfoBannerText}>
-                  When the courier arrives, show your pickup QR code (or read them the 4-digit PIN) to confirm pickup. After that, a delivery OTP will be generated for you to forward to the receiver.
+            {/* ---- receiver ---- */}
+            <View style={[styles.rvCard, !receiver && styles.rvCardEmpty]}>
+              <TouchableOpacity
+                style={styles.rvReceiverRow}
+                onPress={handleSelectReceiver}
+                activeOpacity={0.8}
+                disabled={savingBooking}
+              >
+                <View style={[styles.rvAvatar, !receiver && styles.rvAvatarEmpty]}>
+                  {receiver ? (
+                    <Text style={styles.rvAvatarText}>
+                      {(receiver.receiver_name || receiver.first_name || '?').trim().charAt(0).toUpperCase()}
+                    </Text>
+                  ) : (
+                    <Ionicons name="person-add-outline" size={18} color={ORANGE} />
+                  )}
+                </View>
+                <View style={{ flex: 1 }}>
+                  {receiver ? (
+                    <>
+                      <Text style={styles.rvReceiverName} numberOfLines={1}>
+                        {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
+                      </Text>
+                      <Text style={styles.rvReceiverSub} numberOfLines={1}>
+                        {receiver.receiver_phone || receiver.phone_number || '—'}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.rvReceiverName, { color: ORANGE }]}>Select receiver</Text>
+                      <Text style={styles.rvReceiverSub}>Who will receive this package?</Text>
+                    </>
+                  )}
+                </View>
+                {receiver ? (
+                  <View style={styles.rvChangePill}>
+                    <Text style={styles.rvChangeText}>Change</Text>
+                  </View>
+                ) : (
+                  <Ionicons name="chevron-forward" size={18} color={ORANGE} />
+                )}
+              </TouchableOpacity>
+
+              {receiver && (
+                <View style={styles.rvNote}>
+                  <Ionicons name="qr-code-outline" size={14} color={colors.textSecondary} />
+                  <Text style={styles.rvNoteText}>
+                    Show your pickup QR or PIN when the courier arrives. A delivery OTP follows for the receiver.
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* ---- fare ---- */}
+            <View style={styles.rvCard}>
+              {pricing ? (
+                <View style={styles.rvFareRows}>
+                  <View style={styles.rvFareRow}>
+                    <Text style={styles.rvFareLabel}>Base fee</Text>
+                    <Text style={styles.rvFareValue}>₱{pricing.base.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.rvFareRow}>
+                    <Text style={styles.rvFareLabel}>Distance · {pricing.distanceKm.toFixed(1)} km</Text>
+                    <Text style={styles.rvFareValue}>₱{pricing.distance.toFixed(2)}</Text>
+                  </View>
+                  {pricing.size > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Package size</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.size.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.fragile > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Fragile handling</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.fragile.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.schedule > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Scheduled delivery</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.schedule.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.emergency > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Emergency priority</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.emergency.toFixed(2)}</Text>
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <View style={styles.rvCalcRow}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                  <Text style={styles.rvFareLabel}>Calculating fare…</Text>
+                </View>
+              )}
+            </View>
+
+            </ScrollView>
+
+            <View style={styles.sheetFooter}>
+              <View style={styles.rvTotalRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rvTotalLabel}>Total{refiningDistance ? ' · updating…' : ''}</Text>
+                  <View style={styles.rvEscrowRow}>
+                    <Ionicons name="shield-checkmark-outline" size={12} color={colors.success} />
+                    <Text style={styles.rvEscrowText}>Held in escrow until delivery</Text>
+                  </View>
+                </View>
+                <Text style={styles.rvTotalValue}>
+                  ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
                 </Text>
               </View>
-            )}
-
-            <View style={styles.divider} />
-
-            {pricing ? (
-              <View style={styles.fareBreakdown}>
-                <View style={styles.fareRow}>
-                  <Text style={styles.fareLabel}>Base fee</Text>
-                  <Text style={styles.fareValue}>₱{pricing.base.toFixed(2)}</Text>
-                </View>
-                <View style={styles.fareRow}>
-                  <Text style={styles.fareLabel}>
-                    Distance · {pricing.distanceKm.toFixed(1)} km
-                  </Text>
-                  <Text style={styles.fareValue}>₱{pricing.distance.toFixed(2)}</Text>
-                </View>
-                {pricing.size > 0 && (
-                  <View style={styles.fareRow}>
-                    <Text style={styles.fareLabel}>Package size</Text>
-                    <Text style={styles.fareValue}>₱{pricing.size.toFixed(2)}</Text>
-                  </View>
-                )}
-                {pricing.fragile > 0 && (
-                  <View style={styles.fareRow}>
-                    <Text style={styles.fareLabel}>Fragile handling</Text>
-                    <Text style={styles.fareValue}>₱{pricing.fragile.toFixed(2)}</Text>
-                  </View>
-                )}
-                {pricing.schedule > 0 && (
-                  <View style={styles.fareRow}>
-                    <Text style={styles.fareLabel}>Scheduled delivery</Text>
-                    <Text style={styles.fareValue}>₱{pricing.schedule.toFixed(2)}</Text>
-                  </View>
-                )}
-                {pricing.emergency > 0 && (
-                  <View style={styles.fareRow}>
-                    <Text style={styles.fareLabel}>Emergency priority</Text>
-                    <Text style={styles.fareValue}>₱{pricing.emergency.toFixed(2)}</Text>
-                  </View>
-                )}
-                <View style={styles.fareDivider} />
-              </View>
-            ) : null}
-
-            <View style={styles.costRow}>
-              <View>
-                <Text style={styles.costLabel}>Estimated total</Text>
-                <Text style={styles.costSub}>Held in escrow until delivery is confirmed</Text>
-              </View>
-              <Text style={styles.costValue}>
-                ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
-              </Text>
-            </View>
 
             <TouchableOpacity
               style={[
@@ -1297,15 +1205,14 @@ export default function BookingScreen({ route, navigation }: any) {
                 <>
                   <Ionicons name="card-outline" size={16} color="#FFFFFF" />
                   <Text style={styles.primaryButtonText}>
-                    {pricing
-                      ? `Proceed to Payment · ₱${pricing.total.toFixed(2)}${refiningDistance ? ' ⏳' : ''}`
-                      : 'Calculating fare…'}
+                    {pricing ? 'Proceed to Payment' : 'Calculating fare…'}
                   </Text>
                 </>
               )}
             </TouchableOpacity>
 
             {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable payment</Text>}
+            </View>
           </Animated.View>
         )}
 
@@ -1437,8 +1344,15 @@ export default function BookingScreen({ route, navigation }: any) {
 
         {/* --- MATCHED STATE --- */}
         {bookingState === 'matched' && matchFound && (
-          <Animated.View style={[styles.sheetCardMatched, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          <Animated.View style={[styles.sheetCardMatched, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetScrollContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              bounces={false}
+            >
             <View style={styles.matchedHeader}>
               <View style={styles.matchedHeaderIcon}>
                 <Ionicons name="checkmark-circle" size={22} color={colors.success} />
@@ -1568,10 +1482,14 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
             </View>
 
-            <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
-              <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
-            </TouchableOpacity>
+            </ScrollView>
+
+            <View style={styles.sheetFooter}>
+              <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
+                <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
+                <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
           </Animated.View>
         )}
 
@@ -1617,33 +1535,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   map: { ...StyleSheet.absoluteFill },
 
-  topOverlay: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'flex-start', zIndex: 10 },
+  topOverlay: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', zIndex: 10 },
   backCircleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3,
-    marginRight: 10, borderWidth: 1, borderColor: c.border,
-  },
-  pillsContainer: { flex: 1 },
-  routeCard: {
-    backgroundColor: c.card, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 4,
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 8, elevation: 3,
-    borderWidth: 1, borderColor: c.border,
+    shadowOpacity: isDark ? 0.4 : 0.12, shadowRadius: 8, elevation: 5,
+    marginRight: 12, borderWidth: 1, borderColor: c.border,
   },
-  routeRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 7 },
-  routeIconSlot: { width: 22, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  routeDivider: { height: 1, backgroundColor: c.divider, marginLeft: 32 },
-  pillIconPickup: {
-    width: 16, height: 16, borderRadius: 8, borderWidth: 3,
-    borderColor: ORANGE, justifyContent: 'center', alignItems: 'center',
-  },
-  pillIconPickupInner: { width: 4, height: 4, borderRadius: 2, backgroundColor: ORANGE },
-  pillTextContainer: { flex: 1 },
-  pillLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 0.8, marginBottom: 1 },
-  pillMainText: { fontSize: 14, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
-  pillSubText: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
 
   bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center' },
   bottomSheetFinding: { bottom: 0 },
@@ -1655,51 +1554,48 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
-  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
-  sheetIconBox: {
-    width: 40, height: 40, borderRadius: 12, backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: ORANGE,
+  sheetCardCapped: { maxHeight: SHEET_MAX_H },
+  sheetScroll: { flexGrow: 0, flexShrink: 1 },
+  sheetScrollContent: { paddingBottom: 8 },
+  sheetFooter: { paddingTop: 10, borderTopWidth: 1, borderTopColor: c.divider },
+  /* review sheet */
+  rvHeader: { marginBottom: 12 },
+  rvTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+
+  rvCard: {
+    backgroundColor: c.background, borderRadius: 16, borderWidth: 1, borderColor: c.border,
+    marginBottom: 10, overflow: 'hidden',
   },
-  sheetHeaderTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  sheetHeaderSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  rvCardEmpty: { borderStyle: 'dashed', borderColor: ORANGE, backgroundColor: c.accentSoft },
 
-  divider: { height: 1, backgroundColor: c.border, marginVertical: 12 },
-
-  fareBreakdown: { marginBottom: 8 },
-  fareRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: 5,
+  rvReceiverRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  rvAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: ORANGE, alignItems: 'center', justifyContent: 'center' },
+  rvAvatarEmpty: { backgroundColor: c.card, borderWidth: 1.5, borderColor: ORANGE },
+  rvAvatarText: { fontSize: 16, fontWeight: '800', color: '#FFFFFF' },
+  rvReceiverName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  rvReceiverSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  rvChangePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: c.card, borderWidth: 1, borderColor: c.border },
+  rvChangeText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  rvNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    paddingHorizontal: 14, paddingVertical: 10,
+    borderTopWidth: 1, borderTopColor: c.divider,
   },
-  fareLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
-  fareValue: { fontSize: 12, color: c.textPrimary, fontWeight: '700' },
-  fareDivider: { height: 1, backgroundColor: c.divider, marginTop: 6 },
+  rvNoteText: { flex: 1, fontSize: 11, lineHeight: 15, color: c.textSecondary, fontWeight: '500' },
 
-  receiverCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background,
-    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 14,
+  rvFareRows: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 },
+  rvFareRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+  rvFareLabel: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  rvFareValue: { fontSize: 13, color: c.textPrimary, fontWeight: '700' },
+  rvCalcRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 14 },
+  rvTotalRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 4, paddingBottom: 12,
   },
-  receiverCardEmpty: { borderStyle: 'dashed', borderColor: ORANGE, backgroundColor: c.accentSoft },
-  receiverIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
-  receiverIconBoxFilled: { backgroundColor: ORANGE },
-  receiverIconBoxEmpty: { backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE },
-  receiverLabel: { fontSize: 9, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 3 },
-  receiverName: { fontSize: 14, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  receiverPhone: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
-  receiverPlaceholder: { fontSize: 13, fontWeight: '700', color: ORANGE },
-  receiverHelper: { fontSize: 10, color: c.textMuted, marginTop: 2, fontWeight: '500' },
-
-  otpInfoBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: isDark ? '#231542' : '#F5F3FF',
-    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginTop: 10,
-    borderWidth: 1, borderColor: isDark ? '#5B21B6' : '#DDD6FE',
-  },
-  otpInfoBannerText: { flex: 1, fontSize: 11, color: isDark ? '#C4B5FD' : '#5B21B6', fontWeight: '600', lineHeight: 15 },
-
-  costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  costLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
-  costSub: { fontSize: 10, color: c.textMuted, fontWeight: '500', marginTop: 2 },
-  costValue: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
+  rvTotalLabel: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  rvEscrowRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  rvEscrowText: { fontSize: 11, color: c.textMuted, fontWeight: '500' },
+  rvTotalValue: { fontSize: 22, fontWeight: '900', color: ORANGE, letterSpacing: -0.5 },
 
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',

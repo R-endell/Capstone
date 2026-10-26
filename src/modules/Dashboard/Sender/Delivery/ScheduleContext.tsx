@@ -21,6 +21,8 @@ interface LocationInfo {
   address: string;
   latitude: number;
   longitude: number;
+  /** optional note for the driver (gate, floor, landmark...) */
+  note?: string;
 }
 
 export interface ScheduleState {
@@ -41,6 +43,10 @@ export interface ScheduleState {
   };
   explorePickup: LocationInfo | null;
   exploreDropoff: LocationInfo | null;
+  // Set when the sender asks for a delivery along a specific provider's trip (Explore tab)
+  preferredProviderId?: number | null;
+  preferredRouteId?: number | null;
+  preferredProviderName?: string | null;
 }
 
 type Action =
@@ -56,7 +62,8 @@ type Action =
   | { type: 'RESET' }
   | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> } 
   | { type: 'SET_EXPLORE_PICKUP'; payload: LocationInfo | null }
-  | { type: 'SET_EXPLORE_DROPOFF'; payload: LocationInfo | null };
+  | { type: 'SET_EXPLORE_DROPOFF'; payload: LocationInfo | null }
+  | { type: 'SET_PREFERRED_PROVIDER'; payload: { providerId: number; routeId: number; name?: string | null } | null };
 
 const initialState: ScheduleState = {
   dropoffType: null,
@@ -70,6 +77,9 @@ const initialState: ScheduleState = {
   editIds: undefined,
   explorePickup: null,
   exploreDropoff: null,
+  preferredProviderId: null,
+  preferredRouteId: null,
+  preferredProviderName: null,
   receiver: null
 };
 
@@ -101,6 +111,15 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
       return { ...state, explorePickup: action.payload };
     case 'SET_EXPLORE_DROPOFF':
       return { ...state, exploreDropoff: action.payload };
+    case 'SET_PREFERRED_PROVIDER':
+      return action.payload
+        ? {
+            ...state,
+            preferredProviderId: action.payload.providerId,
+            preferredRouteId: action.payload.routeId,
+            preferredProviderName: action.payload.name ?? null,
+          }
+        : { ...state, preferredProviderId: null, preferredRouteId: null, preferredProviderName: null };
     default:
       return state;
   }

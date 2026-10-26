@@ -8,8 +8,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { ProviderWallet, WithdrawalRequest } from '../../../types/payment';
+import {
+  fetchWithdrawalHistory,
+  reconcileWithdrawalStatus,
+  isSavedWalletNumberValid,
+} from '../../../services/withdrawalService';
 
 const ORANGE = '#FA7A25';
 
@@ -39,31 +45,24 @@ interface EarningRow {
   display_amount: number;
 }
 
-interface ProviderWallet {
-  wallet_id?: number;
-  provider_id: number;
-  balance: number;
-  gcash_number: string | null;
-  bank_name: string | null;
-  bank_acc_number: string | null;
-  bank_acc_holder: string | null;
-  updated_at: string;
-}
-
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
 export default function EarningsScreen() {
   const insets = useSafeAreaInsets();
-  const { colors, isDark } = useTheme();
+  const navigation = useNavigation<any>();
+  const { colors } = useTheme();
   const styles = makeStyles(colors);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [reconcilingId, setReconcilingId] = useState<number | null>(null);
 
   const [walletData, setWalletData] = useState<ProviderWallet | null>(null);
   const [walletMissing, setWalletMissing] = useState(false);
   const [earnings, setEarnings] = useState<EarningRow[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
+  const [historyTab, setHistoryTab] = useState<'earnings' | 'withdrawals'>('earnings');
   const [providerId, setProviderId] = useState<number | null>(null);
 
   const [totalEarned, setTotalEarned] = useState(0);
@@ -73,6 +72,7 @@ export default function EarningsScreen() {
   const [ratingCount, setRatingCount] = useState(0);
 
   const [detailRow, setDetailRow] = useState<EarningRow | null>(null);
+  const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalRequest | null>(null);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -90,11 +90,30 @@ export default function EarningsScreen() {
     return userData?.user_id ?? null;
   };
 
-  const fetchWallet = async (pid: number) => {
-    const { data, error } = await supabase.from('provider_wallet').select('*').eq('provider_id', pid).maybeSingle();
-    if (error || !data) { setWalletData(null); setWalletMissing(true); return; }
-    setWalletData(data as ProviderWallet);
+  const fetchWalletAndWithdrawals = async (pid: number) => {
+    const { data, error } = await supabase
+      .from('provider_wallet')
+      .select('*')
+      .eq('provider_id', pid)
+      .maybeSingle();
+
+    if (error || !data) {
+      setWalletData(null);
+      setWalletMissing(true);
+      setWithdrawals([]);
+      return;
+    }
+
+    const typedWallet = data as ProviderWallet;
+    setWalletData(typedWallet);
     setWalletMissing(false);
+
+    try {
+      const wdList = await fetchWithdrawalHistory(typedWallet.wallet_id);
+      setWithdrawals(wdList);
+    } catch (e) {
+      console.warn('[Earnings] fetchWithdrawalHistory warning:', e);
+    }
   };
 
   const fetchEarnings = async (pid: number) => {
@@ -171,7 +190,11 @@ export default function EarningsScreen() {
       const pid = providerId || (await getProviderId());
       if (!pid) return;
       if (!providerId) setProviderId(pid);
-      await Promise.all([fetchWallet(pid), fetchEarnings(pid), fetchAverageRating(pid)]);
+      await Promise.all([
+        fetchWalletAndWithdrawals(pid),
+        fetchEarnings(pid),
+        fetchAverageRating(pid),
+      ]);
     } catch (e) { console.warn('[Earnings] loadData error', e); }
     finally { setLoading(false); setRefreshing(false); }
   };
@@ -185,12 +208,31 @@ export default function EarningsScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments', filter: `provider_id=eq.${providerId}` }, () => loadData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, () => loadData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_wallet', filter: `provider_id=eq.${providerId}` }, () => loadData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawal_requests' }, () => loadData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => loadData(true))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [providerId]);
 
   const onRefresh = () => { setRefreshing(true); loadData(true); };
+
+  const handleReconcile = async (withdrawalId: number) => {
+    setReconcilingId(withdrawalId);
+    try {
+      const updated = await reconcileWithdrawalStatus(withdrawalId);
+      await loadData(true);
+      if (updated && selectedWithdrawal?.withdrawal_id === withdrawalId) {
+        setSelectedWithdrawal({
+          ...updated,
+          amount: Number(updated.amount || selectedWithdrawal.amount),
+        });
+      }
+    } catch (err: any) {
+      Alert.alert('Status Check', err?.message || 'Could not refresh payout status.');
+    } finally {
+      setReconcilingId(null);
+    }
+  };
 
   const formatDate = (timestamp: string | null) => {
     if (!timestamp) return 'Pending';
@@ -217,7 +259,7 @@ export default function EarningsScreen() {
     return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
   };
 
-  const maskAccount = (num: string | null) => {
+  const maskAccount = (num: string | null | undefined) => {
     if (!num) return null;
     const clean = num.replace(/\s/g, '');
     if (clean.length <= 4) return clean;
@@ -234,10 +276,14 @@ export default function EarningsScreen() {
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
   });
 
+  const activeWithdrawalsTotal = withdrawals
+    .filter((w) => ['Pending', 'Processing', 'Pending_Compliance'].includes(w.status))
+    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
+
   const renderWalletCard = () => {
     const balance = Number(walletData?.balance || 0);
-    const hasGcash = !!walletData?.gcash_number;
-    const hasBank = !!(walletData?.bank_name && walletData?.bank_acc_number);
+    const hasGcash = isSavedWalletNumberValid(walletData?.gcash_number);
+    const hasMaya = isSavedWalletNumberValid(walletData?.maya_number);
 
     return (
       <View style={styles.walletCard}>
@@ -246,14 +292,18 @@ export default function EarningsScreen() {
             <Ionicons name="wallet" size={20} color={ORANGE} />
           </View>
           <TouchableOpacity
-            style={[styles.withdrawBtn, balance <= 0 && { opacity: 0.5 }]}
-            activeOpacity={0.8}
-            onPress={() => Alert.alert('Coming Soon', 'Cash-out will be enabled soon.')}
+            style={[styles.withdrawBtn, styles.withdrawBtnActive]}
+            activeOpacity={0.85}
+            onPress={() => {
+              if (walletMissing) {
+                Alert.alert('Wallet Not Ready', 'Complete a delivery first to initialize your wallet.');
+                return;
+              }
+              navigation.navigate('Cashout', { providerId });
+            }}
           >
-            <Text style={styles.withdrawBtnText}>Cash Out</Text>
-            <View style={styles.gcashPill}>
-              <Text style={styles.gcashText}>Soon</Text>
-            </View>
+            <Ionicons name="arrow-up-circle" size={16} color="#FFFFFF" />
+            <Text style={styles.withdrawBtnTextActive}>Cash Out</Text>
           </TouchableOpacity>
         </View>
 
@@ -266,7 +316,15 @@ export default function EarningsScreen() {
           {totalPending > 0 && (
             <View style={styles.pendingRow}>
               <Ionicons name="time-outline" size={12} color={colors.warning} />
-              <Text style={styles.pendingText}>₱{totalPending.toFixed(2)} pending release</Text>
+              <Text style={styles.pendingText}>₱{totalPending.toFixed(2)} pending escrow release</Text>
+            </View>
+          )}
+          {activeWithdrawalsTotal > 0 && (
+            <View style={[styles.pendingRow, { marginTop: 4 }]}>
+              <Ionicons name="sync-outline" size={12} color={ORANGE} />
+              <Text style={[styles.pendingText, { color: ORANGE }]}>
+                ₱{activeWithdrawalsTotal.toFixed(2)} payout in progress
+              </Text>
             </View>
           )}
         </View>
@@ -292,28 +350,30 @@ export default function EarningsScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.payoutLabel}>GCash</Text>
-                  <Text style={styles.payoutValue}>{hasGcash ? walletData!.gcash_number : 'Not set'}</Text>
+                  <Text style={styles.payoutValue}>
+                    {hasGcash ? maskAccount(walletData!.gcash_number) : 'Set on first cashout'}
+                  </Text>
                 </View>
                 <View style={[styles.payoutBadge, hasGcash ? styles.payoutBadgeOn : styles.payoutBadgeOff]}>
                   <Text style={[styles.payoutBadgeText, hasGcash ? { color: colors.success } : { color: colors.textMuted }]}>
-                    {hasGcash ? 'Linked' : 'Missing'}
+                    {hasGcash ? 'Saved' : 'Not set'}
                   </Text>
                 </View>
               </View>
 
               <View style={styles.payoutRow}>
                 <View style={styles.payoutIconWrap}>
-                  <Ionicons name="business-outline" size={14} color={colors.success} />
+                  <Ionicons name="wallet-outline" size={14} color="#059669" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.payoutLabel}>{walletData?.bank_name || 'Bank account'}</Text>
+                  <Text style={styles.payoutLabel}>Maya</Text>
                   <Text style={styles.payoutValue}>
-                    {hasBank ? `${maskAccount(walletData!.bank_acc_number)} · ${walletData!.bank_acc_holder || ''}` : 'Not set'}
+                    {hasMaya ? maskAccount(walletData!.maya_number) : 'Set on first cashout'}
                   </Text>
                 </View>
-                <View style={[styles.payoutBadge, hasBank ? styles.payoutBadgeOn : styles.payoutBadgeOff]}>
-                  <Text style={[styles.payoutBadgeText, hasBank ? { color: colors.success } : { color: colors.textMuted }]}>
-                    {hasBank ? 'Linked' : 'Missing'}
+                <View style={[styles.payoutBadge, hasMaya ? styles.payoutBadgeOn : styles.payoutBadgeOff]}>
+                  <Text style={[styles.payoutBadgeText, hasMaya ? { color: colors.success } : { color: colors.textMuted }]}>
+                    {hasMaya ? 'Saved' : 'Not set'}
                   </Text>
                 </View>
               </View>
@@ -409,6 +469,262 @@ export default function EarningsScreen() {
     );
   };
 
+  const renderWithdrawalItem = ({ item }: { item: WithdrawalRequest }) => {
+    const st = item.status;
+    const isCompleted = st === 'Completed';
+    const isRefunded = ['Failed', 'Rejected', 'Reversed'].includes(st);
+    const isMaya = String(item.method || '').toLowerCase() === 'maya';
+
+    const statusColor = isCompleted
+      ? colors.success
+      : isRefunded
+      ? colors.error
+      : ORANGE;
+    const statusBg = isCompleted
+      ? colors.successBg
+      : isRefunded
+      ? colors.errorBg
+      : colors.accentSoft;
+    const statusIcon = isCompleted
+      ? 'arrow-up-circle'
+      : isRefunded
+      ? 'refresh-circle'
+      : 'time';
+    const statusLabel =
+      st === 'Pending_Compliance'
+        ? 'Under Review'
+        : isRefunded
+        ? `${st} · Refunded`
+        : st;
+
+    const stamp = item.processed_at || item.requested_at;
+
+    return (
+      <TouchableOpacity
+        style={styles.transactionCard}
+        activeOpacity={0.85}
+        onPress={() => setSelectedWithdrawal(item)}
+      >
+        <View style={styles.transactionLeft}>
+          <View style={[styles.iconContainer, { backgroundColor: statusBg }]}>
+            <Ionicons name={statusIcon as any} size={20} color={statusColor} />
+          </View>
+          <View style={styles.transactionDetails}>
+            <Text style={styles.transactionTitle}>
+              {isMaya ? 'Maya' : 'GCash'} Cashout
+            </Text>
+            <Text style={styles.transactionSubtitle}>
+              <Text style={{ color: statusColor, fontWeight: '700' }}>
+                {statusLabel}
+              </Text>
+              {' • '}
+              {formatDate(stamp)}
+            </Text>
+            <View style={styles.paymentMethodRow}>
+              <Ionicons
+                name="phone-portrait-outline"
+                size={11}
+                color={colors.textMuted}
+              />
+              <Text style={styles.transactionPayment}>
+                {maskAccount(item.account_number) || 'Account'}
+                {item.account_holder_name ? ` • ${item.account_holder_name}` : ''}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.transactionRight}>
+          <Text
+            style={[
+              styles.transactionAmount,
+              {
+                color: isRefunded
+                  ? colors.textSecondary
+                  : isCompleted
+                  ? colors.textPrimary
+                  : ORANGE,
+              },
+              isRefunded && { textDecorationLine: 'line-through' },
+            ]}
+          >
+            -₱{Number(item.amount || 0).toFixed(2)}
+          </Text>
+          {isRefunded && (
+            <Text style={[styles.penaltyText, { color: colors.success }]}>
+              Restored to wallet
+            </Text>
+          )}
+          <Ionicons
+            name="chevron-forward"
+            size={14}
+            color={colors.textMuted}
+            style={{ marginTop: 6 }}
+          />
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderWithdrawalModal = () => {
+    const w = selectedWithdrawal;
+    if (!w) return null;
+
+    const st = w.status;
+    const isCompleted = st === 'Completed';
+    const isRefunded = ['Failed', 'Rejected', 'Reversed'].includes(st);
+    const isProcessing = ['Pending', 'Processing', 'Pending_Compliance'].includes(st);
+
+    const headColor = isCompleted
+      ? colors.success
+      : isRefunded
+      ? colors.error
+      : ORANGE;
+    const headBg = isCompleted
+      ? colors.successBg
+      : isRefunded
+      ? colors.errorBg
+      : colors.accentSoft;
+    const headIcon = isCompleted
+      ? 'checkmark-circle'
+      : isRefunded
+      ? 'alert-circle'
+      : 'time';
+
+    return (
+      <Modal
+        visible={!!selectedWithdrawal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedWithdrawal(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Cashout Details</Text>
+              <TouchableOpacity onPress={() => setSelectedWithdrawal(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+              <View style={[styles.heroBox, { backgroundColor: headBg }]}>
+                <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
+                  <Ionicons name={headIcon as any} size={26} color={headColor} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.heroStatus, { color: headColor }]}>
+                    {st === 'Pending_Compliance'
+                      ? 'Under Compliance Review'
+                      : isRefunded
+                      ? `${st} — Balance Restored`
+                      : st}
+                  </Text>
+                  <Text style={styles.heroSub}>Withdrawal #{w.withdrawal_id}</Text>
+                </View>
+                <Text style={[styles.heroAmount, { color: headColor }]}>
+                  ₱{Number(w.amount || 0).toFixed(2)}
+                </Text>
+              </View>
+
+              <Text style={styles.sectionLabel}>PAYOUT SUMMARY</Text>
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Method"
+                value={String(w.method).toLowerCase() === 'maya' ? 'Maya' : 'GCash'}
+              />
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Recipient Number"
+                value={w.account_number || '—'}
+              />
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Account Holder"
+                value={w.account_holder_name || '—'}
+              />
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Reference ID"
+                value={w.xendit_reference_id || `pns_wd_${w.withdrawal_id}`}
+              />
+              {!!w.xendit_payout_id && (
+                <InfoRow
+                  styles={styles}
+                  colors={colors}
+                  label="Xendit Payout ID"
+                  value={w.xendit_payout_id}
+                />
+              )}
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Requested At"
+                value={formatFullDate(w.requested_at)}
+              />
+              <InfoRow
+                styles={styles}
+                colors={colors}
+                label="Processed At"
+                value={formatFullDate(w.processed_at)}
+                last={!w.failure_code}
+              />
+              {!!w.failure_code && (
+                <InfoRow
+                  styles={styles}
+                  colors={colors}
+                  label="Gateway Failure Code"
+                  value={`${w.failure_code}${w.failure_message ? ` (${w.failure_message})` : ''}`}
+                  valueColor={colors.error}
+                  last
+                />
+              )}
+
+              {isRefunded && (
+                <View style={[styles.noteBox, { backgroundColor: colors.successBg, borderColor: colors.success }]}>
+                  <Ionicons name="checkmark-circle" size={15} color={colors.success} />
+                  <Text style={[styles.noteText, { color: colors.success }]}>
+                    ₱{Number(w.amount || 0).toFixed(2)} was automatically restored to your Pack-N-Ship wallet.
+                  </Text>
+                </View>
+              )}
+
+              {isProcessing && (
+                <TouchableOpacity
+                  style={styles.reconcileBtn}
+                  onPress={() => handleReconcile(w.withdrawal_id)}
+                  disabled={reconcilingId === w.withdrawal_id}
+                  activeOpacity={0.85}
+                >
+                  {reconcilingId === w.withdrawal_id ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <>
+                      <Ionicons name="refresh" size={16} color={ORANGE} />
+                      <Text style={styles.reconcileBtnText}>Refresh Gateway Status</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.modalDoneBtn}
+              onPress={() => setSelectedWithdrawal(null)}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.modalDoneBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   const renderDetailModal = () => {
     const r = detailRow;
     if (!r) return null;
@@ -444,7 +760,11 @@ export default function EarningsScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+            {/* Same concept as detail sheet: flexGrow so no dead space above the Done button */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ flexGrow: 1, paddingBottom: 8 }}
+            >
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
                   <Ionicons name={headIcon} size={26} color={headColor} />
@@ -551,26 +871,78 @@ export default function EarningsScreen() {
 
       <Animated.View style={[styles.mainContent, fadeUp(contentAnim, 20)]}>
         <FlatList
-          data={earnings}
-          keyExtractor={(item) => item.escrow_id.toString()}
-          renderItem={renderEarning}
+          data={(historyTab === 'earnings' ? earnings : withdrawals) as any[]}
+          keyExtractor={(item: any) =>
+            historyTab === 'earnings'
+              ? `earn-${item.escrow_id}`
+              : `wd-${item.withdrawal_id}`
+          }
+          renderItem={
+            historyTab === 'earnings'
+              ? (renderEarning as any)
+              : (renderWithdrawalItem as any)
+          }
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContent}
+          // flexGrow:1 keeps the list stretched when content is short — no stub empty space above the last item
+          contentContainerStyle={[styles.listContent, { flexGrow: 1 }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
           ListHeaderComponent={
             <>
               {renderWalletCard()}
-              <Text style={styles.sectionTitle}>Earnings History</Text>
+              <View style={styles.historyTabsRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.historyTabBtn,
+                    historyTab === 'earnings' && styles.historyTabBtnActive,
+                  ]}
+                  onPress={() => setHistoryTab('earnings')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.historyTabText,
+                      historyTab === 'earnings' && styles.historyTabTextActive,
+                    ]}
+                  >
+                    Earnings ({earnings.length})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.historyTabBtn,
+                    historyTab === 'withdrawals' && styles.historyTabBtnActive,
+                  ]}
+                  onPress={() => setHistoryTab('withdrawals')}
+                  activeOpacity={0.85}
+                >
+                  <Text
+                    style={[
+                      styles.historyTabText,
+                      historyTab === 'withdrawals' && styles.historyTabTextActive,
+                    ]}
+                  >
+                    Withdrawals ({withdrawals.length})
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </>
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
-                <Ionicons name="receipt-outline" size={36} color={ORANGE} />
+                <Ionicons
+                  name={historyTab === 'earnings' ? 'receipt-outline' : 'wallet-outline'}
+                  size={36}
+                  color={ORANGE}
+                />
               </View>
-              <Text style={styles.emptyText}>No earnings yet</Text>
+              <Text style={styles.emptyText}>
+                {historyTab === 'earnings' ? 'No earnings yet' : 'No withdrawals yet'}
+              </Text>
               <Text style={styles.emptySubText}>
-                Once you complete a delivery and the escrow is released, your earnings will show up here.
+                {historyTab === 'earnings'
+                  ? 'Once you complete a delivery and the escrow is released, your earnings will show up here.'
+                  : 'When you cash out your wallet balance to GCash or Maya, your payout history will appear here.'}
               </Text>
             </View>
           }
@@ -578,6 +950,7 @@ export default function EarningsScreen() {
       </Animated.View>
 
       {renderDetailModal()}
+      {renderWithdrawalModal()}
     </View>
   );
 }
@@ -631,7 +1004,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 40 },
 
   walletCard: {
-    backgroundColor: c.card, borderRadius: 20, padding: 20, marginBottom: 28,
+    backgroundColor: c.card, borderRadius: 20, padding: 20, marginBottom: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 14, elevation: 3,
     borderWidth: 1, borderColor: c.border,
@@ -643,12 +1016,19 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   withdrawBtn: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.divider,
-    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 12,
-    borderWidth: 1, borderColor: c.border, gap: 8,
+    paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12,
+    borderWidth: 1, borderColor: c.border, gap: 6,
   },
-  withdrawBtnText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  gcashPill: { backgroundColor: '#0070F0', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
-  gcashText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  withdrawBtnActive: {
+    backgroundColor: ORANGE,
+    borderColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  withdrawBtnTextActive: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
 
   balanceSection: { marginBottom: 4 },
   balanceLabel: { fontSize: 11, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 4 },
@@ -688,7 +1068,33 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   verticalDivider: { width: 1, height: 24, backgroundColor: c.border },
   walletUpdated: { fontSize: 10, color: c.textMuted, textAlign: 'center', marginTop: 14, fontStyle: 'italic' },
 
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: c.textSecondary, marginBottom: 14, letterSpacing: -0.2 },
+  historyTabsRow: {
+    flexDirection: 'row',
+    backgroundColor: c.card,
+    borderRadius: 14,
+    padding: 4,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  historyTabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  historyTabBtnActive: {
+    backgroundColor: c.accentSoft,
+  },
+  historyTabText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: c.textSecondary,
+  },
+  historyTabTextActive: {
+    color: ORANGE,
+    fontWeight: '800',
+  },
 
   transactionCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -708,7 +1114,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   transactionAmount: { fontSize: 16, fontWeight: '800', letterSpacing: -0.5 },
   penaltyText: { fontSize: 11, color: c.error, fontWeight: '600', marginTop: 4 },
 
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
   emptyIconCircle: {
     width: 72, height: 72, borderRadius: 36, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
@@ -720,7 +1126,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 18, maxHeight: '92%',
+    paddingHorizontal: 20, paddingTop: 18, maxHeight: '92%', flexGrow: 1,
   },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
@@ -761,6 +1167,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderRadius: 12, padding: 12, marginTop: 16,
   },
   noteText: { flex: 1, fontSize: 11, color: c.warning, fontWeight: '600', lineHeight: 16 },
+
+  reconcileBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12,
+    borderWidth: 1.5, borderColor: ORANGE, backgroundColor: c.accentSoft,
+  },
+  reconcileBtnText: { fontSize: 13, fontWeight: '800', color: ORANGE },
 
   modalDoneBtn: { marginTop: 16, backgroundColor: c.textPrimary, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
   modalDoneBtnText: { color: c.card, fontSize: 15, fontWeight: '800' },

@@ -3,13 +3,16 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput,
   ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Modal, ScrollView,
+  StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
-const ORANGE = '#FA7A25';
+// Same palette as LocationSelectScreen / BookingScreen
+const ORANGE = '#F27024';
+const ORANGE_TINT = 'rgba(242,112,36,0.09)';
 
 /** Normalize PH phone number to E.164 (+63XXXXXXXXXX) */
 const toE164 = (raw: string): string => {
@@ -19,6 +22,10 @@ const toE164 = (raw: string): string => {
   else if (!digits.startsWith('63') && digits.length === 10) digits = '63' + digits;
   return '+' + digits;
 };
+
+type Row =
+  | { type: 'header'; key: string; label: string; count?: number }
+  | { type: 'receiver'; key: string; data: any };
 
 export default function ReceiverPickerScreen({ route, navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -169,75 +176,123 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     );
   }, [receivers, search]);
 
-  const renderItem = useCallback(({ item }: any) => {
+  // Flat list with small section labels (same look as the RECENT label in LocationSelect)
+  const rows = useMemo<Row[]>(() => {
+    const out: Row[] = [];
+    if (search.trim()) {
+      filtered.forEach(r => out.push({ type: 'receiver', key: `r-${r.receiver_id}`, data: r }));
+      return out;
+    }
+    const favs = filtered.filter(r => r.is_favorite);
+    const others = filtered.filter(r => !r.is_favorite);
+    if (favs.length > 0) {
+      out.push({ type: 'header', key: 'h-fav', label: 'FAVORITES', count: favs.length });
+      favs.forEach(r => out.push({ type: 'receiver', key: `r-${r.receiver_id}`, data: r }));
+      if (others.length > 0) {
+        out.push({ type: 'header', key: 'h-all', label: 'ALL RECEIVERS', count: others.length });
+        others.forEach(r => out.push({ type: 'receiver', key: `r-${r.receiver_id}`, data: r }));
+      }
+    } else {
+      out.push({ type: 'header', key: 'h-all', label: 'SAVED RECEIVERS', count: others.length });
+      others.forEach(r => out.push({ type: 'receiver', key: `r-${r.receiver_id}`, data: r }));
+    }
+    return out;
+  }, [filtered, search]);
+
+  const renderItem = useCallback(({ item: row }: { item: Row }) => {
+    if (row.type === 'header') {
+      return (
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionLabel}>{row.label}</Text>
+          {row.count != null && <Text style={styles.sectionCount}>{row.count}</Text>}
+        </View>
+      );
+    }
+
+    const item = row.data;
     const isSelected = item.receiver_id === selectedId;
+    const subLine = [item.receiver_phone, item.receiver_email].filter(Boolean).join('  ·  ');
     return (
-      <View style={[styles.itemCard, isSelected && styles.itemCardSelected]}>
+      <View style={[styles.row, isSelected && styles.rowSelected]}>
         <TouchableOpacity
-          style={styles.itemMainTouchable}
+          style={styles.rowMain}
           onPress={() => handlePick(item)}
-          activeOpacity={0.8}
+          activeOpacity={0.7}
         >
-          <View style={styles.itemAvatar}>
-            <Text style={styles.itemAvatarText}>
-              {(item.receiver_name || '?').trim().charAt(0).toUpperCase()}
-            </Text>
-          </View>
-          <View style={{ flex: 1, marginRight: 8 }}>
-            <View style={styles.itemNameRow}>
-              <Text style={styles.itemName} numberOfLines={1}>{item.receiver_name}</Text>
-              {item.is_favorite && <Ionicons name="star" size={12} color={colors.warning} style={{ marginLeft: 4 }} />}
+          <View style={styles.rowIconCol}>
+            <View style={[styles.avatar, isSelected && styles.avatarSelected]}>
+              <Text style={[styles.avatarText, isSelected && { color: '#FFFFFF' }]}>
+                {(item.receiver_name || '?').trim().charAt(0).toUpperCase()}
+              </Text>
             </View>
-            <Text style={styles.itemPhone} numberOfLines={1}>{item.receiver_phone}</Text>
-            {item.receiver_email ? (
-              <Text style={styles.itemEmail} numberOfLines={1}>{item.receiver_email}</Text>
-            ) : null}
           </View>
+          <View style={styles.rowText}>
+            <View style={styles.nameRow}>
+              <Text style={styles.rowTitle} numberOfLines={1}>{item.receiver_name}</Text>
+              {item.is_favorite && <Ionicons name="star" size={13} color={colors.warning} style={{ marginLeft: 6 }} />}
+            </View>
+            <Text style={styles.rowSub} numberOfLines={1}>{subLine || '—'}</Text>
+          </View>
+          {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} style={{ marginRight: 4 }} />}
         </TouchableOpacity>
 
-        <View style={styles.itemActions}>
-          {isSelected && (
-            <Ionicons name="checkmark-circle" size={20} color={ORANGE} style={{ marginRight: 10 }} />
-          )}
-          <TouchableOpacity
-            style={styles.deleteBtn}
-            onPress={() => handleDeleteReceiver(item.receiver_id, item.receiver_name)}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="trash-outline" size={18} color={colors.error} />
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={() => handleDeleteReceiver(item.receiver_id, item.receiver_name)}
+          activeOpacity={0.7}
+          hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+        >
+          <Ionicons name="trash-outline" size={18} color={colors.error} />
+        </TouchableOpacity>
       </View>
     );
   }, [selectedId, colors, styles]);
 
+  const renderAddRow = () => (
+    <TouchableOpacity style={[styles.row, styles.addRow]} activeOpacity={0.85} onPress={() => setShowAddModal(true)}>
+      <View style={styles.rowMain}>
+        <View style={styles.rowIconCol}>
+          <View style={[styles.avatar, { backgroundColor: ORANGE, borderColor: ORANGE }]}>
+            <Ionicons name="person-add" size={18} color="#FFFFFF" />
+          </View>
+        </View>
+        <View style={styles.rowText}>
+          <Text style={styles.rowTitle}>Add new receiver</Text>
+          <Text style={styles.rowSub} numberOfLines={1}>Save someone you send parcels to</Text>
+        </View>
+        <Ionicons name="add" size={22} color={ORANGE} style={{ marginRight: 14 }} />
+      </View>
+    </TouchableOpacity>
+  );
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={[styles.container, { paddingTop: insets.top + 10 }]}>
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
+
+      {/* header: back + search, same as the LocationSelect search bar */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Select Receiver</Text>
-        <TouchableOpacity style={styles.addBtn} onPress={() => setShowAddModal(true)} activeOpacity={0.85}>
-          <Ionicons name="add" size={22} color="#FFFFFF" />
-        </TouchableOpacity>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search receiver name or phone"
+            placeholderTextColor={colors.textMuted}
+            value={search}
+            onChangeText={setSearch}
+            returnKeyType="search"
+          />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => setSearch('')} hitSlop={10}>
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
 
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={18} color={colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search receivers..."
-          placeholderTextColor={colors.textMuted}
-          value={search}
-          onChangeText={setSearch}
-        />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
-        )}
-      </View>
+      <Text style={styles.screenTitle}>Who is receiving this?</Text>
 
       {loading ? (
         <View style={styles.loadingBox}>
@@ -247,7 +302,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       ) : filtered.length === 0 ? (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIconBox}>
-            <Ionicons name="people-outline" size={38} color={ORANGE} />
+            <Ionicons name={receivers.length === 0 ? 'people-outline' : 'search-outline'} size={36} color={ORANGE} />
           </View>
           <Text style={styles.emptyTitle}>
             {receivers.length === 0 ? 'No receivers yet' : 'No matches'}
@@ -255,29 +310,27 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           <Text style={styles.emptySubtitle}>
             {receivers.length === 0
               ? 'Add your first receiver to start booking deliveries.'
-              : 'Try a different search term.'}
+              : 'Try a different name or phone number.'}
           </Text>
           {receivers.length === 0 && (
-            <TouchableOpacity
-              style={styles.emptyCta}
-              onPress={() => setShowAddModal(true)}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="add" size={16} color="#FFFFFF" />
-              <Text style={styles.emptyCtaText}>Add New Receiver</Text>
+            <TouchableOpacity style={styles.emptyCta} onPress={() => setShowAddModal(true)} activeOpacity={0.9}>
+              <Text style={styles.emptyCtaText}>Add new receiver</Text>
             </TouchableOpacity>
           )}
         </View>
       ) : (
         <FlatList
-          data={filtered}
-          keyExtractor={(item) => String(item.receiver_id)}
+          data={rows}
+          keyExtractor={(row) => row.key}
           renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
+          ListHeaderComponent={search.trim() ? null : renderAddRow()}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 40 }}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         />
       )}
 
+      {/* ===================== ADD RECEIVER SHEET ===================== */}
       <Modal
         visible={showAddModal}
         transparent
@@ -288,77 +341,81 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalOverlay}
         >
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add New Receiver</Text>
-              <TouchableOpacity onPress={() => setShowAddModal(false)}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowAddModal(false)} />
+          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+            <View style={styles.dragHandle} />
+
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Add new receiver</Text>
+              <TouchableOpacity onPress={() => setShowAddModal(false)} hitSlop={10}>
+                <Ionicons name="close" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Receiver Name</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="Full name"
-                  placeholderTextColor={colors.textMuted}
-                  value={newName}
-                  onChangeText={setNewName}
-                />
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <View style={styles.fieldRow}>
+                <Ionicons name="person-outline" size={22} color={ORANGE} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.fieldLabel}>RECEIVER NAME</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    placeholder="Full name"
+                    placeholderTextColor={colors.textMuted}
+                    value={newName}
+                    onChangeText={setNewName}
+                  />
+                </View>
               </View>
 
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Phone Number</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="e.g. 0917 123 4567"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="phone-pad"
-                  value={newPhone}
-                  onChangeText={setNewPhone}
-                />
-                <Text style={styles.fieldHint}>
-                  Auto-formatted to +63 for dispatch notifications
-                </Text>
+              <View style={styles.fieldRow}>
+                <Ionicons name="call-outline" size={22} color={ORANGE} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    placeholder="e.g. 0917 123 4567"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="phone-pad"
+                    value={newPhone}
+                    onChangeText={setNewPhone}
+                  />
+                  <Text style={styles.fieldHint}>Auto-formatted to +63 for dispatch notifications</Text>
+                </View>
               </View>
 
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Email (optional)</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="receiver@email.com"
-                  placeholderTextColor={colors.textMuted}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={newEmail}
-                  onChangeText={setNewEmail}
-                />
+              <View style={[styles.fieldRow, { borderBottomWidth: 0 }]}>
+                <Ionicons name="mail-outline" size={22} color={ORANGE} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.fieldLabel}>EMAIL (OPTIONAL)</Text>
+                  <TextInput
+                    style={styles.fieldInput}
+                    placeholder="receiver@email.com"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={newEmail}
+                    onChangeText={setNewEmail}
+                  />
+                </View>
               </View>
 
               <TouchableOpacity
-                style={[styles.saveBtn, !canAdd && styles.saveBtnDisabled]}
+                style={[styles.confirmBtn, !canAdd && styles.confirmBtnDisabled]}
                 onPress={handleAddNew}
                 disabled={!canAdd}
                 activeOpacity={0.9}
               >
                 {saving ? (
                   <ActivityIndicator size="small" color="#FFF" />
-                ) : !userId ? (
-                  <>
-                    <ActivityIndicator size="small" color="#FFF" />
-                    <Text style={styles.saveBtnText}>Loading account…</Text>
-                  </>
                 ) : (
-                  <>
-                    <Ionicons name="checkmark" size={16} color="#FFF" />
-                    <Text style={styles.saveBtnText}>Save & Select</Text>
-                  </>
+                  <Text style={styles.confirmBtnText}>
+                    {!userId ? 'Loading account…' : 'Save & select'}
+                  </Text>
                 )}
               </TouchableOpacity>
 
               {!canAdd && !saving && (
-                <Text style={styles.saveBtnHint}>
+                <Text style={styles.confirmHint}>
                   {!userId
                     ? 'Preparing your account…'
                     : 'Enter a name and phone number to continue.'}
@@ -375,151 +432,100 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  header: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingBottom: 14, paddingTop: 6, gap: 12,
-  },
+  /* header (mirrors LocationSelect search header) */
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
   backBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card, justifyContent: 'center', alignItems: 'center',
+    marginRight: 12, borderWidth: 1, borderColor: c.border,
   },
-  headerTitle: {
-    flex: 1, fontSize: 18, fontWeight: '800', color: c.textPrimary,
-    letterSpacing: -0.3,
+  searchWrap: {
+    flex: 1, height: 48, backgroundColor: c.card, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, borderWidth: 1, borderColor: c.border,
   },
-  addBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  searchInput: { flex: 1, fontSize: 15, color: c.textPrimary, fontWeight: '500', padding: 0 },
+
+  screenTitle: {
+    fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
+    paddingHorizontal: 20, paddingTop: 6, paddingBottom: 10,
   },
 
-  searchBar: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
-    borderRadius: 16, paddingHorizontal: 16, paddingVertical: 12,
-    marginHorizontal: 20, marginBottom: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: isDark ? 0.3 : 0.02, shadowRadius: 4, elevation: 1,
+  /* sections */
+  sectionHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, paddingTop: 18, paddingBottom: 6,
   },
-  searchInput: { flex: 1, fontSize: 14, color: c.textPrimary, padding: 0 },
+  sectionLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  sectionCount: { fontSize: 12, fontWeight: '700', color: ORANGE },
 
-  listContent: { paddingHorizontal: 20, paddingBottom: 40 },
-
-  itemCard: {
+  /* rows (mirrors LocationSelect rows) */
+  row: {
     flexDirection: 'row', alignItems: 'center',
+    borderBottomWidth: 1, borderBottomColor: c.divider,
     backgroundColor: c.card,
-    borderRadius: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: c.border,
-    overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.03, shadowRadius: 6, elevation: 2,
   },
-  itemCardSelected: {
-    borderColor: ORANGE, backgroundColor: c.accentSoft,
-    borderWidth: 1.5,
+  rowSelected: { backgroundColor: ORANGE_TINT },
+  addRow: { backgroundColor: ORANGE_TINT, marginHorizontal: 0 },
+  rowMain: {
+    flex: 1, flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 12, paddingLeft: 16, gap: 14,
   },
-  itemMainTouchable: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12,
-    padding: 14,
+  rowIconCol: { width: 56, alignItems: 'center' },
+  avatar: {
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.background, borderWidth: 1.5, borderColor: ORANGE,
   },
-  itemAvatar: {
-    width: 46, height: 46, borderRadius: 23, backgroundColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  itemAvatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
-  itemNameRow: {
-    flexDirection: 'row', alignItems: 'center', marginBottom: 3,
-  },
-  itemName: {
-    fontSize: 15, fontWeight: '700', color: c.textPrimary,
-    letterSpacing: -0.2, flexShrink: 1,
-  },
-  itemPhone: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
-  itemEmail: { fontSize: 11, color: c.textMuted, marginTop: 2, fontWeight: '400' },
+  avatarSelected: { backgroundColor: ORANGE },
+  avatarText: { fontSize: 16, fontWeight: '800', color: ORANGE },
+  rowText: { flex: 1 },
+  nameRow: { flexDirection: 'row', alignItems: 'center' },
+  rowTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary, flexShrink: 1 },
+  rowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  deleteBtn: { paddingHorizontal: 16, paddingVertical: 12 },
 
-  itemActions: {
-    flexDirection: 'row', alignItems: 'center', paddingRight: 14,
-  },
-  deleteBtn: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: c.errorBg,
-    justifyContent: 'center', alignItems: 'center',
-  },
-
+  /* loading / empty */
   loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { color: c.textSecondary, fontWeight: '500', fontSize: 13 },
-
-  emptyBox: {
-    flex: 1, justifyContent: 'center', alignItems: 'center',
-    paddingHorizontal: 40, paddingBottom: 60,
-  },
+  emptyBox: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40, paddingBottom: 80 },
   emptyIconBox: {
-    width: 84, height: 84, borderRadius: 42, backgroundColor: c.accentSoft,
+    width: 80, height: 80, borderRadius: 40, backgroundColor: ORANGE_TINT,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
   },
-  emptyTitle: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary,
-    marginBottom: 6, textAlign: 'center',
-  },
-  emptySubtitle: {
-    fontSize: 13, color: c.textSecondary, textAlign: 'center',
-    lineHeight: 18, marginBottom: 20,
-  },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 6, textAlign: 'center' },
+  emptySubtitle: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19, marginBottom: 22 },
   emptyCta: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: ORANGE, paddingHorizontal: 18, paddingVertical: 12,
-    borderRadius: 14,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 14, paddingHorizontal: 28,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  emptyCtaText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  emptyCtaText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
 
-  modalOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
+  /* add sheet (mirrors LocationSelect bottom sheet) */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: c.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, maxHeight: '88%',
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 12, elevation: 12,
   },
-  modalCard: {
-    backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 18, paddingBottom: 34,
-    maxHeight: '85%',
-    borderTopWidth: 1, borderColor: c.border,
+  dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
+  sheetHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12,
   },
-  modalHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 20,
+  sheetTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+
+  fieldRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 14,
+    paddingHorizontal: 20, paddingVertical: 14,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
   },
-  modalTitle: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3,
+  fieldLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  fieldInput: { fontSize: 16, fontWeight: '700', color: c.textPrimary, paddingVertical: 4, paddingHorizontal: 0 },
+  fieldHint: { fontSize: 11, color: c.textMuted, marginTop: 2, fontWeight: '500' },
+
+  confirmBtn: {
+    marginHorizontal: 20, marginTop: 16, backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  fieldGroup: { marginBottom: 16 },
-  fieldLabel: {
-    fontSize: 13, fontWeight: '700', color: c.textPrimary,
-    marginBottom: 6, letterSpacing: 0.1,
-  },
-  fieldHint: {
-    fontSize: 11, color: c.textMuted, marginTop: 4, fontWeight: '500',
-  },
-  textInput: {
-    backgroundColor: c.background,
-    borderWidth: 1, borderColor: c.border, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 14, color: c.textPrimary, fontWeight: '500',
-  },
-  saveBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
-    gap: 8, marginTop: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
-  },
-  saveBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  saveBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
-  saveBtnHint: {
-    fontSize: 11,
-    color: c.textMuted,
-    textAlign: 'center',
-    marginTop: 8,
-    fontWeight: '500',
-  },
+  confirmBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
+  confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
+  confirmHint: { fontSize: 11, color: c.textMuted, textAlign: 'center', marginTop: 10, fontWeight: '500' },
 });

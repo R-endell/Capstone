@@ -105,6 +105,35 @@ export default function LoginScreen() {
     return 'Something went wrong. Please try again.';
   };
 
+  // Checks if the user is active in public.users; signs out and alerts if deactivated
+  const assertAccountActive = async (authId: string, emailFallback?: string): Promise<boolean> => {
+    let { data: userRow } = await supabase
+      .from('users')
+      .select('user_id, is_active')
+      .eq('auth_id', authId)
+      .maybeSingle();
+
+    if (!userRow && emailFallback) {
+      const { data: byEmail } = await supabase
+        .from('users')
+        .select('user_id, is_active')
+        .eq('email', emailFallback.trim().toLowerCase())
+        .maybeSingle();
+      userRow = byEmail;
+    }
+
+    if (userRow && userRow.is_active === false) {
+      await supabase.auth.signOut();
+      Alert.alert(
+        'Account Deactivated',
+        'Your account has been deactivated by an administrator. Please contact Pack-N-Ship Support for assistance.'
+      );
+      return false;
+    }
+
+    return true;
+  };
+
   const handleLogin = async () => {
     const emailValidation = validateEmail(email);
     const passwordValidation = validatePassword(password);
@@ -119,6 +148,10 @@ export default function LoginScreen() {
       });
 
       if (error) throw error;
+
+      // Block login immediately if account is deactivated in public.users
+      const isActive = await assertAccountActive(signInData.user.id, email.trim());
+      if (!isActive) return;
 
       // Check if 2FA is enabled
       if (signInData?.user?.user_metadata?.two_factor_enabled) {
@@ -166,6 +199,12 @@ export default function LoginScreen() {
       if (error) throw error;
 
       if (data?.user) {
+        const isActive = await assertAccountActive(data.user.id, sentTo);
+        if (!isActive) {
+          setPhase('login');
+          setOtpCode('');
+          return;
+        }
         await routeToDashboard(data.user.id);
       }
 
@@ -195,6 +234,9 @@ export default function LoginScreen() {
   };
 
   const routeToDashboard = async (authId: string) => {
+    const isActive = await assertAccountActive(authId);
+    if (!isActive) return;
+
     const route = await resolveHomeRoute(authId);
     (async () => {
       try {
@@ -270,9 +312,18 @@ export default function LoginScreen() {
       // Ensure user exists in public.users (trg_users_default_role assigns Sender role automatically)
       const { data: existingUser } = await supabase
         .from('users')
-        .select('user_id')
+        .select('user_id, is_active')
         .eq('auth_id', authUser.id)
         .maybeSingle();
+
+      if (existingUser && existingUser.is_active === false) {
+        await supabase.auth.signOut();
+        Alert.alert(
+          'Account Deactivated',
+          'Your account has been deactivated by an administrator. Please contact Pack-N-Ship Support for assistance.'
+        );
+        return;
+      }
 
       if (!existingUser) {
         const meta = authUser.user_metadata || {};
@@ -285,11 +336,20 @@ export default function LoginScreen() {
         // Check if email already exists (e.g. previously registered via email)
         const { data: emailMatch } = await supabase
           .from('users')
-          .select('user_id')
+          .select('user_id, is_active')
           .eq('email', authUser.email)
           .maybeSingle();
 
         if (emailMatch) {
+          if (emailMatch.is_active === false) {
+            await supabase.auth.signOut();
+            Alert.alert(
+              'Account Deactivated',
+              'Your account has been deactivated by an administrator. Please contact Pack-N-Ship Support for assistance.'
+            );
+            return;
+          }
+
           await supabase
             .from('users')
             .update({
@@ -411,7 +471,7 @@ export default function LoginScreen() {
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
-                      <Image source={require('../../../assets/Pack-N-Ship-Logo2.png')} style={styles.logoImage} resizeMode="contain" />
+                      <Image source={require('../../../assets/appiconfinal2.png')} style={styles.logoImage} resizeMode="contain" />
                       <Text style={styles.brandText}>
                         Pack-<Text style={styles.brandTextOrange}>N-Ship</Text>
                       </Text>
@@ -507,8 +567,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   contentWrapper: { flex: 1, justifyContent: 'center' },
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
-  logoImage: { width: 54, height: 54 },
-  brandText: { fontSize: 22, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3 },
+  logoImage: { width: 74, height: 74 },
+  brandText: { fontSize: 29, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3, marginLeft: -12 },
   brandTextOrange: { color: ORANGE },
   header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.5 },
   subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },

@@ -1,6 +1,6 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, LogBox, Platform, View } from 'react-native';
+import { Alert, AppState, LogBox, Platform, View } from 'react-native';
 import {
   NavigationContainer,
   useNavigation,
@@ -10,6 +10,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import "expo-crypto";
 import { supabase } from './src/utils/supabase';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
@@ -64,10 +65,14 @@ import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailS
 import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
 import JobsScreen from './src/modules/Dashboard/Provider/JobsScreen';
 import EarningsScreen from './src/modules/Dashboard/Provider/EarningsScreen';
+import CashoutScreen from './src/modules/Dashboard/Provider/CashoutScreen';
 import TaskScreen from './src/modules/Dashboard/Provider/TaskScreen';
 import ProviderMessagesScreen from './src/modules/Dashboard/Provider/MessagesScreen';
 import ManageVehicleScreen from './src/modules/Dashboard/Provider/Manage/ManageVehicleScreen';
 import ManageRoutesScreen from './src/modules/Dashboard/Provider/Manage/ManageRoutesScreen';
+
+// NEW: Provider Navigation Screen
+import ProviderNavigationScreen from './src/modules/Dashboard/Provider/ProviderNavigationScreen';
 
 // Delivery Features
 import { ScheduleProvider } from './src/modules/Dashboard/Sender/Delivery/ScheduleContext';
@@ -83,7 +88,7 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
-// Support FAB  ← RE-ADDED
+// Support FAB
 import SupportFab from './src/components/SupportFab';
 
 // Canonical background matcher
@@ -92,6 +97,7 @@ import {
   stopBackgroundMatcher,
 } from './src/services/backgroundMatcher';
 import { setActiveRouteId } from './src/services/activeRouteStore';
+import { useTabBarHidden } from './src/services/tabBarVisibilityStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
 import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScreen';
@@ -114,8 +120,7 @@ export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
   ForgotPassword: undefined;
-  ResetPassword: { token_hash: string; type: string };
-  PermissionsPrompt: undefined;
+  ResetPassword: { token_hash: string; type: string; skipVerify?: boolean };  PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
   MainTabs: { screen?: keyof MainTabParamList; params?: any };
@@ -144,9 +149,11 @@ export type RootStackParamList = {
   PaymentMethods: undefined;
   AddPaymentMethod: undefined;
   DeliveryPayment: { requestId: number; amount: number };
+  Cashout: { providerId?: number } | undefined;
   LiveTracking: { deliveryId: number };
   NotificationsList: undefined;
   VerifyEmail: { token_hash: string; type: string };
+  ProviderNavigation: { deliveryId: number };
 };
 
 export type MainTabParamList = {
@@ -384,6 +391,7 @@ function ProviderTabs() {
 function ProviderTabsInner() {
   const unreadCount = useUnreadMessages();
   const tabBarStyle = useTabBarStyle();
+  const tabBarHidden = useTabBarHidden();
   const { colors } = useTheme();
 
   return (
@@ -409,7 +417,8 @@ function ProviderTabsInner() {
           },
           tabBarActiveTintColor: '#F27024',
           tabBarInactiveTintColor: colors.textSecondary,
-          tabBarStyle,
+          tabBarStyle:
+            route.name === 'Jobs' && tabBarHidden ? { display: 'none' } : tabBarStyle,
           tabBarLabelStyle: {
             fontSize: 11,
             fontWeight: '500',
@@ -550,6 +559,152 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
   }, []);
 }
 
+// ---------- DEACTIVATION GUARD ----------
+function useDeactivationGuard(navigationRef: React.RefObject<any>) {
+  const handlingKickRef = useRef(false);
+  const channelRef = useRef<any>(null);
+
+  const getActiveRouteName = (): string | null => {
+    const state = navigationRef.current?.getRootState?.();
+    const findRoute = (navState: any): string | null => {
+      if (!navState) return null;
+      const idx = navState.index ?? 0;
+      const route = navState.routes?.[idx];
+      if (!route) return null;
+      if (route.state) return findRoute(route.state);
+      return route.name ?? null;
+    };
+    return findRoute(state);
+  };
+
+  const forceDeactivatedLogout = async () => {
+    if (handlingKickRef.current) return;
+
+    const currentRoute = getActiveRouteName();
+    if (currentRoute === 'Login') return;
+
+    handlingKickRef.current = true;
+
+    try {
+      stopBackgroundMatcher();
+      await clearLastMode();
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('[DeactivationGuard] signOut cleanup error:', e);
+    }
+
+    if (navigationRef.current?.isReady?.()) {
+      navigationRef.current.reset({
+        index: 0,
+        routes: [{ name: 'Login' }],
+      });
+    }
+
+    Alert.alert(
+      'Account Deactivated',
+      'Your account has been deactivated by an administrator. You have been logged out.',
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            handlingKickRef.current = false;
+          },
+        },
+      ],
+      {
+        cancelable: false,
+        onDismiss: () => {
+          handlingKickRef.current = false;
+        },
+      }
+    );
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const cleanupChannel = () => {
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+    };
+
+    const checkAndSubscribe = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session?.user) {
+        cleanupChannel();
+        return;
+      }
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('user_id, is_active')
+        .eq('auth_id', session.user.id)
+        .maybeSingle();
+
+      if (!isMounted || !userRow) return;
+
+      if (userRow.is_active === false) {
+        await forceDeactivatedLogout();
+        return;
+      }
+
+      cleanupChannel();
+      channelRef.current = supabase
+        .channel(`user-active-guard-${userRow.user_id}-${Date.now()}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'users',
+            filter: `user_id=eq.${userRow.user_id}`,
+          },
+          async (payload) => {
+            const updated = payload.new as { is_active?: boolean };
+            if (updated && updated.is_active === false) {
+              await forceDeactivatedLogout();
+            }
+          }
+        )
+        .subscribe();
+    };
+
+    checkAndSubscribe();
+
+    const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session?.user) {
+        cleanupChannel();
+        return;
+      }
+      if (
+        event === 'SIGNED_IN' ||
+        event === 'TOKEN_REFRESHED' ||
+        event === 'INITIAL_SESSION'
+      ) {
+        checkAndSubscribe();
+      }
+    });
+
+    const appStateSub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        checkAndSubscribe();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      cleanupChannel();
+      authSub.subscription.unsubscribe();
+      appStateSub.remove();
+    };
+  }, [navigationRef]);
+}
+
 // ---------- Inner App ----------
 function AppInner() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
@@ -557,7 +712,8 @@ function AppInner() {
   const matcherStartedRef = useRef(false);
 
   useRoleGuard(navigationRef as any);
-    useDeepLink(navigationRef);
+  useDeactivationGuard(navigationRef as any);
+  useDeepLink(navigationRef);
 
   useEffect(() => {
     let cancelled = false;
@@ -576,11 +732,17 @@ function AppInner() {
 
       const { data: userRow } = await supabase
         .from('users')
-        .select('user_id')
+        .select('user_id, is_active')
         .eq('auth_id', session.user.id)
         .maybeSingle();
 
-      if (!userRow?.user_id) return;
+      if (!userRow?.user_id || userRow.is_active === false) {
+        if (matcherStartedRef.current) {
+          stopBackgroundMatcher();
+          matcherStartedRef.current = false;
+        }
+        return;
+      }
 
       const { data: providerRole } = await supabase
         .from('roles')
@@ -681,10 +843,10 @@ function AppInner() {
 
       const { data: userRow } = await supabase
         .from('users')
-        .select('user_id')
+        .select('user_id, is_active')
         .eq('auth_id', session.user.id)
         .maybeSingle();
-      if (!userRow?.user_id) return;
+      if (!userRow?.user_id || userRow.is_active === false) return;
 
       await registerPushToken(userRow.user_id);
     };
@@ -757,6 +919,11 @@ function AppInner() {
           options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
         />
         <Stack.Screen
+          name="Cashout"
+          component={CashoutScreen}
+          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
+        />
+        <Stack.Screen
           name="LiveTracking"
           component={LiveTrackingScreen}
           options={{ animation: 'slide_from_right' }}
@@ -780,6 +947,17 @@ function AppInner() {
         <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
+
+        {/* NEW: Provider Navigation Screen */}
+        <Stack.Screen
+          name="ProviderNavigation"
+          component={ProviderNavigationScreen}
+          options={{
+            headerShown: false,
+            presentation: 'fullScreenModal',
+            animation: 'slide_from_bottom',
+          }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

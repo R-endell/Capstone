@@ -1,6 +1,14 @@
 // supabase/functions/send-push/index.ts
+// @ts-expect-error Deno resolves remote imports at runtime.
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+// @ts-expect-error Deno resolves remote imports at runtime.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+};
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -12,7 +20,7 @@ const CORS_HEADERS = {
 const json = (body: Record<string, unknown>) =>
   new Response(JSON.stringify(body), { status: 200, headers: CORS_HEADERS });
 
-serve(async (req) => {
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
 
   try {

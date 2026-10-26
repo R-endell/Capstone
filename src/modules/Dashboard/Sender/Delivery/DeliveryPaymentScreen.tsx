@@ -257,70 +257,79 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
 
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-       <TouchableOpacity onPress={handleBack} style={styles.backBtn} disabled={paying} activeOpacity={0.85}>
+      <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+        <TouchableOpacity onPress={handleBack} style={styles.backBtn} disabled={paying} activeOpacity={0.85}>
           <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Payment</Text>
-        <View style={{ width: 40 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* ---- total ---- */}
         <View style={styles.amountCard}>
           <Text style={styles.amountLabel}>TOTAL TO PAY</Text>
           <Text style={styles.amountValue}>₱{Number(amount).toFixed(2)}</Text>
-          <Text style={styles.amountNote}>Held in escrow until delivery is confirmed</Text>
+          <View style={styles.escrowRow}>
+            <Ionicons name="shield-checkmark-outline" size={13} color={colors.success} />
+            <Text style={styles.amountNote}>
+              Held in escrow and released to the provider only after delivery is confirmed
+            </Text>
+          </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Choose payment method</Text>
+        {/* ---- methods ---- */}
+        <Text style={styles.sectionLabel}>PAYMENT METHOD</Text>
 
         {methods.length === 0 ? (
           <View style={styles.emptyBox}>
-            <Ionicons name="card-outline" size={36} color={ORANGE} />
-            <Text style={styles.emptyText}>No payment methods linked</Text>
+            <View style={styles.emptyIconBox}>
+              <Ionicons name="card-outline" size={34} color={ORANGE} />
+            </View>
+            <Text style={styles.emptyTitle}>No payment methods linked</Text>
+            <Text style={styles.emptyText}>Link GCash or Maya to pay for this delivery.</Text>
             <TouchableOpacity
               style={styles.linkBtn}
               onPress={() => navigation.navigate('AddPaymentMethod')}
+              activeOpacity={0.9}
             >
-              <Text style={styles.linkBtnText}>Add Payment Method</Text>
+              <Text style={styles.linkBtnText}>Add payment method</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          methods.map((m) => {
-            const isSelected = selected === m.provider;
-            const label = m.provider === 'gcash' ? 'GCash' : 'Maya';
-            const logo = m.provider === 'gcash' ? GCASH_LOGO : MAYA_LOGO;
-            return (
-              <TouchableOpacity
-                key={m.id}
-                style={[styles.methodRow, isSelected && styles.methodRowSelected]}
-                onPress={() => setSelected(m.provider)}
-                activeOpacity={0.85}
-                disabled={paying}
-              >
-                <View style={styles.methodIcon}>
-                  <Image source={logo} style={styles.methodLogo} resizeMode="contain" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.methodName}>{label}</Text>
-                  {m.is_default && <Text style={styles.methodDefault}>Default</Text>}
-                </View>
-                <Ionicons
-                  name={isSelected ? 'radio-button-on' : 'radio-button-off'}
-                  size={22}
-                  color={isSelected ? ORANGE : colors.textMuted}
-                />
-              </TouchableOpacity>
-            );
-          })
+          <View style={styles.methodList}>
+            {methods.map((m, i) => {
+              const isSelected = selected === m.provider;
+              const label = m.provider === 'gcash' ? 'GCash' : 'Maya';
+              const logo = m.provider === 'gcash' ? GCASH_LOGO : MAYA_LOGO;
+              return (
+                <TouchableOpacity
+                  key={m.id}
+                  style={[
+                    styles.methodRow,
+                    isSelected && styles.methodRowSelected,
+                    i === methods.length - 1 && { borderBottomWidth: 0 },
+                  ]}
+                  onPress={() => setSelected(m.provider)}
+                  activeOpacity={0.7}
+                  disabled={paying}
+                >
+                  <View style={styles.methodIcon}>
+                    <Image source={logo} style={styles.methodLogo} resizeMode="contain" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.methodName}>{label}</Text>
+                    {m.is_default && <Text style={styles.methodDefault}>Default</Text>}
+                  </View>
+                  <Ionicons
+                    name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={24}
+                    color={isSelected ? ORANGE : colors.textMuted}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         )}
-
-        <View style={styles.infoBox}>
-          <Ionicons name="shield-checkmark-outline" size={16} color={isDark ? '#C4B5FD' : '#7C3AED'} />
-          <Text style={styles.infoText}>
-            Your payment is held securely and only released to the provider after delivery is confirmed.
-          </Text>
-        </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
@@ -331,10 +340,10 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           activeOpacity={0.9}
         >
           {paying ? (
-            <ActivityIndicator color={colors.card} />
+            <ActivityIndicator color="#FFFFFF" />
           ) : (
             <>
-              <Ionicons name="lock-closed" size={16} color={colors.card} />
+              <Ionicons name="lock-closed" size={16} color="#FFFFFF" />
               <Text style={styles.payBtnText}>Pay ₱{Number(amount).toFixed(2)}</Text>
             </>
           )}
@@ -345,35 +354,75 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 }
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
-  /* ... your existing styles unchanged ... */
   container: { flex: 1, backgroundColor: c.background },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 16, backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+
+  /* header (same as the receiver picker / location screens) */
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
+  backBtn: {
+    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12,
+    borderWidth: 1, borderColor: c.border,
   },
-  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  content: { padding: 20, paddingBottom: 40 },
-  amountCard: { backgroundColor: c.card, borderRadius: 20, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: c.border, marginBottom: 24 },
-  amountLabel: { fontSize: 11, fontWeight: '800', color: c.textSecondary, letterSpacing: 1 },
-  amountValue: { fontSize: 36, fontWeight: '900', color: c.textPrimary, marginVertical: 8, letterSpacing: -1 },
-  amountNote: { fontSize: 11, color: c.textSecondary, textAlign: 'center' },
-  sectionTitle: { fontSize: 13, fontWeight: '800', color: c.textPrimary, marginBottom: 12 },
-  methodRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 2, borderColor: c.border },
-  methodRowSelected: { borderColor: ORANGE, backgroundColor: c.accentSoft },
-  methodIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
-  methodLogo: { width: 32, height: 32 },
-  methodName: { fontSize: 15, fontWeight: '700', color: c.textPrimary },
-  methodDefault: { fontSize: 10, color: c.success, fontWeight: '700', marginTop: 2 },
-  emptyBox: { alignItems: 'center', paddingVertical: 40 },
-  emptyText: { marginTop: 12, fontSize: 13, color: c.textSecondary },
-  linkBtn: { marginTop: 12, backgroundColor: ORANGE, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10 },
-  linkBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
-  infoBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: isDark ? '#231542' : '#F5F3FF', borderRadius: 12, padding: 12, marginTop: 20, borderWidth: 1, borderColor: isDark ? '#5B21B6' : '#DDD6FE' },
-  infoText: { flex: 1, fontSize: 11, color: isDark ? '#C4B5FD' : '#5B21B6', fontWeight: '600', lineHeight: 15 },
-  footer: { paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.border },
-  payBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8 },
-  payBtnDisabled: { backgroundColor: c.textMuted },
-  payBtnText: { color: c.card, fontSize: 16, fontWeight: '800' },
+  headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
+
+  content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 40 },
+
+  /* total */
+  amountCard: {
+    backgroundColor: c.card, borderRadius: 18, paddingVertical: 22, paddingHorizontal: 20,
+    alignItems: 'center', borderWidth: 1, borderColor: c.border, marginBottom: 22,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 2,
+  },
+  amountLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  amountValue: { fontSize: 38, fontWeight: '900', color: ORANGE, marginVertical: 6, letterSpacing: -1 },
+  escrowRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 8 },
+  amountNote: { flexShrink: 1, fontSize: 12, lineHeight: 17, color: c.textSecondary, textAlign: 'center', fontWeight: '500' },
+
+  /* methods */
+  sectionLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1, marginBottom: 8, paddingHorizontal: 4 },
+  methodList: {
+    backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+  },
+  methodRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    paddingVertical: 14, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: c.divider, backgroundColor: c.card,
+  },
+  methodRowSelected: { backgroundColor: 'rgba(242,112,36,0.09)' },
+  methodIcon: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+  },
+  methodLogo: { width: 30, height: 30 },
+  methodName: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
+  methodDefault: { fontSize: 12, color: c.success, fontWeight: '700', marginTop: 2 },
+
+  /* empty */
+  emptyBox: {
+    alignItems: 'center', paddingVertical: 32, paddingHorizontal: 24,
+    backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border,
+  },
+  emptyIconBox: {
+    width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(242,112,36,0.09)',
+    justifyContent: 'center', alignItems: 'center', marginBottom: 14,
+  },
+  emptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  emptyText: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
+  linkBtn: {
+    marginTop: 18, backgroundColor: ORANGE, borderRadius: 30, paddingHorizontal: 26, paddingVertical: 13,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  linkBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14, letterSpacing: 0.2 },
+
+  /* footer */
+  footer: { paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
+  payBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+  },
+  payBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
+  payBtnText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
 });
