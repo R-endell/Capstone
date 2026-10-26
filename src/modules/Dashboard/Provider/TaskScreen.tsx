@@ -186,7 +186,7 @@ const enrichDeliveries = async (list: any[]) => {
   });
 };
 
-const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[]) => {
+const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[], providerId: number) => {
   if (!nearbyList || nearbyList.length === 0) return [];
   const senderIds = Array.from(new Set(nearbyList.map(n => n.request?.sender_id).filter(Boolean)));
   const senders: Record<number, any> = {};
@@ -197,22 +197,29 @@ const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[]) => {
     }
   } catch { }
 
-  return nearbyList.map(n => ({
-    ...n,
-    syntheticDelivery: {
-      delivery_id: -n.request.request_id, // negative ID distinguishes nearby preview from accepted delivery
-      request_id: n.request.request_id,
-      delivery_requests: n.request,
-      sender: senders[n.request.sender_id] || null,
-      escrow: n.request.payment_provider ? { payment_method: n.request.payment_provider } : null,
-      nearbyMeta: {
-        route: n.route,
-        pickupDistToCorridorKm: n.pickupDistToCorridorKm,
-        dropoffDistToCorridorKm: n.dropoffDistToCorridorKm,
-        extraDetourKm: n.extraDetourKm,
+  return nearbyList.map(n => {
+    const isDirect =
+      !!n.isDirectRequest ||
+      (n.request?.preferred_provider_id != null && Number(n.request.preferred_provider_id) === Number(providerId));
+
+    return {
+      ...n,
+      syntheticDelivery: {
+        delivery_id: -n.request.request_id, // negative ID distinguishes nearby/direct preview from accepted delivery
+        request_id: n.request.request_id,
+        delivery_requests: n.request,
+        sender: senders[n.request.sender_id] || null,
+        escrow: n.request.payment_provider ? { payment_method: n.request.payment_provider } : null,
+        nearbyMeta: {
+          route: n.route,
+          pickupDistToCorridorKm: n.pickupDistToCorridorKm,
+          dropoffDistToCorridorKm: n.dropoffDistToCorridorKm,
+          extraDetourKm: n.extraDetourKm,
+          isDirectRequest: isDirect,
+        },
       },
-    },
-  }));
+    };
+  });
 };
 
 /* ==================================================================== */
@@ -388,12 +395,16 @@ export default function TaskScreen() {
 
       const cancelled = hydrated.filter(isCancelledDelivery);
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
-      const active    = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
+      const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
 
-      const enrichedNearby = await enrichNearbyRequests(rawNearby);
+      const enrichedNearby = await enrichNearbyRequests(rawNearby, pid);
       const nearbySynthetics = enrichedNearby.map(n => n.syntheticDelivery);
 
-      setActiveDeliveries(active);
+      // Direct requests (where sender explicitly selected this provider) appear at the top of Active
+      // as "Waiting for Acceptance", as well as in Nearby
+      const directAwaitingSynthetics = nearbySynthetics.filter(s => s?.nearbyMeta?.isDirectRequest);
+
+      setActiveDeliveries([...directAwaitingSynthetics, ...acceptedActive]);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
       setNearbyDeliveries(nearbySynthetics);
@@ -403,7 +414,7 @@ export default function TaskScreen() {
   };
 
   /* ------------------------------------------------------------------ */
-  /* Accept Nearby Delivery Request                                     */
+  /* Accept Nearby / Direct Delivery Request                            */
   /* ------------------------------------------------------------------ */
   const doAcceptNearbyRequest = async (syntheticTask: any) => {
     const req = syntheticTask?.delivery_requests;
@@ -411,7 +422,7 @@ export default function TaskScreen() {
 
     setAcceptingRequestId(req.request_id);
     try {
-      // 1. Resolve verified vehicle
+      // 1. Resolve verified vehicle (or fallback to any vehicle owned by provider)
       const { data: v } = await supabase
         .from('vehicles')
         .select('vehicle_id')
@@ -420,15 +431,26 @@ export default function TaskScreen() {
         .limit(1)
         .maybeSingle();
 
-      const vehicleId = v?.vehicle_id ?? syntheticTask?.nearbyMeta?.route?.vehicle_id ?? null;
+      let vehicleId = v?.vehicle_id ?? syntheticTask?.nearbyMeta?.route?.vehicle_id ?? null;
       if (!vehicleId) {
-        Alert.alert('Vehicle Not Verified', 'You need a verified vehicle before you can accept deliveries.');
+        const { data: anyVeh } = await supabase
+          .from('vehicles')
+          .select('vehicle_id')
+          .eq('provider_id', providerId)
+          .limit(1)
+          .maybeSingle();
+        vehicleId = anyVeh?.vehicle_id ?? null;
+      }
+      if (!vehicleId) {
+        Alert.alert('Vehicle Not Found', 'You need a registered vehicle before you can accept deliveries.');
         return;
       }
 
-      // 2. Resolve active route_id
+      // 2. Resolve route_id (preferred_route_id -> nearbyMeta route -> active route -> latest route)
       let routeId: number | null =
-        syntheticTask?.nearbyMeta?.route?.route_id || (await getActiveRouteId());
+        req.preferred_route_id ||
+        syntheticTask?.nearbyMeta?.route?.route_id ||
+        (await getActiveRouteId());
       if (!routeId) {
         const { data: latestRoute } = await supabase
           .from('provider_routes')
@@ -438,10 +460,6 @@ export default function TaskScreen() {
           .limit(1)
           .maybeSingle();
         routeId = latestRoute?.route_id ?? null;
-      }
-      if (!routeId) {
-        Alert.alert('No Active Route', 'Please set up or select an active route in the Jobs tab first.');
-        return;
       }
 
       // 3. Ensure request is still Pending & unassigned
@@ -457,7 +475,7 @@ export default function TaskScreen() {
         .limit(1);
 
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
-        Alert.alert('Request Unavailable', 'This delivery request was already accepted by another provider or cancelled.');
+        Alert.alert('Request Unavailable', 'This delivery request was already accepted or cancelled.');
         await fetchDeliveries(providerId);
         return;
       }
@@ -521,7 +539,7 @@ export default function TaskScreen() {
           notifyUser(
             requestData.sender_id,
             'Courier Accepted Your Delivery! 🚚',
-            `A nearby courier accepted your parcel #${code} and will head to the pickup location.`,
+            `Your courier accepted parcel #${code} and will head to the pickup location.`,
             { deliveryId: delivery.delivery_id },
           ).catch(() => {});
         }
@@ -532,10 +550,10 @@ export default function TaskScreen() {
       await fetchDeliveries(providerId);
       Alert.alert(
         '✅ Delivery Accepted!',
-        'The route has been added to your Active tasks. Ask the sender for their pickup QR or PIN when you arrive.',
+        'The route is now in your Active tasks. Ask the sender for their pickup QR or PIN when you arrive.',
       );
     } catch (error: any) {
-      Alert.alert('Error', error?.message || 'Failed to accept nearby delivery.');
+      Alert.alert('Error', error?.message || 'Failed to accept delivery.');
     } finally {
       setAcceptingRequestId(null);
     }
@@ -544,8 +562,9 @@ export default function TaskScreen() {
   const confirmAcceptNearby = (syntheticTask: any) => {
     if (acceptingRequestId != null) return;
     const info = buildTaskInfo(syntheticTask);
+    const isDirect = !!syntheticTask?.nearbyMeta?.isDirectRequest;
     Alert.alert(
-      'Accept Nearby Delivery?',
+      isDirect ? 'Accept Direct Route Request?' : 'Accept Nearby Delivery?',
       `You will earn ${money(info.earnings)} for delivering from ${info.pickup.main} to ${info.dropoff.main}.`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -732,37 +751,6 @@ export default function TaskScreen() {
     } catch { return { handled: false, success: false }; }
   };
 
-  const handleResendDeliveryOTP = async () => {
-    if (!deliveryOTPTarget) return;
-
-    Alert.alert('Send New OTP', 'A brand new 6-digit OTP will be sent to the receiver. The previous code will no longer work.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Send New OTP',
-        onPress: async () => {
-          try {
-            setDeliveryOTPResending(true);
-            const { data, error } = await supabase.functions.invoke('contiguity-otp', {
-              body: { action: 'regenerate', delivery_id: deliveryOTPTarget.delivery_id },
-            });
-            if (error || !data?.success) {
-              const detail = await extractFunctionError(error, data?.error || 'Could not send new OTP.');
-              console.warn('[contiguity-otp regenerate]', detail);
-              Alert.alert('Error', detail);
-              return;
-            }
-            Alert.alert('OTP Sent', 'A new OTP has been sent to the receiver.');
-            setDeliveryOTPInput('');
-          } catch (err: any) {
-            const detail = await extractFunctionError(err, 'Failed to send new OTP.');
-            console.warn('[contiguity-otp regenerate exception]', detail);
-            Alert.alert('Error', detail);
-          } finally { setDeliveryOTPResending(false); }
-        },
-      },
-    ]);
-  };
-
   const completeDelivery = async () => {
     if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
 
@@ -879,15 +867,18 @@ export default function TaskScreen() {
     return status === 'In Transit' || status === 'Completed';
   };
 
-  const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' => {
+  const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' | 'awaiting_acceptance' => {
+    if (d?.nearbyMeta?.isDirectRequest) return 'awaiting_acceptance';
     if (d?.nearbyMeta) return 'nearby';
     if (isCancelledDelivery(d)) return 'cancelled';
     if (d?.completed_at) return 'done';
     return isPickupVerified(d) ? 'transit' : 'pickup';
   };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby') => {
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' | 'awaiting_acceptance') => {
     switch (stage) {
+      case 'awaiting_acceptance':
+        return { label: 'Waiting for Acceptance', bg: colors.accentSoft, fg: ORANGE, icon: 'hourglass-outline' };
       case 'nearby':
         return { label: 'Nearby Route', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'compass-outline' };
       case 'done':
@@ -933,8 +924,22 @@ export default function TaskScreen() {
     } finally { setOpeningChat(false); }
   };
 
-  const allTasks = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries];
-  const allLookupTasks = [...allTasks, ...nearbyDeliveries];
+  // Deduplicate between activeDeliveries and nearbyDeliveries when building allTasks
+  const allTasks = useMemo(() => {
+    const map = new Map<number, any>();
+    [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries].forEach(d => {
+      map.set(d.delivery_id, d);
+    });
+    return Array.from(map.values());
+  }, [activeDeliveries, completedDeliveries, cancelledDeliveries]);
+
+  const allLookupTasks = useMemo(() => {
+    const map = new Map<number, any>();
+    [...allTasks, ...nearbyDeliveries].forEach(d => {
+      map.set(d.delivery_id, d);
+    });
+    return Array.from(map.values());
+  }, [allTasks, nearbyDeliveries]);
 
   const openRoute = (d: any) => {
     const st = stageOf(d);
@@ -1062,14 +1067,19 @@ export default function TaskScreen() {
     const stage = stageOf(d);
     const meta = statusMeta(stage);
     const isCancelled = stage === 'cancelled';
-    const isNearby = stage === 'nearby';
+    const isUnaccepted = stage === 'nearby' || stage === 'awaiting_acceptance';
+    const isDirect = stage === 'awaiting_acceptance';
     const active = stage === 'pickup' || stage === 'transit';
-    const isAcceptingThis = isNearby && acceptingRequestId === info.request.request_id;
+    const isAcceptingThis = isUnaccepted && acceptingRequestId === info.request.request_id;
 
     return (
       <TouchableOpacity
         key={d.delivery_id}
-        style={[styles.oCard, !active && !isNearby && { opacity: 0.88 }]}
+        style={[
+          styles.oCard,
+          isDirect && { borderColor: ORANGE, borderWidth: 1.5 },
+          !active && !isUnaccepted && { opacity: 0.88 },
+        ]}
         onPress={() => setSelectedId(d.delivery_id)}
         activeOpacity={0.92}
       >
@@ -1079,28 +1089,39 @@ export default function TaskScreen() {
             {renderStatusPill(meta)}
           </View>
 
-          {isNearby && d.nearbyMeta && (
+          {isUnaccepted && d.nearbyMeta && (
             <View style={styles.nearbyBadgeRow}>
-              <View style={styles.nearbyDistPill}>
-                <Ionicons name="git-branch-outline" size={13} color={ORANGE} />
-                <Text style={styles.nearbyDistText}>
-                  {d.nearbyMeta.pickupDistToCorridorKm.toFixed(1)} km from your route
-                </Text>
-              </View>
-              <View style={styles.nearbyDetourPill}>
-                <Ionicons name="navigate-outline" size={12} color={colors.textSecondary} />
-                <Text style={styles.nearbyDetourText}>
-                  +{d.nearbyMeta.extraDetourKm.toFixed(1)} km detour
-                </Text>
-              </View>
+              {isDirect ? (
+                <View style={styles.nearbyDistPill}>
+                  <Ionicons name="person-circle-outline" size={14} color={ORANGE} />
+                  <Text style={styles.nearbyDistText}>
+                    Sender selected your route · Waiting for your acceptance
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <View style={styles.nearbyDistPill}>
+                    <Ionicons name="git-branch-outline" size={13} color={ORANGE} />
+                    <Text style={styles.nearbyDistText}>
+                      {d.nearbyMeta.pickupDistToCorridorKm.toFixed(1)} km from your route
+                    </Text>
+                  </View>
+                  <View style={styles.nearbyDetourPill}>
+                    <Ionicons name="navigate-outline" size={12} color={colors.textSecondary} />
+                    <Text style={styles.nearbyDetourText}>
+                      +{d.nearbyMeta.extraDetourKm.toFixed(1)} km detour
+                    </Text>
+                  </View>
+                </>
+              )}
             </View>
           )}
 
           {renderRoute(info)}
 
           <View style={styles.oContacts}>
-            {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isNearby })}
-            {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isNearby })}
+            {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isUnaccepted })}
+            {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isUnaccepted })}
           </View>
           {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
         </View>
@@ -1139,7 +1160,7 @@ export default function TaskScreen() {
           </View>
         )}
 
-        {isNearby && (
+        {isUnaccepted && (
           <View style={styles.oActions}>
             <TouchableOpacity
               style={styles.oChatBtn}
@@ -1176,7 +1197,7 @@ export default function TaskScreen() {
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['nearby','active', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['active', 'nearby', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             const label = t === 'nearby' ? 'Nearby' : t.charAt(0).toUpperCase() + t.slice(1);
@@ -1210,7 +1231,7 @@ export default function TaskScreen() {
             <View style={styles.nearbyInfoBanner}>
               <Ionicons name="location-outline" size={16} color={ORANGE} />
               <Text style={styles.nearbyInfoBannerText}>
-                Showing unassigned sender routes close to your current route corridor, even if they didn't auto-match by schedule.
+                Showing direct route requests and unassigned sender routes close to your current route corridor.
               </Text>
             </View>
           )}
@@ -1242,7 +1263,7 @@ export default function TaskScreen() {
                   : activeTab === 'nearby'
                   ? 'Sender routes close to your current active route will appear here so you can accept them.'
                   : allTasks.length === 0
-                    ? 'Deliveries you accept appear here. Review matched requests in the Jobs tab.'
+                    ? 'Deliveries you accept or direct route requests appear here.'
                     : 'Try another tab to view history.'}
               </Text>
             </View>
@@ -1264,9 +1285,10 @@ export default function TaskScreen() {
       ? 'Released to your wallet'
       : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
     const isCancelled = stage === 'cancelled';
-    const isNearby = stage === 'nearby';
+    const isUnaccepted = stage === 'nearby' || stage === 'awaiting_acceptance';
+    const isDirect = stage === 'awaiting_acceptance';
     const active = stage === 'pickup' || stage === 'transit';
-    const isAcceptingThis = isNearby && acceptingRequestId === info.request?.request_id;
+    const isAcceptingThis = isUnaccepted && acceptingRequestId === info.request?.request_id;
 
     const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : 0;
@@ -1276,7 +1298,9 @@ export default function TaskScreen() {
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
     const photos = items.filter((it: any) => !!it.photo && !failedPhotos[it.photo]);
-    const hintText = isNearby
+    const hintText = isDirect
+      ? 'The sender specifically selected your route for this delivery! Tap Accept Delivery below to confirm and start.'
+      : stage === 'nearby'
       ? `This sender route is ${d.nearbyMeta?.pickupDistToCorridorKm?.toFixed(1) || '0'} km from your current route (+${d.nearbyMeta?.extraDetourKm?.toFixed(1) || '0'} km detour). Tap Accept below to take this job.`
       : stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
@@ -1293,7 +1317,7 @@ export default function TaskScreen() {
 
         <ScrollView
           style={StyleSheet.absoluteFill}
-          contentContainerStyle={{ paddingBottom: (active || isNearby) ? insets.bottom + 110 : insets.bottom + 40 }}
+          contentContainerStyle={{ paddingBottom: (active || isUnaccepted) ? insets.bottom + 110 : insets.bottom + 40 }}
           showsVerticalScrollIndicator={false}
         >
           <View style={{ height: mapH - 28 }}>
@@ -1325,7 +1349,7 @@ export default function TaskScreen() {
               <Text style={styles.dWhen}>Scheduled · {formatDateTime(info.request.scheduled_time)}</Text>
             )}
 
-            {!isCancelled && !isNearby && (
+            {!isCancelled && !isUnaccepted && (
               <View style={styles.stepper}>
                 {progressSteps.map((label, i) => {
                   const done = i <= doneUpTo;
@@ -1373,7 +1397,7 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={isNearby ? 'compass' : 'information-circle'} size={18} color={ORANGE} />
+                <Ionicons name={isDirect ? 'hourglass-outline' : isUnaccepted ? 'compass' : 'information-circle'} size={18} color={ORANGE} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1381,8 +1405,8 @@ export default function TaskScreen() {
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
             <View style={styles.oContacts}>
-              {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isNearby })}
-              {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isNearby })}
+              {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isUnaccepted })}
+              {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isUnaccepted })}
             </View>
 
             {stage === 'pickup' && (
@@ -1478,7 +1502,7 @@ export default function TaskScreen() {
           </View>
         )}
 
-        {isNearby && (
+        {isUnaccepted && (
           <View style={[styles.dBar, { paddingBottom: Math.max(12, insets.bottom) }]}>
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>YOU EARN</Text>
@@ -1625,7 +1649,7 @@ export default function TaskScreen() {
             </View>
             {(() => {
               const st = stageOf(selectedTask);
-              if (st === 'nearby') {
+              if (st === 'nearby' || st === 'awaiting_acceptance') {
                 return (
                   <TouchableOpacity
                     style={[styles.actionBtn, { justifyContent: 'center', marginTop: 14, paddingVertical: 14 }]}

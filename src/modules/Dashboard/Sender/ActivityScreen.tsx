@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
-  BackHandler, StatusBar, Platform, Linking, Image, Share,
+  BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -16,6 +16,7 @@ import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
 import { formatDateTime } from '../../../utils/dateUtils';
+import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
@@ -31,6 +32,7 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const RATING_TAGS = ['On time', 'Careful handling', 'Friendly', 'Fast delivery', 'Good communication'];
 const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
+const EDIT_FLOW_ROUTE_NAMES = ['DropoffType', 'ScheduleDelivery'];
 
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
@@ -297,6 +299,8 @@ interface DeliveryRequest {
   payment_status?: string | null;
   escrow_status?: string | null;
   refund_status?: string | null;
+  preferred_provider_id?: number | null;
+  preferred_route_id?: number | null;
   cargo_profiles: any;
   pickup_location: any;
   dropoff_location: any;
@@ -363,6 +367,9 @@ interface MappedDelivery {
   provider_name: string;
   provider_id?: number;
   provider_phone?: string | null;
+  preferred_provider_id?: number | null;
+  preferred_route_id?: number | null;
+  hasPreferredProvider: boolean;
   cargo_items: CargoItem[];
   total_items: number;
   weight_kg: number | null;
@@ -390,6 +397,7 @@ export default function ActivityScreen() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+  const { dispatch: scheduleDispatch } = useSchedule();
 
   const hasLoadedRef = useRef(false);
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
@@ -414,6 +422,15 @@ export default function ActivityScreen() {
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [ratingSaved, setRatingSaved] = useState<{ rating: number; tags: string[]; comment: string | null } | null>(null);
   const [escrowRow, setEscrowRow] = useState<any>(null);
+
+  // ---- Edit Request Modal State ----
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editTarget, setEditTarget] = useState<MappedDelivery | null>(null);
+  const [editPickupNote, setEditPickupNote] = useState('');
+  const [editDropoffNote, setEditDropoffNote] = useState('');
+  const [editReceiverName, setEditReceiverName] = useState('');
+  const [editReceiverPhone, setEditReceiverPhone] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -440,6 +457,7 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     const backAction = () => {
+      if (editModalVisible) { setEditModalVisible(false); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (showFullMap) { setShowFullMap(false); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
@@ -447,7 +465,7 @@ export default function ActivityScreen() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedId, showFullMap, photoPreview]);
+  }, [selectedId, showFullMap, photoPreview, editModalVisible]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -455,10 +473,10 @@ export default function ActivityScreen() {
   });
 
   const handleResumeFindingProvider = (item: MappedDelivery) => {
-    if (item.isMatched || item.status !== 'Waiting for Provider') return;
+    if (item.isMatched) return;
     const target = findRouteOwner(navigation, FINDING_PROVIDER_ROUTE_NAMES);
     if (!target) {
-      Alert.alert('Unavailable', 'Could not open the Finding Provider screen.');
+      Alert.alert('Unavailable', 'Could not open the Booking screen.');
       return;
     }
     target.owner.navigate(target.name, {
@@ -473,6 +491,12 @@ export default function ActivityScreen() {
     const id = item.deliveryData?.delivery_id;
     if (id) {
       navigation.navigate('LiveTracking', { deliveryId: id });
+    } else if (item.hasPreferredProvider && item.preferred_provider_id) {
+      navigation.navigate('LiveTracking', {
+        mode: 'provider',
+        providerId: item.preferred_provider_id,
+        routeId: item.preferred_route_id,
+      });
     } else {
       setShowFullMap(true);
     }
@@ -484,13 +508,6 @@ export default function ActivityScreen() {
       if (!user) return null;
       const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
       return userRecord?.user_id || null;
-    } catch { return null; }
-  };
-
-  const fetchProviderDetails = async (providerId: number) => {
-    try {
-      const { data } = await supabase.from('users').select('user_id, first_name, last_name, email, phone_number').eq('user_id', providerId).single();
-      return data;
     } catch { return null; }
   };
 
@@ -560,6 +577,23 @@ export default function ActivityScreen() {
         }
       }
 
+      // Collect all provider IDs (both accepted deliveries AND preferred_provider_id on pending requests)
+      const allProviderIds = Array.from(
+        new Set([
+          ...deliveriesData.map(d => d.provider_id).filter(Boolean),
+          ...(requests || []).map((r: any) => r.preferred_provider_id).filter(Boolean),
+        ]),
+      ) as number[];
+
+      const providerById: Record<number, any> = {};
+      if (allProviderIds.length > 0) {
+        const { data: providerRows } = await supabase
+          .from('users')
+          .select('user_id, first_name, last_name, email, phone_number')
+          .in('user_id', allProviderIds);
+        (providerRows || []).forEach((p: any) => { providerById[p.user_id] = p; });
+      }
+
       const mappedDeliveries: MappedDelivery[] = (requests || []).map((item: any) => {
         const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
         const delivery = deliveriesData.find((d: any) => d.request_id === item.request_id);
@@ -578,6 +612,10 @@ export default function ActivityScreen() {
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
         const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
 
+        const prefProviderId: number | null = item.preferred_provider_id ? Number(item.preferred_provider_id) : null;
+        const prefRouteId: number | null = item.preferred_route_id ? Number(item.preferred_route_id) : null;
+        const hasPreferredProvider = !!prefProviderId;
+
         let status = item.delivery_status;
         let statusDisplay = status;
 
@@ -591,7 +629,13 @@ export default function ActivityScreen() {
         else if (delivery?.completed_at || status === 'Completed') statusDisplay = 'Completed';
         else if (qrRow?.pickup_verified || status === 'In Transit') statusDisplay = 'In Transit';
         else if (status === 'Accepted') statusDisplay = 'In Progress';
-        else if (status === 'Pending') statusDisplay = delivery ? 'Matched' : 'Waiting for Provider';
+        else if (status === 'Pending') {
+          statusDisplay = delivery
+            ? 'Matched'
+            : hasPreferredProvider
+              ? 'Waiting for Acceptance'
+              : 'Waiting for Provider';
+        }
 
         const joinedReceiver = item.receiver || (item.receiver_id != null ? receiverById[item.receiver_id] : null);
         const receiverInfo: ReceiverInfo | null = joinedReceiver
@@ -626,6 +670,16 @@ export default function ActivityScreen() {
         const dimsArr = [cargoObj?.cargo_length_cm, cargoObj?.cargo_width_cm, cargoObj?.cargo_height_cm];
         const dims = dimsArr.every(v => Number(v) > 0) ? `${dimsArr[0]} × ${dimsArr[1]} × ${dimsArr[2]} cm` : null;
 
+        const resolvedProviderId = delivery?.provider_id ?? prefProviderId ?? undefined;
+        const resolvedProviderObj = resolvedProviderId ? providerById[resolvedProviderId] : null;
+        const resolvedProviderName = resolvedProviderObj
+          ? `${resolvedProviderObj.first_name || ''} ${resolvedProviderObj.last_name || ''}`.trim()
+          : delivery
+            ? 'Courier Assigned'
+            : hasPreferredProvider
+              ? 'Selected Courier (Awaiting Acceptance)'
+              : 'Finding courier...';
+
         return {
           request_id: item.request_id,
           pickup_type: item.pickup_type,
@@ -647,8 +701,12 @@ export default function ActivityScreen() {
           dropoff_note: item.dropoff_note || null,
           status: statusDisplay,
           status_time: delivery?.accepted_at ? new Date(delivery.accepted_at).toLocaleString() : 'Recently updated',
-          provider_name: delivery ? 'Courier Assigned' : 'Finding courier...',
-          provider_id: delivery?.provider_id,
+          provider_name: resolvedProviderName,
+          provider_id: resolvedProviderId,
+          provider_phone: resolvedProviderObj?.phone_number || null,
+          preferred_provider_id: prefProviderId,
+          preferred_route_id: prefRouteId,
+          hasPreferredProvider,
           price: item.estimated_cost?.toFixed(2) || '0.00',
           payment_method: item.payment_provider || null,
           coords: {
@@ -676,17 +734,6 @@ export default function ActivityScreen() {
           confirmation: confirmationRow || null,
         };
       });
-
-      const matchedDeliveries = mappedDeliveries.filter(d => d.isMatched);
-      for (const delivery of matchedDeliveries) {
-        if (delivery.provider_id) {
-          const provider = await fetchProviderDetails(delivery.provider_id);
-          if (provider) {
-            delivery.provider_name = `${provider.first_name} ${provider.last_name}`.trim();
-            delivery.provider_phone = (provider as any).phone_number || null;
-          }
-        }
-      }
 
       setDeliveries(mappedDeliveries);
     } catch {
@@ -839,10 +886,139 @@ export default function ActivityScreen() {
     }
   };
 
-  const handleEdit = (rawData: any) => {
-    if (!rawData) return;
+  /* --------------------------- Edit Request Functionality --------------------------- */
+  const openEditModal = (item: MappedDelivery) => {
+    setEditTarget(item);
+    setEditPickupNote(item.pickup_note || '');
+    setEditDropoffNote(item.dropoff_note || '');
+    setEditReceiverName(item.receiver?.receiver_name || '');
+    setEditReceiverPhone(item.receiver?.receiver_phone || item.rawData?.receiver_phone || '');
+    setEditModalVisible(true);
+  };
+
+  const handleSaveQuickEdit = async () => {
+    if (!editTarget) return;
+    const trimmedPhone = editReceiverPhone.trim();
+    if (!trimmedPhone) {
+      Alert.alert('Receiver Phone Required', 'Please enter a valid contact number for the receiver.');
+      return;
+    }
+
+    setEditSaving(true);
+    try {
+      const reqId = editTarget.request_id;
+      const receiverId = editTarget.receiver?.receiver_id ?? editTarget.rawData?.receiver_id ?? null;
+
+      if (receiverId) {
+        await supabase
+          .from('receivers')
+          .update({
+            receiver_name: editReceiverName.trim() || 'Receiver',
+            receiver_phone: trimmedPhone,
+          })
+          .eq('receiver_id', receiverId);
+      }
+
+      const { error } = await supabase
+        .from('delivery_requests')
+        .update({
+          pickup_note: editPickupNote.trim().slice(0, 200) || null,
+          dropoff_note: editDropoffNote.trim().slice(0, 200) || null,
+          receiver_phone: trimmedPhone,
+        })
+        .eq('request_id', reqId);
+
+      if (error) throw error;
+
+      setEditModalVisible(false);
+      setEditTarget(null);
+      await fetchData();
+      Alert.alert('Updated', 'Your delivery details have been updated.');
+    } catch (e: any) {
+      Alert.alert('Update Failed', e?.message || 'Could not update delivery details.');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const handleOpenFullEditWizard = (item: MappedDelivery) => {
+    const raw = item.rawData;
+    if (!raw) return;
+
+    const cargoObj = Array.isArray(raw.cargo_profiles) ? raw.cargo_profiles[0] : raw.cargo_profiles;
+    let parsedItems: ShipmentItem[] = [];
+    let rawJson = cargoObj?.items_json;
+    if (typeof rawJson === 'string') {
+      try { rawJson = JSON.parse(rawJson); } catch { rawJson = null; }
+    }
+    if (Array.isArray(rawJson) && rawJson.length > 0) {
+      parsedItems = rawJson.map((it: any, idx: number) => ({
+        id: `edit-${idx}-${Date.now()}`,
+        size: (it.size === 'Small' || it.size === 'Medium' || it.size === 'Large') ? it.size : 'Small',
+        description: it.description || 'Package',
+        photoUri: it.photo || null,
+        fragile: !!it.fragile,
+      }));
+    } else {
+      parsedItems = [{
+        id: `edit-0-${Date.now()}`,
+        size: Number(cargoObj?.large_box_qty) > 0 ? 'Large' : Number(cargoObj?.medium_box_qty) > 0 ? 'Medium' : 'Small',
+        description: cargoObj?.description || item.cargo_name || 'Package',
+        photoUri: cargoObj?.cargo_pic || null,
+        fragile: !!cargoObj?.is_fragile,
+      }];
+    }
+
+    const editMode = raw.scheduled_time ? 'schedule' : 'sendNow';
+    const dropoffType = /door/i.test(String(raw.pickup_type || '')) ? 'door-to-door' : 'curb-side';
+
+    scheduleDispatch({
+      type: 'SET_INITIAL_STATE',
+      payload: {
+        isEdit: true,
+        mode: editMode,
+        dropoffType,
+        items: parsedItems,
+        scheduledDate: raw.scheduled_time ? new Date(raw.scheduled_time.replace(' ', 'T')) : null,
+        pickupLocation: {
+          address: raw.pickup_location?.street_address || item.pickup_main,
+          latitude: Number(raw.pickup_location?.latitude) || 10.3157,
+          longitude: Number(raw.pickup_location?.longitude) || 123.8854,
+          note: raw.pickup_note || undefined,
+        },
+        dropoffLocation: {
+          address: raw.dropoff_location?.street_address || item.dropoff_main,
+          latitude: Number(raw.dropoff_location?.latitude) || 10.3157,
+          longitude: Number(raw.dropoff_location?.longitude) || 123.8854,
+          note: raw.dropoff_note || undefined,
+        },
+        estimatedCost: Number(raw.estimated_cost) || 0,
+        receiver: (item.receiver || null) as any,
+        preferredProviderId: item.preferred_provider_id ?? null,
+        preferredRouteId: item.preferred_route_id ?? null,
+        preferredProviderName: item.hasPreferredProvider ? item.provider_name : null,
+      },
+    });
+
+    scheduleDispatch({
+      type: 'SET_EDIT_DATA',
+      payload: {
+        requestId: raw.request_id,
+        cargoId: raw.cargo_id,
+        pickupLocId: raw.pickup_location_id,
+        dropoffLocId: raw.dropoff_location_id,
+      },
+    });
+
+    setEditModalVisible(false);
     setSelectedId(null);
-    navigation.navigate('ScheduleDelivery', { editData: rawData, mode: rawData.scheduled_time ? 'schedule' : 'sendNow' });
+
+    const target = findRouteOwner(navigation, EDIT_FLOW_ROUTE_NAMES);
+    if (target) {
+      target.owner.navigate(target.name, { mode: editMode, isEdit: true });
+    } else {
+      navigation.navigate('DropoffType', { mode: editMode, isEdit: true });
+    }
   };
 
   const handleCancelDelivery = (rawData: any) => {
@@ -861,7 +1037,7 @@ export default function ActivityScreen() {
       {
         text: 'Yes, Cancel', style: 'destructive', onPress: async () => {
           const reqId: number = rawData.request_id;
-          const providerId: number | null = selectedDelivery?.provider_id ?? null;
+          const providerId: number | null = selectedDelivery?.provider_id ?? rawData.preferred_provider_id ?? null;
           const amount: number = Number(selectedDelivery?.price) || 0;
 
           let refundSucceeded = false;
@@ -935,7 +1111,7 @@ export default function ActivityScreen() {
   const handleMessageProvider = async (item: MappedDelivery) => {
     try {
       if (!item.deliveryData?.delivery_id) {
-        return Alert.alert('Please wait', 'Courier details are still loading.');
+        return Alert.alert('Please wait', 'Chat becomes available as soon as the courier accepts your request.');
       }
       setOpeningChat(true);
       const roomId = await getOrCreateChatRoom(item.deliveryData.delivery_id);
@@ -969,7 +1145,7 @@ export default function ActivityScreen() {
     return 'pending';
   };
 
-  const statusMeta = (stage: 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled') => {
+  const statusMeta = (stage: 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled', hasPreferredProvider = false) => {
     switch (stage) {
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
@@ -981,7 +1157,9 @@ export default function ActivityScreen() {
         return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
       case 'pending':
       default:
-        return { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+        return hasPreferredProvider
+          ? { label: 'Waiting for Acceptance', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'hourglass-outline' }
+          : { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
     }
   };
 
@@ -1075,11 +1253,11 @@ export default function ActivityScreen() {
     </View>
   );
 
-  const renderMiniContact = (o: { role: string; name: string | null; phone: string | null; color: string }) => {
+  const renderMiniContact = (o: { role: string; name: string | null; phone: string | null; color: string; subBadge?: string | null }) => {
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}`,
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
         o.phone ? [
           { text: 'Cancel', style: 'cancel' },
           { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
@@ -1095,6 +1273,9 @@ export default function ActivityScreen() {
         <View style={{ flex: 1 }}>
           <Text style={styles.mcRole}>{o.role}</Text>
           <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+          {!!o.subBadge && (
+            <Text style={styles.mcSubBadge} numberOfLines={1}>{o.subBadge}</Text>
+          )}
         </View>
         {!!o.phone && (
           <TouchableOpacity
@@ -1113,12 +1294,21 @@ export default function ActivityScreen() {
   /* ---------------------------- List Card (TaskScreen style) ---------------------------- */
   const renderShipmentCard = (item: MappedDelivery) => {
     const stage = stageOf(item);
-    const meta = statusMeta(stage);
+    const meta = statusMeta(stage, item.hasPreferredProvider);
     const isCancelled = stage === 'cancelled';
     const isActive = stage === 'pickup' || stage === 'transit' || stage === 'pending';
     const receiverName = item.receiver?.receiver_name || item.receiver?.receiver_phone || 'Receiver';
     const receiverPhone = item.receiver?.receiver_phone || null;
-    const courierName = item.isMatched ? item.provider_name : 'Searching...';
+
+    const courierName = item.isMatched
+      ? item.provider_name
+      : item.hasPreferredProvider
+        ? item.provider_name
+        : 'Searching...';
+
+    const courierSubBadge = !item.isMatched && item.hasPreferredProvider
+      ? 'Awaiting acceptance'
+      : null;
 
     return (
       <TouchableOpacity
@@ -1139,8 +1329,9 @@ export default function ActivityScreen() {
             {renderMiniContact({
               role: 'COURIER',
               name: courierName,
-              phone: item.isMatched ? (item.provider_phone || null) : null,
+              phone: (item.isMatched || item.hasPreferredProvider) ? (item.provider_phone || null) : null,
               color: BLUE,
+              subBadge: courierSubBadge,
             })}
             {renderMiniContact({
               role: 'RECEIVER',
@@ -1200,7 +1391,7 @@ export default function ActivityScreen() {
           <View style={styles.oActions}>
             <TouchableOpacity
               style={styles.oChatBtn}
-              onPress={() => handleEdit(item.rawData)}
+              onPress={() => openEditModal(item)}
               activeOpacity={0.85}
             >
               <Ionicons name="create-outline" size={16} color={ORANGE} />
@@ -1208,11 +1399,21 @@ export default function ActivityScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.oRouteBtn}
-              onPress={() => handleResumeFindingProvider(item)}
+              onPress={() =>
+                item.hasPreferredProvider
+                  ? setSelectedId(item.request_id)
+                  : handleResumeFindingProvider(item)
+              }
               activeOpacity={0.9}
             >
-              <Ionicons name="search" size={16} color="#FFFFFF" />
-              <Text style={styles.oRouteText}>Find Courier</Text>
+              <Ionicons
+                name={item.hasPreferredProvider ? 'hourglass-outline' : 'search'}
+                size={16}
+                color="#FFFFFF"
+              />
+              <Text style={styles.oRouteText}>
+                {item.hasPreferredProvider ? 'Awaiting Courier' : 'Find Courier'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1302,14 +1503,20 @@ export default function ActivityScreen() {
   /* --------------------------- Detail View (TaskScreen style) --------------------------- */
   const renderDetailView = (d: MappedDelivery) => {
     const stage = stageOf(d);
-    const meta = statusMeta(stage);
+    const meta = statusMeta(stage, d.hasPreferredProvider);
     const code = trackingCode(d.request_id);
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
     const isInTransit = stage === 'transit';
     const active = stage === 'pickup' || stage === 'transit' || stage === 'pending';
 
-    const progressSteps = ['Placed', 'Matched', 'Picked up', 'In Transit', 'Delivered'];
+    const progressSteps = [
+      'Placed',
+      d.hasPreferredProvider && !d.isMatched ? 'Awaiting' : 'Matched',
+      'Picked up',
+      'In Transit',
+      'Delivered',
+    ];
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : stage === 'pickup' ? 1 : 0;
     const currentStep = stage === 'done' ? -1 : stage === 'transit' ? 3 : stage === 'pickup' ? 2 : 1;
 
@@ -1324,12 +1531,16 @@ export default function ActivityScreen() {
       ? 'Refunded / Cancelled'
       : released
         ? 'Released to courier'
-        : d.isMatched ? 'Held in escrow' : 'Awaiting courier';
+        : (d.isMatched || d.rawData?.payment_status === 'held')
+          ? 'Held in escrow'
+          : 'Awaiting courier';
 
     const payoutProvider = escrowRow?.payment_method || d.payment_method;
 
     const hintText = stage === 'pending'
-      ? 'Looking for a nearby courier partner to accept your delivery request.'
+      ? d.hasPreferredProvider
+        ? `Sent directly to ${d.provider_name}. Waiting for the provider to accept your delivery request along their route.`
+        : 'Looking for a nearby courier partner to accept your delivery request.'
       : stage === 'pickup'
         ? 'Your courier is heading to pickup. Show your Pickup QR or 4-digit PIN when they arrive.'
         : 'Your package is on the way! Share the 6-digit Delivery OTP with the receiver so they can confirm arrival.';
@@ -1449,7 +1660,7 @@ export default function ActivityScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name="information-circle" size={18} color={ORANGE} />
+                <Ionicons name={d.hasPreferredProvider && !d.isMatched ? 'hourglass-outline' : 'information-circle'} size={18} color={ORANGE} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1459,9 +1670,10 @@ export default function ActivityScreen() {
             <View style={styles.oContacts}>
               {renderMiniContact({
                 role: 'COURIER',
-                name: d.isMatched ? d.provider_name : 'Searching...',
-                phone: d.isMatched ? (d.provider_phone || null) : null,
+                name: (d.isMatched || d.hasPreferredProvider) ? d.provider_name : 'Searching...',
+                phone: (d.isMatched || d.hasPreferredProvider) ? (d.provider_phone || null) : null,
                 color: BLUE,
+                subBadge: !d.isMatched && d.hasPreferredProvider ? 'Waiting for acceptance' : null,
               })}
               {renderMiniContact({
                 role: 'RECEIVER',
@@ -1575,7 +1787,13 @@ export default function ActivityScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.tlTitle, !d.isMatched && { color: colors.textMuted }]}>Courier Accepted</Text>
                   <Text style={styles.tlSub}>
-                    {d.deliveryData?.accepted_at ? formatDateTimeShort(d.deliveryData.accepted_at) : d.isMatched ? 'Courier assigned' : 'Waiting for a courier'}
+                    {d.deliveryData?.accepted_at
+                      ? formatDateTimeShort(d.deliveryData.accepted_at)
+                      : d.isMatched
+                        ? 'Courier assigned'
+                        : d.hasPreferredProvider
+                          ? `Waiting for ${d.provider_name} to accept`
+                          : 'Waiting for a courier'}
                   </Text>
                 </View>
               </View>
@@ -1712,7 +1930,7 @@ export default function ActivityScreen() {
             {!isCompleted && !isCancelled && !isInTransit && (
               <View style={styles.detailActionsRow}>
                 {!d.isMatched && (
-                  <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(d.rawData)} activeOpacity={0.9}>
+                  <TouchableOpacity style={styles.editBtn} onPress={() => openEditModal(d)} activeOpacity={0.9}>
                     <Ionicons name="create-outline" size={16} color={ORANGE} />
                     <Text style={styles.editBtnText}>Edit Details</Text>
                   </TouchableOpacity>
@@ -1726,7 +1944,7 @@ export default function ActivityScreen() {
           </Animated.View>
         </ScrollView>
 
-        {/* Sticky Bottom Bar (TaskScreen dBar style) */}
+        {/* Sticky Bottom Bar */}
         {(stage === 'pickup' || stage === 'transit') && (
           <View style={[styles.dBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             <TouchableOpacity
@@ -1760,7 +1978,7 @@ export default function ActivityScreen() {
           <View style={[styles.dBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             <TouchableOpacity
               style={[styles.mSoftBtn, { flex: 1 }]}
-              onPress={() => handleEdit(d.rawData)}
+              onPress={() => openEditModal(d)}
               activeOpacity={0.85}
             >
               <Ionicons name="create-outline" size={16} color={ORANGE} />
@@ -1768,11 +1986,21 @@ export default function ActivityScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
-              onPress={() => handleResumeFindingProvider(d)}
+              onPress={() =>
+                d.hasPreferredProvider
+                  ? openLiveTrack(d)
+                  : handleResumeFindingProvider(d)
+              }
               activeOpacity={0.9}
             >
-              <Ionicons name="search" size={18} color="#FFFFFF" />
-              <Text style={styles.mPrimaryText}>Find Courier</Text>
+              <Ionicons
+                name={d.hasPreferredProvider ? 'navigate-outline' : 'search'}
+                size={18}
+                color="#FFFFFF"
+              />
+              <Text style={styles.mPrimaryText}>
+                {d.hasPreferredProvider ? 'Track Provider' : 'Find Courier'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1781,6 +2009,107 @@ export default function ActivityScreen() {
   };
 
   /* --------------------------- Modals --------------------------- */
+  const renderEditModal = () => {
+    if (!editTarget) return null;
+    const isPaid =
+      editTarget.rawData?.payment_status === 'held' ||
+      editTarget.rawData?.escrow_status === 'held';
+
+    return (
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalCard, { maxWidth: 400, alignItems: 'stretch' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Shipment #{trackingCode(editTarget.request_id)}</Text>
+              <TouchableOpacity onPress={() => setEditModalVisible(false)}>
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.modalSubtitle, { textAlign: 'left', marginBottom: 14 }]}>
+              Update receiver contact info or instructions for your courier.
+            </Text>
+
+            <Text style={styles.editFieldLabel}>RECEIVER NAME</Text>
+            <TextInput
+              style={styles.editInput}
+              value={editReceiverName}
+              onChangeText={setEditReceiverName}
+              placeholder="Receiver's full name"
+              placeholderTextColor={colors.textMuted}
+            />
+
+            <Text style={styles.editFieldLabel}>RECEIVER PHONE</Text>
+            <TextInput
+              style={styles.editInput}
+              value={editReceiverPhone}
+              onChangeText={setEditReceiverPhone}
+              keyboardType="phone-pad"
+              placeholder="09XXXXXXXXX"
+              placeholderTextColor={colors.textMuted}
+            />
+
+            <Text style={styles.editFieldLabel}>PICKUP NOTE (OPTIONAL)</Text>
+            <TextInput
+              style={[styles.editInput, { minHeight: 60, textAlignVertical: 'top' }]}
+              value={editPickupNote}
+              onChangeText={setEditPickupNote}
+              multiline
+              maxLength={200}
+              placeholder="Gate color, landmark, instructions for pickup..."
+              placeholderTextColor={colors.textMuted}
+            />
+
+            <Text style={styles.editFieldLabel}>DROP-OFF NOTE (OPTIONAL)</Text>
+            <TextInput
+              style={[styles.editInput, { minHeight: 60, textAlignVertical: 'top' }]}
+              value={editDropoffNote}
+              onChangeText={setEditDropoffNote}
+              multiline
+              maxLength={200}
+              placeholder="Floor, unit number, guardhouse instructions..."
+              placeholderTextColor={colors.textMuted}
+            />
+
+            <TouchableOpacity
+              style={[styles.mPrimaryBtn, { marginTop: 8 }, editSaving && { opacity: 0.7 }]}
+              onPress={handleSaveQuickEdit}
+              disabled={editSaving}
+              activeOpacity={0.9}
+            >
+              {editSaving ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <Text style={styles.mPrimaryText}>Save Changes</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {!isPaid && (
+              <TouchableOpacity
+                style={[styles.mSoftBtn, { marginTop: 10, flex: 0 }]}
+                onPress={() => handleOpenFullEditWizard(editTarget)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="map-outline" size={16} color={ORANGE} />
+                <Text style={styles.mSoftText}>Change Route / Package Items</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  };
+
   const renderFullMapModal = () => {
     if (!selectedDelivery) return null;
     const st = stageOf(selectedDelivery);
@@ -1988,6 +2317,7 @@ export default function ActivityScreen() {
     <View style={styles.safeArea}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {selectedDelivery ? renderDetailView(selectedDelivery) : renderListView()}
+      {renderEditModal()}
       {renderFullMapModal()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
@@ -2056,6 +2386,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
   mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  mcSubBadge: { fontSize: 10, fontWeight: '700', color: BLUE, marginTop: 1 },
   mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
 
@@ -2161,6 +2492,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   sdCancelBtnText: { color: c.error, fontWeight: '800', fontSize: 14 },
 
+  /* Edit Modal Styles */
+  editFieldLabel: {
+    fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8, marginBottom: 6, marginTop: 8,
+  },
+  editInput: {
+    borderWidth: 1.5, borderColor: c.border, borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: c.textPrimary,
+    backgroundColor: c.background, fontWeight: '600', marginBottom: 6,
+  },
+
   /* Bottom Sticky Bar */
   dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
@@ -2169,7 +2510,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 13, borderRadius: 14 },
   mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
 
-  /* Full Map Modal (TaskScreen style) */
+  /* Full Map Modal */
   mapCloseBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
