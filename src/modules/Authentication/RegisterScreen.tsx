@@ -485,7 +485,7 @@ export default function RegisterScreen() {
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
-                      <Image source={require('../../../assets/Pack-N-Ship-Logo2.png')} style={styles.logoImage} resizeMode="contain" />
+                      <Image source={require('../../../assets/appiconfinal2.png')} style={styles.logoImage} resizeMode="contain" />
                       <Text style={styles.brandText}>Pack-<Text style={styles.brandTextOrange}>N-Ship</Text></Text>
                     </View>
                     <Text style={styles.header}>Create Account</Text>
@@ -662,8 +662,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
-  logoImage: { width: 54, height: 54 },
-  brandText: { fontSize: 22, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3 },
+  logoImage: { width: 64, height: 64 },
+  brandText: { fontSize: 25, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3, marginLeft: -12 },
   brandTextOrange: { color: ORANGE },
   header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
   subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },

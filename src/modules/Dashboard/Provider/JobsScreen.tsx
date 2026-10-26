@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, Circle, PROVIDER_GOOGLE } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
@@ -23,6 +24,8 @@ import { MAP_PROPS, GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 const ORANGE = '#FF751F';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+const ONLINE_STATUS_KEY_PREFIX = 'pns_provider_online_';
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // Explicit Light Mode override props for Google Maps
 const LIGHT_MAP_PROPS = {
@@ -122,6 +125,21 @@ const parseNaiveIsoString = (s: string): Date => {
     parseInt(parts[3], 10),
     parseInt(parts[4], 10),
   );
+};
+
+const nextWeekday = (weekday: number, from = new Date()): Date => {
+  const d = new Date(from);
+  const diff = (weekday - d.getDay() + 7) % 7 || 7;
+  d.setDate(d.getDate() + diff);
+  return d;
+};
+
+// Helper to check if a One-time route has already passed
+const isRouteExpired = (route: Route): boolean => {
+  const freq = (route.route_frequency || '').trim().toLowerCase();
+  if (freq !== 'one-time') return false;
+  const dt = parseNaiveIsoString(route.departure_time);
+  return dt.getTime() < Date.now();
 };
 
 const randToken = (len = 16) => {
@@ -657,6 +675,7 @@ export default function JobsScreen() {
   const styles = makeStyles(colors);
 
   const [isOnline, setIsOnline] = useState(false);
+  const [isAccountActive, setIsAccountActive] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -685,6 +704,8 @@ export default function JobsScreen() {
   const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
   const [departureDate, setDepartureDate] = useState(new Date());
+  const [departureTime, setDepartureTime] = useState(new Date());
+  const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
@@ -736,6 +757,21 @@ export default function JobsScreen() {
 
   useEffect(() => { selectedIdRef.current = selectedRequest?.request_id ?? null; }, [selectedRequest]);
 
+  const saveOnlinePreference = async (pid: number, status: boolean) => {
+    try {
+      await AsyncStorage.setItem(`${ONLINE_STATUS_KEY_PREFIX}${pid}`, status ? 'true' : 'false');
+    } catch { /* ignore storage error */ }
+  };
+
+  const loadOnlinePreference = async (pid: number): Promise<boolean> => {
+    try {
+      const val = await AsyncStorage.getItem(`${ONLINE_STATUS_KEY_PREFIX}${pid}`);
+      return val === 'true';
+    } catch {
+      return false;
+    }
+  };
+
   const loadNotifs = useCallback(async () => {
     if (!providerId) return;
     setNotifLoading(true);
@@ -764,14 +800,14 @@ export default function JobsScreen() {
         loadNotifs();
         const row: any = payload.new;
         const t = (row?.type || '').toLowerCase();
-        if (t === 'match') {
+        if (t === 'match' && isOnline) {
           fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [providerId, loadNotifs]);
+  }, [providerId, loadNotifs, isOnline]);
 
   const fireLocalMatchNotification = async (body: string) => {
     try {
@@ -816,15 +852,32 @@ export default function JobsScreen() {
     }
   };
 
+  // Reads user_id and admin-controlled is_active without using is_active as the online toggle
   const getProviderData = async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData, error } = await supabase.from('users').select('user_id, is_active').eq('auth_id', user.id).single();
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('user_id, is_active')
+        .eq('auth_id', user.id)
+        .single();
       if (error) throw error;
-      setProviderId(userData.user_id);
-      setIsOnline(userData.is_active || false);
-      return userData.user_id;
+
+      const pid = userData.user_id;
+      const acctActive = userData.is_active !== false;
+      setProviderId(pid);
+      setIsAccountActive(acctActive);
+
+      if (!acctActive) {
+        setIsOnline(false);
+        await saveOnlinePreference(pid, false);
+      } else {
+        const savedOnline = await loadOnlinePreference(pid);
+        setIsOnline(savedOnline);
+      }
+
+      return pid;
     } catch { return null; }
   };
 
@@ -922,7 +975,7 @@ export default function JobsScreen() {
           start_location_id: startLoc.location_id,
           end_location_id: endLoc.location_id,
           departure_time: nowIso,
-          route_frequency: 'On-Demand',
+          route_frequency: 'Daily',
         })
         .select('*')
         .single();
@@ -997,13 +1050,22 @@ export default function JobsScreen() {
         }
       } else { list = data as Route[]; }
 
-      setRoutes(list);
-      const savedId = await getActiveRouteId();
-      const restored = savedId ? list.find((r) => r.route_id === savedId) : null;
+      // Filter out expired One-time routes so they do not appear in JobsScreen
+      const validRoutes = list.filter((r) => !isRouteExpired(r));
+      setRoutes(validRoutes);
 
-      if (restored) { setActiveRoute(restored); }
-      else if (list.length > 0) { setActiveRoute(list[0]); await setActiveRouteId(list[0].route_id); }
-      else { setActiveRoute(null); await setActiveRouteId(null); }
+      const savedId = await getActiveRouteId();
+      const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
+
+      if (restored) {
+        setActiveRoute(restored);
+      } else if (validRoutes.length > 0) {
+        setActiveRoute(validRoutes[0]);
+        await setActiveRouteId(validRoutes[0].route_id);
+      } else {
+        setActiveRoute(null);
+        await setActiveRouteId(null);
+      }
     } catch (e) { console.error('fetchRoutes error:', e); }
   };
 
@@ -1044,7 +1106,7 @@ export default function JobsScreen() {
   };
 
   const refreshMatches = async () => {
-    if (!activeRoute) { setRequests([]); setRefreshing(false); return; }
+    if (!activeRoute || !isOnline) { setRequests([]); setRefreshing(false); return; }
     try {
       setCheckingMatches(true);
       const matches = await findMatches(activeRoute.route_id);
@@ -1095,32 +1157,53 @@ export default function JobsScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [isOnline, activeRoute?.route_id]);
 
+  // Toggles online/offline state for matching WITHOUT deactivating the user account in `users.is_active`
   const toggleOnlineStatus = async (online: boolean) => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
+    if (!isAccountActive) {
+      Alert.alert(
+        'Account Deactivated',
+        'Your account has been deactivated by an administrator. Please contact support for assistance.',
+      );
+      setIsOnline(false);
+      return;
+    }
+
     if (online) {
-      let currentRoute = activeRoute;
+      let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
           await setActiveRouteId(currentRoute.route_id);
-        } else { currentRoute = await createQuickRoute(pid); }
+        } else {
+          currentRoute = await createQuickRoute(pid);
+        }
       }
-      if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route. Please try again.'); return; }
+      if (!currentRoute) {
+        Alert.alert('Route Error', 'Unable to set an active route. Please create or select an active route first.');
+        return;
+      }
 
-      await supabase.from('users').update({ is_active: true }).eq('user_id', pid);
       setIsOnline(true);
+      await saveOnlinePreference(pid, true);
       setTimeout(refreshMatches, 200);
     } else {
-      Alert.alert('Go Offline', 'Going offline will stop matching new requests. Your route will remain saved.', [
+      Alert.alert('Go Offline', 'Going offline will pause new delivery requests. Your routes and account remain active.', [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
-            await supabase.from('users').update({ is_active: false }).eq('user_id', pid);
             setIsOnline(false);
             setRequests([]);
+            selectedIdRef.current = null;
+            setSelectedRequest(null);
+            await saveOnlinePreference(pid, false);
+            // Clear live location broadcast while offline without touching users.is_active
+            try {
+              await supabase.from('provider_live_locations').delete().eq('provider_id', pid);
+            } catch { /* ignore */ }
           },
         },
       ]);
@@ -1130,17 +1213,67 @@ export default function JobsScreen() {
   const openConfirmSheet = (route: Route) => {
     setPendingRoute(route);
     const dt = parseNaiveIsoString(route.departure_time);
-    setDepartureDate(dt);
+    const now = new Date();
+    const freq = (route.route_frequency || 'Daily').trim();
+
+    setDepartureTime(dt);
+    setSelectedWeekday(dt.getDay());
+
+    if (freq === 'Daily') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      setDepartureDate(today);
+    } else if (freq === 'Weekly') {
+      setDepartureDate(nextWeekday(dt.getDay()));
+    } else {
+      // If One-time or Custom date is in the past, default date picker to today
+      setDepartureDate(dt < now ? now : dt);
+    }
+
     setShowDatePicker(false);
     setShowTimePicker(false);
     setConfirmSheetVisible(true);
   };
 
+  const computeEffectiveConfirmDate = (route: Route): Date => {
+    const freq = (route.route_frequency || 'Daily').trim();
+    if (freq === 'Daily') {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    if (freq === 'Weekly') {
+      return nextWeekday(selectedWeekday);
+    }
+    return departureDate;
+  };
+
   const confirmDeparture = async () => {
     if (!pendingRoute || !providerId) return;
+
+    const freq = (pendingRoute.route_frequency || 'Daily').trim();
+    const effectiveDate = computeEffectiveConfirmDate(pendingRoute);
+    const combined = new Date(
+      effectiveDate.getFullYear(),
+      effectiveDate.getMonth(),
+      effectiveDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes(),
+      0,
+      0,
+    );
+
+    if ((freq === 'One-time' || freq === 'Custom') && combined < new Date()) {
+      Alert.alert('Invalid Time', 'You cannot schedule a route in the past. Please select a future date and time.');
+      return;
+    }
+
     try {
-      const departureValue = toNaiveIsoString(departureDate);
-      const { error: updateErr } = await supabase.from('provider_routes').update({ departure_time: departureValue }).eq('route_id', pendingRoute.route_id);
+      const departureValue = toNaiveIsoString(combined);
+      const { error: updateErr } = await supabase
+        .from('provider_routes')
+        .update({ departure_time: departureValue })
+        .eq('route_id', pendingRoute.route_id);
       if (updateErr) throw updateErr;
 
       const { data: fullRoute } = await supabase
@@ -1151,13 +1284,21 @@ export default function JobsScreen() {
           end_location:locations!provider_routes_end_location_id_fkey(*),
           vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
         `)
-        .eq('route_id', pendingRoute.route_id).single();
-      if (!fullRoute) throw new Error('Failed to reload route');
+        .eq('route_id', pendingRoute.route_id)
+        .single();
 
-      setActiveRoute(fullRoute as Route);
+      const updatedRoute: Route = (fullRoute as Route) || {
+        ...pendingRoute,
+        departure_time: departureValue,
+      };
+
+      setActiveRoute(updatedRoute);
+      setRoutes(prev => prev.map(r => r.route_id === updatedRoute.route_id ? updatedRoute : r));
       await setActiveRouteId(pendingRoute.route_id);
-      await supabase.from('users').update({ is_active: true }).eq('user_id', providerId);
+
+      // Go online in-app without mutating users.is_active
       setIsOnline(true);
+      await saveOnlinePreference(providerId, true);
 
       setConfirmSheetVisible(false);
       setRoutePickerVisible(false);
@@ -1959,7 +2100,7 @@ export default function JobsScreen() {
           <View style={styles.routePickerSheet}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Select a Route</Text>
+              <Text style={styles.routePickerTitle}>Select an Active Route</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {providerId && (
                   <TouchableOpacity
@@ -1993,9 +2134,9 @@ export default function JobsScreen() {
             {routes.length === 0 ? (
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
-                <Text style={styles.routePickerEmptyTitle}>No routes created yet</Text>
+                <Text style={styles.routePickerEmptyTitle}>No active routes available</Text>
                 <Text style={styles.routePickerEmptySub}>
-                  Create an on-demand route now, or set up a scheduled route in Manage Routes.
+                  Create an on-demand route now, or manage your scheduled &amp; expired routes in Manage Routes.
                 </Text>
                 <TouchableOpacity
                   style={styles.createQuickRouteBtn}
@@ -2027,6 +2168,13 @@ export default function JobsScreen() {
                   const rDate = parseNaiveIsoString(r.departure_time);
                   const startAddr = splitAddress(r.start_location?.street_address);
                   const endAddr = splitAddress(r.end_location?.street_address);
+                  const timeStr = rDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  const scheduleLabel =
+                    r.route_frequency === 'Daily'
+                      ? `Every day · ${timeStr}`
+                      : r.route_frequency === 'Weekly'
+                        ? `Every ${WEEKDAY_LABELS[rDate.getDay()]} · ${timeStr}`
+                        : `${rDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${timeStr}`;
 
                   return (
                     <TouchableOpacity key={r.route_id} style={[styles.routeOption, isSelected && styles.routeOptionSelected]} onPress={() => openConfirmSheet(r)} activeOpacity={0.85}>
@@ -2039,7 +2187,7 @@ export default function JobsScreen() {
                           {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
                         </Text>
                         <Text style={styles.routeOptionAddr} numberOfLines={1}>
-                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
+                          {scheduleLabel} · {r.route_frequency}
                         </Text>
                       </View>
                       {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
@@ -2053,6 +2201,7 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
+      {/* Confirm Departure Modal — frequency-aware based on ManageRoutesScreen */}
       <Modal visible={confirmSheetVisible} transparent animationType="slide" onRequestClose={() => setConfirmSheetVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
@@ -2078,50 +2227,117 @@ export default function JobsScreen() {
                   </View>
                 </View>
 
-                <View style={styles.dateTimeRow}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Date</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
-                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
-                    </TouchableOpacity>
-                    {showDatePicker && (
-                      <DateTimePicker
-                        value={departureDate} mode="date" display="default"
-                        minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
-                        onChange={(e, d) => {
-                          if (Platform.OS === 'android') setShowDatePicker(false);
-                          if (e.type === 'set' && d) {
-                            const merged = new Date(d);
-                            merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Time</Text>
+                {pendingRoute.route_frequency === 'Daily' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Departure Time (Daily)</Text>
                     <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
                       <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
                     </TouchableOpacity>
                     {showTimePicker && (
                       <DateTimePicker
-                        value={departureDate} mode="time" display="default"
+                        value={departureTime}
+                        mode="time"
+                        display="default"
                         onChange={(e, t) => {
                           if (Platform.OS === 'android') setShowTimePicker(false);
-                          if (e.type === 'set' && t) {
-                            const merged = new Date(departureDate);
-                            merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
-                          }
+                          if (e.type === 'set' && t) setDepartureTime(t);
                         }}
                       />
                     )}
+                    <Text style={styles.helperText}>
+                      This route recurs daily. Only the departure time will be updated.
+                    </Text>
                   </View>
-                </View>
+                ) : pendingRoute.route_frequency === 'Weekly' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Repeats on</Text>
+                    <View style={styles.weekdayRow}>
+                      {WEEKDAY_LABELS.map((label, idx) => {
+                        const on = selectedWeekday === idx;
+                        return (
+                          <TouchableOpacity
+                            key={label}
+                            style={[styles.weekdayChip, on && styles.weekdayChipActive]}
+                            onPress={() => setSelectedWeekday(idx)}
+                            activeOpacity={0.85}
+                          >
+                            <Text style={[styles.weekdayChipText, on && styles.weekdayChipTextActive]}>
+                              {label}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
+                    <Text style={[styles.inputLabel, { marginTop: 12 }]}>Departure Time</Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        display="default"
+                        onChange={(e, t) => {
+                          if (Platform.OS === 'android') setShowTimePicker(false);
+                          if (e.type === 'set' && t) setDepartureTime(t);
+                        }}
+                      />
+                    )}
+                    <Text style={styles.helperText}>
+                      This route recurs every {WEEKDAY_LABELS[selectedWeekday]} at the selected time.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.dateTimeRow}>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Date</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
+                      </TouchableOpacity>
+                      {showDatePicker && (
+                        <DateTimePicker
+                          value={departureDate}
+                          mode="date"
+                          display="default"
+                          minimumDate={new Date()}
+                          onChange={(e, d) => {
+                            if (Platform.OS === 'android') setShowDatePicker(false);
+                            if (e.type === 'set' && d) setDepartureDate(d);
+                          }}
+                        />
+                      )}
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Time</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                        <Ionicons name="time-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>
+                          {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </TouchableOpacity>
+                      {showTimePicker && (
+                        <DateTimePicker
+                          value={departureTime}
+                          mode="time"
+                          display="default"
+                          onChange={(e, t) => {
+                            if (Platform.OS === 'android') setShowTimePicker(false);
+                            if (e.type === 'set' && t) setDepartureTime(t);
+                          }}
+                        />
+                      )}
+                    </View>
+                  </View>
+                )}
 
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#1E40AF'} />
@@ -2130,7 +2346,7 @@ export default function JobsScreen() {
 
                 <TouchableOpacity style={styles.confirmBtn} onPress={confirmDeparture} activeOpacity={0.9}>
                   <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                  <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
+                  <Text style={styles.confirmBtnText}>Confirm &amp; Go Online</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -2479,6 +2695,21 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
   },
   dateTimeValue: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
+  helperText: { marginTop: 8, fontSize: 11, color: c.textMuted, fontWeight: '500', fontStyle: 'italic' },
+
+  weekdayRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+  weekdayChip: {
+    flex: 1, minWidth: 42, paddingVertical: 9, borderRadius: 12,
+    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  weekdayChipActive: {
+    backgroundColor: ORANGE, borderColor: ORANGE,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
+  },
+  weekdayChipText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  weekdayChipTextActive: { color: '#FFFFFF' },
 
   infoBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,

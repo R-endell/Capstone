@@ -44,7 +44,7 @@ interface Route {
 }
 
 /* ==================================================================== */
-/* Timezone helpers                                                      */
+/* Timezone & Expiration Helpers                                         */
 /* ==================================================================== */
 const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
   const y = dateObj.getFullYear();
@@ -65,6 +65,15 @@ const parseNaiveIsoString = (isoString: string) => {
   const hh = parseInt(parts[3], 10);
   const mm = parseInt(parts[4], 10);
   return new Date(y, m, d, hh, mm);
+};
+
+export const isRouteExpired = (route: { route_frequency: string; departure_time: string }): boolean => {
+  const freq = (route.route_frequency || '').toLowerCase();
+  if (freq === 'one-time' || freq === 'custom') {
+    const dt = parseNaiveIsoString(route.departure_time);
+    return dt.getTime() < Date.now();
+  }
+  return false;
 };
 
 const nextWeekday = (weekday: number, from = new Date()): Date => {
@@ -262,6 +271,7 @@ const InteractiveMap = ({
 
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
 type Frequency = typeof FREQUENCIES[number];
+type RouteTab = 'active' | 'expired';
 
 export default function ManageRoutesScreen() {
   const navigation = useNavigation();
@@ -274,6 +284,7 @@ export default function ManageRoutesScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  const [activeTab, setActiveTab] = useState<RouteTab>('active');
   const [modalVisible, setModalVisible] = useState(false);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
@@ -349,6 +360,22 @@ export default function ManageRoutesScreen() {
   };
 
   useFocusEffect(useCallback(() => { fetchRoutes(); }, []));
+
+  // Partition routes into Active vs Expired
+  const { activeRoutes, expiredRoutes } = useMemo(() => {
+    const active: Route[] = [];
+    const expired: Route[] = [];
+    for (const r of routes) {
+      if (isRouteExpired(r)) {
+        expired.push(r);
+      } else {
+        active.push(r);
+      }
+    }
+    return { activeRoutes: active, expiredRoutes: expired };
+  }, [routes]);
+
+  const displayedRoutes = activeTab === 'active' ? activeRoutes : expiredRoutes;
 
   const handleLocationSelect = async (lat: number, lng: number) => {
     try {
@@ -452,6 +479,7 @@ export default function ManageRoutesScreen() {
       Alert.alert('Success', editingRoute ? 'Route updated successfully!' : 'Route added successfully!');
       resetForm();
       setModalVisible(false);
+      setActiveTab('active');
       fetchRoutes();
     } catch (err) {
       console.error(err);
@@ -476,9 +504,14 @@ export default function ManageRoutesScreen() {
   const handleEdit = (route: Route) => {
     setEditingRoute(route);
     const dt = parseNaiveIsoString(route.departure_time);
-    setDepartureDate(dt);
+    const expired = isRouteExpired(route);
+
+    // If rescheduling an expired route, default the date picker to today
+    const baseDate = expired ? new Date() : dt;
+    setDepartureDate(baseDate);
     setDepartureTime(dt);
-    setSelectedWeekday(dt.getDay());
+    setSelectedWeekday(baseDate.getDay());
+
     const freq = (route.route_frequency || 'Daily') as Frequency;
     setSelectedFrequency(FREQUENCIES.includes(freq) ? freq : 'Daily');
     setSelectedVehicleId(route.vehicle_id || null);
@@ -517,12 +550,14 @@ export default function ManageRoutesScreen() {
 
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
+    const expired = isRouteExpired(item);
 
-    const freqColor =
-      item.route_frequency === 'Daily' ? { bg: isDark ? '#0F2744' : '#DBEAFE', fg: isDark ? '#93C5FD' : '#2563EB' } :
-      item.route_frequency === 'Weekly' ? { bg: isDark ? '#231542' : '#EDE9FE', fg: isDark ? '#C4B5FD' : '#7C3AED' } :
-      item.route_frequency === 'One-time' ? { bg: isDark ? '#2A1F0A' : '#FEF3C7', fg: isDark ? '#FCD34D' : '#D97706' } :
-      { bg: colors.divider, fg: colors.textSecondary };
+    const freqColor = expired
+      ? { bg: colors.errorBg, fg: colors.error }
+      : item.route_frequency === 'Daily' ? { bg: isDark ? '#0F2744' : '#DBEAFE', fg: isDark ? '#93C5FD' : '#2563EB' } :
+        item.route_frequency === 'Weekly' ? { bg: isDark ? '#231542' : '#EDE9FE', fg: isDark ? '#C4B5FD' : '#7C3AED' } :
+        item.route_frequency === 'One-time' ? { bg: isDark ? '#2A1F0A' : '#FEF3C7', fg: isDark ? '#FCD34D' : '#D97706' } :
+        { bg: colors.divider, fg: colors.textSecondary };
 
     const freqLabel = (() => {
       const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -532,20 +567,24 @@ export default function ManageRoutesScreen() {
     })();
 
     return (
-      <View style={styles.routeCard}>
+      <View style={[styles.routeCard, expired && styles.routeCardExpired]}>
         <View style={[styles.cardAccent, { backgroundColor: freqColor.fg }]} />
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
-            <View style={styles.routeIconBox}>
-              <Ionicons name="map-outline" size={20} color={ORANGE} />
+            <View style={[styles.routeIconBox, expired && { backgroundColor: colors.errorBg }]}>
+              <Ionicons name={expired ? 'time-outline' : 'map-outline'} size={20} color={expired ? colors.error : ORANGE} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.routeDate}>{freqLabel}</Text>
-              <Text style={styles.routeTime}>{item.route_frequency}</Text>
+              <Text style={styles.routeTime}>
+                {item.route_frequency}{expired ? ' · Passed' : ''}
+              </Text>
             </View>
           </View>
           <View style={[styles.frequencyBadge, { backgroundColor: freqColor.bg }]}>
-            <Text style={[styles.frequencyText, { color: freqColor.fg }]}>{item.route_frequency}</Text>
+            <Text style={[styles.frequencyText, { color: freqColor.fg }]}>
+              {expired ? 'EXPIRED' : item.route_frequency}
+            </Text>
           </View>
         </View>
 
@@ -586,8 +625,8 @@ export default function ManageRoutesScreen() {
 
         <View style={styles.cardFooter}>
           <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(item)}>
-            <Ionicons name="create-outline" size={14} color={ORANGE} />
-            <Text style={styles.editBtnText}>Edit</Text>
+            <Ionicons name={expired ? 'calendar-outline' : 'create-outline'} size={14} color={ORANGE} />
+            <Text style={styles.editBtnText}>{expired ? 'Reschedule' : 'Edit'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item)}>
             <Ionicons name="trash-outline" size={14} color={colors.error} />
@@ -612,29 +651,72 @@ export default function ManageRoutesScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* Active / Expired Segmented Tab Bar */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'active' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('active')}
+          activeOpacity={0.85}
+        >
+          <Ionicons
+            name="navigate-circle-outline"
+            size={16}
+            color={activeTab === 'active' ? '#FFFFFF' : colors.textSecondary}
+          />
+          <Text style={[styles.tabButtonText, activeTab === 'active' && styles.tabButtonTextActive]}>
+            Active ({activeRoutes.length})
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tabButton, activeTab === 'expired' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('expired')}
+          activeOpacity={0.85}
+        >
+          <Ionicons
+            name="time-outline"
+            size={16}
+            color={activeTab === 'expired' ? '#FFFFFF' : colors.textSecondary}
+          />
+          <Text style={[styles.tabButtonText, activeTab === 'expired' && styles.tabButtonTextActive]}>
+            Expired ({expiredRoutes.length})
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={ORANGE} />
           <Text style={styles.loadingText}>Loading routes...</Text>
         </View>
-      ) : routes.length === 0 ? (
+      ) : displayedRoutes.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
           <View style={styles.emptyIconCircle}>
-            <Ionicons name="map-outline" size={40} color={ORANGE} />
+            <Ionicons
+              name={activeTab === 'active' ? 'map-outline' : 'time-outline'}
+              size={40}
+              color={ORANGE}
+            />
           </View>
-          <Text style={styles.emptyTitle}>No routes yet</Text>
-          <Text style={styles.emptySubtitle}>
-            Add a travel route so you can be matched with packages on your way.
+          <Text style={styles.emptyTitle}>
+            {activeTab === 'active' ? 'No active routes' : 'No expired routes'}
           </Text>
-          <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd}>
-            <Ionicons name="add-circle" size={18} color="#FFFFFF" />
-            <Text style={styles.emptyAddBtnText}>Add Route</Text>
-          </TouchableOpacity>
+          <Text style={styles.emptySubtitle}>
+            {activeTab === 'active'
+              ? 'Add a travel route so you can be matched with packages on your way.'
+              : 'One-time or custom routes that have passed their departure time will appear here.'}
+          </Text>
+          {activeTab === 'active' && (
+            <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd}>
+              <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+              <Text style={styles.emptyAddBtnText}>Add Route</Text>
+            </TouchableOpacity>
+          )}
         </Animated.View>
       ) : (
         <Animated.View style={{ flex: 1, opacity: listAnim }}>
           <FlatList
-            data={routes}
+            data={displayedRoutes}
             keyExtractor={(i) => i.route_id.toString()}
             renderItem={renderRouteCard}
             contentContainerStyle={styles.listContent}
@@ -939,7 +1021,45 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
 
-  listContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
+  tabContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginTop: 16,
+    marginBottom: 4,
+    padding: 4,
+    backgroundColor: c.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: c.border,
+    gap: 6,
+  },
+  tabButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  tabButtonActive: {
+    backgroundColor: ORANGE,
+    shadowColor: ORANGE,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  tabButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: c.textSecondary,
+  },
+  tabButtonTextActive: {
+    color: '#FFFFFF',
+  },
+
+  listContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 40 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { color: c.textSecondary, fontSize: 13, fontWeight: '500' },
 
@@ -960,6 +1080,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3, shadowRadius: 8, elevation: 2,
     borderWidth: 1, borderColor: c.border, overflow: 'hidden', position: 'relative',
+  },
+  routeCardExpired: {
+    opacity: 0.88,
   },
   cardAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, borderTopRightRadius: 4, borderBottomRightRadius: 4 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },

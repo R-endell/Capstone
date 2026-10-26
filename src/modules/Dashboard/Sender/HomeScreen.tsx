@@ -158,7 +158,7 @@ const FAQS = [
   { q: 'What if something goes wrong?', a: 'Report it from the Dispute Center. Add details and photos so the team can review the case.' },
 ] as const;
 
-/* ------------------ Banner carousel (unchanged) ------------------ */
+/* ------------------ Banner carousel ------------------ */
 function BannerCarousel({
   colors,
   navigation,
@@ -196,10 +196,16 @@ function BannerCarousel({
     };
   }, [snap]);
 
+  // IMPORTANT: useNativeDriver is set to false here on purpose.
+  // The scrollX value is interpolated into a `width` style for the
+  // pagination dots below, and `width` is NOT supported by the native
+  // animated module (native driver only supports transform & opacity).
+  // Keeping this on the JS driver avoids:
+  //   "Style property 'width' is not supported by native animated module"
   const onScroll = useRef(
     Animated.event(
       [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-      { useNativeDriver: true },
+      { useNativeDriver: false },
     ),
   ).current;
 
@@ -315,7 +321,7 @@ export default function HomeScreen() {
   // both the Guides and FAQ groups (reduces visual noise + scroll length).
   const [openItem, setOpenItem] = useState<string | null>(null);
 
-  /* ------------------ user + notifications (unchanged) ------------------ */
+  /* ------------------ user + notifications ------------------ */
   useEffect(() => {
     let active = true;
     (async () => {
@@ -457,7 +463,7 @@ export default function HomeScreen() {
   const bellScale = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
   const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
 
-  /* ------------------ notification modal (unchanged) ------------------ */
+  /* ------------------ notification modal ------------------ */
   const renderNotifModal = () => (
     <Modal visible={notifModalOpen} transparent animationType="fade" onRequestClose={() => setNotifModalOpen(false)}>
       <Pressable style={styles.modalBackdrop} onPress={() => setNotifModalOpen(false)}>
@@ -519,7 +525,7 @@ export default function HomeScreen() {
     </Modal>
   );
 
-  /* ------------------ full notifications modal (unchanged) ------------------ */
+  /* ------------------ full notifications modal ------------------ */
   const renderFullListModal = () => (
     <Modal visible={fullListOpen} animationType="slide" onRequestClose={() => setFullListOpen(false)}>
       <View style={{ flex: 1, backgroundColor: colors.background }}>

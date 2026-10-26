@@ -289,7 +289,7 @@ export default function LoadingScreen() {
         >
           <Animated.View style={{ transform: [{ scale: pulseScale }] }}>
             <Image
-              source={require('../../../assets/Pack-N-Ship-Logo2.png')}
+              source={require('../../../assets/appiconfinal2.png')}
               style={styles.logoImage}
               resizeMode="contain"
             />
@@ -395,7 +395,7 @@ const styles = StyleSheet.create({
   logoImage: {
     width: 260,
     height: 140,
-    marginBottom: -35,
+    marginBottom: -30,
   },
   logoText: {
     fontSize: 44,

@@ -1,12 +1,12 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
   BackHandler, StatusBar, Platform, Linking, Image, KeyboardAvoidingView, Share,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import QRCode from 'react-native-qrcode-svg';
@@ -39,19 +39,6 @@ const findRouteOwner = (nav: any, names: string[]): { owner: any; name: string }
     current = current.getParent?.();
   }
   return null;
-};
-
-const getTabNavigations = (nav: any): any[] => {
-  const found: any[] = [];
-  let current = nav;
-  while (current) {
-    try {
-      if (current.getState?.()?.type === 'tab') found.push(current);
-    } catch { /* ignore */ }
-    current = current.getParent?.();
-  }
-  if (found.length === 0) [nav, nav?.getParent?.()].forEach(n => n && found.push(n));
-  return found;
 };
 
 /* ==================================================================== */
@@ -172,6 +159,28 @@ const LeafletMap = ({
   const centerLat = hasPickup ? (pickupLat as number) : (hasDropoff ? (dropoffLat as number) : 10.3157);
   const centerLng = hasPickup ? (pickupLng as number) : (hasDropoff ? (dropoffLng as number) : 123.8854);
 
+  const fitMapToLine = useCallback((line: { latitude: number; longitude: number }[]) => {
+    if (!line || line.length === 0) return;
+    const isSamePoint =
+      line.length >= 2 &&
+      Math.abs(line[0].latitude - line[line.length - 1].latitude) < 0.0001 &&
+      Math.abs(line[0].longitude - line[line.length - 1].longitude) < 0.0001;
+
+    if (isSamePoint) {
+      mapRef.current?.animateToRegion({
+        latitude: line[0].latitude,
+        longitude: line[0].longitude,
+        latitudeDelta: 0.008,
+        longitudeDelta: 0.008,
+      }, 250);
+    } else {
+      mapRef.current?.fitToCoordinates(line, {
+        edgePadding: { top: 48, right: 48, bottom: 48, left: 48 },
+        animated: false,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (!hasPickup || !hasDropoff) { setCoords([]); return; }
     let cancelled = false;
@@ -182,29 +191,27 @@ const LeafletMap = ({
       );
       if (cancelled) return;
       setCoords(line);
-      const t = setTimeout(() => {
-        mapRef.current?.fitToCoordinates(line, {
-          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
-          animated: false,
-        });
-      }, 120);
+      const t = setTimeout(() => fitMapToLine(line), 150);
       return () => clearTimeout(t);
     })();
     return () => { cancelled = true; };
-  }, [pickupLat, pickupLng, dropoffLat, dropoffLng]);
+  }, [pickupLat, pickupLng, dropoffLat, dropoffLng, hasPickup, hasDropoff, fitMapToLine]);
 
   return (
     <MapView
       ref={mapRef}
       provider={PROVIDER_GOOGLE}
-      style={{ flex: 1 }}
-      googleMapId={GOOGLE_MAP_ID}
+      style={{ flex: 1, width: '100%', height: '100%' }} // Changed from absoluteFillObject to ensure it renders inside ScrollView/Modal
+      googleMapId={GOOGLE_MAP_ID || undefined} // Fallback to default map if ID is missing
       userInterfaceStyle="light"
       initialRegion={{
         latitude: centerLat,
         longitude: centerLng,
         latitudeDelta: 0.03,
         longitudeDelta: 0.03,
+      }}
+      onMapReady={() => {
+        if (coords.length > 0) fitMapToLine(coords);
       }}
       scrollEnabled={interactive}
       zoomEnabled={interactive}
@@ -491,10 +498,6 @@ export default function ActivityScreen() {
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [ratingSaved, setRatingSaved] = useState<{ rating: number; tags: string[]; comment: string | null } | null>(null);
   const [escrowRow, setEscrowRow] = useState<any>(null);
-  const isFocused = useIsFocused();
-  const tabBarHidden = useRef(false);
-  const navigationRef = useRef(navigation);
-  navigationRef.current = navigation;
 
   const listAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
@@ -523,22 +526,6 @@ export default function ActivityScreen() {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
   }, [selectedDelivery, showFullMap, photoPreview]);
-
-  const setTabBarHidden = useCallback((hidden: boolean) => {
-    if (tabBarHidden.current === hidden) return;
-    tabBarHidden.current = hidden;
-    getTabNavigations(navigationRef.current).forEach(nav => {
-      try {
-        nav.setOptions({ tabBarStyle: hidden ? { display: 'none' } : undefined });
-      } catch { /* ignore */ }
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    setTabBarHidden(isFocused && showFullMap);
-  }, [isFocused, showFullMap, setTabBarHidden]);
-
-  useEffect(() => () => setTabBarHidden(false), [setTabBarHidden]);
 
   const handleResumeFindingProvider = (item: MappedDelivery) => {
     if (item.isMatched || item.status !== 'Waiting for Provider') return;
@@ -912,6 +899,15 @@ export default function ActivityScreen() {
 
   const handleCancelDelivery = (rawData: any) => {
     if (!rawData) return;
+    if (
+      rawData.delivery_status === 'In Transit' ||
+      selectedDelivery?.status === 'In Transit' ||
+      selectedDelivery?.qr?.pickup_verified
+    ) {
+      Alert.alert('Cannot Cancel', 'This package has already been picked up and is in transit.');
+      return;
+    }
+
     Alert.alert('Cancel Delivery', 'Are you sure you want to cancel this delivery?', [
       { text: 'Keep Delivery', style: 'cancel' },
       {
@@ -920,21 +916,25 @@ export default function ActivityScreen() {
           const providerId: number | null = selectedDelivery?.provider_id ?? null;
           const amount: number = Number(selectedDelivery?.price) || 0;
 
-          let wasPaid = false;
           let refundSucceeded = false;
           let refundFailed = false;
 
           try {
             const { data: reqRow } = await supabase
               .from('delivery_requests')
-              .select('payment_status, escrow_status')
+              .select('payment_status, escrow_status, delivery_status')
               .eq('request_id', reqId)
               .maybeSingle();
+
+            if (reqRow?.delivery_status === 'In Transit') {
+              Alert.alert('Cannot Cancel', 'This package has already been picked up and is in transit.');
+              fetchData();
+              return;
+            }
 
             const wasHeld =
               reqRow?.payment_status === 'held' ||
               reqRow?.escrow_status === 'held';
-            wasPaid = wasHeld;
 
             const updateData: any = { delivery_status: 'Cancelled' };
 
@@ -995,6 +995,7 @@ export default function ActivityScreen() {
         setOpeningChat(false);
         return Alert.alert('Error', 'Could not open chat.');
       }
+      setShowFullMap(false);
       navigation.navigate('MainTabs', { screen: 'Messages', params: { openRoomId: roomId } });
     } catch {
       Alert.alert('Error', 'Could not open chat.');
@@ -1375,8 +1376,12 @@ export default function ActivityScreen() {
   const renderDetailView = () => {
     const d = selectedDelivery;
     const pickupVerified = d?.qr?.pickup_verified === true;
-    const isCompleted = !!d?.deliveryData?.completed_at;
+    const isCompleted = !!d?.deliveryData?.completed_at || d?.status === 'Completed';
     const isCancelled = d?.status === 'Cancelled';
+    const isInTransit =
+      d?.status === 'In Transit' ||
+      d?.rawData?.delivery_status === 'In Transit' ||
+      pickupVerified;
 
     const showPickupQRButton = !!d?.isMatched && !!d?.qr && !d?.qr?.pickup_verified && !isCompleted && !isCancelled;
     const hasConfirmation = !!d?.confirmation;
@@ -1387,7 +1392,7 @@ export default function ActivityScreen() {
     let stepIndex = 0;
     if (d?.isMatched) stepIndex = 1;
     if (pickupVerified) stepIndex = 2;
-    if (pickupVerified && !isCompleted) stepIndex = 3;
+    if ((pickupVerified || d?.status === 'In Transit') && !isCompleted) stepIndex = 3;
     if (isCompleted) stepIndex = 4;
 
     const trackingId = `PNS-${String(d?.request_id).padStart(4, '0')}`;
@@ -1514,7 +1519,7 @@ export default function ActivityScreen() {
               <View style={styles.mapOverlayPill}>
                 <Ionicons name="navigate" size={11} color={ORANGE} />
                 <Text style={styles.overlayPillText}>
-                  {isCompleted ? 'Fulfilled Route Map' : pickupVerified ? 'In Transit Along Cebu' : 'Live Route Preview'}
+                  {isCompleted ? 'Fulfilled Route Map' : isInTransit ? 'In Transit Along Cebu' : 'Live Route Preview'}
                 </Text>
               </View>
               <View style={styles.mapTapHint}>
@@ -1578,7 +1583,7 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           )}
 
-          {pickupVerified && !isCompleted && !isCancelled && (
+          {isInTransit && !isCompleted && !isCancelled && (
             <TouchableOpacity style={styles.pickupQRCard} onPress={() => setShowDeliveryOTP(true)} activeOpacity={0.9}>
               <View style={styles.pickupQRIconBox}>
                 <Ionicons name="key" size={20} color="#FFF" />
@@ -1835,11 +1840,11 @@ export default function ActivityScreen() {
             </View>
 
             <View style={styles.tlRow}>
-              <Ionicons name={pickupVerified ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={pickupVerified ? ORANGE : colors.border} />
+              <Ionicons name={isInTransit ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={isInTransit ? ORANGE : colors.border} />
               <View style={{ flex: 1 }}>
-                <Text style={[styles.tlTitle, !pickupVerified && { color: colors.textMuted }]}>Package picked up</Text>
+                <Text style={[styles.tlTitle, !isInTransit && { color: colors.textMuted }]}>Package picked up</Text>
                 <Text style={styles.tlSub}>
-                  {pickupVerified ? 'Verified with sender QR / PIN' : d?.isMatched ? 'Waiting for courier to scan QR or enter PIN' : 'Awaiting courier'}
+                  {isInTransit ? 'Verified with sender QR / PIN — In Transit' : d?.isMatched ? 'Waiting for courier to scan QR or enter PIN' : 'Awaiting courier'}
                 </Text>
               </View>
             </View>
@@ -1859,7 +1864,8 @@ export default function ActivityScreen() {
             </View>
           </View>
 
-          {!isCompleted && !isCancelled && (
+          {/* Hide Cancel Booking once the package is picked up or In Transit */}
+          {!isCompleted && !isCancelled && !isInTransit && (
             <View style={styles.detailActionsRow}>
               {!d?.isMatched && (
                 <TouchableOpacity style={styles.editBtn} onPress={() => handleEdit(d?.rawData)} activeOpacity={0.9}>
@@ -1876,134 +1882,144 @@ export default function ActivityScreen() {
     );
   };
 
-  const renderFullMapView = () => (
-    <View style={styles.fullMapContainer}>
-      <LeafletMap
-        pickupLat={selectedDelivery?.coords.pickup.latitude}
-        pickupLng={selectedDelivery?.coords.pickup.longitude}
-        dropoffLat={selectedDelivery?.coords.dropoff.latitude}
-        dropoffLng={selectedDelivery?.coords.dropoff.longitude}
-        interactive={true}
-      />
-      <View style={[styles.topOverlay, { top: insets.top + 10 }]}>
-        <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <View style={styles.statusPill}>
-          <Text style={styles.statusPillText}>{selectedDelivery?.status}</Text>
+  const renderFullMapModal = () => (
+    <Modal
+      visible={showFullMap && !!selectedDelivery}
+      animationType="fade"
+      transparent={false}
+      statusBarTranslucent
+      onRequestClose={() => setShowFullMap(false)}
+    >
+      <View style={styles.fullMapContainer}>
+        {selectedDelivery && (
+          <LeafletMap
+            pickupLat={selectedDelivery.coords.pickup.latitude}
+            pickupLng={selectedDelivery.coords.pickup.longitude}
+            dropoffLat={selectedDelivery.coords.dropoff.latitude}
+            dropoffLng={selectedDelivery.coords.dropoff.longitude}
+            interactive={true}
+          />
+        )}
+        <View style={[styles.topOverlay, { top: Math.max(insets.top, 24) + 10 }]}>
+          <TouchableOpacity style={styles.backCircleBtn} onPress={() => setShowFullMap(false)} activeOpacity={0.85}>
+            <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <View style={styles.statusPill}>
+            <Text style={styles.statusPillText}>{selectedDelivery?.status}</Text>
+          </View>
         </View>
-      </View>
 
-      {selectedDelivery && (
-        <View style={[styles.mapInfoSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-          <View style={styles.sheetGrabber} />
-          <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 360 }}>
-            <View style={styles.etaPayRow}>
-              <View style={styles.etaPayBox}>
-                <View style={styles.etaPayLabelRow}>
-                  <Ionicons name="time-outline" size={12} color={ORANGE} />
-                  <Text style={styles.etaPayLabel}>ESTIMATED ARRIVAL</Text>
-                </View>
-                <Text style={styles.etaPayValue} numberOfLines={1}>
-                  {selectedDelivery.deliveryData?.completed_at
-                    ? 'Delivered'
-                    : selectedDelivery.status === 'Cancelled'
-                      ? 'Cancelled'
-                      : selectedDelivery.isMatched
-                        ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
-                        : 'Awaiting provider'}
-                </Text>
-              </View>
-              <View style={styles.etaPayBox}>
-                <View style={styles.etaPayLabelRow}>
-                  <Ionicons name="cash-outline" size={12} color={ORANGE} />
-                  <Text style={styles.etaPayLabel}>TOTAL PAY</Text>
-                </View>
-                <Text style={styles.etaPayValue}>₱{selectedDelivery.price}</Text>
-              </View>
-            </View>
-
-            {selectedDelivery.isMatched ? (
-              <View style={styles.mapSection}>
-                {renderProviderIdentity(selectedDelivery)}
-                <View style={styles.courierActionsRow}>
-                  <TouchableOpacity
-                    style={styles.courierMsgBtn}
-                    activeOpacity={0.85}
-                    onPress={() => handleMessageProvider(selectedDelivery)}
-                    disabled={openingChat}
-                  >
-                    <Ionicons name="chatbubble-ellipses-outline" size={15} color="#FFFFFF" />
-                    <Text style={styles.courierMsgBtnText}>Message</Text>
-                  </TouchableOpacity>
-                  {!!selectedDelivery.provider_phone && (
-                    <TouchableOpacity
-                      style={styles.courierCallBtn}
-                      activeOpacity={0.85}
-                      onPress={() => Linking.openURL(`tel:${selectedDelivery.provider_phone}`)}
-                    >
-                      <Ionicons name="call-outline" size={15} color={colors.textPrimary} />
-                      <Text style={styles.courierCallBtnText}>Call</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            ) : (
-              <View style={[styles.mapSection, styles.waitingRow]}>
-                <ActivityIndicator size="small" color={ORANGE} />
-                <Text style={styles.waitingText}>Still finding a courier partner for this shipment.</Text>
-              </View>
-            )}
-
-            <View style={styles.mapSection}>
-              <View style={styles.detailLine}>
-                <Text style={styles.detailLineLabel}>Tracking code</Text>
-                <Text style={styles.detailLineValue}>#PNS-{String(selectedDelivery.request_id).padStart(4, '0')}</Text>
-              </View>
-              <View style={styles.detailLine}>
-                <Text style={styles.detailLineLabel}>Items</Text>
-                <Text style={styles.detailLineValue}>{selectedDelivery.total_items}</Text>
-              </View>
-              <View style={styles.detailLine}>
-                <Text style={styles.detailLineLabel}>Service</Text>
-                <Text style={styles.detailLineValue}>{selectedDelivery.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
-              </View>
-              <View style={styles.detailLine}>
-                <Text style={styles.detailLineLabel}>Pickup</Text>
-                <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.pickup_main}</Text>
-              </View>
-              <View style={styles.detailLine}>
-                <Text style={styles.detailLineLabel}>Drop-off</Text>
-                <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.dropoff_main}</Text>
-              </View>
-              {!!selectedDelivery.receiver && (
-                <View style={styles.detailLine}>
-                  <Text style={styles.detailLineLabel}>Receiver</Text>
-                  <Text style={styles.detailLineValue} numberOfLines={1}>
-                    {selectedDelivery.receiver.receiver_name || selectedDelivery.receiver.receiver_phone || '—'}
+        {selectedDelivery && (
+          <View style={[styles.mapInfoSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={styles.sheetGrabber} />
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 360 }}>
+              <View style={styles.etaPayRow}>
+                <View style={styles.etaPayBox}>
+                  <View style={styles.etaPayLabelRow}>
+                    <Ionicons name="time-outline" size={12} color={ORANGE} />
+                    <Text style={styles.etaPayLabel}>ESTIMATED ARRIVAL</Text>
+                  </View>
+                  <Text style={styles.etaPayValue} numberOfLines={1}>
+                    {selectedDelivery.deliveryData?.completed_at
+                      ? 'Delivered'
+                      : selectedDelivery.status === 'Cancelled'
+                        ? 'Cancelled'
+                        : selectedDelivery.isMatched
+                          ? formatEta(selectedDelivery.deliveryData?.estimated_eta)
+                          : 'Awaiting provider'}
                   </Text>
                 </View>
-              )}
-            </View>
-
-            {selectedDelivery.status !== 'Cancelled' && (
-              <View style={styles.trackerPlaceholder}>
-                <View style={styles.trackerIconBox}>
-                  <Ionicons name="radio-outline" size={18} color="#7C3AED" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.trackerTitle}>Live Courier Tracking</Text>
-                  <Text style={styles.trackerSub}>Real-time location is coming soon. Route shown is a preview.</Text>
-                </View>
-                <View style={styles.soonBadge}>
-                  <Text style={styles.soonBadgeText}>SOON</Text>
+                <View style={styles.etaPayBox}>
+                  <View style={styles.etaPayLabelRow}>
+                    <Ionicons name="cash-outline" size={12} color={ORANGE} />
+                    <Text style={styles.etaPayLabel}>TOTAL PAY</Text>
+                  </View>
+                  <Text style={styles.etaPayValue}>₱{selectedDelivery.price}</Text>
                 </View>
               </View>
-            )}
-          </ScrollView>
-        </View>
-      )}
-    </View>
+
+              {selectedDelivery.isMatched ? (
+                <View style={styles.mapSection}>
+                  {renderProviderIdentity(selectedDelivery)}
+                  <View style={styles.courierActionsRow}>
+                    <TouchableOpacity
+                      style={styles.courierMsgBtn}
+                      activeOpacity={0.85}
+                      onPress={() => handleMessageProvider(selectedDelivery)}
+                      disabled={openingChat}
+                    >
+                      <Ionicons name="chatbubble-ellipses-outline" size={15} color="#FFFFFF" />
+                      <Text style={styles.courierMsgBtnText}>Message</Text>
+                    </TouchableOpacity>
+                    {!!selectedDelivery.provider_phone && (
+                      <TouchableOpacity
+                        style={styles.courierCallBtn}
+                        activeOpacity={0.85}
+                        onPress={() => Linking.openURL(`tel:${selectedDelivery.provider_phone}`)}
+                      >
+                        <Ionicons name="call-outline" size={15} color={colors.textPrimary} />
+                        <Text style={styles.courierCallBtnText}>Call</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+              ) : (
+                <View style={[styles.mapSection, styles.waitingRow]}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                  <Text style={styles.waitingText}>Still finding a courier partner for this shipment.</Text>
+                </View>
+              )}
+
+              <View style={styles.mapSection}>
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Tracking code</Text>
+                  <Text style={styles.detailLineValue}>#PNS-{String(selectedDelivery.request_id).padStart(4, '0')}</Text>
+                </View>
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Items</Text>
+                  <Text style={styles.detailLineValue}>{selectedDelivery.total_items}</Text>
+                </View>
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Service</Text>
+                  <Text style={styles.detailLineValue}>{selectedDelivery.pickup_type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
+                </View>
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Pickup</Text>
+                  <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.pickup_main}</Text>
+                </View>
+                <View style={styles.detailLine}>
+                  <Text style={styles.detailLineLabel}>Drop-off</Text>
+                  <Text style={styles.detailLineValue} numberOfLines={1}>{selectedDelivery.dropoff_main}</Text>
+                </View>
+                {!!selectedDelivery.receiver && (
+                  <View style={styles.detailLine}>
+                    <Text style={styles.detailLineLabel}>Receiver</Text>
+                    <Text style={styles.detailLineValue} numberOfLines={1}>
+                      {selectedDelivery.receiver.receiver_name || selectedDelivery.receiver.receiver_phone || '—'}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {selectedDelivery.status !== 'Cancelled' && (
+                <View style={styles.trackerPlaceholder}>
+                  <View style={styles.trackerIconBox}>
+                    <Ionicons name="radio-outline" size={18} color="#7C3AED" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.trackerTitle}>Live Courier Tracking</Text>
+                    <Text style={styles.trackerSub}>Real-time location is coming soon. Route shown is a preview.</Text>
+                  </View>
+                  <View style={styles.soonBadge}>
+                    <Text style={styles.soonBadgeText}>SOON</Text>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        )}
+      </View>
+    </Modal>
   );
 
   const renderPickupQRModal = () => (
@@ -2124,9 +2140,10 @@ export default function ActivityScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={showFullMap ? [] : ['top']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
-      {showFullMap && selectedDelivery ? renderFullMapView() : selectedDelivery ? renderDetailView() : renderListView()}
+      {selectedDelivery ? renderDetailView() : renderListView()}
+      {renderFullMapModal()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
       {renderPhotoPreviewModal()}
@@ -2321,7 +2338,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepLabel: { fontSize: 9, fontWeight: '700', color: c.textMuted, marginTop: 8, textAlign: 'center' },
   stepLabelActive: { color: ORANGE, fontWeight: '900' },
 
-  sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6' },
+  sdMap: { width: '100%', height: 190, backgroundColor: '#F3F4F6', overflow: 'hidden', position: 'relative' },
   sdRoutePad: { padding: 18 },
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
