@@ -22,11 +22,6 @@ const RED = '#DC2626';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 
-/**
- * Strict road-level accuracy:
- * Pin MUST be within 45 meters of the provider's road polyline between Point A and Point B.
- * If it is off by 100m, it will be rejected as disaligned.
- */
 const MAX_ROUTE_CORRIDOR_METERS = 45;
 const ENDPOINT_OVERSHOOT_TOLERANCE_M = 25;
 
@@ -112,7 +107,6 @@ function evaluateRouteAlignment(
 ) {
   const path = polyline.length >= 2 ? polyline : [pointA, pointB];
 
-  // Check endpoint overshoot on first and last segments
   const firstSeg = pointToSegmentInfo(point, path[0], path[Math.min(1, path.length - 1)]);
   const lastSeg = pointToSegmentInfo(point, path[Math.max(0, path.length - 2)], path[path.length - 1]);
   const abInfo = pointToSegmentInfo(point, pointA, pointB);
@@ -303,7 +297,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const pinPulse = useRef(new Animated.Value(0)).current;
   const buttonScale = useRef(new Animated.Value(1)).current;
 
-  /* ------------------ Fetch Provider Route Polyline ------------------ */
   useEffect(() => {
     if (!routePointA || !routePointB) {
       setProviderRouteCoords([]);
@@ -317,7 +310,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return () => { cancelled = true; };
   }, [routePointA, routePointB]);
 
-  /* ------------------ Fit Map to Provider Route First ------------------ */
   const fitProviderRoute = useCallback(() => {
     if (!mapRef.current || !routePointA || !routePointB) return;
     const pts = providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB];
@@ -338,7 +330,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return () => clearTimeout(t);
   }, [mapLoaded, hasPreferredRoute, routePointA, routePointB, fitProviderRoute]);
 
-  /* ------------------ Evaluate Route Alignment Live ------------------ */
   const routeAlignment = useMemo(() => {
     if (!hasPreferredRoute || !routePointA || !routePointB) {
       return {
@@ -393,7 +384,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     state.pickupLocation,
   ]);
 
-  /* ------------------------------ animations ------------------------------ */
   useEffect(() => {
     Animated.timing(sheetAnim, { toValue: 1, duration: 450, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [sheetAnim]);
@@ -428,7 +418,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const animatePressIn = () => Animated.spring(buttonScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
   const animatePressOut = () => Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
 
-  /* ------------------------------ recents ------------------------------ */
   const loadRecents = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(RECENTS_KEY);
@@ -456,7 +445,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   useEffect(() => { loadRecents(); }, [loadRecents]);
 
-  /* ---------------------- address lookup ---------------------- */
   const fetchNearby = async (coords: Coord): Promise<NearbyPlace[]> => {
     if (!HAS_API_KEY) return [];
     try {
@@ -582,7 +570,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     if (target) moveTo(target);
   }, [hasPreferredRoute, routeAlignment.nearestCoordOnRoute, moveTo]);
 
-  /* ------------------------------ init ------------------------------ */
   useEffect(() => {
     const existingLoc = isPickup ? state.pickupLocation : state.dropoffLocation;
     if (state.isEdit && existingLoc?.latitude && existingLoc?.longitude) {
@@ -644,7 +631,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------ search ------------------------------ */
   const runSearch = useCallback(async (text: string) => {
     setSearchError(null);
     if (!text.trim()) { setSearchResults([]); return; }
@@ -713,7 +699,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     moveTo({ latitude: p.latitude, longitude: p.longitude }, { name: p.name, sub: p.address });
   };
 
-  /* ------------------------------ confirm ------------------------------ */
   const confirmLocation = () => {
     if (hasPreferredRoute && !routeAlignment.aligned) {
       Alert.alert(
@@ -753,7 +738,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     }
   };
 
-  /* ------------------------------ map handlers ------------------------------ */
   const onPanDrag = () => {
     if (!isDraggingMap) setIsDraggingMap(true);
     if (editingNote) { Keyboard.dismiss(); setEditingNote(false); }
@@ -795,7 +779,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
-  // Filter nearby places when on a provider's route so only places strictly within the 45m route corridor are suggested
   const alignedNearby = useMemo(() => {
     if (!hasPreferredRoute || !routePointA || !routePointB) return nearby;
     return nearby.filter(p => {
@@ -813,7 +796,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     <View style={[styles.container, { paddingBottom: kbH }]}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
-      {/* ============================== MAP AREA ============================== */}
       <View style={styles.mapArea}>
         <MapView
           ref={mapRef}
@@ -901,7 +883,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* Provider Route Banner & Alignment Status */}
         {hasPreferredRoute && preferredRoute && (
           <View style={[styles.routeBannerWrapper, { top: insets.top + 66 }]} pointerEvents="box-none">
             <View
@@ -960,7 +941,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {/* name bubble + pin, centred in the visible map */}
         <View style={styles.centerStack} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
             <TouchableOpacity style={styles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
@@ -1025,7 +1005,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      {/* ============================== BOTTOM SHEET ============================== */}
       <Animated.View style={[styles.sheet, { opacity: sheetAnim }]}>
         <View style={styles.dragHandle} />
 
@@ -1181,7 +1160,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
       </Animated.View>
 
-      {/* ============================== SEARCH OVERLAY ============================== */}
       {isSearching && (
         <View style={[styles.searchOverlay, { paddingTop: insets.top + 10 }]}>
           <View style={styles.searchModalHeader}>

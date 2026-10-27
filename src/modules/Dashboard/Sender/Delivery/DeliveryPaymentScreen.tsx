@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen.tsx
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
@@ -17,7 +18,16 @@ const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
 const ORANGE = '#F27024';
 
 export default function DeliveryPaymentScreen({ route, navigation }: any) {
-  const { requestId, amount } = route.params;
+  const paramRequestId = route?.params?.requestId ?? route?.params?.request_id ?? null;
+  const paramAmount = route?.params?.amount ?? route?.params?.estimated_cost ?? null;
+
+  const [resolvedRequestId, setResolvedRequestId] = useState<number | null>(
+    paramRequestId != null ? Number(paramRequestId) : null,
+  );
+  const [resolvedAmount, setResolvedAmount] = useState<number>(
+    Number.isFinite(Number(paramAmount)) ? Number(paramAmount) : 0,
+  );
+
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
@@ -33,7 +43,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ---- Resolve user_id once ----
+  // ---- Resolve user_id and fallback requestId/amount if missing ----
   useEffect(() => {
     let active = true;
     (async () => {
@@ -42,11 +52,37 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         if (!user || !active) return;
         const { data } = await supabase
           .from('users').select('user_id').eq('auth_id', user.id).single();
-        if (active && data?.user_id) setUserId(data.user_id);
+        if (!active || !data?.user_id) return;
+        setUserId(data.user_id);
+
+        if (resolvedRequestId && (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0)) {
+          const { data: reqRow } = await supabase
+            .from('delivery_requests')
+            .select('request_id, estimated_cost')
+            .eq('request_id', resolvedRequestId)
+            .maybeSingle();
+          if (active && reqRow) {
+            setResolvedAmount(Number(reqRow.estimated_cost) || 0);
+          }
+        } else if (!resolvedRequestId) {
+          const { data: latestReq } = await supabase
+            .from('delivery_requests')
+            .select('request_id, estimated_cost')
+            .eq('sender_id', data.user_id)
+            .eq('delivery_status', 'Pending')
+            .eq('payment_status', 'unpaid')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (active && latestReq) {
+            setResolvedRequestId(Number(latestReq.request_id));
+            setResolvedAmount(Number(latestReq.estimated_cost) || 0);
+          }
+        }
       } catch (e) { console.warn('[payment] userId lookup failed', e); }
     })();
     return () => { active = false; };
-  }, []);
+  }, [resolvedRequestId, resolvedAmount]);
 
   // ---- Central loader (used by focus, realtime, and appstate) ----
   const applyList = useCallback((list: PaymentMethod[]) => {
@@ -76,7 +112,6 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       if (!userId) return;
       if (methods.length === 0) setLoading(true);
       loadMethods();
-      // NOTE: do NOT include methods.length in deps — that causes loop.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userId, loadMethods]),
   );
@@ -134,17 +169,15 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const cleanedUpRef = useRef(false);
 
   const handleBack = useCallback(async () => {
-    // Block while a payment session is live, or once we've already
-    // navigated away via goBackToBooking (payment success path).
     if (payingRef.current || navigatedRef.current) return;
 
-    if (!cleanedUpRef.current) {
+    if (!cleanedUpRef.current && resolvedRequestId) {
       cleanedUpRef.current = true;
       try {
         const { data: row } = await supabase
           .from('delivery_requests')
           .select('payment_status, payment_reference, delivery_status, cargo_id')
-          .eq('request_id', requestId)
+          .eq('request_id', resolvedRequestId)
           .maybeSingle();
         const safeToDelete =
           row &&
@@ -157,7 +190,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           const { error: delErr } = await supabase
             .from('delivery_requests')
             .delete()
-            .eq('request_id', requestId);
+            .eq('request_id', resolvedRequestId);
 
           if (delErr) {
             console.warn('[payment] cleanup: delete request failed', delErr);
@@ -167,7 +200,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
               .delete()
               .eq('cargo_id', cargoId);
           }
-          console.log('[payment] cleaned up unpaid request', requestId);
+          console.log('[payment] cleaned up unpaid request', resolvedRequestId);
         }
       } catch (e) {
         console.warn('[payment] cleanup on leave failed', e);
@@ -175,12 +208,11 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
     }
 
     navigation.goBack();
-  }, [requestId, navigation]);
+  }, [resolvedRequestId, navigation]);
 
-  // Android hardware back — swallow during active payment.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (payingRef.current) return true; // block during payment
+      if (payingRef.current) return true;
       handleBack();
       return true;
     });
@@ -200,14 +232,18 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
   const handlePay = async () => {
     if (!selected) return;
+    if (!resolvedRequestId) {
+      Alert.alert('Missing Booking', 'Please go back and confirm your booking details first.');
+      return;
+    }
     if (payingRef.current) return;
     payingRef.current = true;
     setPaying(true);
 
     try {
-      const res = await chargeDelivery(requestId, selected);
+      const res = await chargeDelivery(resolvedRequestId, selected);
 
-      if (res.status === 'held') { goBackToBooking(requestId); return; }
+      if (res.status === 'held') { goBackToBooking(resolvedRequestId); return; }
       if (!res.payment_url) throw new Error('No payment URL returned');
 
       await WebBrowser.openBrowserAsync(res.payment_url, {
@@ -220,9 +256,9 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       statusPollRef.current = setInterval(async () => {
         attempts++;
         try {
-          const status = await getDeliveryPaymentStatus(requestId);
+          const status = await getDeliveryPaymentStatus(resolvedRequestId);
           if (status.payment_status === 'held' || status.payment_status === 'released') {
-            goBackToBooking(requestId); return;
+            goBackToBooking(resolvedRequestId); return;
           }
           if (status.payment_status === 'failed') {
             if (statusPollRef.current) { clearInterval(statusPollRef.current); statusPollRef.current = null; }
@@ -253,6 +289,8 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
     );
   }
 
+  const displayAmount = Number.isFinite(resolvedAmount) ? resolvedAmount : 0;
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
@@ -268,7 +306,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         {/* ---- total ---- */}
         <View style={styles.amountCard}>
           <Text style={styles.amountLabel}>TOTAL TO PAY</Text>
-          <Text style={styles.amountValue}>₱{Number(amount).toFixed(2)}</Text>
+          <Text style={styles.amountValue}>₱{displayAmount.toFixed(2)}</Text>
           <View style={styles.escrowRow}>
             <Ionicons name="shield-checkmark-outline" size={13} color={colors.success} />
             <Text style={styles.amountNote}>
@@ -334,9 +372,12 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <TouchableOpacity
-          style={[styles.payBtn, (!selected || paying || methods.length === 0) && styles.payBtnDisabled]}
+          style={[
+            styles.payBtn,
+            (!selected || paying || methods.length === 0 || !resolvedRequestId) && styles.payBtnDisabled,
+          ]}
           onPress={handlePay}
-          disabled={!selected || paying || methods.length === 0}
+          disabled={!selected || paying || methods.length === 0 || !resolvedRequestId}
           activeOpacity={0.9}
         >
           {paying ? (
@@ -344,7 +385,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           ) : (
             <>
               <Ionicons name="lock-closed" size={16} color="#FFFFFF" />
-              <Text style={styles.payBtnText}>Pay ₱{Number(amount).toFixed(2)}</Text>
+              <Text style={styles.payBtnText}>Pay ₱{displayAmount.toFixed(2)}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -355,8 +396,6 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
-
-  /* header (same as the receiver picker / location screens) */
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
   backBtn: {
     width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
@@ -364,10 +403,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1, borderColor: c.border,
   },
   headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
-
   content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 40 },
-
-  /* total */
   amountCard: {
     backgroundColor: c.card, borderRadius: 18, paddingVertical: 22, paddingHorizontal: 20,
     alignItems: 'center', borderWidth: 1, borderColor: c.border, marginBottom: 22,
@@ -378,8 +414,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   amountValue: { fontSize: 38, fontWeight: '900', color: ORANGE, marginVertical: 6, letterSpacing: -1 },
   escrowRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 8 },
   amountNote: { flexShrink: 1, fontSize: 12, lineHeight: 17, color: c.textSecondary, textAlign: 'center', fontWeight: '500' },
-
-  /* methods */
   sectionLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1, marginBottom: 8, paddingHorizontal: 4 },
   methodList: {
     backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
@@ -398,8 +432,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   methodLogo: { width: 30, height: 30 },
   methodName: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
   methodDefault: { fontSize: 12, color: c.success, fontWeight: '700', marginTop: 2 },
-
-  /* empty */
   emptyBox: {
     alignItems: 'center', paddingVertical: 32, paddingHorizontal: 24,
     backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border,
@@ -415,8 +447,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
   linkBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14, letterSpacing: 0.2 },
-
-  /* footer */
   footer: { paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   payBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
