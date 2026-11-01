@@ -277,6 +277,8 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
       cargo_id: cargo!.cargo_id,
       pickup_note: cleanNote(pickup?.note),
       dropoff_note: cleanNote(dropoff?.note),
+      preferred_provider_id: state.preferredProviderId ?? null,
+      preferred_route_id: state.preferredRouteId ?? null,
     })
     .select()
     .single();
@@ -385,6 +387,8 @@ export async function updateScheduleInDB(
       receiver_phone: receiverPhone,
       pickup_note: cleanNote(pickup?.note),
       dropoff_note: cleanNote(dropoff?.note),
+      preferred_provider_id: state.preferredProviderId ?? null,
+      preferred_route_id: state.preferredRouteId ?? null,
     })
     .eq('request_id', existingIds.requestId);
 }

@@ -1,10 +1,15 @@
 // supabase/functions/xendit-webhook/index.ts
+// @ts-ignore Deno resolves these URL imports at runtime.
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+// @ts-ignore Deno resolves these URL imports at runtime.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const XENDIT_WEBHOOK_TOKEN = Deno.env.get('XENDIT_WEBHOOK_TOKEN')!
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+type DenoRuntime = { env: { get(name: string): string | undefined } }
+const deno = (globalThis as typeof globalThis & { Deno?: DenoRuntime }).Deno
+
+const XENDIT_WEBHOOK_TOKEN = deno?.env.get('XENDIT_WEBHOOK_TOKEN')!
+const SUPABASE_URL = deno?.env.get('SUPABASE_URL')!
+const SUPABASE_SERVICE_ROLE_KEY = deno?.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 const mapProvider = (code?: string | null): string | null => {
   if (!code) return null
@@ -14,7 +19,7 @@ const mapProvider = (code?: string | null): string | null => {
   return null
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   try {
     const callbackToken = req.headers.get('x-callback-token')
     if (callbackToken !== XENDIT_WEBHOOK_TOKEN) {

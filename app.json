@@ -4,7 +4,7 @@
     "slug": "Pack-N-Ship",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/appiconfixed.png",
     "scheme": "packnship",
     "userInterfaceStyle": "light",
     "ios": {
@@ -25,10 +25,8 @@
         }
       },
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/appiconfixed.png",
+        "backgroundColor": "#FFFFFF"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.rendelljames.Capstone",
@@ -67,7 +65,7 @@
       ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/appiconfixed.png"
     },
     "plugins": [
       "expo-splash-screen",
@@ -93,7 +91,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/applogo.jpeg",
+          "icon": "./assets/appiconfixed.png",
           "color": "#FF751F"
         }
       ],
@@ -116,10 +114,12 @@
       "expo-font"
     ],
     "extra": {
+      "owner": "junjosephps-team",
+      "slug": "packnship",
       "eas": {
-        "projectId": "c20eee31-affa-428f-aef1-efe3b47fce69"
+        "projectId": "1c9f41a3-3eae-47b2-9aef-9ce9350c66e7"
       }
     },
-    "owner": "kenzozxc"
+    "owner": "junjosephps-team"
   }
 }

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "supabase": {
+      "type": "remote",
+      "url": "https://mcp.supabase.com/mcp?project_ref=ellqwkalvvedtyivdozd&read_only=true&features=database%2Cdocs%2Cdebugging",
+      "oauth": {}
+    }
+  }
+}

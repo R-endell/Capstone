@@ -1,4 +1,12 @@
+// @ts-ignore Deno resolves HTTPS imports at runtime.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined
+  }
+  serve(handler: (req: Request) => Response | Promise<Response>): void
+}
 
 const XENDIT_SECRET_KEY = Deno.env.get('XENDIT_SECRET_KEY')!
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -9,7 +17,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
   try {

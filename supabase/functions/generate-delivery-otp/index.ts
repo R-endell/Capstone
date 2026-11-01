@@ -1,6 +1,14 @@
 // supabase/functions/generate-delivery-otp/index.ts
+// @ts-ignore Deno resolves remote module imports at deploy/runtime.
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
+// @ts-ignore Deno resolves remote module imports at deploy/runtime.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+};
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -14,7 +22,7 @@ const jsonResponse = (body: Record<string, unknown>) =>
 
 const rand6 = () => String(Math.floor(100000 + Math.random() * 900000));
 
-serve(async (req) => {
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
 
   try {

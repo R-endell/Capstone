@@ -1,7 +1,7 @@
 // src/modules/Dashboard/Provider/JobsScreen.tsx
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Image, TouchableOpacity, Switch,
+  View, Text, StyleSheet, Image, TouchableOpacity,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
   Animated, Easing, Linking, StatusBar, FlatList, Pressable, Dimensions,
 } from 'react-native';
@@ -15,16 +15,19 @@ import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
 import { findMatches } from '../../../services/matchingService';
+import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 import { MAP_PROPS } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
+import { isRouteExpired } from './Manage/ManageRoutesScreen';
 
 const ORANGE = '#FF751F';
 const GREEN = '#10B981';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 interface Location {
   location_id?: number;
@@ -92,6 +95,9 @@ interface JobRequest {
   dims: string | null;
   senderName: string;
   receiverName: string | null;
+  preferred_provider_id?: number | null;
+  preferred_route_id?: number | null;
+  isDirectRequest?: boolean;
 }
 
 type Notif = NotifRow;
@@ -116,6 +122,13 @@ const parseNaiveIsoString = (s: string): Date => {
     parseInt(parts[3], 10),
     parseInt(parts[4], 10),
   );
+};
+
+const nextWeekday = (weekday: number, from = new Date()): Date => {
+  const d = new Date(from);
+  const diff = (weekday - d.getDay() + 7) % 7;
+  d.setDate(d.getDate() + diff);
+  return d;
 };
 
 const randToken = (len = 16) => {
@@ -180,7 +193,7 @@ const ago = (iso: string) => {
 const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
   const t = (type || '').toLowerCase();
   if (t.startsWith('dispute')) return 'shield-checkmark-outline';
-  if (t.startsWith('delivery')) return 'cube-outline';
+  if (t.startsWith('delivery') || t.includes('route')) return 'cube-outline';
   if (t === 'match') return 'flash-outline';
   if (t.startsWith('message') || t.startsWith('chat')) return 'chatbubble-ellipses-outline';
   if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
@@ -191,6 +204,7 @@ const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
 const titleForType = (type: string, fallback: string): string => {
   const t = (type || '').toLowerCase();
   if (t === 'match') return 'New Delivery Match';
+  if (t.includes('direct')) return 'Direct Route Request';
   if (t.startsWith('delivery')) return 'Delivery Update';
   if (t.startsWith('message') || t.startsWith('chat')) return 'New Message';
   if (t.startsWith('dispute')) return 'Dispute Update';
@@ -209,7 +223,7 @@ const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
     .join(' · ');
 };
 
-const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest => {
+const normalizeRequest = (r: any, senders: Record<number, string>, currentProviderId?: number | null): JobRequest => {
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
   let itemsJson: any = cargo?.items_json;
@@ -252,6 +266,13 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
   const pu = splitAddress(r.pickup_location?.street_address);
   const dr = splitAddress(r.dropoff_location?.street_address);
 
+  const prefProviderId = r.preferred_provider_id != null ? Number(r.preferred_provider_id) : null;
+  const prefRouteId = r.preferred_route_id != null ? Number(r.preferred_route_id) : null;
+  const isDirectRequest =
+    prefProviderId != null &&
+    currentProviderId != null &&
+    prefProviderId === Number(currentProviderId);
+
   return {
     request_id: r.request_id,
     pickup_type: r.pickup_type,
@@ -272,6 +293,9 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
     dims,
     senderName: senders[r.sender_id] || 'Sender',
     receiverName: r.receiver?.receiver_name || [r.receiver?.first_name, r.receiver?.last_name].filter(Boolean).join(' ') || null,
+    preferred_provider_id: prefProviderId,
+    preferred_route_id: prefRouteId,
+    isDirectRequest,
   };
 };
 
@@ -341,82 +365,6 @@ const fetchRoadCoords = async (
     }
   } catch { /* fall through */ }
   return fallback;
-};
-
-/* ==================================================================== */
-/* RouteMap                                                             */
-/* ==================================================================== */
-const RouteMap = ({
-  startLat, startLng, endLat, endLng, startLabel = 'S', endLabel = 'E',
-  interactive = false, padTop = 40, padBottom = 40,
-}: any) => {
-  const mapRef = useRef<MapView>(null);
-  const [coords, setCoords] = useState<{ latitude: number; longitude: number }[]>([]);
-
-  useEffect(() => {
-    if (startLat == null || startLng == null || endLat == null || endLng == null) return;
-    let cancelled = false;
-
-    (async () => {
-      const line = await fetchRoadCoords(
-        { lat: startLat, lng: startLng },
-        { lat: endLat, lng: endLng },
-      );
-      if (cancelled) return;
-      setCoords(line);
-      const t = setTimeout(() => {
-        mapRef.current?.fitToCoordinates(line, {
-          edgePadding: { top: padTop, right: 40, bottom: padBottom, left: 40 },
-          animated: false,
-        });
-      }, 120);
-      return () => clearTimeout(t);
-    })();
-
-    return () => { cancelled = true; };
-  }, [startLat, startLng, endLat, endLng]);
-
-  return (
-    <MapView
-      ref={mapRef}
-      {...MAP_PROPS}
-      style={{ flex: 1 }}
-      initialRegion={{
-        latitude: startLat ?? endLat ?? DEFAULT_CENTER.latitude,
-        longitude: startLng ?? endLng ?? DEFAULT_CENTER.longitude,
-        latitudeDelta: 0.03,
-        longitudeDelta: 0.03,
-      }}
-      scrollEnabled={interactive}
-      zoomEnabled={interactive}
-      rotateEnabled={false}
-      pitchEnabled={false}
-      toolbarEnabled={false}
-      showsUserLocation={false}
-      showsMyLocationButton={false}
-      showsCompass={false}
-    >
-      {startLat != null && startLng != null && (
-        <Marker coordinate={{ latitude: startLat, longitude: startLng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-          <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
-            <Text style={mapStyles.mkDotText}>{startLabel}</Text>
-          </View>
-        </Marker>
-      )}
-
-      {endLat != null && endLng != null && (
-        <Marker coordinate={{ latitude: endLat, longitude: endLng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-          <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
-            <Text style={mapStyles.mkDotText}>{endLabel}</Text>
-          </View>
-        </Marker>
-      )}
-
-      {coords.length > 1 && (
-        <Polyline coordinates={coords} strokeColor={ORANGE} strokeWidth={4} />
-      )}
-    </MapView>
-  );
 };
 
 /* ==================================================================== */
@@ -692,6 +640,8 @@ export default function JobsScreen() {
   const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
   const [departureDate, setDepartureDate] = useState(new Date());
+  const [departureTime, setDepartureTime] = useState(new Date());
+  const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
@@ -810,7 +760,7 @@ export default function JobsScreen() {
         loadNotifs();
         const row: any = payload.new;
         const t = (row?.type || '').toLowerCase();
-        if (t === 'match') {
+        if (t === 'match' || t.includes('direct')) {
           fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
         }
       })
@@ -823,7 +773,7 @@ export default function JobsScreen() {
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: '🎯 New Delivery Match!',
+          title: '🎯 New Delivery Request!',
           body,
           data: { type: 'match' },
           sound: true,
@@ -898,12 +848,14 @@ export default function JobsScreen() {
     } catch { return null; }
   };
 
+  const hasDirectOffers = requests.some(r => r.isDirectRequest && !dismissedIds.includes(r.request_id));
+
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline);
+      setTabBarHidden(!loading && !isOnline && !hasDirectOffers);
       return () => setTabBarHidden(false);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOnline, loading]),
+    }, [isOnline, loading, hasDirectOffers]),
   );
 
   const goToTasks = () => {
@@ -1079,19 +1031,29 @@ export default function JobsScreen() {
             vehicle: vehMap.get(r.vehicle_id),
           }));
         }
-      } else { list = data as Route[]; }
+      } else {
+        list = data as Route[];
+      }
 
-      setRoutes(list);
+      const validRoutes = list.filter((r) => !isRouteExpired(r));
+
+      setRoutes(validRoutes);
       const savedId = await getActiveRouteId();
-      const restored = savedId ? list.find((r) => r.route_id === savedId) : null;
+      const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
-      if (restored) { setActiveRoute(restored); }
-      else if (list.length > 0) { setActiveRoute(list[0]); await setActiveRouteId(list[0].route_id); }
-      else { setActiveRoute(null); await setActiveRouteId(null); }
+      if (restored) {
+        setActiveRoute(restored);
+      } else if (validRoutes.length > 0) {
+        setActiveRoute(validRoutes[0]);
+        await setActiveRouteId(validRoutes[0].route_id);
+      } else {
+        setActiveRoute(null);
+        await setActiveRouteId(null);
+      }
     } catch (e) { console.error('fetchRoutes error:', e); }
   };
 
-  const hydrateRequests = async (ids: number[]): Promise<JobRequest[]> => {
+  const hydrateRequests = async (ids: number[], currentPid?: number | null): Promise<JobRequest[]> => {
     if (ids.length === 0) return [];
 
     const { data: reqs, error } = await supabase
@@ -1099,7 +1061,7 @@ export default function JobsScreen() {
       .select(`
         request_id, pickup_type, scheduled_time, created_at, estimated_cost,
         delivery_status, sender_id, receiver_id, receiver_phone,
-        pickup_note, dropoff_note,
+        pickup_note, dropoff_note, preferred_provider_id, preferred_route_id,
         cargo:cargo_id ( * ),
         pickup_location:locations!delivery_requests_pickup_location_id_fkey ( * ),
         dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( * ),
@@ -1110,7 +1072,9 @@ export default function JobsScreen() {
 
     const { data: taken } = await supabase.from('deliveries').select('request_id').in('request_id', ids);
     const takenIds = new Set((taken || []).map((t: any) => t.request_id));
-    const open = (reqs || []).filter((r: any) => !takenIds.has(r.request_id));
+    const open = (reqs || []).filter(
+      (r: any) => !takenIds.has(r.request_id) && (currentPid == null || Number(r.sender_id) !== Number(currentPid)),
+    );
 
     const senderIds = Array.from(new Set(open.map((r: any) => r.sender_id).filter(Boolean)));
     const senders: Record<number, string> = {};
@@ -1123,35 +1087,72 @@ export default function JobsScreen() {
     }
 
     return open
-      .map((r: any) => normalizeRequest(r, senders))
-      .sort((a, b) => b.estimated_cost - a.estimated_cost);
+      .map((r: any) => normalizeRequest(r, senders, currentPid))
+      .sort((a, b) => {
+        const aDir = a.isDirectRequest ? 0 : 1;
+        const bDir = b.isDirectRequest ? 0 : 1;
+        if (aDir !== bDir) return aDir - bDir;
+        return b.estimated_cost - a.estimated_cost;
+      });
   };
 
-  const refreshMatches = async () => {
-    if (!activeRoute) { setRequests([]); setRefreshing(false); return; }
+  const refreshMatches = useCallback(async () => {
+    const pid = providerId;
+    if (!pid) {
+      setRefreshing(false);
+      return;
+    }
+
     try {
       setCheckingMatches(true);
-      const matches = await findMatches(activeRoute.route_id);
-      const ids = Array.from(new Set(
-        (matches || []).map((m: any) => m?.request?.request_id).filter((id: any) => id != null),
-      )) as number[];
-      const hydrated = await hydrateRequests(ids);
+
+      // 1. Always fetch any direct requests where the sender explicitly selected this provider
+      const { data: directRows } = await supabase
+        .from('delivery_requests')
+        .select('request_id')
+        .eq('preferred_provider_id', pid)
+        .eq('delivery_status', 'Pending');
+
+      const directIds = (directRows || []).map((r: any) => Number(r.request_id));
+
+      // 2. If provider is online with a valid active route, also include route matches
+      let matchedIds: number[] = [];
+      if (isOnline && activeRoute && !isRouteExpired(activeRoute)) {
+        const matches = await findMatches(activeRoute.route_id);
+        matchedIds = (matches || [])
+          .map((m: any) => Number(m?.request?.request_id))
+          .filter((id: number) => Number.isFinite(id));
+      }
+
+      const combinedIds = Array.from(new Set([...directIds, ...matchedIds]));
+      if (combinedIds.length === 0) {
+        setRequests([]);
+        return;
+      }
+
+      const hydrated = await hydrateRequests(combinedIds, pid);
 
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
           notifiedMatchIdsRef.current.add(req.request_id);
-          if (isOnline) {
+          if (isOnline || req.isDirectRequest) {
             fireLocalMatchNotification(
-              `New package from ${req.pickup.main} to ${req.dropoff.main}. Tap to review.`,
+              req.isDirectRequest
+                ? `A sender requested your route from ${req.pickup.main} to ${req.dropoff.main}. Tap to accept!`
+                : `New package from ${req.pickup.main} to ${req.dropoff.main}. Tap to review.`,
             );
           }
         }
       }
 
       setRequests(hydrated);
-    } catch (e) { console.warn('refreshMatches error:', e); }
-    finally { setCheckingMatches(false); setRefreshing(false); }
-  };
+    } catch (e) {
+      console.warn('refreshMatches error:', e);
+    } finally {
+      setCheckingMatches(false);
+      setRefreshing(false);
+    }
+  }, [providerId, isOnline, activeRoute]);
 
   const loadData = async () => {
     setLoading(true);
@@ -1163,28 +1164,30 @@ export default function JobsScreen() {
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   useEffect(() => {
-    if (!isOnline || !activeRoute) { setRequests([]); return; }
+    if (!providerId) return;
     refreshMatches();
     const channel = supabase
-      .channel(`jobs-realtime-${Date.now()}`)
+      .channel(`jobs-realtime-${providerId}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { refreshMatches(); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => { refreshMatches(); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [isOnline, activeRoute?.route_id]);
+  }, [providerId, isOnline, activeRoute?.route_id, refreshMatches]);
 
   const toggleOnlineStatus = async (online: boolean) => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
     if (online) {
-      let currentRoute = activeRoute;
+      let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
           await setActiveRouteId(currentRoute.route_id);
-        } else { currentRoute = await createQuickRoute(pid); }
+        } else {
+          currentRoute = await createQuickRoute(pid);
+        }
       }
       if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route. Please try again.'); return; }
 
@@ -1198,7 +1201,7 @@ export default function JobsScreen() {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
             await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
             setIsOnline(false);
-            setRequests([]);
+            setRequests(prev => prev.filter(r => r.isDirectRequest));
             void loadTodayStats(pid);
           },
         },
@@ -1209,7 +1212,35 @@ export default function JobsScreen() {
   const openConfirmSheet = (route: Route) => {
     setPendingRoute(route);
     const dt = parseNaiveIsoString(route.departure_time);
-    setDepartureDate(dt);
+    const now = new Date();
+    const freq = (route.route_frequency || '').trim();
+
+    if (freq === 'Daily') {
+      const todayAtStoredTime = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        dt.getHours(),
+        dt.getMinutes(),
+        0,
+        0,
+      );
+      const initialTime = todayAtStoredTime.getTime() < now.getTime() ? now : todayAtStoredTime;
+      setDepartureDate(now);
+      setDepartureTime(initialTime);
+      setSelectedWeekday(now.getDay());
+    } else if (freq === 'Weekly') {
+      const wDay = dt.getDay();
+      setSelectedWeekday(wDay);
+      setDepartureDate(nextWeekday(wDay, now));
+      setDepartureTime(dt);
+    } else {
+      const validFuture = dt.getTime() < now.getTime() ? now : dt;
+      setDepartureDate(validFuture);
+      setDepartureTime(validFuture);
+      setSelectedWeekday(validFuture.getDay());
+    }
+
     setShowDatePicker(false);
     setShowTimePicker(false);
     setConfirmSheetVisible(true);
@@ -1217,9 +1248,61 @@ export default function JobsScreen() {
 
   const confirmDeparture = async () => {
     if (!pendingRoute || !providerId) return;
+
+    const now = new Date();
+    const freq = (pendingRoute.route_frequency || '').trim();
+
+    let effectiveDate = new Date(departureDate);
+    if (freq === 'Daily') {
+      effectiveDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (freq === 'Weekly') {
+      effectiveDate = nextWeekday(selectedWeekday, now);
+    }
+
+    const combined = new Date(
+      effectiveDate.getFullYear(),
+      effectiveDate.getMonth(),
+      effectiveDate.getDate(),
+      departureTime.getHours(),
+      departureTime.getMinutes(),
+      0,
+      0,
+    );
+
+    const isSameDayAsToday =
+      effectiveDate.getFullYear() === now.getFullYear() &&
+      effectiveDate.getMonth() === now.getMonth() &&
+      effectiveDate.getDate() === now.getDate();
+
+    if (freq === 'Daily') {
+      if (combined.getTime() < now.getTime()) {
+        Alert.alert(
+          'Invalid Time',
+          `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Please choose a departure time that has not passed yet today.`,
+        );
+        return;
+      }
+    } else if (freq === 'Weekly') {
+      if (isSameDayAsToday && combined.getTime() < now.getTime()) {
+        Alert.alert(
+          'Invalid Time',
+          `That time has already passed for today (${WEEKDAY_LABELS[selectedWeekday]}). Please choose a later time or another day.`,
+        );
+        return;
+      }
+    } else {
+      if (combined.getTime() < now.getTime()) {
+        Alert.alert('Invalid Time', 'You cannot schedule a departure in the past. Please choose a valid future date and time.');
+        return;
+      }
+    }
+
     try {
-      const departureValue = toNaiveIsoString(departureDate);
-      const { error: updateErr } = await supabase.from('provider_routes').update({ departure_time: departureValue }).eq('route_id', pendingRoute.route_id);
+      const departureValue = toNaiveIsoString(combined);
+      const { error: updateErr } = await supabase
+        .from('provider_routes')
+        .update({ departure_time: departureValue })
+        .eq('route_id', pendingRoute.route_id);
       if (updateErr) throw updateErr;
 
       const { data: fullRoute } = await supabase
@@ -1235,6 +1318,7 @@ export default function JobsScreen() {
 
       setActiveRoute(fullRoute as Route);
       await setActiveRouteId(pendingRoute.route_id);
+      await fetchRoutes(providerId);
       await supabase.from('users').update({ is_online: true }).eq('user_id', providerId);
       setIsOnline(true);
 
@@ -1290,7 +1374,10 @@ export default function JobsScreen() {
     }, []),
   );
 
-  const offers = isOnline && !!activeRoute ? requests.filter(r => !dismissedIds.includes(r.request_id)) : [];
+  // Show offers whenever provider is online OR when a sender sent a direct request to this provider
+  const offers = requests.filter(
+    r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest),
+  );
   const currentOffer = offers[0] ?? null;
 
   const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
@@ -1300,15 +1387,19 @@ export default function JobsScreen() {
   useEffect(() => {
     if (!currentOffer) return;
     setOfferSecondsLeft(OFFER_SECONDS);
+    // Do not auto-expire direct requests where the sender specifically selected this provider
+    if (currentOffer.isDirectRequest) return;
     const t = setInterval(() => {
       setOfferSecondsLeft(sec => sec - 1);
     }, 1000);
     return () => clearInterval(t);
-  }, [currentOffer?.request_id]);
+  }, [currentOffer?.request_id, currentOffer?.isDirectRequest]);
 
   useEffect(() => {
-    if (currentOffer && offerSecondsLeft <= 0) dismissOffer(currentOffer.request_id);
-  }, [offerSecondsLeft]);
+    if (currentOffer && !currentOffer.isDirectRequest && offerSecondsLeft <= 0) {
+      dismissOffer(currentOffer.request_id);
+    }
+  }, [offerSecondsLeft, currentOffer]);
 
   const triggerSOS = () => {
     Alert.alert('Emergency', 'Do you need emergency help? You can call the national emergency hotline now.', [
@@ -1318,19 +1409,58 @@ export default function JobsScreen() {
   };
 
   const doAccept = async (req: JobRequest) => {
-    if (!providerId || !activeRoute) return;
+    if (!providerId) return;
     setAccepting(true);
     try {
       let vehicleId: number | null =
-        activeRoute.vehicle?.verification_status === 'Verified' ? activeRoute.vehicle.vehicle_id : null;
+        activeRoute?.vehicle?.verification_status === 'Verified' ? activeRoute.vehicle.vehicle_id : null;
       if (!vehicleId) {
-        const { data: v } = await supabase.from('vehicles').select('vehicle_id').eq('provider_id', providerId).eq('verification_status', 'Verified').limit(1).maybeSingle();
+        const { data: v } = await supabase
+          .from('vehicles')
+          .select('vehicle_id')
+          .eq('provider_id', providerId)
+          .eq('verification_status', 'Verified')
+          .limit(1)
+          .maybeSingle();
         vehicleId = v?.vehicle_id ?? null;
       }
-      if (!vehicleId) { Alert.alert('Vehicle not verified', 'You need a verified vehicle before you can accept deliveries.'); return; }
+      if (!vehicleId) {
+        const { data: anyVeh } = await supabase
+          .from('vehicles')
+          .select('vehicle_id')
+          .eq('provider_id', providerId)
+          .limit(1)
+          .maybeSingle();
+        vehicleId = anyVeh?.vehicle_id ?? null;
+      }
+      if (!vehicleId) {
+        Alert.alert('Vehicle not verified', 'You need a verified vehicle before you can accept deliveries.');
+        return;
+      }
 
-      const { data: fresh } = await supabase.from('delivery_requests').select('delivery_status').eq('request_id', req.request_id).maybeSingle();
-      const { data: existing } = await supabase.from('deliveries').select('delivery_id').eq('request_id', req.request_id).limit(1);
+      let resolvedRouteId: number | null =
+        req.preferred_route_id ?? activeRoute?.route_id ?? routes[0]?.route_id ?? null;
+      if (!resolvedRouteId) {
+        const { data: rRow } = await supabase
+          .from('provider_routes')
+          .select('route_id')
+          .eq('provider_id', providerId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        resolvedRouteId = rRow?.route_id ?? null;
+      }
+
+      const { data: fresh } = await supabase
+        .from('delivery_requests')
+        .select('delivery_status')
+        .eq('request_id', req.request_id)
+        .maybeSingle();
+      const { data: existing } = await supabase
+        .from('deliveries')
+        .select('delivery_id')
+        .eq('request_id', req.request_id)
+        .limit(1);
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
         refreshMatches();
@@ -1338,7 +1468,10 @@ export default function JobsScreen() {
       }
 
       const { data: delivery, error: deliveryError } = await supabase.from('deliveries').insert({
-        request_id: req.request_id, provider_id: providerId, vehicle_id: vehicleId, route_id: activeRoute.route_id,
+        request_id: req.request_id,
+        provider_id: providerId,
+        vehicle_id: vehicleId,
+        route_id: resolvedRouteId,
         accepted_at: new Date().toISOString(),
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
       }).select('*').single();
@@ -1348,24 +1481,45 @@ export default function JobsScreen() {
         delivery_id: delivery.delivery_id,
         pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
         dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
-        pickup_pin: randPin(), dropoff_pin: randPin(),
+        pickup_pin: randPin(),
+        dropoff_pin: randPin(),
       });
       if (qrError) {
         await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
         throw qrError;
       }
 
-      const { error: reqUpdateError } = await supabase.from('delivery_requests').update({ delivery_status: 'Accepted' }).eq('request_id', req.request_id);
+      const { error: reqUpdateError } = await supabase
+        .from('delivery_requests')
+        .update({ delivery_status: 'Accepted' })
+        .eq('request_id', req.request_id);
       if (reqUpdateError) throw reqUpdateError;
 
-      const { data: requestData } = await supabase.from('delivery_requests').select('estimated_cost, sender_id').eq('request_id', req.request_id).single();
+      const { data: requestData } = await supabase
+        .from('delivery_requests')
+        .select('estimated_cost, sender_id')
+        .eq('request_id', req.request_id)
+        .single();
       if (requestData) {
         await supabase.from('escrow_payments').insert({
-          amount: requestData.estimated_cost, delivery_id: delivery.delivery_id,
-          sender_id: requestData.sender_id, provider_id: providerId,
-          escrow_status: 'On hold', emergency_frozen: false,
+          amount: requestData.estimated_cost,
+          delivery_id: delivery.delivery_id,
+          sender_id: requestData.sender_id,
+          provider_id: providerId,
+          escrow_status: 'On hold',
+          emergency_frozen: false,
           created_at: new Date().toISOString(),
         });
+
+        if (requestData.sender_id) {
+          const code = requestCode(req.request_id);
+          notifyUser(
+            requestData.sender_id,
+            'Courier Accepted Your Delivery! 🚚',
+            `Your courier accepted parcel #${code} and will head to the pickup location.`,
+            { deliveryId: delivery.delivery_id },
+          ).catch(() => {});
+        }
       }
 
       setDetailRequestId(null);
@@ -1381,11 +1535,18 @@ export default function JobsScreen() {
 
   const acceptRequest = (req: JobRequest) => {
     if (accepting) return;
-    if (!providerId || !activeRoute) { Alert.alert('Select a route', 'Pick the route you are driving before accepting a request.'); return; }
-    Alert.alert('Accept this delivery?', `You will earn ${money(req.estimated_cost)} for delivering from ${req.pickup.main} to ${req.dropoff.main}.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Accept', onPress: () => doAccept(req) },
-    ]);
+    if (!providerId) {
+      Alert.alert('Please wait', 'Your provider account is still loading.');
+      return;
+    }
+    Alert.alert(
+      'Accept this delivery?',
+      `You will earn ${money(req.estimated_cost)} for delivering from ${req.pickup.main} to ${req.dropoff.main}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Accept', onPress: () => doAccept(req) },
+      ],
+    );
   };
 
   const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
@@ -1465,7 +1626,6 @@ export default function JobsScreen() {
   );
 
   /* ----------------------- full-screen package details ----------------------- */
-    /* ----------------------- full-screen package details ----------------------- */
   const renderFullDetails = () => {
     const o = detailRequestId != null ? requests.find(r => r.request_id === detailRequestId) : null;
     if (!o) return null;
@@ -1513,8 +1673,10 @@ export default function JobsScreen() {
             <View style={styles.oTopRow}>
               {renderServicePill(o)}
               <View style={styles.chipSolid}>
-                <Ionicons name="flash" size={11} color="#FFFFFF" />
-                <Text style={styles.chipSolidText}>MATCHED</Text>
+                <Ionicons name={o.isDirectRequest ? 'hourglass-outline' : 'flash'} size={11} color="#FFFFFF" />
+                <Text style={styles.chipSolidText}>
+                  {o.isDirectRequest ? 'AWAITING YOUR ACCEPTANCE' : 'MATCHED'}
+                </Text>
               </View>
             </View>
             {renderRingRoute(o, true)}
@@ -1704,10 +1866,8 @@ export default function JobsScreen() {
   };
 
   /* ------------------------------ offer popup (summary only) ------------------------------ */
-    /* ------------------------------ offer popup (summary only) ------------------------------ */
   const renderOfferPopup = (o: JobRequest) => {
-    const pct = Math.max(0, Math.min(100, (offerSecondsLeft / OFFER_SECONDS) * 100));
-    // Increased height slightly to accommodate the content without scrolling
+    const pct = o.isDirectRequest ? 100 : Math.max(0, Math.min(100, (offerSecondsLeft / OFFER_SECONDS) * 100));
     const SHEET_H = Math.round(SCREEN_H * 0.48);
 
     return (
@@ -1733,32 +1893,36 @@ export default function JobsScreen() {
             style={[
               styles.offerTimerFill,
               { width: `${pct}%` as any },
-              offerSecondsLeft <= 10 && { backgroundColor: colors.error },
+              !o.isDirectRequest && offerSecondsLeft <= 10 && { backgroundColor: colors.error },
             ]}
           />
         </View>
 
-        {/* Main Content (No ScrollView needed) */}
+        {/* Main Content */}
         <View style={{ flex: 1, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 90 + insets.bottom }}>
           {/* Top Row: Badge & Timer */}
           <View style={styles.oTopRow}>
             {renderServicePill(o)}
             <View style={styles.chipSolid}>
-              <Ionicons name="flash" size={11} color="#FFFFFF" />
-              <Text style={styles.chipSolidText}>NEW MATCH</Text>
+              <Ionicons name={o.isDirectRequest ? 'hourglass-outline' : 'flash'} size={11} color="#FFFFFF" />
+              <Text style={styles.chipSolidText}>
+                {o.isDirectRequest ? 'DIRECT REQUEST · AWAITING ACCEPTANCE' : 'NEW MATCH'}
+              </Text>
             </View>
             {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
             <View style={{ flex: 1 }} />
-            <View style={styles.offerTimerPill}>
-              <Ionicons
-                name="timer-outline"
-                size={13}
-                color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary}
-              />
-              <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
-                {Math.max(0, offerSecondsLeft)}s
-              </Text>
-            </View>
+            {!o.isDirectRequest && (
+              <View style={styles.offerTimerPill}>
+                <Ionicons
+                  name="timer-outline"
+                  size={13}
+                  color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary}
+                />
+                <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
+                  {Math.max(0, offerSecondsLeft)}s
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Total Pay Row */}
@@ -1798,8 +1962,7 @@ export default function JobsScreen() {
               bottom: 0,
               paddingHorizontal: 18,
               paddingTop: 12,
-              // Removed insets.bottom here, handled by the layout wrapper above
-              paddingBottom: 16, 
+              paddingBottom: 16,
               backgroundColor: colors.card,
               borderTopWidth: 1,
               borderTopColor: colors.divider,
@@ -1846,7 +2009,7 @@ export default function JobsScreen() {
   };
 
   const renderBottomPanel = () => {
-    const dismissedCount = isOnline ? requests.length - offers.length : 0;
+    const dismissedCount = requests.length - offers.length;
     const startAddr = splitAddress(activeRoute?.start_location?.street_address);
     const endAddr = splitAddress(activeRoute?.end_location?.street_address);
 
@@ -1911,7 +2074,7 @@ export default function JobsScreen() {
                   {!!startAddr.sub && <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>{startAddr.sub}</Text>}
                 </>
               ) : (
-                <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>No route yet — tap ⇄ to select or create one</Text>
+                <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>No active route — tap ⇄ to select or create one</Text>
               )}
             </View>
             <TouchableOpacity
@@ -2046,7 +2209,6 @@ export default function JobsScreen() {
           <TouchableOpacity
             style={[styles.mapToolBtn, showDemand && isOnline && styles.mapToolBtnActive, !isOnline && styles.mapToolBtnOff]}
             onPress={() => {
-              if (!isOnline) return;
               setShowDemand(d => !d);
               setRefreshing(true);
               refreshMatches();
@@ -2179,7 +2341,7 @@ export default function JobsScreen() {
           <View style={styles.routePickerSheet}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Select a Route</Text>
+              <Text style={styles.routePickerTitle}>Select an Active Route</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 {providerId && (
                   <TouchableOpacity
@@ -2208,9 +2370,9 @@ export default function JobsScreen() {
             {routes.length === 0 ? (
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
-                <Text style={styles.routePickerEmptyTitle}>No routes created yet</Text>
+                <Text style={styles.routePickerEmptyTitle}>No active routes available</Text>
                 <Text style={styles.routePickerEmptySub}>
-                  Create an on-demand route now, or set up a scheduled route in Manage Routes.
+                  Create an on-demand route now, or set up / reschedule a route in Manage Routes.
                 </Text>
                 <TouchableOpacity
                   style={styles.createQuickRouteBtn}
@@ -2236,6 +2398,14 @@ export default function JobsScreen() {
                 {routes.map((r) => {
                   const isSelected = activeRoute?.route_id === r.route_id;
                   const rDate = parseNaiveIsoString(r.departure_time);
+                  const timeStr = rDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  const scheduleLabel =
+                    r.route_frequency === 'Daily'
+                      ? `Every day · ${timeStr}`
+                      : r.route_frequency === 'Weekly'
+                        ? `Every ${WEEKDAY_LABELS[rDate.getDay()]} · ${timeStr}`
+                        : `${rDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${timeStr}`;
+
                   const startAddr = splitAddress(r.start_location?.street_address);
                   const endAddr = splitAddress(r.end_location?.street_address);
 
@@ -2250,7 +2420,7 @@ export default function JobsScreen() {
                           {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
                         </Text>
                         <Text style={styles.routeOptionAddr} numberOfLines={1}>
-                          {rDate.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {r.route_frequency}
+                          {scheduleLabel} · {r.route_frequency}
                         </Text>
                       </View>
                       {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
@@ -2264,12 +2434,20 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
+      {/* Confirm Departure Sheet */}
       <Modal visible={confirmSheetVisible} transparent animationType="slide" onRequestClose={() => setConfirmSheetVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+              <View>
+                <Text style={styles.routePickerTitle}>Confirm Departure</Text>
+                {!!pendingRoute?.route_frequency && (
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 }}>
+                    {pendingRoute.route_frequency} Route
+                  </Text>
+                )}
+              </View>
               <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
                 <Ionicons name="close" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
@@ -2289,54 +2467,130 @@ export default function JobsScreen() {
                   </View>
                 </View>
 
-                <View style={styles.dateTimeRow}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Date</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
-                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
-                    </TouchableOpacity>
-                    {showDatePicker && (
-                      <DateTimePicker
-                        value={departureDate} mode="date" display="default"
-                        minimumDate={new Date(Date.now() - 24 * 60 * 60 * 1000)}
-                        onChange={(e, d) => {
-                          if (Platform.OS === 'android') setShowDatePicker(false);
-                          if (e.type === 'set' && d) {
-                            const merged = new Date(d);
-                            merged.setHours(departureDate.getHours(), departureDate.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>Departure Time</Text>
+                {pendingRoute.route_frequency === 'Daily' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Departure Time (Today)</Text>
                     <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
                       <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>{departureDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
                     </TouchableOpacity>
                     {showTimePicker && (
                       <DateTimePicker
-                        value={departureDate} mode="time" display="default"
+                        value={departureTime}
+                        mode="time"
+                        display="default"
                         onChange={(e, t) => {
                           if (Platform.OS === 'android') setShowTimePicker(false);
                           if (e.type === 'set' && t) {
-                            const merged = new Date(departureDate);
-                            merged.setHours(t.getHours(), t.getMinutes(), 0, 0);
-                            setDepartureDate(merged);
+                            const now = new Date();
+                            const candidate = new Date(
+                              now.getFullYear(),
+                              now.getMonth(),
+                              now.getDate(),
+                              t.getHours(),
+                              t.getMinutes(),
+                              0,
+                              0,
+                            );
+                            if (candidate.getTime() < now.getTime()) {
+                              Alert.alert(
+                                'Invalid Time',
+                                `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You cannot pick a time that has already passed today.`,
+                              );
+                              return;
+                            }
+                            setDepartureTime(t);
                           }
                         }}
                       />
                     )}
                   </View>
-                </View>
+                ) : pendingRoute.route_frequency === 'Weekly' ? (
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputLabel}>Repeats on</Text>
+                    <View style={styles.weekdayRow}>
+                      {WEEKDAY_LABELS.map((label, idx) => (
+                        <TouchableOpacity
+                          key={label}
+                          style={[styles.weekdayChip, selectedWeekday === idx && styles.weekdayChipActive]}
+                          onPress={() => setSelectedWeekday(idx)}
+                        >
+                          <Text style={[styles.weekdayChipText, selectedWeekday === idx && styles.weekdayChipTextActive]}>
+                            {label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <View style={{ height: 12 }} />
+                    <Text style={styles.inputLabel}>Departure Time</Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        display="default"
+                        onChange={(e, t) => {
+                          if (Platform.OS === 'android') setShowTimePicker(false);
+                          if (e.type === 'set' && t) setDepartureTime(t);
+                        }}
+                      />
+                    )}
+                  </View>
+                ) : (
+                  <View style={styles.dateTimeRow}>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Date</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
+                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
+                      </TouchableOpacity>
+                      {showDatePicker && (
+                        <DateTimePicker
+                          value={departureDate}
+                          mode="date"
+                          display="default"
+                          minimumDate={new Date()}
+                          onChange={(e, d) => {
+                            if (Platform.OS === 'android') setShowDatePicker(false);
+                            if (e.type === 'set' && d) setDepartureDate(d);
+                          }}
+                        />
+                      )}
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Departure Time</Text>
+                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
+                        <Ionicons name="time-outline" size={16} color={ORANGE} />
+                        <Text style={styles.dateTimeValue}>
+                          {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </TouchableOpacity>
+                      {showTimePicker && (
+                        <DateTimePicker
+                          value={departureTime}
+                          mode="time"
+                          display="default"
+                          onChange={(e, t) => {
+                            if (Platform.OS === 'android') setShowTimePicker(false);
+                            if (e.type === 'set' && t) setDepartureTime(t);
+                          }}
+                        />
+                      )}
+                    </View>
+                  </View>
+                )}
 
                 <View style={styles.infoBox}>
                   <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#1E40AF'} />
-                  <Text style={styles.infoBoxText}>The app will match requests within ±5 minutes of this departure time.</Text>
+                  <Text style={styles.infoBoxText}>The app will match requests along this route and departure window.</Text>
                 </View>
 
                 <TouchableOpacity style={styles.confirmBtn} onPress={confirmDeparture} activeOpacity={0.9}>
@@ -2421,6 +2675,11 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   statCard: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(15,20,32,0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
   statVal: { fontSize: 16, fontWeight: '900', color: '#E2E8F0', letterSpacing: -0.3 },
   statLbl: { fontSize: 9, fontWeight: '800', color: '#64748B', letterSpacing: 0.6, marginTop: 4 },
+  reopenRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingVertical: 8 },
+  reopenText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textSecondary },
+  reopenLink: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  locWarnBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 6 },
+  locWarnText: { fontSize: 12, fontWeight: '600', color: c.warning },
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
   oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
@@ -2480,21 +2739,19 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, lineHeight: 16, fontWeight: '600' },
 
-    acceptBar: {
-    position: 'absolute', 
-    left: 0, 
-    right: 0, 
-    bottom: 0, 
+  acceptBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: c.card,
-    flexDirection: 'row', 
-    alignItems: 'center', 
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16, 
-    paddingTop: 16, 
-    // paddingBottom is handled inline in renderFullDetails
-    borderTopWidth: 1, 
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
     borderTopColor: c.border,
-    // Add a slight shadow to separate it from the scroll content
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -3 },
     shadowOpacity: 0.05,
@@ -2626,6 +2883,15 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   confirmDot: { width: 8, height: 8, borderRadius: 4 },
   confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: c.textPrimary },
   confirmRouteLine: { width: 1, height: 14, backgroundColor: c.border, marginLeft: 3.5, marginVertical: 4 },
+
+  weekdayRow: { flexDirection: 'row', gap: 6 },
+  weekdayChip: {
+    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5,
+    borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
+  },
+  weekdayChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  weekdayChipText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
+  weekdayChipTextActive: { color: '#FFF' },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
   inputGroup: { flex: 1 },
