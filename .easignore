@@ -21,7 +21,7 @@ node_modules/
 supabase/.temp/
 supabase/.branches/
 
-# OS files
+# OS files  
 .DS_Store
 Thumbs.db
 

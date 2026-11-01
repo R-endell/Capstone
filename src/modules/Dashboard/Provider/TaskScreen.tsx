@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Image, Linking, Share, BackHandler,
+  Dimensions, Image, Linking, Share, BackHandler, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -337,6 +337,7 @@ export default function TaskScreen() {
   const [mapModalVisible, setMapModalVisible] = useState(false);
   const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [pkgInfo, setPkgInfo] = useState<any | null>(null);   // package breakdown pop-up
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
 
@@ -1082,6 +1083,12 @@ export default function TaskScreen() {
     return `${info.totalItems} ${info.totalItems === 1 ? 'item' : 'items'}`;
   };
   const cargoLabelFull = (info: any) => info.sizeSummary?.full || cargoLabel(info);
+  const pkgCount = (info: any) => `${info.totalItems} ${info.totalItems === 1 ? 'pkg' : 'pkgs'}`;
+  const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
+    Small:  { letter: 'S', kg: '~5 kg',  color: '#0284C7', bg: 'rgba(2,132,199,0.12)' },
+    Medium: { letter: 'M', kg: '~15 kg', color: '#D97706', bg: 'rgba(217,119,6,0.14)' },
+    Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
+  };
 
   /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
@@ -1150,18 +1157,19 @@ export default function TaskScreen() {
         </View>
 
         <View style={styles.oFooter}>
-          <View style={styles.oChip}>
+          <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
             <Ionicons name="cube-outline" size={14} color={ORANGE} />
-            <Text style={styles.oChipText}>{cargoLabel(info)}</Text>
-          </View>
+            <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
+            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
+          </TouchableOpacity>
           {info.fragile && (
             <View style={styles.oChip}>
               <Ionicons name="star-outline" size={14} color={ORANGE} />
-              <Text style={styles.oChipText}>Fragile</Text>
+              <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
           <View style={{ flex: 1 }} />
-          <Text style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
+          <Text numberOfLines={1} style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
             {money(info.earnings)}
           </Text>
         </View>
@@ -1471,12 +1479,23 @@ export default function TaskScreen() {
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {items.some((it: any) => !!it.description) && (
-              <View style={{ gap: 4, marginBottom: 10 }}>
-                {items.map((it: any, i: number) => !!it.description && (
-                  <Text key={i} style={styles.dItemText} numberOfLines={2}>
-                    {items.length > 1 ? `${i + 1}. ` : ''}{it.description}{it.size ? `  ·  ${it.size}` : ''}
-                  </Text>
-                ))}
+              <View style={{ gap: 8, marginBottom: 12 }}>
+                {items.map((it: any, i: number) => {
+                  const meta = it.size ? SIZE_META[it.size] : null;
+                  return (
+                    <View key={i} style={styles.dItemRow}>
+                      <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
+                        <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.dItemTitle} numberOfLines={2}>
+                          {items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
+                        </Text>
+                        {!!it.description && <Text style={styles.dItemText} numberOfLines={2}>{it.description}</Text>}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             )}
             <View style={styles.tileGrid}>
@@ -1506,7 +1525,7 @@ export default function TaskScreen() {
         </ScrollView>
 
         {active && (
-          <View style={[styles.dBar, { paddingBottom: Math.max(12, insets.bottom) }]}>
+          <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
               {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
             </TouchableOpacity>
@@ -1526,7 +1545,7 @@ export default function TaskScreen() {
         )}
 
         {isUnaccepted && (
-          <View style={[styles.dBar, { paddingBottom: Math.max(12, insets.bottom) }]}>
+          <View style={styles.dBar}>
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>YOU EARN</Text>
               <Text style={{ fontSize: 22, fontWeight: '900', color: ORANGE }}>{money(info.earnings)}</Text>
@@ -1713,6 +1732,45 @@ export default function TaskScreen() {
     </Modal>
   );
 
+  const renderPkgModal = () => {
+    const info = pkgInfo;
+    const counts: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
+    (info?.items || []).forEach((it: any) => { if (it?.size && counts[it.size] != null) counts[it.size] += 1; });
+    if (!counts.Small && !counts.Medium && !counts.Large) {
+      counts.Small = Number(info?.cargo?.small_box_qty) || 0;
+      counts.Medium = Number(info?.cargo?.medium_box_qty) || 0;
+      counts.Large = Number(info?.cargo?.large_box_qty) || 0;
+    }
+    const rows = (['Small', 'Medium', 'Large'] as const).filter(k => counts[k] > 0);
+    return (
+      <Modal visible={!!info} transparent animationType="fade" onRequestClose={() => setPkgInfo(null)}>
+        <Pressable style={styles.pkgOverlay} onPress={() => setPkgInfo(null)}>
+          <Pressable style={styles.pkgCard} onPress={() => { /* keep open */ }}>
+            <View style={styles.pkgHead}>
+              <Text style={styles.pkgTitle}>{info ? pkgCount(info) : ''} in this order</Text>
+              <TouchableOpacity onPress={() => setPkgInfo(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
+            {rows.map(k => (
+              <View key={k} style={styles.pkgRow}>
+                <View style={[styles.sizeBadge, { backgroundColor: SIZE_META[k].bg }]}>
+                  <Text style={[styles.sizeBadgeText, { color: SIZE_META[k].color }]}>{SIZE_META[k].letter}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pkgName}>{k}</Text>
+                  <Text style={styles.pkgSub}>{SIZE_META[k].kg} each</Text>
+                </View>
+                <Text style={styles.pkgQty}>×{counts[k]}</Text>
+              </View>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
+    );
+  };
+
   const renderDeliveryOTPModal = () => (
     <Modal visible={deliveryOTPModalVisible} transparent animationType="slide" onRequestClose={closeDeliveryOTPModal}>
       <View style={styles.otpModalOverlay}>
@@ -1827,6 +1885,7 @@ export default function TaskScreen() {
       {renderScannerModal()}
       {renderMapModal()}
       {renderPhotoModal()}
+      {renderPkgModal()}
       {renderDeliveryOTPModal()}
     </View>
   );
@@ -1947,9 +2006,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
   mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
   oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
   oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
@@ -1967,12 +2026,24 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
   dSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
   dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 14, color: c.textSecondary, lineHeight: 20 },
+  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
+  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
+  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
+  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
+  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
   tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
   trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },

@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
-  BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView,
+  BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -413,6 +413,7 @@ export default function ActivityScreen() {
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);   // package breakdown pop-up
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -458,6 +459,7 @@ export default function ActivityScreen() {
   useEffect(() => {
     const backAction = () => {
       if (editModalVisible) { setEditModalVisible(false); return true; }
+      if (pkgItem) { setPkgItem(null); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (showFullMap) { setShowFullMap(false); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
@@ -465,7 +467,7 @@ export default function ActivityScreen() {
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedId, showFullMap, photoPreview, editModalVisible]);
+  }, [selectedId, showFullMap, photoPreview, editModalVisible, pkgItem]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -1195,9 +1197,28 @@ export default function ActivityScreen() {
     return out;
   };
 
+  const pkgCount = (item: MappedDelivery) => `${item.total_items} ${item.total_items === 1 ? 'pkg' : 'pkgs'}`;
+
+  const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
+    Small:  { letter: 'S', kg: '~5 kg',  color: '#0284C7', bg: 'rgba(2,132,199,0.12)' },
+    Medium: { letter: 'M', kg: '~15 kg', color: '#D97706', bg: 'rgba(217,119,6,0.14)' },
+    Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
+  };
+
+  /** Packages per size across ALL items (an item saved per-box counts 1, grouped rows count their quantity). */
+  const sizeCountsOf = (item: MappedDelivery): Record<'Small' | 'Medium' | 'Large', number> => {
+    const counts = { Small: 0, Medium: 0, Large: 0 };
+    (item.cargo_items || []).forEach((ci: CargoItem) => {
+      const k = ci.size as 'Small' | 'Medium' | 'Large' | null | undefined;
+      if (k && counts[k] != null) counts[k] += ci.perItem ? 1 : (Number(ci.quantity) || 1);
+    });
+    return counts;
+  };
+
   const cargoLabel = (item: MappedDelivery) => {
-    const firstSize = item.cargo_items?.[0]?.size;
-    return `${item.total_items} ${firstSize || (item.total_items === 1 ? 'item' : 'items')}`;
+    const c = sizeCountsOf(item);
+    const full = (['Small', 'Medium', 'Large'] as const).filter(k => c[k] > 0).map(k => `${c[k]} ${k}`).join(' · ');
+    return full || `${item.total_items} ${item.total_items === 1 ? 'item' : 'items'}`;
   };
 
   /* --------------------------- Shared Pieces (TaskScreen style) --------------------------- */
@@ -1345,18 +1366,19 @@ export default function ActivityScreen() {
         </View>
 
         <View style={styles.oFooter}>
-          <View style={styles.oChip}>
+          <TouchableOpacity style={styles.oChip} onPress={() => setPkgItem(item)} activeOpacity={0.8} hitSlop={6}>
             <Ionicons name="cube-outline" size={14} color={ORANGE} />
-            <Text style={styles.oChipText}>{cargoLabel(item)}</Text>
-          </View>
+            <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(item)}</Text>
+            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
+          </TouchableOpacity>
           {item.fragile && (
             <View style={styles.oChip}>
               <Ionicons name="star-outline" size={14} color={ORANGE} />
-              <Text style={styles.oChipText}>Fragile</Text>
+              <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
           <View style={{ flex: 1 }} />
-          <Text style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
+          <Text numberOfLines={1} style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
             {money(item.price)}
           </Text>
         </View>
@@ -1721,20 +1743,31 @@ export default function ActivityScreen() {
               <Ionicons name="cube-outline" size={17} color={ORANGE} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
-            {d.cargo_items.some(it => !!it.name) && (
-              <View style={{ gap: 4, marginBottom: 10 }}>
-                {d.cargo_items.map((it, i) => !!it.name && (
-                  <Text key={i} style={styles.dItemText} numberOfLines={2}>
-                    {d.cargo_items.length > 1 ? `${i + 1}. ` : ''}{it.name}
-                    {it.notes ? ` — ${it.notes}` : ''}
-                  </Text>
-                ))}
+            {d.cargo_items.length > 0 && (
+              <View style={{ gap: 8, marginBottom: 12 }}>
+                {d.cargo_items.map((it, i) => {
+                  const meta = it.size ? SIZE_META[it.size] : null;
+                  const qty = !it.perItem && (Number(it.quantity) || 1) > 1 ? ` ×${it.quantity}` : '';
+                  return (
+                    <View key={i} style={styles.dItemRow}>
+                      <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
+                        <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.dItemTitle} numberOfLines={2}>
+                          {d.cargo_items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{qty}{it.fragile ? ' · Fragile' : ''}
+                        </Text>
+                        {!!it.name && <Text style={styles.dItemText} numberOfLines={2}>{it.name}{it.notes ? ` — ${it.notes}` : ''}</Text>}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             )}
             <View style={styles.tileGrid}>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>CARGO SIZE</Text>
-                <Text style={styles.tileValue}>{cargoLabel(d)}</Text>
+                <Text style={styles.tileValue} numberOfLines={2}>{cargoLabel(d)}</Text>
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>WEIGHT</Text>
@@ -1774,51 +1807,6 @@ export default function ActivityScreen() {
                   </View>
                 </View>
               )}
-            </View>
-
-            {/* Timeline Section */}
-            <View style={styles.dSecHead}>
-              <Ionicons name="time-outline" size={17} color={ORANGE} />
-              <Text style={styles.dSecTitle}>Delivery Timeline</Text>
-            </View>
-            <View style={styles.sdCardInner}>
-              <View style={styles.tlRow}>
-                <Ionicons name={d.isMatched ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={d.isMatched ? ORANGE : colors.border} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, !d.isMatched && { color: colors.textMuted }]}>Courier Accepted</Text>
-                  <Text style={styles.tlSub}>
-                    {d.deliveryData?.accepted_at
-                      ? formatDateTimeShort(d.deliveryData.accepted_at)
-                      : d.isMatched
-                        ? 'Courier assigned'
-                        : d.hasPreferredProvider
-                          ? `Waiting for ${d.provider_name} to accept`
-                          : 'Waiting for a courier'}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.tlRow}>
-                <Ionicons name={isInTransit || isCompleted ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={isInTransit || isCompleted ? ORANGE : colors.border} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, !(isInTransit || isCompleted) && { color: colors.textMuted }]}>Package Picked Up</Text>
-                  <Text style={styles.tlSub}>
-                    {isInTransit || isCompleted ? 'Verified with sender QR / PIN' : d.isMatched ? 'Waiting for courier pickup scan' : 'Awaiting courier'}
-                  </Text>
-                </View>
-              </View>
-              <View style={[styles.tlRow, { paddingBottom: 0 }]}>
-                <Ionicons name={isCompleted ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={isCompleted ? ORANGE : colors.border} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.tlTitle, !isCompleted && { color: colors.textMuted }]}>Delivered</Text>
-                  <Text style={styles.tlSub}>
-                    {isCompleted && d.deliveryData?.completed_at
-                      ? formatDateTimeShort(d.deliveryData.completed_at)
-                      : d.deliveryData?.estimated_eta
-                        ? `Estimated arrival ${formatDateTimeShort(d.deliveryData.estimated_eta)}`
-                        : 'Awaiting delivery'}
-                  </Text>
-                </View>
-              </View>
             </View>
 
             {/* Rating Section */}
@@ -1946,7 +1934,7 @@ export default function ActivityScreen() {
 
         {/* Sticky Bottom Bar */}
         {(stage === 'pickup' || stage === 'transit') && (
-          <View style={[styles.dBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <View style={styles.dBar}>
             <TouchableOpacity
               style={styles.dBarIcon}
               onPress={() => handleMessageProvider(d)}
@@ -1975,7 +1963,7 @@ export default function ActivityScreen() {
         )}
 
         {stage === 'pending' && (
-          <View style={[styles.dBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+          <View style={styles.dBar}>
             <TouchableOpacity
               style={[styles.mSoftBtn, { flex: 1 }]}
               onPress={() => openEditModal(d)}
@@ -2288,6 +2276,39 @@ export default function ActivityScreen() {
     );
   };
 
+  const renderPkgModal = () => {
+    const item = pkgItem;
+    const counts = item ? sizeCountsOf(item) : { Small: 0, Medium: 0, Large: 0 };
+    const rows = (['Small', 'Medium', 'Large'] as const).filter(k => counts[k] > 0);
+    return (
+      <Modal visible={!!item} transparent animationType="fade" onRequestClose={() => setPkgItem(null)}>
+        <Pressable style={styles.pkgOverlay} onPress={() => setPkgItem(null)}>
+          <Pressable style={styles.pkgCard} onPress={() => { /* keep open */ }}>
+            <View style={styles.pkgHead}>
+              <Text style={styles.pkgTitle}>{item ? pkgCount(item) : ''} in this order</Text>
+              <TouchableOpacity onPress={() => setPkgItem(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+            {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
+            {rows.map(k => (
+              <View key={k} style={styles.pkgRow}>
+                <View style={[styles.sizeBadge, { backgroundColor: SIZE_META[k].bg }]}>
+                  <Text style={[styles.sizeBadgeText, { color: SIZE_META[k].color }]}>{SIZE_META[k].letter}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pkgName}>{k}</Text>
+                  <Text style={styles.pkgSub}>{SIZE_META[k].kg} each</Text>
+                </View>
+                <Text style={styles.pkgQty}>×{counts[k]}</Text>
+              </View>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
+    );
+  };
+
   const renderPhotoPreviewModal = () => (
     <Modal visible={!!photoPreview} transparent animationType="fade" onRequestClose={() => setPhotoPreview(null)}>
       <View style={styles.previewOverlay}>
@@ -2322,6 +2343,7 @@ export default function ActivityScreen() {
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
       {renderPhotoPreviewModal()}
+      {renderPkgModal()}
     </View>
   );
 }
@@ -2391,9 +2413,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
 
   oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
   oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
   oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
@@ -2446,7 +2468,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
   dSecTitle: { flex: 1, fontSize: 16, fontWeight: '900', color: c.textPrimary },
   dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 14, color: c.textSecondary, lineHeight: 20 },
+  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
+  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
+  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
+  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
+  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
@@ -2503,7 +2537,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
 
   /* Bottom Sticky Bar */
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
   mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
   mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
