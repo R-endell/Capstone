@@ -109,6 +109,22 @@ const buildCargoItems = (cargo: any) => {
   }];
 };
 
+/** Count packages per size across ALL items (not just the first one). */
+const summarizeSizes = (items: any[], cargo: any): { full: string; short: string } => {
+  const counts: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
+  items.forEach(it => { if (it?.size && counts[it.size] != null) counts[it.size] += 1; });
+  if (!counts.Small && !counts.Medium && !counts.Large) {
+    counts.Small = Number(cargo?.small_box_qty) || 0;
+    counts.Medium = Number(cargo?.medium_box_qty) || 0;
+    counts.Large = Number(cargo?.large_box_qty) || 0;
+  }
+  const used = (['Small', 'Medium', 'Large'] as const).filter(k => counts[k] > 0);
+  return {
+    full: used.map(k => `${counts[k]} ${k}`).join(' · '),
+    short: used.length > 1 ? used.map(k => `${counts[k]}${k[0]}`).join(' · ') : '',
+  };
+};
+
 const buildTaskInfo = (d: any) => {
   const request = d?.delivery_requests || null;
   const cargo = Array.isArray(request?.cargo) ? request.cargo[0] : request?.cargo;
@@ -134,6 +150,7 @@ const buildTaskInfo = (d: any) => {
     dropoffNote: (request?.dropoff_note as string | null) || null,
     items,
     totalItems: items.length > 1 ? items.length : (qtyTotal || items.length),
+    sizeSummary: summarizeSizes(items, cargo),
     weightKg: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
     fragile: items.some((i: any) => i.fragile) || !!cargo?.is_fragile,
     dims: dims.every(v => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
@@ -843,8 +860,14 @@ export default function TaskScreen() {
     );
   };
 
-  const cargoLabel = (info: any) =>
-    `${info.totalItems} ${info.items?.[0]?.size || (info.totalItems === 1 ? 'item' : 'items')}`;
+  // chip on the card: compact ("1S · 1M · 1L"); details tile: full ("1 Small · 1 Medium · 1 Large")
+  const cargoLabel = (info: any) => {
+    const sm = info.sizeSummary;
+    if (sm?.short) return `${info.totalItems} pkgs · ${sm.short}`;
+    if (sm?.full) return sm.full;
+    return `${info.totalItems} ${info.totalItems === 1 ? 'item' : 'items'}`;
+  };
+  const cargoLabelFull = (info: any) => info.sizeSummary?.full || cargoLabel(info);
 
   /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
@@ -1172,13 +1195,13 @@ export default function TaskScreen() {
               <View style={{ gap: 4, marginBottom: 10 }}>
                 {items.map((it: any, i: number) => !!it.description && (
                   <Text key={i} style={styles.dItemText} numberOfLines={2}>
-                    {items.length > 1 ? `${i + 1}. ` : ''}{it.description}
+                    {items.length > 1 ? `${i + 1}. ` : ''}{it.description}{it.size ? `  ·  ${it.size}` : ''}
                   </Text>
                 ))}
               </View>
             )}
             <View style={styles.tileGrid}>
-              <View style={styles.tile}><Text style={styles.tileLabel}>CARGO SIZE</Text><Text style={styles.tileValue}>{cargoLabel(info)}</Text></View>
+              <View style={styles.tile}><Text style={styles.tileLabel}>CARGO SIZE</Text><Text style={styles.tileValue} numberOfLines={2}>{cargoLabelFull(info)}</Text></View>
               <View style={styles.tile}><Text style={styles.tileLabel}>WEIGHT</Text><Text style={styles.tileValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text></View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
@@ -1338,7 +1361,7 @@ export default function TaskScreen() {
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
+              <View style={styles.sdPinDropoff}><Ionicons name="person" size={14} color="#000000" /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
@@ -1780,9 +1803,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRoutePad: { padding: 18 },
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
+  sdPinPickup: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#D1D5DB', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
+  sdPinDropoff: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', borderWidth: 1.5, borderColor: '#D1D5DB', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
+  sdPinLetter: { fontSize: 12, fontWeight: '900', color: '#000000' },
   sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },

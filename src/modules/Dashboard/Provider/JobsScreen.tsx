@@ -12,7 +12,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
 import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
 import { findMatches } from '../../../services/matchingService';
 import NotificationsList from '../Disputes/NotificationsList';
@@ -86,6 +86,7 @@ interface JobRequest {
   dropoffNote: string | null;
   items: JobItem[];
   totalItems: number;
+  sizeSummary: string;   // e.g. "1 Small · 1 Medium · 1 Large"
   weightKg: number | null;
   fragile: boolean;
   dims: string | null;
@@ -198,6 +199,16 @@ const titleForType = (type: string, fallback: string): string => {
   return fallback;
 };
 
+/** Count packages per size across ALL items (not just the first one). */
+const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
+  const counts: Record<string, number> = {};
+  sizes.forEach(z => { if (z) counts[z] = (counts[z] || 0) + 1; });
+  return ['Small', 'Medium', 'Large']
+    .filter(k => counts[k])
+    .map(k => `${counts[k]} ${k}`)
+    .join(' · ');
+};
+
 const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest => {
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
@@ -253,6 +264,9 @@ const normalizeRequest = (r: any, senders: Record<number, string>): JobRequest =
     dropoffNote: r.dropoff_note || null,
     items,
     totalItems: Array.isArray(itemsJson) && itemsJson.length > 0 ? itemsJson.length : (boxTotal || 1),
+    sizeSummary: Array.isArray(itemsJson) && itemsJson.length > 0
+      ? summarizeSizes(items.map(i => i.size))
+      : sizeCounts.filter(([, q]) => Number(q) > 0).map(([l, q]) => `${q} ${l}`).join(' · '),
     weightKg: Number(cargo?.total_weight_kg) || null,
     fragile: items.some(i => i.fragile) || !!cargo?.is_fragile,
     dims,
@@ -283,23 +297,23 @@ const mapStyles = StyleSheet.create({
     shadowOpacity: 0.15, shadowRadius: 2, elevation: 1,
   },
   zoneBadgeText: { fontSize: 10, fontWeight: '800', color: '#9A4A12' },
-  meMarker: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  meMarker: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center' },
   meHalo: {
-    position: 'absolute', width: 44, height: 44, borderRadius: 22,
-    backgroundColor: 'rgba(255,117,31,0.25)',
+    position: 'absolute', width: 76, height: 76, borderRadius: 38,
+    backgroundColor: 'rgba(255,117,31,0.35)',
   },
   meDot: {
-    position: 'absolute', left: 11, top: 11,
+    position: 'absolute', left: 27, top: 27,
     width: 22, height: 22, borderRadius: 11,
     backgroundColor: '#FF751F', borderWidth: 3, borderColor: '#FFFFFF',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.35, shadowRadius: 4, elevation: 3,
   },
-  meArrowWrap: { position: 'absolute', width: 44, height: 44 },
+  meArrowWrap: { position: 'absolute', width: 76, height: 76 },
   meArrow: {
-    position: 'absolute', left: 17, top: -4,
+    position: 'absolute', left: 31, top: 6,
     width: 0, height: 0,
-    borderLeftWidth: 5, borderRightWidth: 5, borderBottomWidth: 10,
+    borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 16,
     borderLeftColor: 'transparent', borderRightColor: 'transparent',
     borderBottomColor: '#FF751F',
   },
@@ -411,19 +425,50 @@ const RouteMap = ({
 const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, online = true }: any) => {
   const mapRef = useRef<MapView>(null);
   const haloAnim = useRef(new Animated.Value(0)).current;
+  const focused = useIsFocused();
+  // the pulse is restarted every time the tab comes back into view (native loops stop while a tab is detached)
   useEffect(() => {
-    if (!online) { haloAnim.setValue(0); return; }
+    haloAnim.setValue(0);
+    if (!online || !focused) return;
     const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(haloAnim, { toValue: 1, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
-        Animated.timing(haloAnim, { toValue: 0, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
-      ]),
+      Animated.timing(haloAnim, { toValue: 1, duration: 1800, easing: Easing.out(Easing.ease), useNativeDriver: false }),
     );
     loop.start();
     return () => loop.stop();
-  }, [online, haloAnim]);
-  const haloScale = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.3] });
-  const haloOpacity = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.5] });
+  }, [online, focused, haloAnim]);
+  const haloScale = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1.5] });
+  const haloOpacity = haloAnim.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.55, 0.18, 0] });
+
+  // live compass: which way the phone is facing (smoothed, ~10 updates/s)
+  const [compass, setCompass] = useState<number | null>(null);
+  const compassRaw = useRef<number | null>(null);
+  const compassShown = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focused) return;
+    let sub: Location.LocationSubscription | null = null;
+    let gone = false;
+    (async () => {
+      try {
+        sub = await Location.watchHeadingAsync(h => {
+          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
+          if (deg != null && deg >= 0) compassRaw.current = deg;
+        });
+        if (gone) sub.remove();
+      } catch { /* no compass on this device */ }
+    })();
+    const tick = setInterval(() => {
+      const raw = compassRaw.current;
+      if (raw == null) return;
+      const prev = compassShown.current;
+      const next = prev == null ? raw : (prev + ((((raw - prev) % 360) + 540) % 360 - 180) * 0.3 + 360) % 360;
+      if (prev == null || Math.abs(((next - prev + 540) % 360) - 180) > 0.5) {
+        compassShown.current = next;
+        setCompass(next);
+      }
+    }, 100);
+    return () => { gone = true; sub?.remove(); clearInterval(tick); };
+  }, [focused]);
+  const facing = compass ?? provider?.heading ?? null;
   const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
   const [orderCoords, setOrderCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
@@ -590,12 +635,12 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
       )}
 
       {provider && (
-        <Marker coordinate={{ latitude: provider.lat, longitude: provider.lng }} anchor={{ x: 0.5, y: 0.5 }} flat tracksViewChanges>
+        <Marker coordinate={{ latitude: provider.lat, longitude: provider.lng }} anchor={{ x: 0.5, y: 0.5 }} flat tracksViewChanges zIndex={10}>
           <View style={mapStyles.meMarker}>
             <Animated.View style={[mapStyles.meHalo, !online && { backgroundColor: 'rgba(100,116,139,0.22)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
-            {provider.heading != null && (
-              <View style={[mapStyles.meArrowWrap, { transform: [{ rotate: `${provider.heading}deg` }] }]}>
-                <View style={mapStyles.meArrow} />
+            {facing != null && (
+              <View style={[mapStyles.meArrowWrap, { transform: [{ rotate: `${facing}deg` }] }]}>
+                <View style={[mapStyles.meArrow, !online && { borderBottomColor: '#64748B' }]} />
               </View>
             )}
             <View style={[mapStyles.meDot, !online && { backgroundColor: '#64748B' }]} />
@@ -673,6 +718,7 @@ export default function JobsScreen() {
   const modeFade = useRef(new Animated.Value(1)).current;
   const swapAnim = useRef(new Animated.Value(0)).current;
   const [ctaW, setCtaW] = useState(320);
+  const isFocused = useIsFocused();   // loops are restarted on every return to this tab
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
@@ -687,7 +733,8 @@ export default function JobsScreen() {
   }, [isOnline, modeAnim, modeFade]);
 
   useEffect(() => {
-    if (!isOnline) { signal.setValue(0); dotBlink.setValue(0); return; }
+    signal.setValue(0); dotBlink.setValue(0);
+    if (!isOnline || !isFocused) return;
     const ring = Animated.loop(Animated.timing(signal, { toValue: 1, duration: 2000, easing: Easing.out(Easing.ease), useNativeDriver: true }));
     const blink = Animated.loop(Animated.sequence([
       Animated.timing(dotBlink, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
@@ -695,10 +742,11 @@ export default function JobsScreen() {
     ]));
     ring.start(); blink.start();
     return () => { ring.stop(); blink.stop(); };
-  }, [isOnline, signal, dotBlink]);
+  }, [isOnline, isFocused, signal, dotBlink]);
 
   useEffect(() => {
-    if (isOnline) { shine.setValue(0); return; }
+    shine.setValue(0);
+    if (isOnline || !isFocused) return;
     const sweep = Animated.loop(Animated.sequence([
       Animated.timing(shine, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       Animated.delay(1500),
@@ -706,10 +754,11 @@ export default function JobsScreen() {
     ]));
     sweep.start();
     return () => sweep.stop();
-  }, [isOnline, shine]);
+  }, [isOnline, isFocused, shine]);
 
   useEffect(() => {
-    if (!isOnline) return;
+    onlinePulse.setValue(0);
+    if (!isOnline || !isFocused) return;
     const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(onlinePulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
@@ -718,9 +767,11 @@ export default function JobsScreen() {
     );
     pulse.start();
     return () => pulse.stop();
-  }, [isOnline, onlinePulse]);
+  }, [isOnline, isFocused, onlinePulse]);
 
   useEffect(() => {
+    bellPulse.setValue(0);
+    if (!isFocused) return;
     const pulse = Animated.loop(
       Animated.sequence([
         Animated.timing(bellPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
@@ -729,7 +780,7 @@ export default function JobsScreen() {
     );
     pulse.start();
     return () => pulse.stop();
-  }, [bellPulse]);
+  }, [isFocused, bellPulse]);
 
   const loadNotifs = useCallback(async () => {
     if (!providerId) return;
@@ -1547,6 +1598,7 @@ export default function JobsScreen() {
                       {o.items.length > 1 ? `${i + 1}. ` : ''}
                       {it.description}
                       {it.boxes ? `  ·  ${it.boxes}` : ''}
+                      {it.size ? `  ·  ${it.size}` : ''}
                     </Text>
                   ) : null,
                 )}
@@ -1555,8 +1607,8 @@ export default function JobsScreen() {
             <View style={styles.tileGrid}>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>CARGO SIZE</Text>
-                <Text style={styles.tileValue}>
-                  {o.totalItems} {o.items[0]?.size || (o.totalItems === 1 ? 'item' : 'items')}
+                <Text style={styles.tileValue} numberOfLines={2}>
+                  {o.sizeSummary || `${o.totalItems} ${o.totalItems === 1 ? 'item' : 'items'}`}
                 </Text>
               </View>
               <View style={styles.tile}>
@@ -1800,8 +1852,8 @@ export default function JobsScreen() {
 
     const OFF = { title: '#E2E8F0', sub: '#94A3B8', label: '#64748B' };
     const panelBg = modeAnim.interpolate({ inputRange: [0, 1], outputRange: ['#232A3B', colors.card] });
-    const ringScale = signal.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.3] });
-    const ringOpacity = signal.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] });
+    const ringScale = signal.interpolate({ inputRange: [0, 1], outputRange: [1, 1.9] });
+    const ringOpacity = signal.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] });
     const dotOpacity = dotBlink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.4] });
     const swapRotate = swapAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
     const shineX = shine.interpolate({ inputRange: [0, 1], outputRange: [-ctaW, ctaW] });
@@ -1813,17 +1865,17 @@ export default function JobsScreen() {
     };
 
     return (
-      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? colors.border : 'rgba(255,255,255,0.05)', paddingBottom: 22 + (isOnline ? 0 : insets.bottom) }]}>
-        <View style={[styles.dashBar, { backgroundColor: isOnline ? ORANGE : 'rgba(100,116,139,0.35)' }]} />
+      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 12 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 22, borderTopWidth: isOnline ? 2 : 1 }]}>
+        <View style={[styles.dashBar, { backgroundColor: isOnline ? GREEN : 'rgba(100,116,139,0.35)' }]} />
 
         <Animated.View style={{ opacity: modeFade }}>
-          <View style={styles.dashHead}>
+          <View style={[styles.dashHead, isOnline && { marginBottom: 12 }]}>
             <View style={styles.dashHeadLeft}>
-              <View style={[styles.liveBadge, isOnline ? styles.liveBadgeOn : styles.liveBadgeOff]}>
+              <View style={styles.liveBadge}>
                 {isOnline && (
                   <Animated.View style={[styles.liveRing, { transform: [{ scale: ringScale }], opacity: ringOpacity }]} />
                 )}
-                <View style={[styles.liveCore, !isOnline && { opacity: 0.25 }]} />
+                <View style={[styles.liveCore, { backgroundColor: isOnline ? GREEN : '#475569' }]} />
               </View>
               <View>
                 <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>{isOnline ? 'You’re online' : 'You’re offline'}</Text>
@@ -1838,7 +1890,7 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider } : styles.routeBlockOff]}>
+          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 0 } : styles.routeBlockOff]}>
             <View style={[styles.vehicleChip, isOnline ? { backgroundColor: 'rgba(255,117,31,0.10)' } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
               <Text style={{ fontSize: 22 }}>🚐</Text>
               <Animated.View
@@ -1954,7 +2006,7 @@ export default function JobsScreen() {
           demand={showDemand}
           online={isOnline}
           recenterTick={recenterTick}
-          padBottom={currentOffer ? Math.round(SCREEN_H * 0.48) + 30 : 200}
+          padBottom={currentOffer ? Math.round(SCREEN_H * 0.48) + 30 : (isOnline ? 150 : 200)}
         />
 
         <Animated.View
@@ -2340,11 +2392,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   dashBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
   dashHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   dashHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  liveBadge: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  liveBadgeOn: { backgroundColor: GREEN, shadowColor: GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 8, elevation: 4 },
-  liveBadgeOff: { backgroundColor: '#475569' },
-  liveRing: { position: 'absolute', top: -4, left: -4, right: -4, bottom: -4, borderRadius: 25, borderWidth: 2, borderColor: GREEN },
-  liveCore: { width: 10, height: 10, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.85)' },
+  liveBadge: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  liveRing: { position: 'absolute', width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: GREEN },
+  liveCore: { width: 24, height: 24, borderRadius: 12 },
   dashTitle: { fontSize: 17, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.4 },
   dashSub: { fontSize: 12, fontWeight: '600', color: c.textSecondary, marginTop: 2 },
   statusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },

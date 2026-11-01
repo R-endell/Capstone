@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, us
 import { View, Text, StyleSheet, TouchableOpacity, StyleProp, ViewStyle } from 'react-native';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
 import { MAP_PROPS, BRAND_ORANGE, DROPOFF_BLACK } from '../../utils/mapConfig';
 import { fmtDistance, haversineM } from './directions';
 import type { NavRoute } from './directions';
@@ -68,6 +69,139 @@ const ahead = (p: LatLng, bearing: number, meters: number): LatLng => {
 };
 const FOLLOW_PITCH = 55;
 
+
+/* -------------------------------------------------------------------------- */
+/*  "You are here" pointer: glides between GPS fixes and follows the compass   */
+/* -------------------------------------------------------------------------- */
+const COURSE_SPEED_MS = 4;          // above ~15 km/h the GPS course beats the (noisy) compass
+const MIN_GLIDE_MS = 600;
+const MAX_GLIDE_MS = 2000;
+const FRAME_MS = 33;                // ~30 fps is plenty for a marker
+
+const angDiff = (to: number, from: number) => ((((to - from) % 360) + 540) % 360) - 180;
+const norm360 = (a: number) => ((a % 360) + 360) % 360;
+
+type MeFix = { latitude: number; longitude: number; heading?: number | null; speed?: number | null };
+
+const MeMarker = React.memo(function MeMarker({ fix }: { fix: MeFix }) {
+  const [pos, setPos] = useState<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
+  const [rot, setRot] = useState(0);
+  const [track, setTrack] = useState(true);
+
+  const cur = useRef<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
+  const from = useRef<LatLng>(cur.current);
+  const to = useRef<LatLng>(cur.current);
+  const startAt = useRef(0);
+  const dur = useRef(MIN_GLIDE_MS);
+  const lastFixAt = useRef(0);
+  const compass = useRef<number | null>(null);
+  const course = useRef<{ deg: number; speed: number } | null>(null);
+  const rotCur = useRef(0);
+  const rotShown = useRef(0);
+  const raf = useRef<number | null>(null);
+  const lastDraw = useRef(0);
+  const alive = useRef(true);
+
+  useEffect(() => { const t = setTimeout(() => setTrack(false), 1500); return () => clearTimeout(t); }, []);
+
+  const wantedHeading = (): number | null => {
+    const c = course.current;
+    if (c && c.speed > COURSE_SPEED_MS) return c.deg;
+    return compass.current ?? (c ? c.deg : null);
+  };
+
+  const frame = () => {
+    raf.current = null;
+    if (!alive.current) return;
+    const now = Date.now();
+    let busy = false;
+
+    // position: straight glide from where the marker is now to the newest fix
+    const t = Math.min(1, (now - startAt.current) / dur.current);
+    const p = {
+      latitude: from.current.latitude + (to.current.latitude - from.current.latitude) * t,
+      longitude: from.current.longitude + (to.current.longitude - from.current.longitude) * t,
+    };
+    cur.current = p;
+    if (t < 1) busy = true;
+
+    // heading: ease toward the wanted heading along the shortest way round
+    const want = wantedHeading();
+    if (want != null) {
+      const d = angDiff(want, rotCur.current);
+      if (Math.abs(d) > 0.4) {
+        rotCur.current = norm360(rotCur.current + d * 0.25);
+        busy = true;
+      }
+    }
+
+    if (now - lastDraw.current >= FRAME_MS || !busy) {
+      lastDraw.current = now;
+      setPos(p);
+      if (Math.abs(angDiff(rotCur.current, rotShown.current)) > 0.3) {
+        rotShown.current = rotCur.current;
+        setRot(rotCur.current);
+      }
+    }
+    if (busy) raf.current = requestAnimationFrame(frame);
+  };
+
+  const kick = () => { if (raf.current == null && alive.current) raf.current = requestAnimationFrame(frame); };
+
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; if (raf.current != null) cancelAnimationFrame(raf.current); raf.current = null; };
+  }, []);
+
+  // new GPS fix -> glide there over about the time since the previous fix
+  useEffect(() => {
+    const now = Date.now();
+    const next = { latitude: fix.latitude, longitude: fix.longitude };
+    const jump = haversineM(cur.current, next);
+    from.current = jump > 250 ? next : cur.current;     // teleport only for big jumps
+    to.current = next;
+    const gap = lastFixAt.current ? now - lastFixAt.current : MIN_GLIDE_MS;
+    dur.current = Math.min(MAX_GLIDE_MS, Math.max(MIN_GLIDE_MS, gap));
+    startAt.current = now;
+    lastFixAt.current = now;
+    course.current = fix.heading != null && fix.heading >= 0
+      ? { deg: fix.heading, speed: fix.speed ?? 0 }
+      : null;
+    kick();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fix.latitude, fix.longitude, fix.heading, fix.speed]);
+
+  // compass: which way the device is actually facing (N / E / S / W ...)
+  useEffect(() => {
+    let sub: Location.LocationSubscription | null = null;
+    let gone = false;
+    (async () => {
+      try {
+        sub = await Location.watchHeadingAsync(h => {
+          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
+          if (deg == null || deg < 0) return;
+          compass.current = deg;
+          kick();
+        });
+        if (gone) sub.remove();
+      } catch { /* no compass: the GPS course is used instead */ }
+    })();
+    return () => { gone = true; sub?.remove(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <Marker coordinate={pos} anchor={{ x: 0.5, y: 0.5 }} flat rotation={rot} tracksViewChanges={track} zIndex={10}>
+      <View style={styles.meWrap}>
+        {/* Ionicons "navigate" points up-right (45 deg), so turn it back to point straight up */}
+        <View style={{ transform: [{ rotate: '-45deg' }] }}>
+          <Ionicons name="navigate" size={30} color="#000000" style={{ marginLeft: -1, marginTop: 1 }} />
+        </View>
+      </View>
+    </Marker>
+  );
+});
+
 type RouteState = { r: NavRoute; idx: RouteIndex; tKey: string };
 
 const NavigationMapInner = (
@@ -98,14 +232,18 @@ const NavigationMapInner = (
   const alongRef = useRef<number | undefined>(undefined);
   const fittedFor = useRef('');
   const headingRef = useRef(0);
-  const [trackMarker, setTrackMarker] = useState(true);
-  
-  useEffect(() => { const t = setTimeout(() => setTrackMarker(false), 800); return () => clearTimeout(t); }, []);
+  const lastFixTs = useRef(0);
+  const fixGap = useRef(900);
 
   const me = useMemo<LatLng | null>(
     () => (loc.fix ? { latitude: loc.fix.latitude, longitude: loc.fix.longitude } : null),
     [loc.fix],
   );
+  useEffect(() => {
+    const now = Date.now();
+    if (lastFixTs.current) fixGap.current = Math.min(2000, Math.max(600, now - lastFixTs.current));
+    lastFixTs.current = now;
+  }, [loc.fix]);
   const liveM = me ? haversineM(me, target) : null;
 
   useEffect(() => { setArrived(false); }, [tKey]);
@@ -211,7 +349,7 @@ const NavigationMapInner = (
     }, guidance ? 350 : 0);
   }, [route, tKey, me, target, padTop, padBottom, fit, guidance]);
 
-  const followCamera = useCallback((duration = 900) => {
+  const followCamera = useCallback((duration = fixGap.current) => {
     if (!me) return;
     const d = progress?.distToManeuverM;
     const zoom = d == null || d < 300 ? 18 : d < 1200 ? 17 : 16;
@@ -243,7 +381,7 @@ const NavigationMapInner = (
 
   useEffect(() => {
     if (!guidance || !following || !me || arrived) return;
-    followCamera(900);
+    followCamera();
   }, [guidance, following, me, arrived, progress?.distToManeuverM, loc.fix]);
 
   useEffect(() => { if (guidance && arrived) fit(true); }, [guidance, arrived]);
@@ -292,13 +430,7 @@ const NavigationMapInner = (
         showsMyLocationButton={false}
         showsUserLocation={false} 
       >
-        {me && (
-          <Marker coordinate={me} anchor={{ x: 0.5, y: 0.5 }} flat rotation={headingRef.current} tracksViewChanges={trackMarker}>
-            <View style={styles.meWrap}>
-              <Ionicons name="navigate" size={32} color={BRAND_ORANGE} />
-            </View>
-          </Marker>
-        )}
+        {me && loc.fix && <MeMarker fix={loc.fix as any} />}
 
         {linePts && (
           <Polyline
@@ -313,9 +445,11 @@ const NavigationMapInner = (
         
         {/* ✅ RE-DESIGNED PREMIUM MARKER & BANNER */}
         {targetLabel === 'D' ? (
-          /* Drop-off: plain black location icon (no banner) */
-          <Marker coordinate={target} anchor={{ x: 0.5, y: 1 }} tracksViewChanges={false}>
-            <Ionicons name="location" size={48} color="#000000" />
+          /* Drop-off: black user icon in a white circle (no banner) */
+          <Marker coordinate={target} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+            <View style={styles.dropWrap}>
+              <Ionicons name="person" size={26} color="#000000" />
+            </View>
           </Marker>
         ) : (
         <Marker coordinate={target} anchor={{ x: 0.5, y: 1 }} tracksViewChanges={false}>
@@ -463,6 +597,24 @@ const styles = StyleSheet.create({
     width: 48, height: 48, borderRadius: 24, backgroundColor: '#fff',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
+  },
+
+  dropWrap: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: '#fff',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
+  },
+  arrowBox: { width: 26, height: 28, alignItems: 'center' },
+  arrowHead: {
+    width: 0, height: 0,
+    borderLeftWidth: 13, borderRightWidth: 13, borderBottomWidth: 28,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent', borderBottomColor: '#000000',
+  },
+  arrowNotch: {
+    position: 'absolute', bottom: 0,
+    width: 0, height: 0,
+    borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 9,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent', borderBottomColor: '#FFFFFF',
   },
 
   floatBtn: {
