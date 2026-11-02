@@ -6,7 +6,7 @@ import {
   BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
@@ -15,6 +15,7 @@ import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
+import { promptCallChoice } from '../../../services/callService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 
@@ -316,6 +317,8 @@ interface Delivery {
   route_id: number;
   vehicle_id: number;
   accepted_at: string;
+  pod_photo_url?: string | null;
+  pod_seen_by_sender?: boolean;
   provider?: any;
   vehicle?: any;
 }
@@ -394,6 +397,7 @@ interface MappedDelivery {
 /* ==================================================================== */
 export default function ActivityScreen() {
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
@@ -441,6 +445,19 @@ export default function ActivityScreen() {
     () => (selectedId != null ? deliveries.find(d => d.request_id === selectedId) || null : null),
     [deliveries, selectedId]
   );
+
+  // Auto-open Completed tab & specific shipment when arriving from ProofOfDeliveryModal
+  useEffect(() => {
+    const params = route.params;
+    if (params?.tab) {
+      setActiveTab(params.tab);
+    }
+    if (params?.openRequestId) {
+      setActiveTab('completed');
+      setSelectedId(Number(params.openRequestId));
+      navigation.setParams({ openRequestId: undefined, tab: undefined });
+    }
+  }, [route.params, navigation]);
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
@@ -1274,15 +1291,37 @@ export default function ActivityScreen() {
     </View>
   );
 
-  const renderMiniContact = (o: { role: string; name: string | null; phone: string | null; color: string; subBadge?: string | null }) => {
+  const renderMiniContact = (o: {
+    role: string;
+    name: string | null;
+    phone: string | null;
+    userId?: number | null;
+    deliveryId?: number | null;
+    color: string;
+    subBadge?: string | null;
+  }) => {
+    const canCall = !!o.phone || !!o.userId;
+
+    const triggerCall = () => {
+      promptCallChoice({
+        name: o.name,
+        role: o.role,
+        calleeId: o.userId ?? null,
+        phone: o.phone,
+        deliveryId: o.deliveryId ?? null,
+      });
+    };
+
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
-        o.phone ? [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
-        ] : [{ text: 'OK' }]
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || (o.userId ? 'In-App Call Available' : 'N/A')}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
+        canCall
+          ? [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Call', onPress: triggerCall },
+            ]
+          : [{ text: 'OK' }]
       );
     };
 
@@ -1298,10 +1337,13 @@ export default function ActivityScreen() {
             <Text style={styles.mcSubBadge} numberOfLines={1}>{o.subBadge}</Text>
           )}
         </View>
-        {!!o.phone && (
+        {canCall && (
           <TouchableOpacity
             style={styles.mcCall}
-            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${o.phone}`); }}
+            onPress={(e) => {
+              e.stopPropagation();
+              triggerCall();
+            }}
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
@@ -1334,7 +1376,7 @@ export default function ActivityScreen() {
     return (
       <TouchableOpacity
         key={item.request_id}
-        style={[styles.oCard, !isActive && { opacity: 0.88 }]}
+        style={[styles.oCard, !isActive && { opacity: 0.92 }]}
         onPress={() => setSelectedId(item.request_id)}
         activeOpacity={0.92}
       >
@@ -1346,11 +1388,41 @@ export default function ActivityScreen() {
 
           {renderRoute(item)}
 
+          {/* Proof of Delivery Banner on Completed Shipment Cards */}
+          {stage === 'done' && !!item.deliveryData?.pod_photo_url && (
+            <TouchableOpacity
+              style={styles.cardPodBanner}
+              onPress={(e) => {
+                e.stopPropagation();
+                setPhotoPreview(item.deliveryData?.pod_photo_url || null);
+              }}
+              activeOpacity={0.85}
+            >
+              <Image
+                source={{ uri: item.deliveryData.pod_photo_url }}
+                style={styles.cardPodThumb}
+                resizeMode="cover"
+              />
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Ionicons name="shield-checkmark" size={14} color={colors.success} />
+                  <Text style={styles.cardPodTitle}>Proof of Delivery Attached</Text>
+                </View>
+                <Text style={styles.cardPodSub} numberOfLines={1}>
+                  Tap photo to enlarge or tap card for full details
+                </Text>
+              </View>
+              <Ionicons name="expand-outline" size={16} color={colors.success} />
+            </TouchableOpacity>
+          )}
+
           <View style={styles.oContacts}>
             {renderMiniContact({
               role: 'COURIER',
               name: courierName,
               phone: (item.isMatched || item.hasPreferredProvider) ? (item.provider_phone || null) : null,
+              userId: (item.isMatched || item.hasPreferredProvider) ? (item.provider_id ?? null) : null,
+              deliveryId: item.deliveryData?.delivery_id ?? null,
               color: BLUE,
               subBadge: courierSubBadge,
             })}
@@ -1358,6 +1430,7 @@ export default function ActivityScreen() {
               role: 'RECEIVER',
               name: receiverName,
               phone: receiverPhone,
+              deliveryId: item.deliveryData?.delivery_id ?? null,
               color: PURPLE,
             })}
           </View>
@@ -1375,6 +1448,12 @@ export default function ActivityScreen() {
             <View style={styles.oChip}>
               <Ionicons name="star-outline" size={14} color={ORANGE} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
+            </View>
+          )}
+          {!!item.deliveryData?.pod_photo_url && (
+            <View style={[styles.oChip, { borderColor: colors.success }]}>
+              <Ionicons name="camera-outline" size={14} color={colors.success} />
+              <Text style={[styles.oChipText, { color: colors.success }]} numberOfLines={1}>POD</Text>
             </View>
           )}
           <View style={{ flex: 1 }} />
@@ -1546,6 +1625,7 @@ export default function ActivityScreen() {
     const mapH = Math.round(H * 0.46);
     const photos = packagePhotosOf(d).filter(ph => !failedPhotos[ph.url]);
     const vehicle: any = d.deliveryData?.vehicle;
+    const podPhotoUrl = d.deliveryData?.pod_photo_url || null;
 
     const escrowStatus = String(escrowRow?.escrow_status || escrowRow?.status || d.rawData?.escrow_status || '');
     const released = isCompleted || /complet|releas/i.test(escrowStatus);
@@ -1694,6 +1774,8 @@ export default function ActivityScreen() {
                 role: 'COURIER',
                 name: (d.isMatched || d.hasPreferredProvider) ? d.provider_name : 'Searching...',
                 phone: (d.isMatched || d.hasPreferredProvider) ? (d.provider_phone || null) : null,
+                userId: (d.isMatched || d.hasPreferredProvider) ? (d.provider_id ?? null) : null,
+                deliveryId: d.deliveryData?.delivery_id ?? null,
                 color: BLUE,
                 subBadge: !d.isMatched && d.hasPreferredProvider ? 'Waiting for acceptance' : null,
               })}
@@ -1701,6 +1783,7 @@ export default function ActivityScreen() {
                 role: 'RECEIVER',
                 name: receiverName,
                 phone: receiverPhone,
+                deliveryId: d.deliveryData?.delivery_id ?? null,
                 color: PURPLE,
               })}
             </View>
@@ -1716,6 +1799,40 @@ export default function ActivityScreen() {
                   <Text style={styles.tileValue}>{vehicle.plate_number || '—'}</Text>
                 </View>
               </View>
+            )}
+
+            {/* Proof of Delivery Section */}
+            {!!podPhotoUrl && (
+              <>
+                <View style={styles.dSecHead}>
+                  <Ionicons name="shield-checkmark" size={17} color={colors.success} />
+                  <Text style={styles.dSecTitle}>Proof of Delivery</Text>
+                  <View style={[styles.sdRatedBadge, { backgroundColor: colors.successBg }]}>
+                    <Ionicons name="checkmark-done" size={12} color={colors.success} />
+                    <Text style={[styles.sdRatedBadgeText, { color: colors.success }]}>Verified</Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.podPhotoCard}
+                  activeOpacity={0.9}
+                  onPress={() => setPhotoPreview(podPhotoUrl)}
+                >
+                  <Image
+                    source={{ uri: podPhotoUrl }}
+                    style={styles.podPhotoImg}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.podPhotoOverlay}>
+                    <View style={styles.podPhotoBadge}>
+                      <Ionicons name="expand-outline" size={13} color="#FFFFFF" />
+                      <Text style={styles.podPhotoBadgeText}>Tap to view full photo</Text>
+                    </View>
+                    {!!d.deliveryData?.completed_at && (
+                      <Text style={styles.podPhotoTime}>{formatDateTime(d.deliveryData.completed_at)}</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              </>
             )}
 
             {photos.length > 0 && (
@@ -2399,6 +2516,35 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
+  /* Completed Card POD Banner */
+  cardPodBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: c.successBg,
+    borderWidth: 1,
+    borderColor: c.success,
+  },
+  cardPodThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: c.card,
+  },
+  cardPodTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: c.success,
+  },
+  cardPodSub: {
+    fontSize: 11,
+    color: c.textSecondary,
+    marginTop: 2,
+  },
+
   oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
@@ -2468,6 +2614,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
   dSecTitle: { flex: 1, fontSize: 16, fontWeight: '900', color: c.textPrimary },
   dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
+
+  /* Proof of Delivery Card Styles */
+  podPhotoCard: {
+    width: '100%',
+    height: 200,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: c.background,
+    borderWidth: 1.5,
+    borderColor: c.success,
+  },
+  podPhotoImg: { width: '100%', height: '100%' },
+  podPhotoOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(17,24,39,0.72)',
+  },
+  podPhotoBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  podPhotoBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  podPhotoTime: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '600' },
+
   dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
   dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
   dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },

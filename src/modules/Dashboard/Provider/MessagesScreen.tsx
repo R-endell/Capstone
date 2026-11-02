@@ -17,6 +17,7 @@ import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
+import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
@@ -786,27 +787,22 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const handleCallPress = () => {
     if (!selectedRoom) return;
-    const number = selectedRoom.other?.phone_number?.trim();
-    if (!number) {
+    if (selectedRoom.is_support) {
       Alert.alert(
-        'Number unavailable',
-        selectedRoom.is_support
-          ? 'Pack-N-Ship System does not accept phone calls. Use the chat instead.'
-          : 'This user has not provided a contact number yet.',
+        'Call unavailable',
+        'Pack-N-Ship System does not accept voice calls. Please send a message in chat instead.'
       );
       return;
     }
-    Alert.alert('Call', `Do you want to call ${number}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Call',
-        onPress: () => {
-          Linking.openURL(`tel:${number}`).catch(() => {
-            Alert.alert('Call failed', 'Unable to open the dialer on this device.');
-          });
-        },
-      },
-    ]);
+
+    const fullName = `${selectedRoom.other.first_name || ''} ${selectedRoom.other.last_name || ''}`.trim() || 'User';
+    promptCallChoice({
+      name: fullName,
+      role: selectedRoom.role === 'sender' ? 'COURIER' : 'SENDER',
+      calleeId: selectedRoom.other.user_id,
+      phone: selectedRoom.other?.phone_number?.trim() || null,
+      deliveryId: selectedRoom.delivery_id || null,
+    });
   };
 
   const openChatOptions = (room: ChatRoom) => {
@@ -894,13 +890,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         fetchConversations();
 
-        // Notify the current user when Pack-N-Ship System messages them
         const incoming = payload.new as ChatMessage;
         const myId = currentUserId.current;
         if (!incoming || !myId || incoming.sender_id === myId) return;
         if (notifiedMsgIds.current.has(incoming.message_id)) return;
 
-        // Skip push if user is already viewing this exact room
         const activeRoom = selectedRoomRef.current;
         if (activeRoom && activeRoom.all_room_ids.includes(incoming.room_id)) return;
 
@@ -1475,7 +1469,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
 
-  // Attachment sheet
   attachBackdrop: {
     flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
     justifyContent: 'flex-end',
@@ -1508,7 +1501,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
 
-  // Image preview
   previewOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
     alignItems: 'center', justifyContent: 'center',

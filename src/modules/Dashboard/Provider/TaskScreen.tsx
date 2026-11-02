@@ -24,6 +24,7 @@ import { useProviderLocationBroadcast } from '../../../services/useProviderLocat
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
+import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -168,6 +169,7 @@ const buildTaskInfo = (d: any) => {
     dims: dims.every(v => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
     receiverName: receiver?.receiver_name || null,
     receiverPhone: request?.receiver_phone || receiver?.receiver_phone || null,
+    senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
     earnings: Number(request?.estimated_cost) || 0,
@@ -347,6 +349,12 @@ export default function TaskScreen() {
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
   const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
+  // --- Proof of Delivery (POD) Camera States ---
+  const podCameraRef = useRef<any>(null);
+  const [podCameraOpen, setPodCameraOpen] = useState(false);
+  const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
+  const [podTakingPhoto, setPodTakingPhoto] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const scanLineAnim = useRef(new Animated.Value(0)).current;
@@ -366,13 +374,14 @@ export default function TaskScreen() {
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (podCameraOpen) { setPodCameraOpen(false); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [photoPreview, mapModalVisible, selectedId]);
+  }, [podCameraOpen, photoPreview, mapModalVisible, selectedId]);
 
   useEffect(() => {
     if (!verifyModalVisible) return;
@@ -418,8 +427,6 @@ export default function TaskScreen() {
       const enrichedNearby = await enrichNearbyRequests(rawNearby, pid);
       const nearbySynthetics = enrichedNearby.map(n => n.syntheticDelivery);
 
-      // Direct requests (where sender explicitly selected this provider) appear at the top of Active
-      // as "Waiting for Acceptance", as well as in Nearby
       const directAwaitingSynthetics = nearbySynthetics.filter(s => s?.nearbyMeta?.isDirectRequest);
 
       setActiveDeliveries([...directAwaitingSynthetics, ...acceptedActive]);
@@ -440,7 +447,6 @@ export default function TaskScreen() {
 
     setAcceptingRequestId(req.request_id);
     try {
-      // 1. Resolve verified vehicle (or fallback to any vehicle owned by provider)
       const { data: v } = await supabase
         .from('vehicles')
         .select('vehicle_id')
@@ -464,7 +470,6 @@ export default function TaskScreen() {
         return;
       }
 
-      // 2. Resolve route_id (preferred_route_id -> nearbyMeta route -> active route -> latest route)
       let routeId: number | null =
         req.preferred_route_id ||
         syntheticTask?.nearbyMeta?.route?.route_id ||
@@ -480,7 +485,6 @@ export default function TaskScreen() {
         routeId = latestRoute?.route_id ?? null;
       }
 
-      // 3. Ensure request is still Pending & unassigned
       const { data: fresh } = await supabase
         .from('delivery_requests')
         .select('delivery_status')
@@ -498,7 +502,6 @@ export default function TaskScreen() {
         return;
       }
 
-      // 4. Create delivery row
       const { data: delivery, error: deliveryError } = await supabase
         .from('deliveries')
         .insert({
@@ -513,7 +516,6 @@ export default function TaskScreen() {
         .single();
       if (deliveryError) throw deliveryError;
 
-      // 5. Generate QR verifications & PINs
       const { error: qrError } = await supabase.from('qr_verifications').insert({
         delivery_id: delivery.delivery_id,
         pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
@@ -526,14 +528,12 @@ export default function TaskScreen() {
         throw qrError;
       }
 
-      // 6. Update delivery_requests status
       const { error: reqUpdateError } = await supabase
         .from('delivery_requests')
         .update({ delivery_status: 'Accepted' })
         .eq('request_id', req.request_id);
       if (reqUpdateError) throw reqUpdateError;
 
-      // 7. Create escrow payment hold
       const { data: requestData } = await supabase
         .from('delivery_requests')
         .select('estimated_cost, sender_id')
@@ -551,7 +551,6 @@ export default function TaskScreen() {
           created_at: new Date().toISOString(),
         });
 
-        // Notify sender
         if (requestData.sender_id) {
           const code = trackingCode(req.request_id);
           notifyUser(
@@ -737,6 +736,8 @@ export default function TaskScreen() {
   const openDeliveryOTPModal = (delivery: any) => {
     setDeliveryOTPTarget(delivery);
     setDeliveryOTPInput('');
+    setPodPhotoUri(null);
+    setPodCameraOpen(false);
     setDeliveryOTPModalVisible(true);
   };
 
@@ -744,8 +745,56 @@ export default function TaskScreen() {
     setDeliveryOTPModalVisible(false);
     setDeliveryOTPTarget(null);
     setDeliveryOTPInput('');
+    setPodPhotoUri(null);
+    setPodCameraOpen(false);
     setDeliveryOTPVerifying(false);
     setDeliveryOTPResending(false);
+  };
+
+  const openPodCamera = async () => {
+    if (!cameraPermission?.granted) {
+      const res = await requestCameraPermission();
+      if (!res?.granted) {
+        Alert.alert('Camera Permission', 'Camera access is required to take a Proof of Delivery photo.');
+        return;
+      }
+    }
+    setPodCameraOpen(true);
+  };
+
+  const capturePodPhoto = async () => {
+    if (!podCameraRef.current || podTakingPhoto) return;
+    setPodTakingPhoto(true);
+    try {
+      const photo = await podCameraRef.current.takePictureAsync({ quality: 0.7 });
+      if (photo?.uri) {
+        setPodPhotoUri(photo.uri);
+        setPodCameraOpen(false);
+      }
+    } catch (e: any) {
+      Alert.alert('Camera Error', e?.message || 'Failed to capture photo.');
+    } finally {
+      setPodTakingPhoto(false);
+    }
+  };
+
+  const uploadPodPhoto = async (uri: string, deliveryId: number): Promise<string> => {
+    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const filePath = `pod/delivery_${deliveryId}_${Date.now()}.${ext}`;
+    const res = await fetch(uri);
+    const arrayBuffer = await res.arrayBuffer();
+
+    const { error: upErr } = await supabase.storage
+      .from(CARGO_PHOTO_BUCKET)
+      .upload(filePath, arrayBuffer, {
+        contentType: `image/${ext === 'png' ? 'png' : 'jpeg'}`,
+        upsert: true,
+      });
+
+    if (upErr) throw upErr;
+
+    const { data } = supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(filePath);
+    return data.publicUrl;
   };
 
   const tryLocalSystemOtpFallback = async (deliveryId: number, otp: string): Promise<{ handled: boolean; success: boolean }> => {
@@ -771,6 +820,10 @@ export default function TaskScreen() {
 
   const completeDelivery = async () => {
     if (!deliveryOTPTarget || deliveryOTPInput.trim().length !== 6) return;
+    if (!podPhotoUri) {
+      Alert.alert('Photo Required', 'Please take a Proof of Delivery photo before completing.');
+      return;
+    }
 
     const deliveryId = deliveryOTPTarget.delivery_id;
     const requestId = deliveryOTPTarget.delivery_requests?.request_id;
@@ -802,6 +855,7 @@ export default function TaskScreen() {
         return;
       }
 
+      const podPublicUrl = await uploadPodPhoto(podPhotoUri, deliveryId);
       const now = new Date().toISOString();
 
       await supabase
@@ -811,14 +865,18 @@ export default function TaskScreen() {
 
       const { error: delError } = await supabase
         .from('deliveries')
-        .update({ completed_at: now })
+        .update({
+          completed_at: now,
+          pod_photo_url: podPublicUrl,
+          pod_seen_by_sender: false,
+        })
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
-      Alert.alert('✅ Delivery Complete!', 'Payment has been released to your wallet.', [{ text: 'OK' }]);
+      Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
       if (senderId) {
-        notifyUser(senderId, 'Delivery complete', `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered.`, { deliveryId });
+        notifyUser(senderId, 'Delivery complete 📦', `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered with photo proof.`, { deliveryId });
       }
       try { await clearLocationFix(deliveryId); } catch {}
       closeDeliveryOTPModal();
@@ -942,7 +1000,6 @@ export default function TaskScreen() {
     } finally { setOpeningChat(false); }
   };
 
-  // Deduplicate between activeDeliveries and nearbyDeliveries when building allTasks
   const allTasks = useMemo(() => {
     const map = new Map<number, any>();
     [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries].forEach(d => {
@@ -1040,15 +1097,37 @@ export default function TaskScreen() {
     </View>
   );
 
-  const renderMiniContact = (o: { role: string; name: string | null; phone: string | null; color: string; hideCall?: boolean }) => {
+  const renderMiniContact = (o: {
+    role: string;
+    name: string | null;
+    phone: string | null;
+    userId?: number | null;
+    deliveryId?: number | null;
+    color: string;
+    hideCall?: boolean;
+  }) => {
+    const canCall = !o.hideCall && (!!o.phone || !!o.userId);
+
+    const triggerCall = () => {
+      promptCallChoice({
+        name: o.name,
+        role: o.role,
+        calleeId: o.userId ?? null,
+        phone: o.phone,
+        deliveryId: o.deliveryId ?? null,
+      });
+    };
+
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'N/A')}`,
-        !o.hideCall && o.phone ? [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
-        ] : [{ text: 'OK' }],
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'In-App Call Available')}`,
+        canCall
+          ? [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Call', onPress: triggerCall },
+            ]
+          : [{ text: 'OK' }],
       );
     };
 
@@ -1061,10 +1140,13 @@ export default function TaskScreen() {
           <Text style={styles.mcRole}>{o.role}</Text>
           <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
         </View>
-        {!o.hideCall && !!o.phone && (
+        {canCall && (
           <TouchableOpacity
             style={styles.mcCall}
-            onPress={(e) => { e.stopPropagation(); Linking.openURL(`tel:${o.phone}`); }}
+            onPress={(e) => {
+              e.stopPropagation();
+              triggerCall();
+            }}
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
@@ -1075,7 +1157,6 @@ export default function TaskScreen() {
     );
   };
 
-  // chip on the card: compact ("1S · 1M · 1L"); details tile: full ("1 Small · 1 Medium · 1 Large")
   const cargoLabel = (info: any) => {
     const sm = info.sizeSummary;
     if (sm?.short) return `${info.totalItems} pkgs · ${sm.short}`;
@@ -1150,8 +1231,23 @@ export default function TaskScreen() {
           {renderRoute(info)}
 
           <View style={styles.oContacts}>
-            {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isUnaccepted })}
-            {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isUnaccepted })}
+            {renderMiniContact({
+              role: 'SENDER',
+              name: info.senderName,
+              phone: info.senderPhone,
+              userId: info.senderId,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: BLUE,
+              hideCall: isUnaccepted,
+            })}
+            {renderMiniContact({
+              role: 'RECEIVER',
+              name: info.receiverName,
+              phone: info.receiverPhone,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: PURPLE,
+              hideCall: isUnaccepted,
+            })}
           </View>
           {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
         </View>
@@ -1335,7 +1431,7 @@ export default function TaskScreen() {
       ? `This sender route is ${d.nearbyMeta?.pickupDistToCorridorKm?.toFixed(1) || '0'} km from your current route (+${d.nearbyMeta?.extraDetourKm?.toFixed(1) || '0'} km detour). Tap Accept below to take this job.`
       : stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
-      : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, then enter the receiver’s 6-digit OTP.`;
+      : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -1436,8 +1532,23 @@ export default function TaskScreen() {
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
             <View style={styles.oContacts}>
-              {renderMiniContact({ role: 'SENDER', name: info.senderName, phone: info.senderPhone, color: BLUE, hideCall: isUnaccepted })}
-              {renderMiniContact({ role: 'RECEIVER', name: info.receiverName, phone: info.receiverPhone, color: PURPLE, hideCall: isUnaccepted })}
+              {renderMiniContact({
+                role: 'SENDER',
+                name: info.senderName,
+                phone: info.senderPhone,
+                userId: info.senderId,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: BLUE,
+                hideCall: isUnaccepted,
+              })}
+              {renderMiniContact({
+                role: 'RECEIVER',
+                name: info.receiverName,
+                phone: info.receiverPhone,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: PURPLE,
+                hideCall: isUnaccepted,
+              })}
             </View>
 
             {stage === 'pickup' && (
@@ -1451,6 +1562,22 @@ export default function TaskScreen() {
                   </>
                 )}
               </TouchableOpacity>
+            )}
+
+            {!!d.pod_photo_url && (
+              <>
+                <View style={styles.dSecHead}>
+                  <Ionicons name="shield-checkmark-outline" size={17} color={colors.success} />
+                  <Text style={styles.dSecTitle}>Proof of Delivery</Text>
+                </View>
+                <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pod_photo_url)}>
+                  <Image
+                    source={{ uri: d.pod_photo_url }}
+                    style={{ width: '100%', height: 190, borderRadius: 16, borderWidth: 1, borderColor: colors.border }}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              </>
             )}
 
             {photos.length > 0 && (
@@ -1773,68 +1900,136 @@ export default function TaskScreen() {
 
   const renderDeliveryOTPModal = () => (
     <Modal visible={deliveryOTPModalVisible} transparent animationType="slide" onRequestClose={closeDeliveryOTPModal}>
-      <View style={styles.otpModalOverlay}>
-        <View style={styles.otpModalCard}>
-          <View style={styles.otpModalHeader}>
-            <View style={styles.otpModalIconBox}>
-              <Ionicons name="shield-checkmark" size={24} color={colors.success} />
-            </View>
-            <TouchableOpacity onPress={closeDeliveryOTPModal}>
-              <Ionicons name="close" size={24} color={colors.textPrimary} />
+      {podCameraOpen ? (
+        <View style={styles.scannerRoot}>
+          <StatusBar barStyle="light-content" backgroundColor="#000" />
+          <CameraView ref={podCameraRef} style={StyleSheet.absoluteFill} facing="back" />
+          <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
+            <TouchableOpacity style={styles.scannerCloseBtn} onPress={() => setPodCameraOpen(false)}>
+              <Ionicons name="close" size={24} color="#FFF" />
             </TouchableOpacity>
           </View>
-
-          <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
-          <Text style={styles.otpModalSubtitle}>
-            Ask the receiver for the 6-digit OTP sent to their phone. Verifying will release payment to your wallet.
-          </Text>
-
-          <View style={styles.otpInputContainer}>
-            <TextInput
-              style={styles.otpInput}
-              value={deliveryOTPInput}
-              onChangeText={(t) => setDeliveryOTPInput(t.replace(/[^0-9]/g, '').slice(0, 6))}
-              keyboardType="number-pad"
-              placeholder="000000"
-              placeholderTextColor={colors.textMuted}
-              maxLength={6}
-            />
-          </View>
-
-          <View style={styles.otpInfoBox}>
-            <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
-            <Text style={styles.otpInfoText} numberOfLines={2}>
-              Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
-              {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
-                deliveryOTPTarget?.delivery_requests?.receiver?.receiver_phone ||
-                'N/A'}
+          <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetHeading}>Take Proof of Delivery</Text>
+            <Text style={[styles.sheetSubheading, { textAlign: 'center' }]}>
+              Capture a clear photo of the package at the drop-off location or with the receiver.
             </Text>
+            <TouchableOpacity
+              style={[styles.mPrimaryBtn, { width: '100%', marginTop: 8 }]}
+              onPress={capturePodPhoto}
+              disabled={podTakingPhoto}
+              activeOpacity={0.9}
+            >
+              {podTakingPhoto ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="camera" size={20} color="#FFF" />
+                  <Text style={styles.mPrimaryText}>Capture Photo</Text>
+                </>
+              )}
+            </TouchableOpacity>
           </View>
-
-          {!!deliveryOTPTarget?.escrow?.payment_method && (
-            <View style={styles.otpPayoutRow}>
-              <Text style={styles.otpPayoutLabel}>Sender paid via</Text>
-              <PaymentMethodBadge provider={deliveryOTPTarget.escrow.payment_method} size={18} />
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={[styles.otpVerifyButton, (deliveryOTPInput.length !== 6 || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled]}
-            disabled={deliveryOTPInput.length !== 6 || deliveryOTPVerifying}
-            onPress={completeDelivery}
-            activeOpacity={0.9}
-          >
-            {deliveryOTPVerifying ? (
-              <ActivityIndicator color="#FFF" size="small" />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
-              </>
-            )}
-          </TouchableOpacity>
         </View>
-      </View>
+      ) : (
+        <View style={styles.otpModalOverlay}>
+          <View style={styles.otpModalCard}>
+            <View style={styles.otpModalHeader}>
+              <View style={styles.otpModalIconBox}>
+                <Ionicons name="shield-checkmark" size={24} color={colors.success} />
+              </View>
+              <TouchableOpacity onPress={closeDeliveryOTPModal}>
+                <Ionicons name="close" size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.otpModalTitle}>Confirm Delivery</Text>
+            <Text style={styles.otpModalSubtitle}>
+              Take a Proof of Delivery photo and enter the receiver's 6-digit OTP to release payment.
+            </Text>
+
+            {/* POD Photo Capture Slot */}
+            {podPhotoUri ? (
+              <View style={{ marginBottom: 14, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: colors.border }}>
+                <Image source={{ uri: podPhotoUri }} style={{ width: '100%', height: 150 }} resizeMode="cover" />
+                <TouchableOpacity
+                  style={{
+                    position: 'absolute', bottom: 8, right: 8,
+                    flexDirection: 'row', alignItems: 'center', gap: 4,
+                    backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10,
+                  }}
+                  onPress={openPodCamera}
+                >
+                  <Ionicons name="camera-reverse-outline" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>Retake</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
+                  backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 14, marginBottom: 14,
+                }}
+                onPress={openPodCamera}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="camera-outline" size={20} color={ORANGE} />
+                <Text style={{ color: ORANGE, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={styles.otpInputContainer}>
+              <TextInput
+                style={styles.otpInput}
+                value={deliveryOTPInput}
+                onChangeText={(t) => setDeliveryOTPInput(t.replace(/[^0-9]/g, '').slice(0, 6))}
+                keyboardType="number-pad"
+                placeholder="000000"
+                placeholderTextColor={colors.textMuted}
+                maxLength={6}
+              />
+            </View>
+
+            <View style={styles.otpInfoBox}>
+              <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
+              <Text style={styles.otpInfoText} numberOfLines={2}>
+                Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
+                {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
+                  deliveryOTPTarget?.delivery_requests?.receiver?.receiver_phone ||
+                  'N/A'}
+              </Text>
+            </View>
+
+            {!!deliveryOTPTarget?.escrow?.payment_method && (
+              <View style={styles.otpPayoutRow}>
+                <Text style={styles.otpPayoutLabel}>Sender paid via</Text>
+                <PaymentMethodBadge provider={deliveryOTPTarget.escrow.payment_method} size={18} />
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.otpVerifyButton,
+                (deliveryOTPInput.length !== 6 || !podPhotoUri || deliveryOTPVerifying) && styles.otpVerifyButtonDisabled,
+              ]}
+              disabled={deliveryOTPInput.length !== 6 || !podPhotoUri || deliveryOTPVerifying}
+              onPress={completeDelivery}
+              activeOpacity={0.9}
+            >
+              {deliveryOTPVerifying ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                  <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </Modal>
   );
 
