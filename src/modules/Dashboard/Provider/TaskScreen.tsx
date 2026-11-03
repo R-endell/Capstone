@@ -13,11 +13,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
-import {
-  getProviderDeliveries,
-  getNearbyUnmatchedRequests,
-  NearbyRequestResult,
-} from '../../../services/matchingService';
+import { getProviderDeliveries } from '../../../services/matchingService';
 import { getActiveRouteId } from '../../../services/activeRouteStore';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
@@ -205,42 +201,6 @@ const enrichDeliveries = async (list: any[]) => {
   });
 };
 
-const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[], providerId: number) => {
-  if (!nearbyList || nearbyList.length === 0) return [];
-  const senderIds = Array.from(new Set(nearbyList.map(n => n.request?.sender_id).filter(Boolean)));
-  const senders: Record<number, any> = {};
-  try {
-    if (senderIds.length) {
-      const { data } = await supabase.from('users').select('user_id, first_name, last_name, phone_number').in('user_id', senderIds as number[]);
-      (data || []).forEach((u: any) => { senders[u.user_id] = u; });
-    }
-  } catch { }
-
-  return nearbyList.map(n => {
-    const isDirect =
-      !!n.isDirectRequest ||
-      (n.request?.preferred_provider_id != null && Number(n.request.preferred_provider_id) === Number(providerId));
-
-    return {
-      ...n,
-      syntheticDelivery: {
-        delivery_id: -n.request.request_id, // negative ID distinguishes nearby/direct preview from accepted delivery
-        request_id: n.request.request_id,
-        delivery_requests: n.request,
-        sender: senders[n.request.sender_id] || null,
-        escrow: n.request.payment_provider ? { payment_method: n.request.payment_provider } : null,
-        nearbyMeta: {
-          route: n.route,
-          pickupDistToCorridorKm: n.pickupDistToCorridorKm,
-          dropoffDistToCorridorKm: n.dropoffDistToCorridorKm,
-          extraDetourKm: n.extraDetourKm,
-          isDirectRequest: isDirect,
-        },
-      },
-    };
-  });
-};
-
 /* ==================================================================== */
 /* Cancellation detection                                               */
 /* ==================================================================== */
@@ -304,7 +264,7 @@ const BLACK = '#111827';
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
-type TabType = 'active' | 'nearby' | 'completed' | 'cancelled' | 'all';
+type TabType = 'active' | 'completed' | 'cancelled' | 'all';
 
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
@@ -319,8 +279,6 @@ export default function TaskScreen() {
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
-  const [nearbyDeliveries, setNearbyDeliveries] = useState<any[]>([]);
-  const [acceptingRequestId, setAcceptingRequestId] = useState<number | null>(null);
   const [userData, setUserData] = useState<any>(null);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
@@ -409,10 +367,7 @@ export default function TaskScreen() {
 
   const fetchDeliveries = async (pid: number) => {
     try {
-      const [deliveries, rawNearby] = await Promise.all([
-        getProviderDeliveries(pid),
-        getNearbyUnmatchedRequests(pid),
-      ]);
+      const deliveries = await getProviderDeliveries(pid);
 
       const uniqueDeliveries = deliveries.filter((v: any, i: number, a: any[]) =>
         a.findIndex(t => (t.request_id === v.request_id)) === i,
@@ -424,170 +379,12 @@ export default function TaskScreen() {
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
       const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
 
-      const enrichedNearby = await enrichNearbyRequests(rawNearby, pid);
-      const nearbySynthetics = enrichedNearby.map(n => n.syntheticDelivery);
-
-      const directAwaitingSynthetics = nearbySynthetics.filter(s => s?.nearbyMeta?.isDirectRequest);
-
-      setActiveDeliveries([...directAwaitingSynthetics, ...acceptedActive]);
+      setActiveDeliveries(acceptedActive);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
-      setNearbyDeliveries(nearbySynthetics);
     } catch (error) {
       console.error('Error fetching deliveries:', error);
     }
-  };
-
-  /* ------------------------------------------------------------------ */
-  /* Accept Nearby / Direct Delivery Request                            */
-  /* ------------------------------------------------------------------ */
-  const doAcceptNearbyRequest = async (syntheticTask: any) => {
-    const req = syntheticTask?.delivery_requests;
-    if (!providerId || !req) return;
-
-    setAcceptingRequestId(req.request_id);
-    try {
-      const { data: v } = await supabase
-        .from('vehicles')
-        .select('vehicle_id')
-        .eq('provider_id', providerId)
-        .eq('verification_status', 'Verified')
-        .limit(1)
-        .maybeSingle();
-
-      let vehicleId = v?.vehicle_id ?? syntheticTask?.nearbyMeta?.route?.vehicle_id ?? null;
-      if (!vehicleId) {
-        const { data: anyVeh } = await supabase
-          .from('vehicles')
-          .select('vehicle_id')
-          .eq('provider_id', providerId)
-          .limit(1)
-          .maybeSingle();
-        vehicleId = anyVeh?.vehicle_id ?? null;
-      }
-      if (!vehicleId) {
-        Alert.alert('Vehicle Not Found', 'You need a registered vehicle before you can accept deliveries.');
-        return;
-      }
-
-      let routeId: number | null =
-        req.preferred_route_id ||
-        syntheticTask?.nearbyMeta?.route?.route_id ||
-        (await getActiveRouteId());
-      if (!routeId) {
-        const { data: latestRoute } = await supabase
-          .from('provider_routes')
-          .select('route_id')
-          .eq('provider_id', providerId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        routeId = latestRoute?.route_id ?? null;
-      }
-
-      const { data: fresh } = await supabase
-        .from('delivery_requests')
-        .select('delivery_status')
-        .eq('request_id', req.request_id)
-        .maybeSingle();
-      const { data: existing } = await supabase
-        .from('deliveries')
-        .select('delivery_id')
-        .eq('request_id', req.request_id)
-        .limit(1);
-
-      if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
-        Alert.alert('Request Unavailable', 'This delivery request was already accepted or cancelled.');
-        await fetchDeliveries(providerId);
-        return;
-      }
-
-      const { data: delivery, error: deliveryError } = await supabase
-        .from('deliveries')
-        .insert({
-          request_id: req.request_id,
-          provider_id: providerId,
-          vehicle_id: vehicleId,
-          route_id: routeId,
-          accepted_at: new Date().toISOString(),
-          estimated_eta: new Date(Date.now() + 3600000).toISOString(),
-        })
-        .select('*')
-        .single();
-      if (deliveryError) throw deliveryError;
-
-      const { error: qrError } = await supabase.from('qr_verifications').insert({
-        delivery_id: delivery.delivery_id,
-        pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
-        dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
-        pickup_pin: randPin(),
-        dropoff_pin: randPin(),
-      });
-      if (qrError) {
-        await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
-        throw qrError;
-      }
-
-      const { error: reqUpdateError } = await supabase
-        .from('delivery_requests')
-        .update({ delivery_status: 'Accepted' })
-        .eq('request_id', req.request_id);
-      if (reqUpdateError) throw reqUpdateError;
-
-      const { data: requestData } = await supabase
-        .from('delivery_requests')
-        .select('estimated_cost, sender_id')
-        .eq('request_id', req.request_id)
-        .single();
-
-      if (requestData) {
-        await supabase.from('escrow_payments').insert({
-          amount: requestData.estimated_cost,
-          delivery_id: delivery.delivery_id,
-          sender_id: requestData.sender_id,
-          provider_id: providerId,
-          escrow_status: 'On hold',
-          emergency_frozen: false,
-          created_at: new Date().toISOString(),
-        });
-
-        if (requestData.sender_id) {
-          const code = trackingCode(req.request_id);
-          notifyUser(
-            requestData.sender_id,
-            'Courier Accepted Your Delivery! 🚚',
-            `Your courier accepted parcel #${code} and will head to the pickup location.`,
-            { deliveryId: delivery.delivery_id },
-          ).catch(() => {});
-        }
-      }
-
-      setSelectedId(null);
-      setActiveTab('active');
-      await fetchDeliveries(providerId);
-      Alert.alert(
-        '✅ Delivery Accepted!',
-        'The route is now in your Active tasks. Ask the sender for their pickup QR or PIN when you arrive.',
-      );
-    } catch (error: any) {
-      Alert.alert('Error', error?.message || 'Failed to accept delivery.');
-    } finally {
-      setAcceptingRequestId(null);
-    }
-  };
-
-  const confirmAcceptNearby = (syntheticTask: any) => {
-    if (acceptingRequestId != null) return;
-    const info = buildTaskInfo(syntheticTask);
-    const isDirect = !!syntheticTask?.nearbyMeta?.isDirectRequest;
-    Alert.alert(
-      isDirect ? 'Accept Direct Route Request?' : 'Accept Nearby Delivery?',
-      `You will earn ${money(info.earnings)} for delivering from ${info.pickup.main} to ${info.dropoff.main}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Accept Delivery', onPress: () => doAcceptNearbyRequest(syntheticTask) },
-      ],
-    );
   };
 
   const handlePingSender = async (delivery: any) => {
@@ -918,13 +715,12 @@ export default function TaskScreen() {
     const stillActive = activeDeliveries.some(d => d.delivery_id === selectedId);
     const stillCompleted = completedDeliveries.some(d => d.delivery_id === selectedId);
     const stillCancelled = cancelledDeliveries.some(d => d.delivery_id === selectedId);
-    const stillNearby = nearbyDeliveries.some(d => d.delivery_id === selectedId);
-    if (!stillActive && !stillCompleted && !stillCancelled && !stillNearby) {
+    if (!stillActive && !stillCompleted && !stillCancelled) {
       setSelectedId(null);
       closeVerifyModal();
       closeDeliveryOTPModal();
     }
-  }, [activeDeliveries, completedDeliveries, cancelledDeliveries, nearbyDeliveries, selectedId]);
+  }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -943,20 +739,14 @@ export default function TaskScreen() {
     return status === 'In Transit' || status === 'Completed';
   };
 
-  const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' | 'awaiting_acceptance' => {
-    if (d?.nearbyMeta?.isDirectRequest) return 'awaiting_acceptance';
-    if (d?.nearbyMeta) return 'nearby';
+  const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
     if (d?.completed_at) return 'done';
     return isPickupVerified(d) ? 'transit' : 'pickup';
   };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' | 'awaiting_acceptance') => {
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
     switch (stage) {
-      case 'awaiting_acceptance':
-        return { label: 'Waiting for Acceptance', bg: colors.accentSoft, fg: ORANGE, icon: 'hourglass-outline' };
-      case 'nearby':
-        return { label: 'Nearby Route', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'compass-outline' };
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
       case 'transit':
@@ -1008,14 +798,6 @@ export default function TaskScreen() {
     return Array.from(map.values());
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries]);
 
-  const allLookupTasks = useMemo(() => {
-    const map = new Map<number, any>();
-    [...allTasks, ...nearbyDeliveries].forEach(d => {
-      map.set(d.delivery_id, d);
-    });
-    return Array.from(map.values());
-  }, [allTasks, nearbyDeliveries]);
-
   const openRoute = (d: any) => {
     const st = stageOf(d);
     if (st !== 'pickup' && st !== 'transit') return;
@@ -1028,18 +810,16 @@ export default function TaskScreen() {
     navigation.navigate('ProviderNavigation', { deliveryId: d.delivery_id });
   };
 
-  const selectedTask = selectedId != null ? allLookupTasks.find(d => d.delivery_id === selectedId) || null : null;
+  const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
 
   const tabCount = (t: TabType) =>
     t === 'active' ? activeDeliveries.length
-      : t === 'nearby' ? nearbyDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
 
   const filteredTasks =
     activeTab === 'active' ? activeDeliveries
-      : activeTab === 'nearby' ? nearbyDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
@@ -1178,18 +958,14 @@ export default function TaskScreen() {
     const stage = stageOf(d);
     const meta = statusMeta(stage);
     const isCancelled = stage === 'cancelled';
-    const isUnaccepted = stage === 'nearby' || stage === 'awaiting_acceptance';
-    const isDirect = stage === 'awaiting_acceptance';
     const active = stage === 'pickup' || stage === 'transit';
-    const isAcceptingThis = isUnaccepted && acceptingRequestId === info.request.request_id;
 
     return (
       <TouchableOpacity
         key={d.delivery_id}
         style={[
           styles.oCard,
-          isDirect && { borderColor: ORANGE, borderWidth: 1.5 },
-          !active && !isUnaccepted && { opacity: 0.88 },
+          !active && { opacity: 0.88 },
         ]}
         onPress={() => setSelectedId(d.delivery_id)}
         activeOpacity={0.92}
@@ -1199,34 +975,6 @@ export default function TaskScreen() {
             {renderServicePill(info)}
             {renderStatusPill(meta)}
           </View>
-
-          {isUnaccepted && d.nearbyMeta && (
-            <View style={styles.nearbyBadgeRow}>
-              {isDirect ? (
-                <View style={styles.nearbyDistPill}>
-                  <Ionicons name="person-circle-outline" size={14} color={ORANGE} />
-                  <Text style={styles.nearbyDistText}>
-                    Sender selected your route · Waiting for your acceptance
-                  </Text>
-                </View>
-              ) : (
-                <>
-                  <View style={styles.nearbyDistPill}>
-                    <Ionicons name="git-branch-outline" size={13} color={ORANGE} />
-                    <Text style={styles.nearbyDistText}>
-                      {d.nearbyMeta.pickupDistToCorridorKm.toFixed(1)} km from your route
-                    </Text>
-                  </View>
-                  <View style={styles.nearbyDetourPill}>
-                    <Ionicons name="navigate-outline" size={12} color={colors.textSecondary} />
-                    <Text style={styles.nearbyDetourText}>
-                      +{d.nearbyMeta.extraDetourKm.toFixed(1)} km detour
-                    </Text>
-                  </View>
-                </>
-              )}
-            </View>
-          )}
 
           {renderRoute(info)}
 
@@ -1238,7 +986,7 @@ export default function TaskScreen() {
               userId: info.senderId,
               deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
               color: BLUE,
-              hideCall: isUnaccepted,
+              hideCall: false,
             })}
             {renderMiniContact({
               role: 'RECEIVER',
@@ -1246,7 +994,7 @@ export default function TaskScreen() {
               phone: info.receiverPhone,
               deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
               color: PURPLE,
-              hideCall: isUnaccepted,
+              hideCall: false,
             })}
           </View>
           {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
@@ -1286,34 +1034,6 @@ export default function TaskScreen() {
             </TouchableOpacity>
           </View>
         )}
-
-        {isUnaccepted && (
-          <View style={styles.oActions}>
-            <TouchableOpacity
-              style={styles.oChatBtn}
-              onPress={() => setSelectedId(d.delivery_id)}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="eye-outline" size={16} color={ORANGE} />
-              <Text style={styles.oChatText}>Details</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.oRouteBtn, isAcceptingThis && { opacity: 0.7 }]}
-              onPress={() => confirmAcceptNearby(d)}
-              disabled={isAcceptingThis}
-              activeOpacity={0.9}
-            >
-              {isAcceptingThis ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle-outline" size={17} color="#FFFFFF" />
-                  <Text style={styles.oRouteText}>Accept Delivery</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -1324,15 +1044,12 @@ export default function TaskScreen() {
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'nearby', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
-            const label = t === 'nearby' ? 'Nearby' : t.charAt(0).toUpperCase() + t.slice(1);
+            const label = t.charAt(0).toUpperCase() + t.slice(1);
             return (
               <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
-                {t === 'nearby' && (
-                  <Ionicons name="compass-outline" size={14} color={on ? ORANGE : colors.textSecondary} />
-                )}
                 <Text style={[styles.tabText, on && styles.tabTextActive]}>
                   {label}
                 </Text>
@@ -1354,22 +1071,12 @@ export default function TaskScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
-          {activeTab === 'nearby' && nearbyDeliveries.length > 0 && (
-            <View style={styles.nearbyInfoBanner}>
-              <Ionicons name="location-outline" size={16} color={ORANGE} />
-              <Text style={styles.nearbyInfoBannerText}>
-                Showing direct route requests and unassigned sender routes close to your current route corridor.
-              </Text>
-            </View>
-          )}
-
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <Ionicons
                   name={
                     activeTab === 'cancelled' ? 'close-circle-outline'
-                      : activeTab === 'nearby' ? 'compass-outline'
                       : allTasks.length === 0 ? 'briefcase-outline'
                       : 'search-outline'
                   }
@@ -1380,17 +1087,13 @@ export default function TaskScreen() {
               <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
-                  : activeTab === 'nearby'
-                  ? 'No nearby sender routes right now'
                   : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
-                  : activeTab === 'nearby'
-                  ? 'Sender routes close to your current active route will appear here so you can accept them.'
                   : allTasks.length === 0
-                    ? 'Deliveries you accept or direct route requests appear here.'
+                    ? 'Deliveries you accept appear here.'
                     : 'Try another tab to view history.'}
               </Text>
             </View>
@@ -1412,10 +1115,7 @@ export default function TaskScreen() {
       ? 'Released to your wallet'
       : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
     const isCancelled = stage === 'cancelled';
-    const isUnaccepted = stage === 'nearby' || stage === 'awaiting_acceptance';
-    const isDirect = stage === 'awaiting_acceptance';
     const active = stage === 'pickup' || stage === 'transit';
-    const isAcceptingThis = isUnaccepted && acceptingRequestId === info.request?.request_id;
 
     const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : 0;
@@ -1425,11 +1125,7 @@ export default function TaskScreen() {
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
     const photos = items.filter((it: any) => !!it.photo && !failedPhotos[it.photo]);
-    const hintText = isDirect
-      ? 'The sender specifically selected your route for this delivery! Tap Accept Delivery below to confirm and start.'
-      : stage === 'nearby'
-      ? `This sender route is ${d.nearbyMeta?.pickupDistToCorridorKm?.toFixed(1) || '0'} km from your current route (+${d.nearbyMeta?.extraDetourKm?.toFixed(1) || '0'} km detour). Tap Accept below to take this job.`
-      : stage === 'pickup'
+    const hintText = stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
       : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
 
@@ -1444,7 +1140,7 @@ export default function TaskScreen() {
 
         <ScrollView
           style={StyleSheet.absoluteFill}
-          contentContainerStyle={{ paddingBottom: (active || isUnaccepted) ? insets.bottom + 110 : insets.bottom + 40 }}
+          contentContainerStyle={{ paddingBottom: active ? insets.bottom + 110 : insets.bottom + 40 }}
           showsVerticalScrollIndicator={false}
         >
           <View style={{ height: mapH - 28 }}>
@@ -1476,7 +1172,7 @@ export default function TaskScreen() {
               <Text style={styles.dWhen}>Scheduled · {formatDateTime(info.request.scheduled_time)}</Text>
             )}
 
-            {!isCancelled && !isUnaccepted && (
+            {!isCancelled && (
               <View style={styles.stepper}>
                 {progressSteps.map((label, i) => {
                   const done = i <= doneUpTo;
@@ -1524,7 +1220,7 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={isDirect ? 'hourglass-outline' : isUnaccepted ? 'compass' : 'information-circle'} size={18} color={ORANGE} />
+                <Ionicons name={'information-circle'} size={18} color={ORANGE} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1539,7 +1235,7 @@ export default function TaskScreen() {
                 userId: info.senderId,
                 deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
                 color: BLUE,
-                hideCall: isUnaccepted,
+                hideCall: false,
               })}
               {renderMiniContact({
                 role: 'RECEIVER',
@@ -1547,7 +1243,7 @@ export default function TaskScreen() {
                 phone: info.receiverPhone,
                 deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
                 color: PURPLE,
-                hideCall: isUnaccepted,
+                hideCall: false,
               })}
             </View>
 
@@ -1667,30 +1363,6 @@ export default function TaskScreen() {
             >
               <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color="#FFFFFF" />
               <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {isUnaccepted && (
-          <View style={styles.dBar}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.eyebrow}>YOU EARN</Text>
-              <Text style={{ fontSize: 22, fontWeight: '900', color: ORANGE }}>{money(info.earnings)}</Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.5 }, isAcceptingThis && { opacity: 0.7 }]}
-              onPress={() => confirmAcceptNearby(d)}
-              disabled={isAcceptingThis}
-              activeOpacity={0.9}
-            >
-              {isAcceptingThis ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-                  <Text style={styles.mPrimaryText}>Accept Delivery</Text>
-                </>
-              )}
             </TouchableOpacity>
           </View>
         )}
@@ -1818,18 +1490,6 @@ export default function TaskScreen() {
             </View>
             {(() => {
               const st = stageOf(selectedTask);
-              if (st === 'nearby' || st === 'awaiting_acceptance') {
-                return (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, { justifyContent: 'center', marginTop: 14, paddingVertical: 14 }]}
-                    onPress={() => { setMapModalVisible(false); confirmAcceptNearby(selectedTask); }}
-                    activeOpacity={0.9}
-                  >
-                    <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
-                    <Text style={styles.actionBtnText}>Accept This Delivery</Text>
-                  </TouchableOpacity>
-                );
-              }
               if (st !== 'pickup' && st !== 'transit') return null;
               return (
                 <TouchableOpacity
@@ -2116,26 +1776,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
   emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
-
-  nearbyInfoBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
-    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
-  },
-  nearbyInfoBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
-  nearbyBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
-  nearbyDistPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
-  },
-  nearbyDistText: { fontSize: 11.5, fontWeight: '800', color: ORANGE },
-  nearbyDetourPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.background, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 8, borderWidth: 1, borderColor: c.divider,
-  },
-  nearbyDetourText: { fontSize: 11.5, fontWeight: '700', color: c.textSecondary },
 
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
