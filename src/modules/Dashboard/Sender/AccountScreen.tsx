@@ -353,26 +353,17 @@ export default function AccountScreen() {
                 <Text style={styles.profileName} numberOfLines={1}>
                   {firstName} {lastName}
                 </Text>
-                <View style={[
-                  styles.roleBadgeInline,
-                  providerState === 'approved' ? styles.roleBadgeProvider
-                    : providerState === 'pending' ? styles.roleBadgePending
-                    : providerState === 'rejected' ? styles.roleBadgeRejected
-                    : styles.roleBadgeSender,
-                ]}>
-                  <Text style={[styles.roleBadgeTextInline, {
-                    color:
-                      providerState === 'approved' ? colors.success
-                      : providerState === 'pending' ? colors.warning
-                      : providerState === 'rejected' ? colors.error
-                      : ORANGE,
-                  }]}>
-                    {providerState === 'approved' ? 'PROVIDER'
-                      : providerState === 'pending' ? 'PENDING'
-                      : providerState === 'rejected' ? 'REJECTED'
-                      : 'SENDER'}
-                  </Text>
+                                {/* Always show Sender */}
+                <View style={[styles.roleBadgeInline, { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: '#3B82F6' }]}>SENDER</Text>
                 </View>
+
+                {/* Show Provider only if they are approved */}
+                {providerState === 'approved' && (
+                  <View style={[styles.roleBadgeInline, { backgroundColor: '#FFF7ED', borderColor: ORANGE }]}>
+                    <Text style={[styles.roleBadgeTextInline, { color: ORANGE }]}>PROVIDER</Text>
+                  </View>
+                )}
               </View>
               <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
             </View>

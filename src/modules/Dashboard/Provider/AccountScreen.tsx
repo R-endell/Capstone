@@ -378,8 +378,12 @@ export default function ProviderAccountScreen() {
             <View style={styles.nameContainer}>
               <View style={styles.nameAndBadgeRow}>
                 <Text style={styles.profileName} numberOfLines={1}>{firstName} {lastName}</Text>
-                <View style={styles.roleBadgeInline}>
-                  <Text style={styles.roleBadgeTextInline}>PROVIDER</Text>
+                                {/* Show both roles since everyone is a Sender by default */}
+                <View style={[styles.roleBadgeInline, { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: '#3B82F6' }]}>SENDER</Text>
+                </View>
+                <View style={[styles.roleBadgeInline, { backgroundColor: '#FFF7ED', borderColor: ORANGE }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: ORANGE }]}>PROVIDER</Text>
                 </View>
               </View>
               <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
