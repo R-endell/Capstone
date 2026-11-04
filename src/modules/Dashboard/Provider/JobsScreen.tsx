@@ -16,10 +16,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
-import { getActiveRouteId, setActiveRouteId, getDemoMode, setDemoMode, subscribeDemoMode } from '../../../services/activeRouteStore';
+import {
+  getActiveRouteId,
+  setActiveRouteId,
+  subscribeActiveRoute,
+  getDemoMode,
+  setDemoMode,
+  subscribeDemoMode,
+} from '../../../services/activeRouteStore';
 import { evaluateAndFetchRouteMatches, computeCargoVolumeLiters, RouteMatchRow } from '../../../services/matchingService';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
-import { startBackgroundMatcher, stopBackgroundMatcher } from '../../../services/backgroundMatcher';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
@@ -85,6 +91,8 @@ interface Route {
   fallback_reason?: 'CONDITION_A' | 'CONDITION_B' | null;
   fallback_used?: boolean;
   admin_review_flag?: boolean;
+  is_deleted?: boolean;
+  is_active?: boolean;
   start_location_id: number;
   end_location_id: number;
   provider_id: number;
@@ -146,15 +154,6 @@ type SearchResult = {
 };
 type NearbyPlace = { id: string; name: string; address: string; latitude: number; longitude: number; dist: number };
 type Label = { name: string; sub?: string };
-
-const toNaiveIsoString = (date: Date): string => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${y}-${m}-${d}T${hh}:${mm}:00`;
-};
 
 const parseNaiveIsoString = (s: string): Date => {
   if (!s) return new Date();
@@ -349,7 +348,7 @@ const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, cu
     senderName: senders[r.sender_id] || 'Sender',
     receiverName: r.receiver?.receiver_name || [r.receiver?.first_name, r.receiver?.last_name].filter(Boolean).join(' ') || null,
     preferred_provider_id: prefProviderId,
-    preferred_route_id: r.preferred_route_id ?? null,
+    preferred_route_id: r.preferred_route_id ?? m.route_id ?? null,
     isDirectRequest,
     matchScore: m.match_score,
     isFallback: m.is_fallback,
@@ -551,7 +550,7 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
     <MapView
       ref={mapRef}
       {...MAP_PROPS}
-      userInterfaceStyle="light" // ✅ FIX: Force light theme
+      userInterfaceStyle="light"
       style={{ flex: 1 }}
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
@@ -1022,7 +1021,7 @@ const RouteLocationPickerModal = ({
           <MapView
             ref={mapRef}
             provider={PROVIDER_GOOGLE}
-            userInterfaceStyle="light" // ✅ FIX: Force light theme
+            userInterfaceStyle="light"
             style={StyleSheet.absoluteFill}
             initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
             onMapReady={() => setMapLoaded(true)}
@@ -1303,6 +1302,15 @@ export default function JobsScreen() {
   const [usedTodayCount, setUsedTodayCount] = useState(0);
   const [demoMode, setDemoModeState] = useState(false);
 
+  // Refs so async callbacks & realtime listeners always see latest values without waiting for re-render
+  const providerIdRef = useRef<number | null>(null);
+  const activeRouteRef = useRef<Route | null>(null);
+  const routesRef = useRef<Route[]>([]);
+
+  useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
+  useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
+  useEffect(() => { routesRef.current = routes; }, [routes]);
+
   const [requests, setRequests] = useState<JobRequest[]>([]);
   const [checkingMatches, setCheckingMatches] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -1369,6 +1377,19 @@ export default function JobsScreen() {
     return subscribeDemoMode(setDemoModeState);
   }, []);
 
+  // Listen to active route changes made from ManageRoutesScreen or App.tsx
+  useEffect(() => {
+    return subscribeActiveRoute((newRouteId) => {
+      if (!newRouteId) return;
+      const found = routesRef.current.find(r => r.route_id === newRouteId);
+      if (found && activeRouteRef.current?.route_id !== newRouteId) {
+        setActiveRoute(found);
+        activeRouteRef.current = found;
+        void refreshMatches(providerIdRef.current, found, routesRef.current);
+      }
+    });
+  }, []);
+
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
@@ -1418,7 +1439,7 @@ export default function JobsScreen() {
     return () => pulse.stop();
   }, [isOnline, isFocused, onlinePulse]);
 
-    useEffect(() => {
+  useEffect(() => {
     bellPulse.setValue(0);
     if (!isFocused) return;
     const pulse = Animated.loop(
@@ -1461,6 +1482,7 @@ export default function JobsScreen() {
         const t = (row?.type || '').toLowerCase();
         if (t === 'match' || t.includes('direct')) {
           fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
+          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
@@ -1526,13 +1548,14 @@ export default function JobsScreen() {
     } catch { /* keep zeros */ }
   };
 
-  const getProviderData = async () => {
+  const getProviderData = async (): Promise<number | null> => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
       const { data: userData, error } = await supabase.from('users').select('user_id, is_online').eq('auth_id', user.id).single();
       if (error) throw error;
       setProviderId(userData.user_id);
+      providerIdRef.current = userData.user_id;
       setIsOnline(!!(userData as any).is_online);
       void loadTodayStats(userData.user_id);
       return userData.user_id;
@@ -1540,13 +1563,13 @@ export default function JobsScreen() {
   };
 
   const hasDirectOffers = requests.some(r => r.isDirectRequest && !dismissedIds.includes(r.request_id));
+  const hasAnyActiveOffers = requests.some(r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest));
 
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline && !hasDirectOffers);
+      setTabBarHidden(!loading && !isOnline && !hasDirectOffers && !hasAnyActiveOffers);
       return () => setTabBarHidden(false);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOnline, loading, hasDirectOffers]),
+    }, [isOnline, loading, hasDirectOffers, hasAnyActiveOffers]),
   );
 
   const goToTasks = () => {
@@ -1569,8 +1592,8 @@ export default function JobsScreen() {
     navigation.navigate('ManageRoutes');
   };
 
-  /* ------------------ Fetch routes / vehicles ------------------ */
-  const fetchRoutes = async (pid: number) => {
+  /* ------------------ Fetch routes / vehicles (Returns resolved route immediately) ------------------ */
+  const fetchRoutes = async (pid: number): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
     try {
       const stats = await getTodayRouteStats(pid);
       setUsedTodayCount(stats.usedTodayCount);
@@ -1592,41 +1615,148 @@ export default function JobsScreen() {
       const validRoutes = nonDeleted.filter((r) => !isRouteExpired(r));
 
       setRoutes(validRoutes);
+      routesRef.current = validRoutes;
+
       const savedId = await getActiveRouteId();
       const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
       if (restored) {
         setActiveRoute(restored);
+        activeRouteRef.current = restored;
+        return { resolvedRoute: restored, validRoutes };
       } else if (validRoutes.length > 0) {
-        setActiveRoute(validRoutes[0]);
-        await setActiveRouteId(validRoutes[0].route_id);
+        const firstRoute = validRoutes[0];
+        setActiveRoute(firstRoute);
+        activeRouteRef.current = firstRoute;
+        await setActiveRouteId(firstRoute.route_id);
+        return { resolvedRoute: firstRoute, validRoutes };
       } else {
         setActiveRoute(null);
+        activeRouteRef.current = null;
         await setActiveRouteId(null);
+        return { resolvedRoute: null, validRoutes: [] };
       }
     } catch (e) {
       console.error('fetchRoutes error:', e);
+      return { resolvedRoute: activeRouteRef.current, validRoutes: routesRef.current };
     }
   };
 
-  const refreshMatches = useCallback(async () => {
-    const pid = providerId;
+  /* ------------------ Automatic Route Match Evaluation & Auto-Selection ------------------ */
+  const refreshMatches = useCallback(async (
+    overridePid?: number | null,
+    overrideActiveRoute?: Route | null,
+    overrideAllRoutes?: Route[],
+  ) => {
+    const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
+
+    const currentActive = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
+    const allCandidateRoutes = overrideAllRoutes ?? routesRef.current;
 
     try {
       setCheckingMatches(true);
 
-      const activeRouteId = activeRoute?.route_id ?? (await getActiveRouteId());
+      // Build ordered list of routes to check: active route first, then any other valid routes
+      const orderedRoutes: Route[] = [];
+      if (currentActive) orderedRoutes.push(currentActive);
+      for (const r of allCandidateRoutes) {
+        if (!orderedRoutes.some(x => x.route_id === r.route_id)) {
+          orderedRoutes.push(r);
+        }
+      }
 
-      // Rule 1: Route First, Requests Second (Zero requests if no route is posted)
-      if (!activeRouteId) {
+      // If no routes in memory yet, check storage/DB once
+      if (orderedRoutes.length === 0) {
+        const storedId = await getActiveRouteId();
+        if (storedId) {
+          orderedRoutes.push({ route_id: storedId } as Route);
+        } else {
+          // Rule 1: Zero requests until a route is posted
+          setRequests([]);
+          return;
+        }
+      }
+
+      const isDemo = await getDemoMode();
+      let winningRoute: Route | null = orderedRoutes[0] || null;
+      let winningMatches: RouteMatchRow[] = [];
+
+      // Evaluate routes in order; automatically switch to the first route that has a match!
+      for (const candidate of orderedRoutes) {
+        const rows = await evaluateAndFetchRouteMatches(candidate.route_id, isDemo);
+        if (rows.length > 0) {
+          winningRoute = candidate;
+          winningMatches = rows;
+          break;
+        }
+      }
+
+      // Also check if a sender sent a direct request (`preferred_provider_id = pid`) anchored to one of our routes
+      if (winningMatches.length === 0) {
+        const { data: directReqs } = await supabase
+          .from('delivery_requests')
+          .select(`
+            *,
+            pickup_location:locations!delivery_requests_pickup_location_id_fkey(*),
+            dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*),
+            cargo:cargo_id(*),
+            receiver:receiver_id(*)
+          `)
+          .eq('preferred_provider_id', pid)
+          .eq('delivery_status', 'Pending');
+
+        if (directReqs && directReqs.length > 0) {
+          const reqIds = directReqs.map((r: any) => r.request_id);
+          const { data: existingDelivs } = await supabase
+            .from('deliveries')
+            .select('request_id')
+            .in('request_id', reqIds);
+          const takenSet = new Set((existingDelivs || []).map((d: any) => d.request_id));
+          const openDirect = directReqs.filter((r: any) => !takenSet.has(r.request_id));
+
+          if (openDirect.length > 0) {
+            const firstPrefRouteId = openDirect[0].preferred_route_id;
+            const matchedRouteObj =
+              orderedRoutes.find(r => r.route_id === Number(firstPrefRouteId)) ||
+              orderedRoutes[0];
+
+            if (matchedRouteObj) {
+              winningRoute = matchedRouteObj;
+              winningMatches = openDirect.map((dr: any) => ({
+                match_id: 0,
+                route_id: matchedRouteObj.route_id,
+                request_id: dr.request_id,
+                provider_id: pid,
+                match_score: 100,
+                is_fallback: false,
+                fallback_type: null,
+                pickup_dist_m: 0,
+                dropoff_dist_m: 0,
+                pickup_fraction: 0,
+                dropoff_fraction: 1,
+                extra_detour_km: 0,
+                status: 'matched',
+                request: dr,
+              }));
+            }
+          }
+        }
+      }
+
+      // If a match was found on a different route than the currently displayed one, auto-select it!
+      if (winningRoute && winningRoute.start_location && activeRouteRef.current?.route_id !== winningRoute.route_id) {
+        setActiveRoute(winningRoute);
+        activeRouteRef.current = winningRoute;
+        await setActiveRouteId(winningRoute.route_id);
+      }
+
+      if (winningMatches.length === 0) {
         setRequests([]);
         return;
       }
 
-      const matchRows = await evaluateAndFetchRouteMatches(activeRouteId, demoMode);
-
-      const senderIds = Array.from(new Set(matchRows.map(m => m.request?.sender_id).filter(Boolean)));
+      const senderIds = Array.from(new Set(winningMatches.map(m => m.request?.sender_id).filter(Boolean)));
       const senders: Record<number, string> = {};
       if (senderIds.length > 0) {
         const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
@@ -1636,7 +1766,7 @@ export default function JobsScreen() {
         });
       }
 
-      const hydrated = matchRows.map(m => normalizeMatchRow(m, senders, pid));
+      const hydrated = winningMatches.map(m => normalizeMatchRow(m, senders, pid));
 
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
@@ -1655,31 +1785,36 @@ export default function JobsScreen() {
     } finally {
       setCheckingMatches(false);
     }
-  }, [providerId, activeRoute?.route_id, demoMode]);
+  }, []);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     const pid = await getProviderData();
     if (pid) {
-      await fetchRoutes(pid);
-      await refreshMatches();
+      const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
+      await refreshMatches(pid, resolvedRoute, validRoutes);
     }
     setLoading(false);
-  };
+  }, [refreshMatches]);
 
-  useFocusEffect(useCallback(() => { loadData(); }, []));
+  useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
   useEffect(() => {
     if (!providerId) return;
-    refreshMatches();
     const channel = supabase
       .channel(`jobs-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { refreshMatches(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { refreshMatches(); })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => { refreshMatches(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [providerId, activeRoute?.route_id, refreshMatches]);
+  }, [providerId, refreshMatches]);
 
   /* ------------------------------ Add Route Modal helpers ------------------------------ */
   const fetchVehiclesForNewRoute = async (pid: number) => {
@@ -1813,12 +1948,11 @@ export default function JobsScreen() {
 
   const handleAddRouteSubmit = async () => {
     if (!providerId) { Alert.alert('Error', 'Provider not loaded.'); return; }
-    if (!newRouteStart || !newRouteEnd || !newRouteVehicleId) {
+    if (!newRouteStart || !newRouteEnd || !newRouteVehicleId || !newRouteStart.location_id || !newRouteEnd.location_id) {
       Alert.alert('Required', 'Please select start location, destination, and vehicle.');
       return;
     }
 
-    const now = new Date();
     const effectiveDate = computeNewRouteEffectiveDate();
     const combined = new Date(
       effectiveDate.getFullYear(),
@@ -1837,8 +1971,18 @@ export default function JobsScreen() {
       const res = await createProviderRouteWithGuardrails({
         providerId,
         vehicleId: newRouteVehicleId,
-        startLocation: newRouteStart,
-        endLocation: newRouteEnd,
+        startLocation: {
+          location_id: newRouteStart.location_id,
+          latitude: newRouteStart.latitude,
+          longitude: newRouteStart.longitude,
+          street_address: newRouteStart.street_address,
+        },
+        endLocation: {
+          location_id: newRouteEnd.location_id,
+          latitude: newRouteEnd.latitude,
+          longitude: newRouteEnd.longitude,
+          street_address: newRouteEnd.street_address,
+        },
         departureDateObj: combined,
         endTimeObj,
         routeFrequency: newRouteFrequency,
@@ -1852,12 +1996,11 @@ export default function JobsScreen() {
       );
 
       setAddRouteModalVisible(false);
-      await fetchRoutes(providerId);
       if (res.route) {
-        setActiveRoute(res.route);
         await setActiveRouteId(res.route.route_id);
       }
-      refreshMatches();
+      const { resolvedRoute, validRoutes } = await fetchRoutes(providerId);
+      await refreshMatches(providerId, resolvedRoute, validRoutes);
     } catch (err: any) {
       console.error('handleAddRouteSubmit error:', err);
       Alert.alert('Guardrail Check', err?.message || 'Failed to save route.');
@@ -1876,6 +2019,7 @@ export default function JobsScreen() {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
+          activeRouteRef.current = currentRoute;
           await setActiveRouteId(currentRoute.route_id);
         } else {
           await openAddRouteModal();
@@ -1887,7 +2031,7 @@ export default function JobsScreen() {
 
       await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
       setIsOnline(true);
-      setTimeout(refreshMatches, 200);
+      await refreshMatches(pid, currentRoute, routesRef.current);
     } else {
       Alert.alert('Go Offline', 'Going offline will stop matching new requests.', [
         { text: 'Cancel', style: 'cancel' },
@@ -1945,9 +2089,8 @@ export default function JobsScreen() {
     }, []),
   );
 
-  const offers = requests.filter(
-    r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest),
-  );
+  // Show all non-dismissed route matches immediately when a route is active
+  const offers = requests.filter(r => !dismissedIds.includes(r.request_id));
   const currentOffer = offers[0] ?? null;
 
   const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
@@ -2030,7 +2173,7 @@ export default function JobsScreen() {
         .limit(1);
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
-        refreshMatches();
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
         return;
       }
 
@@ -2118,7 +2261,7 @@ export default function JobsScreen() {
 
       setDetailRequestId(null);
       setDismissedIds(prev => [...prev, req.request_id]);
-      refreshMatches();
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
       if (!goToTaskTab()) {
         Alert.alert('Delivery accepted', 'Find it in the Task tab. Ask the sender to show their pickup QR when you arrive.');
       }
@@ -2593,7 +2736,9 @@ export default function JobsScreen() {
     const handleToggleDemo = async (val: boolean) => {
       setDemoModeState(val);
       await setDemoMode(val);
-      setTimeout(refreshMatches, 150);
+      setTimeout(() => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      }, 150);
     };
 
     return (
@@ -2999,7 +3144,7 @@ export default function JobsScreen() {
                   ref={addRoutePreviewMapRef}
                   style={StyleSheet.absoluteFill}
                   provider={PROVIDER_GOOGLE}
-                  userInterfaceStyle="light" // ✅ FIX: Force light theme
+                  userInterfaceStyle="light"
                   initialRegion={{
                     latitude: newRouteStart.latitude,
                     longitude: newRouteStart.longitude,
@@ -3286,9 +3431,10 @@ export default function JobsScreen() {
                       style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
                       onPress={async () => {
                         setActiveRoute(r);
+                        activeRouteRef.current = r;
                         await setActiveRouteId(r.route_id);
                         setRoutePickerVisible(false);
-                        refreshMatches();
+                        await refreshMatches(providerIdRef.current, r, routesRef.current);
                       }}
                       activeOpacity={0.85}
                     >
