@@ -55,30 +55,28 @@ const LIGHT: ThemeColors = {
 };
 
 const DARK: ThemeColors = {
-  // Matched to screenshot: Deep Navy Background & Slate Cards
-  background: '#0B1120', 
-  card: '#111827',       
-  cardElevated: '#1F2937', 
-  border: '#1F2937',     
-  divider: '#374151',
+  background: '#0F172A', // Slightly softer, premium dark navy
+  card: '#1E293B',       
+  cardElevated: '#334155', 
+  border: '#1E293B',     
+  divider: '#334155',
 
-  textPrimary: '#F9FAFB',
-  textSecondary: '#9CA3AF',
-  textMuted: '#6B7280',
-  textInverted: '#0B1120',
+  textPrimary: '#F8FAFC',
+  textSecondary: '#94A3B8',
+  textMuted: '#64748B', 
+  textInverted: '#0F172A',
 
   statusBarStyle: 'light-content',
 
-  accent: '#F27024', // Your brand orange
+  accent: '#F27024', 
   accentSoft: '#2A1A0E',
 
-  // Matched to screenshot: Pill badges
-  success: '#34D399', // Bright green text
-  successBg: '#064E3B', // Dark green background
+  success: '#34D399', 
+  successBg: '#064E3B', 
   warning: '#FBBF24', 
   warningBg: '#2A1F0A',
-  error: '#F87171', // Bright red text
-  errorBg: '#7F1D1D', // Dark red background
+  error: '#F87171', 
+  errorBg: '#7F1D1D', 
 };
 
 interface ThemeContextValue {

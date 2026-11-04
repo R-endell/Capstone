@@ -5,12 +5,13 @@ import {
   Pressable, ActivityIndicator, Alert, TextInput, Platform,
   Animated, Easing, Keyboard, KeyboardEvent, PanResponder, Dimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../utils/supabase';
 import { useTheme, ThemeColors } from '../utils/themeContext';
 
-const ORANGE = '#FF751F';
+// --- NEW UI COMPONENTS ---
+import { PhIcon } from './ui/PhIcon';
+
 const FAB_SIZE = 54;
 const EDGE_PADDING = 10;
 const TOP_SAFE = 80;
@@ -48,8 +49,6 @@ export default function SupportFab({ role }: Props) {
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0 });
 
-  // PanResponder built once — moves the FAB while dragging,
-  // and snaps to the closest side (left/right) on release.
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
@@ -72,14 +71,12 @@ export default function SupportFab({ role }: Props) {
         const finalX = dragStart.current.x + gesture.dx;
         const finalY = dragStart.current.y + gesture.dy;
 
-        // Snap to nearest edge (left or right)
         const centerX = finalX + FAB_SIZE / 2;
         const snapToRight = centerX > SCREEN_W / 2;
         const targetX = snapToRight
           ? SCREEN_W - FAB_SIZE - EDGE_PADDING
           : EDGE_PADDING;
 
-        // Clamp Y within safe area
         const clampedY = Math.max(
           TOP_SAFE,
           Math.min(finalY, SCREEN_H - FAB_SIZE - BOTTOM_SAFE),
@@ -243,7 +240,7 @@ export default function SupportFab({ role }: Props) {
             status: 'In Progress',
             created_at: d.accepted_at,
             ref: `DEL-${d.delivery_id}`,
-            badge_color: ORANGE,
+            badge_color: colors.accent,
           });
         });
       }
@@ -255,7 +252,7 @@ export default function SupportFab({ role }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [me, role, colors.error, colors.warning]);
+  }, [me, role, colors.error, colors.warning, colors.accent]);
 
   const openModal = () => {
     if (isDragging) return;
@@ -333,8 +330,9 @@ export default function SupportFab({ role }: Props) {
           onPress={openModal}
           activeOpacity={0.85}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityLabel="Customer Support"
         >
-          <Ionicons name="headset" size={22} color="#FFFFFF" />
+          <PhIcon name="Headset" weight="fill" size={24} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
 
@@ -352,7 +350,7 @@ export default function SupportFab({ role }: Props) {
 
             <View style={styles.header}>
               <View style={styles.headerIcon}>
-                <Ionicons name="headset" size={20} color={ORANGE} />
+                <PhIcon name="Headset" size={20} color={colors.accent} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.headerTitle}>Customer Support</Text>
@@ -366,7 +364,7 @@ export default function SupportFab({ role }: Props) {
                 hitSlop={10}
                 activeOpacity={0.7}
               >
-                <Ionicons name="close" size={18} color={colors.textSecondary} />
+                <PhIcon name="X" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
@@ -381,14 +379,14 @@ export default function SupportFab({ role }: Props) {
                   <QuickAction
                     styles={styles}
                     colors={colors}
-                    icon="alert-circle-outline"
+                    icon="WarningCircle"
                     label={role === 'provider' ? 'Report an issue' : 'Report a problem'}
                     onPress={() => { closeModal(); navigation.navigate('ReportIssue'); }}
                   />
                   <QuickAction
                     styles={styles}
                     colors={colors}
-                    icon="shield-checkmark-outline"
+                    icon="ShieldWarning"
                     label="Dispute center"
                     onPress={() => { closeModal(); navigation.navigate('DisputeCenter'); }}
                   />
@@ -398,7 +396,7 @@ export default function SupportFab({ role }: Props) {
                   <QuickAction
                     styles={styles}
                     colors={colors}
-                    icon="chatbubbles-outline"
+                    icon="ChatCircleDots"
                     label="Messages"
                     onPress={() => {
                       closeModal();
@@ -416,7 +414,7 @@ export default function SupportFab({ role }: Props) {
                   <QuickAction
                     styles={styles}
                     colors={colors}
-                    icon="document-text-outline"
+                    icon="FileText"
                     label="Policies"
                     onPress={() => { closeModal(); navigation.navigate('LegalPolicies'); }}
                   />
@@ -424,10 +422,10 @@ export default function SupportFab({ role }: Props) {
 
                 <Text style={[styles.sectionLabel, { marginTop: 20 }]}>YOUR CASES</Text>
                 {loading ? (
-                  <View style={styles.center}><ActivityIndicator color={ORANGE} /></View>
+                  <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
                 ) : cases.length === 0 ? (
                   <View style={styles.emptyBox}>
-                    <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                    <PhIcon name="CheckCircle" weight="fill" size={22} color={colors.success} />
                     <Text style={styles.emptyText}>No open cases — you're all set.</Text>
                   </View>
                 ) : (
@@ -449,7 +447,7 @@ export default function SupportFab({ role }: Props) {
                             {c.subtitle} · {c.status}
                           </Text>
                         </View>
-                        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                        <PhIcon name="CaretRight" size={16} color={colors.textMuted} />
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -476,7 +474,7 @@ export default function SupportFab({ role }: Props) {
                 {sending ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Ionicons name="send" size={16} color="#FFFFFF" />
+                  <PhIcon name="PaperPlaneTilt" weight="fill" size={18} color="#FFFFFF" />
                 )}
               </TouchableOpacity>
             </View>
@@ -490,7 +488,7 @@ export default function SupportFab({ role }: Props) {
 const QuickAction = ({ icon, label, onPress, styles, colors }: any) => (
   <TouchableOpacity style={styles.quickCard} onPress={onPress} activeOpacity={0.8}>
     <View style={styles.quickIcon}>
-      <Ionicons name={icon} size={18} color={ORANGE} />
+      <PhIcon name={icon} size={18} color={colors.accent} />
     </View>
     <Text style={styles.quickLabel} numberOfLines={2}>{label}</Text>
   </TouchableOpacity>
@@ -509,12 +507,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   fabGlow: {
     position: 'absolute', width: 62, height: 62, borderRadius: 31,
-    backgroundColor: 'rgba(255,117,31,0.35)',
+    backgroundColor: c.accentSoft,
   },
   fab: {
-    width: FAB_SIZE, height: FAB_SIZE, borderRadius: FAB_SIZE / 2, backgroundColor: ORANGE,
+    width: FAB_SIZE, height: FAB_SIZE, borderRadius: FAB_SIZE / 2, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.4, shadowRadius: 14, elevation: 8,
     borderWidth: 2, borderColor: c.card,
   },
@@ -544,7 +542,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
   headerTitle: {
     fontSize: 17, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3,
@@ -578,7 +576,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 34, height: 34, borderRadius: 17,
     backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
   quickLabel: {
     flex: 1, fontSize: 13, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2,
@@ -624,9 +622,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     color: c.textPrimary, fontWeight: '500',
   },
   sendBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
 });

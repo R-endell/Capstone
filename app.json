@@ -16,7 +16,8 @@
       },
       "config": {
         "googleMapsApiKey": "AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg"
-      }
+      },
+      "bundleIdentifier": "com.rendelljames.Capstone"
     },
     "android": {
       "config": {
@@ -111,7 +112,8 @@
           "kotlin.daemon.jvmargs": "-Xmx2048m"
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-image"
     ],
     "extra": {
       "owner": "junjosephps-team",
