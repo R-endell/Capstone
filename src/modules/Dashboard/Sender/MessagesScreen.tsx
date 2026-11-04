@@ -10,7 +10,6 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../../../utils/supabase';
@@ -19,8 +18,12 @@ import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { PhIcon } from '../../../components/ui/PhIcon';
 
-const ORANGE = '#FF751F';
+const CHAT_ICON = require('../../../../assets/bublechat-icon.png');
+const ARCHIVED_ICON = require('../../../../assets/archivedchat-icon.png');
+const NOTIFICATION_ICON = require('../../../../assets/notification-icon-bell.png');
+
 const PAGE_SIZE = 30;
 const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
 const IMG_MARKER_START = '[img]';
@@ -130,7 +133,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const route = useRoute<any>();
   const isFocused = useIsFocused();
   const { colors, isDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const openRoomIdParam: number | undefined =
     propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
@@ -941,15 +944,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return (
       <View style={{ width: size, height: size, position: 'relative' }}>
         {party.profile_photo ? (
-          <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE }} />
+          <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent }} />
         ) : (
-          <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent, justifyContent: 'center', alignItems: 'center' }}>
             <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: size * 0.45 }}>{initial}</Text>
           </View>
         )}
         {badgeColor && (
           <View style={[styles.avatarBadge, { backgroundColor: badgeColor }]}>
-            <Ionicons name="checkmark" size={size * 0.25} color="#FFFFFF" />
+            <PhIcon name="Check" size={size * 0.25} color="#FFFFFF" weight="bold" />
           </View>
         )}
       </View>
@@ -966,7 +969,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
           <View style={styles.avatarWrapper}>
             {isSupport ? (
-              <View style={styles.supportAvatar}><Ionicons name="headset" size={22} color="#FFFFFF" /></View>
+              <View style={styles.supportAvatar}><PhIcon name="Headset" size={22} color="#FFFFFF" weight="fill" /></View>
             ) : item.other.profile_photo ? (
               <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
             ) : (
@@ -1003,7 +1006,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.optionsButton} onPress={() => openChatOptions(item)} activeOpacity={0.6}>
-          <Ionicons name="ellipsis-vertical" size={18} color={colors.textMuted} />
+          <PhIcon name="DotsThreeVertical" size={20} color={colors.textMuted} weight="bold" />
         </TouchableOpacity>
       </View>
     );
@@ -1034,7 +1037,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             <View style={styles.msgAvatarSlot}>
               {showAvatar ? (
                 selectedRoom?.is_support ? (
-                  <View style={styles.supportMsgAvatar}><Ionicons name="headset" size={14} color="#FFFFFF" /></View>
+                  <View style={styles.supportMsgAvatar}><PhIcon name="Headset" size={14} color="#FFFFFF" weight="fill" /></View>
                 ) : (
                   renderAvatar(selectedRoom!.other, 32)
                 )
@@ -1051,10 +1054,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.msgMeta}>
                   <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
                   {isMe && (
-                    <Ionicons
-                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                    <PhIcon
+                      name={item.is_read ? 'Checks' : 'Check'}
                       size={12}
                       color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      weight="bold"
                       style={{ marginLeft: 4 }}
                     />
                   )}
@@ -1066,10 +1070,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.msgMeta}>
                   <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
                   {isMe && (
-                    <Ionicons
-                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
+                    <PhIcon
+                      name={item.is_read ? 'Checks' : 'Check'}
                       size={12}
                       color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      weight="bold"
                       style={{ marginLeft: 4 }}
                     />
                   )}
@@ -1135,24 +1140,24 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromCamera} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <Ionicons name="camera" size={20} color={ORANGE} />
+              <PhIcon name="Camera" size={20} color={colors.accent} weight="fill" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Take a photo</Text>
               <Text style={styles.attachRowSub}>Open camera and capture</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            <PhIcon name="CaretRight" size={18} color={colors.textMuted} weight="bold" />
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <Ionicons name="images" size={20} color={ORANGE} />
+              <PhIcon name="Image" size={20} color={colors.accent} weight="fill" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Choose from gallery</Text>
               <Text style={styles.attachRowSub}>Pick an existing image</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            <PhIcon name="CaretRight" size={18} color={colors.textMuted} weight="bold" />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -1178,7 +1183,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           onPress={() => setPreviewImage(null)}
           activeOpacity={0.85}
         >
-          <Ionicons name="close" size={24} color="#FFFFFF" />
+          <PhIcon name="X" size={24} color="#FFFFFF" weight="bold" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1189,10 +1194,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       <View style={styles.detailContainer}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-        <SafeAreaView edges={['top']} style={{ backgroundColor: ORANGE }}>
+        <SafeAreaView edges={['top']} style={{ backgroundColor: colors.accent }}>
           <Animated.View style={[styles.chatHeaderFlat, fadeUp(detailHeaderAnim, -10)]}>
             <TouchableOpacity onPress={closeConversation} style={styles.backBtnFlat} activeOpacity={0.7}>
-              <Ionicons name="chevron-back" size={28} color="#FFFFFF" />
+              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" weight="bold" />
             </TouchableOpacity>
 
             <View style={styles.chatHeaderInfo}>
@@ -1213,7 +1218,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               activeOpacity={0.7}
               onPress={handleCallPress}
             >
-              <Ionicons name="call" size={22} color={ORANGE} />
+              <PhIcon name="PhoneCall" size={20} color={colors.accent} weight="fill" />
             </TouchableOpacity>
           </Animated.View>
         </SafeAreaView>
@@ -1226,7 +1231,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: colors.background }]}>
             {chatLoading ? (
               <View style={styles.centerLoader}>
-                <ActivityIndicator size="small" color={ORANGE} />
+                <ActivityIndicator size="small" color={colors.accent} />
               </View>
             ) : (
               <FlatList
@@ -1243,7 +1248,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 onEndReachedThreshold={0.2}
                 ListFooterComponent={
                   loadMore ? (
-                    <View style={styles.loadingMore}><ActivityIndicator size="small" color={ORANGE} /></View>
+                    <View style={styles.loadingMore}><ActivityIndicator size="small" color={colors.accent} /></View>
                   ) : null
                 }
               />
@@ -1252,7 +1257,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           {sendingImage && (
             <View style={styles.uploadingBanner}>
-              <ActivityIndicator size="small" color={ORANGE} />
+              <ActivityIndicator size="small" color={colors.accent} />
               <Text style={styles.uploadingText}>Sending photo…</Text>
             </View>
           )}
@@ -1264,7 +1269,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               onPress={openAttachmentSheet}
               disabled={sendingImage}
             >
-              <Ionicons name="add-circle" size={32} color={colors.textMuted} />
+              <PhIcon name="PlusCircle" size={32} color={colors.textMuted} weight="fill" />
             </TouchableOpacity>
 
             <View style={styles.inputWrapperFlat}>
@@ -1286,7 +1291,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               disabled={!newMessage.trim()}
               activeOpacity={0.7}
             >
-              <Ionicons name="send" size={24} color={ORANGE} />
+              <PhIcon name="PaperPlaneTilt" size={26} color={newMessage.trim() ? colors.accent : colors.textMuted} weight="fill" />
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
@@ -1305,18 +1310,37 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       {loading ? (
         <View style={styles.centerLoader}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
         </View>
       ) : activeTab === 'notification' ? (
         <View style={{ flex: 1 }}>
-          <NotificationsList embedded />
+          <NotificationsList 
+            embedded 
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Image 
+                  source={NOTIFICATION_ICON} 
+                  style={{ width: 140, height: 140, marginBottom: 20 }} 
+                  resizeMode="contain" 
+                />
+                <Text style={styles.emptyTitle}>No notifications yet</Text>
+                <Text style={styles.emptySubtext}>
+                  Updates about your reports and disputes will appear here.
+                </Text>
+              </View>
+            }
+          />
         </View>
       ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons
-            name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
-            size={48}
-            color={colors.textMuted}
+          <Image 
+            source={
+              messagesView === 'archived' 
+                ? ARCHIVED_ICON 
+                : CHAT_ICON
+            } 
+            style={{ width: 140, height: 140, marginBottom: 20 }} 
+            resizeMode="contain" 
           />
           <Text style={styles.emptyTitle}>
             {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
@@ -1335,7 +1359,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             renderItem={renderConversationItem}
             contentContainerStyle={styles.listContentFlat}
             showsVerticalScrollIndicator={false}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
           />
         </View>
       )}
@@ -1343,12 +1367,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   flex: { flex: 1 },
 
   listHeaderFlat: {
-    backgroundColor: c.card,
+    backgroundColor: c.background,
     paddingHorizontal: 20, paddingTop: 24, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
@@ -1363,111 +1387,112 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   tabButtonActive: {
     backgroundColor: c.card,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.08 : 0.4,
+    shadowOpacity: isDark ? 0.4 : 0.08,
     shadowRadius: 4, elevation: 2,
   },
-  tabTextActive: { color: ORANGE, fontWeight: '800' },
+  tabTextActive: { color: c.accent, fontWeight: '800' },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16, letterSpacing: -0.2 },
-  emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  emptyTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginTop: 8, letterSpacing: -0.3 },
+  emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 10, lineHeight: 20, fontWeight: '500' },
 
-  listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+  listContentFlat: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 20 },
 
   chatRowWrapper: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, marginBottom: 6, borderRadius: 16,
-    borderWidth: 1, borderColor: c.divider,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
-    shadowRadius: 6, elevation: 1,
+    backgroundColor: c.card, marginBottom: 10, borderRadius: 20,
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.2 : 0.04,
+    shadowRadius: 8, elevation: 2,
   },
-  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 12 },
-  optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingLeft: 16 },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 16, justifyContent: 'center', alignItems: 'center' },
 
   avatarWrapper: { position: 'relative', marginRight: 14 },
-  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
   avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.divider },
   avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
   supportAvatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: c.success, borderWidth: 2.5, borderColor: c.card },
 
   chatInfo: { flex: 1, marginRight: 8 },
-  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  chatName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  chatName: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
   chatTime: { fontSize: 11, color: c.textMuted, fontWeight: '600' },
-  chatTimeUnread: { color: ORANGE, fontWeight: '800' },
+  chatTimeUnread: { color: c.accent, fontWeight: '800' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chatLastMsg: { fontSize: 13, color: c.textSecondary, flex: 1, fontWeight: '500' },
+  chatLastMsg: { fontSize: 13.5, color: c.textSecondary, flex: 1, fontWeight: '500' },
   chatLastMsgUnread: { color: c.textPrimary, fontWeight: '700' },
   supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   supportTagText: { color: c.card, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
-  unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  unreadBadge: { backgroundColor: c.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
 
   detailContainer: { flex: 1, backgroundColor: c.background },
   chatHeaderFlat: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
-    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.accent,
+    paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20,
     borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2, shadowRadius: 10, elevation: 5,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.3, shadowRadius: 12, elevation: 6,
   },
-  backBtnFlat: { padding: 4, marginRight: 8, marginLeft: -8 },
+  backBtnFlat: { padding: 8, marginRight: 12, marginLeft: -8, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20 },
   chatHeaderInfo: { flex: 1 },
-  chatHeaderName: { fontSize: 17, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.2 },
-  chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
-  callBtnFlat: { padding: 8, backgroundColor: '#FFFFFF', borderRadius: 20 },
+  chatHeaderName: { fontSize: 18, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
+  chatHeaderSubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2, fontWeight: '600' },
+  callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
 
-  chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
-  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
+  chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, paddingHorizontal: 24, gap: 10 },
   dateSeparatorLine: { flex: 1, height: 1, backgroundColor: c.border },
   dateSeparatorText: { fontSize: 11, color: c.textMuted, fontWeight: '700', letterSpacing: 0.3 },
 
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4, paddingHorizontal: 4 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
   msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
   supportMsgAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
-  msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 22 },
   imageBubble: { padding: 4, overflow: 'hidden' },
-  myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.divider, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.05 : 0.35, shadowRadius: 4, elevation: 1 },
-  msgText: { fontSize: 14.5, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
+  myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6, shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2 },
+  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.border, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 4, elevation: 1 },
+  msgText: { fontSize: 15, color: c.textPrimary, lineHeight: 22, fontWeight: '500' },
   myMsgText: { color: '#FFFFFF' },
-  chatImage: { width: 220, height: 220, borderRadius: 16 },
-  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4, paddingHorizontal: 4 },
+  chatImage: { width: 220, height: 220, borderRadius: 18 },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 6, paddingHorizontal: 4 },
   msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
-  myMsgTime: { color: 'rgba(255,255,255,0.85)' },
+  myMsgTime: { color: 'rgba(255,255,255,0.8)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
   inputContainerFlat: {
     flexDirection: 'row', alignItems: 'flex-end',
-    backgroundColor: c.card, paddingHorizontal: 12, paddingTop: 10,
+    backgroundColor: c.card, paddingHorizontal: 16, paddingTop: 12,
     borderTopWidth: 1, borderTopColor: c.border,
   },
-  attachBtnFlat: { paddingBottom: 8, marginRight: 8 },
+  attachBtnFlat: { paddingBottom: 8, marginRight: 10 },
   inputWrapperFlat: {
-    flex: 1, backgroundColor: c.divider, borderRadius: 20,
+    flex: 1, backgroundColor: c.background, borderRadius: 24,
     paddingHorizontal: 16, marginBottom: 8,
-    minHeight: 40, maxHeight: 120, justifyContent: 'center',
+    minHeight: 44, maxHeight: 120, justifyContent: 'center',
+    borderWidth: 1, borderColor: c.border,
   },
   textInputFlat: {
     flex: 1, fontSize: 15, color: c.textPrimary,
-    paddingTop: Platform.OS === 'ios' ? 10 : 8,
-    paddingBottom: Platform.OS === 'ios' ? 10 : 8,
+    paddingTop: Platform.OS === 'ios' ? 12 : 10,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 10,
   },
   sendBtnFlat: { paddingBottom: 10, paddingLeft: 12, paddingRight: 4 },
 
   uploadingBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, paddingVertical: 8, backgroundColor: c.accentSoft,
+    gap: 8, paddingVertical: 10, backgroundColor: c.accentSoft,
     borderTopWidth: 1, borderTopColor: c.border,
   },
-  uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
+  uploadingText: { fontSize: 12, fontWeight: '700', color: c.accent },
 
   attachBackdrop: {
     flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
@@ -1476,30 +1501,30 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   attachSheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 32,
   },
   attachHandle: {
-    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
-    backgroundColor: c.border, marginBottom: 12,
+    alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
+    backgroundColor: c.border, marginBottom: 16,
   },
   attachTitle: {
-    fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 12,
+    fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 16,
   },
   attachRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 14, borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 16,
+    paddingVertical: 16, borderRadius: 16,
   },
   attachIcon: {
-    width: 44, height: 44, borderRadius: 22,
+    width: 48, height: 48, borderRadius: 16,
     justifyContent: 'center', alignItems: 'center',
   },
-  attachRowTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  attachRowSub: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  attachRowTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
+  attachRowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
   attachCancel: {
-    marginTop: 8, paddingVertical: 14, borderRadius: 14,
+    marginTop: 16, paddingVertical: 16, borderRadius: 16,
     alignItems: 'center', backgroundColor: c.divider,
   },
-  attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
+  attachCancelText: { fontSize: 15, fontWeight: '800', color: c.textSecondary },
 
   previewOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
@@ -1507,7 +1532,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   previewImage: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
+    position: 'absolute', right: 20, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center', justifyContent: 'center',
   },

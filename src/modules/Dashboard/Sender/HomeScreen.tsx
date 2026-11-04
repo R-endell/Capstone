@@ -400,9 +400,9 @@ export default function HomeScreen() {
             <Svg height="100%" width="100%">
               <Defs>
                 <LinearGradient id="baseGrad" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0" stopColor={isNightTime ? "#0F172A" : "colors.background"} stopOpacity="1" />
                   <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : "colors.background"} stopOpacity="0.9" />
-                  <Stop offset="1" stopColor={colors.background} stopOpacity="0" />
+                  <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : "colors.background"} stopOpacity="0.9" />
+                  <Stop offset="1" stopColor={colors.background} stopOpacity="0.1" />
                 </LinearGradient>
 
                 <RadialGradient id="glow" cx="100%" cy="5%" r="60%" fx="30%" fy="10%">

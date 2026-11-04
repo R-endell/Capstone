@@ -7,7 +7,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
@@ -18,14 +17,14 @@ import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
+import { PhIcon } from '../../../components/ui/PhIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+const SEARCH_ICON = require('../../../../assets/magnifying-glass-icon.png');
 
-const ORANGE = '#FF751F';
 const BLUE = '#3B82F6';
 const PURPLE = '#8B5CF6';
-const BLACK = '#111827';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
@@ -258,28 +257,6 @@ const normalizeCargoItems = (cargo: any, fallbackName: string): CargoItem[] => {
   });
 };
 
-const formatDateTimeShort = (iso?: string | null): string => {
-  if (!iso) return '';
-  let raw = String(iso);
-  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) {
-    raw = raw.replace(' ', 'T') + 'Z';
-  }
-  const d = new Date(raw);
-  if (isNaN(d.getTime())) return '';
-
-  const month = d.toLocaleDateString('en-US', { month: 'short' });
-  const day = d.getDate();
-  const year = d.getFullYear();
-
-  let hours = d.getHours();
-  const minutes = d.getMinutes().toString().padStart(2, '0');
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-
-  return `${month} ${day}, ${year} · ${hours}:${minutes} ${ampm}`;
-};
-
 interface DeliveryRequest {
   request_id: number;
   pickup_type: string;
@@ -417,7 +394,7 @@ export default function ActivityScreen() {
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);   // package breakdown pop-up
+  const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -596,7 +573,6 @@ export default function ActivityScreen() {
         }
       }
 
-      // Collect all provider IDs (both accepted deliveries AND preferred_provider_id on pending requests)
       const allProviderIds = Array.from(
         new Set([
           ...deliveriesData.map(d => d.provider_id).filter(Boolean),
@@ -1167,18 +1143,18 @@ export default function ActivityScreen() {
   const statusMeta = (stage: 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled', hasPreferredProvider = false) => {
     switch (stage) {
       case 'done':
-        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
+        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
-        return { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' };
+        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'NavigationArrow' };
       case 'pickup':
-        return { label: 'Awaiting Pickup', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'car-sport' };
+        return { label: 'Awaiting Pickup', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Package' };
       case 'cancelled':
-        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'XCircle' };
       case 'pending':
       default:
         return hasPreferredProvider
-          ? { label: 'Waiting for Acceptance', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'hourglass-outline' }
-          : { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+          ? { label: 'Waiting for Acceptance', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Hourglass' }
+          : { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
     }
   };
 
@@ -1222,7 +1198,6 @@ export default function ActivityScreen() {
     Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
   };
 
-  /** Packages per size across ALL items (an item saved per-box counts 1, grouped rows count their quantity). */
   const sizeCountsOf = (item: MappedDelivery): Record<'Small' | 'Medium' | 'Large', number> => {
     const counts = { Small: 0, Medium: 0, Large: 0 };
     (item.cargo_items || []).forEach((ci: CargoItem) => {
@@ -1238,10 +1213,10 @@ export default function ActivityScreen() {
     return full || `${item.total_items} ${item.total_items === 1 ? 'item' : 'items'}`;
   };
 
-  /* --------------------------- Shared Pieces (TaskScreen style) --------------------------- */
+  /* --------------------------- Shared Pieces --------------------------- */
   const renderServicePill = (item: MappedDelivery) => (
     <View style={styles.svcPill}>
-      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <PhIcon name="Package" size={13} color={BLUE} weight="fill" />
       <Text style={styles.svcPillText}>{serviceLabel(item.pickup_type)}</Text>
     </View>
   );
@@ -1256,8 +1231,8 @@ export default function ActivityScreen() {
   const renderRoute = (item: MappedDelivery, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, color: ORANGE, note: item.pickup_note },
-        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, color: BLACK, note: item.dropoff_note },
+        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, color: colors.accent, note: item.pickup_note },
+        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, color: colors.textPrimary, note: item.dropoff_note },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
@@ -1275,13 +1250,13 @@ export default function ActivityScreen() {
             <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
             {!!r.road && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                <Ionicons name="map-outline" size={12} color={colors.textMuted} />
+                <PhIcon name="MapTrifold" size={12} color={colors.textMuted} weight="bold" />
                 <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
               </View>
             )}
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <PhIcon name="ChatCircleDots" size={13} color={colors.accent} weight="fill" />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -1347,14 +1322,14 @@ export default function ActivityScreen() {
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <Ionicons name="call" size={14} color={ORANGE} />
+            <PhIcon name="PhoneCall" size={14} color={colors.accent} weight="fill" />
           </TouchableOpacity>
         )}
       </TouchableOpacity>
     );
   };
 
-  /* ---------------------------- List Card (TaskScreen style) ---------------------------- */
+  /* ---------------------------- List Card ---------------------------- */
   const renderShipmentCard = (item: MappedDelivery) => {
     const stage = stageOf(item);
     const meta = statusMeta(stage, item.hasPreferredProvider);
@@ -1405,14 +1380,14 @@ export default function ActivityScreen() {
               />
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <Ionicons name="shield-checkmark" size={14} color={colors.success} />
+                  <PhIcon name="ShieldCheck" size={14} color={colors.success} weight="fill" />
                   <Text style={styles.cardPodTitle}>Proof of Delivery Attached</Text>
                 </View>
                 <Text style={styles.cardPodSub} numberOfLines={1}>
                   Tap photo to enlarge or tap card for full details
                 </Text>
               </View>
-              <Ionicons name="expand-outline" size={16} color={colors.success} />
+              <PhIcon name="ArrowsOut" size={16} color={colors.success} weight="bold" />
             </TouchableOpacity>
           )}
 
@@ -1440,19 +1415,19 @@ export default function ActivityScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgItem(item)} activeOpacity={0.8} hitSlop={6}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
+            <PhIcon name="Cube" size={14} color={colors.accent} weight="fill" />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(item)}</Text>
-            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
+            <PhIcon name="CaretRight" size={13} color={colors.textMuted} weight="bold" />
           </TouchableOpacity>
           {item.fragile && (
             <View style={styles.oChip}>
-              <Ionicons name="star-outline" size={14} color={ORANGE} />
+              <PhIcon name="Star" size={14} color={colors.accent} weight="fill" />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
           {!!item.deliveryData?.pod_photo_url && (
             <View style={[styles.oChip, { borderColor: colors.success }]}>
-              <Ionicons name="camera-outline" size={14} color={colors.success} />
+              <PhIcon name="Camera" size={14} color={colors.success} weight="fill" />
               <Text style={[styles.oChipText, { color: colors.success }]} numberOfLines={1}>POD</Text>
             </View>
           )}
@@ -1470,9 +1445,9 @@ export default function ActivityScreen() {
               disabled={openingChat}
               activeOpacity={0.85}
             >
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : (
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  <PhIcon name="ChatCircle" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
@@ -1482,7 +1457,7 @@ export default function ActivityScreen() {
               onPress={() => openLiveTrack(item)}
               activeOpacity={0.9}
             >
-              <Ionicons name="navigate" size={16} color="#FFFFFF" />
+              <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
               <Text style={styles.oRouteText}>Live Track</Text>
             </TouchableOpacity>
           </View>
@@ -1495,7 +1470,7 @@ export default function ActivityScreen() {
               onPress={() => openEditModal(item)}
               activeOpacity={0.85}
             >
-              <Ionicons name="create-outline" size={16} color={ORANGE} />
+              <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
               <Text style={styles.oChatText}>Edit</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1507,10 +1482,11 @@ export default function ActivityScreen() {
               }
               activeOpacity={0.9}
             >
-              <Ionicons
-                name={item.hasPreferredProvider ? 'hourglass-outline' : 'search'}
+              <PhIcon
+                name={item.hasPreferredProvider ? 'Hourglass' : 'MagnifyingGlass'}
                 size={16}
                 color="#FFFFFF"
+                weight="bold"
               />
               <Text style={styles.oRouteText}>
                 {item.hasPreferredProvider ? 'Awaiting Courier' : 'Find Courier'}
@@ -1560,26 +1536,26 @@ export default function ActivityScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => { setRefreshing(true); fetchData(); }}
-            tintColor={ORANGE}
-            colors={[ORANGE]}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
           />
         }
       >
-        <Animated.View style={{ opacity: contentAnim }}>
-          {filteredDeliveries.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons
-                  name={
-                    activeTab === 'cancelled' ? 'close-circle-outline'
-                      : deliveries.length === 0 ? 'cube-outline'
-                      : 'search-outline'
-                  }
-                  size={30}
-                  color={ORANGE}
-                />
-              </View>
-              <Text style={styles.emptyTitle}>
+                <Animated.View style={{ opacity: contentAnim }}>
+                  {filteredDeliveries.length === 0 ? (
+                    <View style={styles.emptyContainer}>
+                      {deliveries.length === 0 ? (
+                        <View style={styles.emptyIconCircle}>
+                          <PhIcon name="Cube" size={30} color={colors.accent} weight="fill" />
+                        </View>
+                      ) : (
+                        <Image 
+                          source={SEARCH_ICON} 
+                          style={{ width: 140, height: 140, marginBottom: 20 }} 
+                          resizeMode="contain" 
+                        />
+                      )}
+                      <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
                   : deliveries.length === 0 ? 'No shipments yet' : 'Nothing here'}
@@ -1601,7 +1577,7 @@ export default function ActivityScreen() {
     </View>
   );
 
-  /* --------------------------- Detail View (TaskScreen style) --------------------------- */
+  /* --------------------------- Detail View --------------------------- */
   const renderDetailView = (d: MappedDelivery) => {
     const stage = stageOf(d);
     const meta = statusMeta(stage, d.hasPreferredProvider);
@@ -1661,14 +1637,14 @@ export default function ActivityScreen() {
           onPress={() => setSelectedId(null)}
           activeOpacity={0.85}
         >
-          <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]}
           onPress={() => setShowFullMap(true)}
           activeOpacity={0.85}
         >
-          <Ionicons name="expand-outline" size={20} color={colors.textPrimary} />
+          <PhIcon name="ArrowsOut" size={20} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
 
         <ScrollView
@@ -1706,7 +1682,7 @@ export default function ActivityScreen() {
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={styles.trackTextCopy}
               >
-                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <PhIcon name={copied ? 'CheckCircle' : 'Copy'} size={16} color={colors.accent} weight={copied ? 'fill' : 'bold'} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1723,12 +1699,12 @@ export default function ActivityScreen() {
                   return (
                     <View key={label} style={styles.stepCol}>
                       <View style={styles.stepLineRow}>
-                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                          {done ? <PhIcon name="Check" size={14} color="#FFFFFF" weight="bold" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
-                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
                       </View>
                       <Text style={[styles.stepLabel, reached && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
                     </View>
@@ -1740,7 +1716,7 @@ export default function ActivityScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <PhIcon name="XCircle" size={22} color={colors.error} weight="fill" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1751,7 +1727,7 @@ export default function ActivityScreen() {
               </View>
             ) : isCompleted ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
+                <View style={styles.doneIcon}><PhIcon name="Check" size={20} color={colors.success} weight="bold" /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1762,7 +1738,7 @@ export default function ActivityScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={d.hasPreferredProvider && !d.isMatched ? 'hourglass-outline' : 'information-circle'} size={18} color={ORANGE} />
+                <PhIcon name={d.hasPreferredProvider && !d.isMatched ? 'Hourglass' : 'Info'} size={18} color={colors.accent} weight="fill" />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1805,10 +1781,10 @@ export default function ActivityScreen() {
             {!!podPhotoUrl && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="shield-checkmark" size={17} color={colors.success} />
+                  <PhIcon name="ShieldCheck" size={17} color={colors.success} weight="fill" />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                   <View style={[styles.sdRatedBadge, { backgroundColor: colors.successBg }]}>
-                    <Ionicons name="checkmark-done" size={12} color={colors.success} />
+                    <PhIcon name="CheckCircle" size={12} color={colors.success} weight="fill" />
                     <Text style={[styles.sdRatedBadgeText, { color: colors.success }]}>Verified</Text>
                   </View>
                 </View>
@@ -1824,7 +1800,7 @@ export default function ActivityScreen() {
                   />
                   <View style={styles.podPhotoOverlay}>
                     <View style={styles.podPhotoBadge}>
-                      <Ionicons name="expand-outline" size={13} color="#FFFFFF" />
+                      <PhIcon name="ArrowsOut" size={13} color="#FFFFFF" weight="bold" />
                       <Text style={styles.podPhotoBadgeText}>Tap to view full photo</Text>
                     </View>
                     {!!d.deliveryData?.completed_at && (
@@ -1838,7 +1814,7 @@ export default function ActivityScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="images-outline" size={17} color={ORANGE} />
+                  <PhIcon name="Images" size={17} color={colors.accent} weight="fill" />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1857,7 +1833,7 @@ export default function ActivityScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <Ionicons name="cube-outline" size={17} color={ORANGE} />
+              <PhIcon name="Cube" size={17} color={colors.accent} weight="fill" />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {d.cargo_items.length > 0 && (
@@ -1892,7 +1868,7 @@ export default function ActivityScreen() {
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
-                <Text style={[styles.tileValue, d.fragile && { color: ORANGE }]}>{d.fragile ? 'Fragile' : 'Standard'}</Text>
+                <Text style={[styles.tileValue, d.fragile && { color: colors.accent }]}>{d.fragile ? 'Fragile' : 'Standard'}</Text>
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>TOTAL COST</Text>
@@ -1930,11 +1906,11 @@ export default function ActivityScreen() {
             {!isCancelled && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="star" size={17} color={ORANGE} />
+                  <PhIcon name="Star" size={17} color={colors.accent} weight="fill" />
                   <Text style={styles.dSecTitle}>Rate Your Courier</Text>
                   {!!ratingSaved && (
                     <View style={styles.sdRatedBadge}>
-                      <Ionicons name="checkmark-circle" size={12} color={ORANGE} />
+                      <PhIcon name="CheckCircle" size={12} color={colors.accent} weight="fill" />
                       <Text style={styles.sdRatedBadgeText}>Rated</Text>
                     </View>
                   )}
@@ -1949,10 +1925,11 @@ export default function ActivityScreen() {
                         activeOpacity={0.7}
                         hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                       >
-                        <Ionicons
-                          name={n <= shownRating ? 'star' : 'star-outline'}
+                        <PhIcon
+                          name="Star"
+                          weight={n <= shownRating ? 'fill' : 'regular'}
                           size={36}
-                          color={n <= shownRating ? ORANGE : (isDark ? '#5A3418' : '#FFC9A3')}
+                          color={n <= shownRating ? colors.accent : (isDark ? '#5A3418' : '#FFC9A3')}
                         />
                       </TouchableOpacity>
                     ))}
@@ -1964,7 +1941,7 @@ export default function ActivityScreen() {
                     </Text>
                   ) : (
                     <View style={styles.sdLockedNote}>
-                      <Ionicons name="lock-closed-outline" size={12} color={colors.textMuted} />
+                      <PhIcon name="Lock" size={12} color={colors.textMuted} weight="bold" />
                       <Text style={styles.sdLockedNoteText}>
                         {d.isMatched ? 'You can rate once the delivery is completed.' : 'Available after a courier is assigned.'}
                       </Text>
@@ -2036,12 +2013,12 @@ export default function ActivityScreen() {
               <View style={styles.detailActionsRow}>
                 {!d.isMatched && (
                   <TouchableOpacity style={styles.editBtn} onPress={() => openEditModal(d)} activeOpacity={0.9}>
-                    <Ionicons name="create-outline" size={16} color={ORANGE} />
+                    <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
                     <Text style={styles.editBtnText}>Edit Details</Text>
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity style={styles.sdCancelBtn} onPress={() => handleCancelDelivery(d.rawData)} activeOpacity={0.9}>
-                  <Ionicons name="close-circle-outline" size={16} color={colors.error} />
+                  <PhIcon name="XCircle" size={16} color={colors.error} weight="bold" />
                   <Text style={styles.sdCancelBtnText}>Cancel Booking</Text>
                 </TouchableOpacity>
               </View>
@@ -2058,14 +2035,14 @@ export default function ActivityScreen() {
               disabled={openingChat}
               activeOpacity={0.85}
             >
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircle" size={20} color={colors.accent} weight="bold" />}
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mSoftBtn, { flex: 1 }]}
               onPress={() => openLiveTrack(d)}
               activeOpacity={0.85}
             >
-              <Ionicons name="navigate" size={16} color={ORANGE} />
+              <PhIcon name="NavigationArrow" size={16} color={colors.accent} weight="fill" />
               <Text style={styles.mSoftText}>Live Track</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -2073,7 +2050,7 @@ export default function ActivityScreen() {
               onPress={() => (stage === 'pickup' ? setShowPickupQR(true) : setShowDeliveryOTP(true))}
               activeOpacity={0.9}
             >
-              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'key-outline'} size={18} color="#FFFFFF" />
+              <PhIcon name={stage === 'pickup' ? 'QrCode' : 'Key'} size={18} color="#FFFFFF" weight="bold" />
               <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Pickup QR' : 'Delivery OTP'}</Text>
             </TouchableOpacity>
           </View>
@@ -2086,7 +2063,7 @@ export default function ActivityScreen() {
               onPress={() => openEditModal(d)}
               activeOpacity={0.85}
             >
-              <Ionicons name="create-outline" size={16} color={ORANGE} />
+              <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
               <Text style={styles.mSoftText}>Edit Request</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -2098,10 +2075,11 @@ export default function ActivityScreen() {
               }
               activeOpacity={0.9}
             >
-              <Ionicons
-                name={d.hasPreferredProvider ? 'navigate-outline' : 'search'}
+              <PhIcon
+                name={d.hasPreferredProvider ? 'NavigationArrow' : 'MagnifyingGlass'}
                 size={18}
                 color="#FFFFFF"
+                weight="bold"
               />
               <Text style={styles.mPrimaryText}>
                 {d.hasPreferredProvider ? 'Track Provider' : 'Find Courier'}
@@ -2135,7 +2113,7 @@ export default function ActivityScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Edit Shipment #{trackingCode(editTarget.request_id)}</Text>
               <TouchableOpacity onPress={() => setEditModalVisible(false)}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
             <Text style={[styles.modalSubtitle, { textAlign: 'left', marginBottom: 14 }]}>
@@ -2193,7 +2171,7 @@ export default function ActivityScreen() {
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
                   <Text style={styles.mPrimaryText}>Save Changes</Text>
                 </>
               )}
@@ -2205,7 +2183,7 @@ export default function ActivityScreen() {
                 onPress={() => handleOpenFullEditWizard(editTarget)}
                 activeOpacity={0.85}
               >
-                <Ionicons name="map-outline" size={16} color={ORANGE} />
+                <PhIcon name="MapTrifold" size={16} color={colors.accent} weight="bold" />
                 <Text style={styles.mSoftText}>Change Route / Package Items</Text>
               </TouchableOpacity>
             )}
@@ -2238,7 +2216,7 @@ export default function ActivityScreen() {
             onPress={() => setShowFullMap(false)}
             activeOpacity={0.85}
           >
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+            <PhIcon name="ArrowLeft" size={20} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -2266,7 +2244,7 @@ export default function ActivityScreen() {
                 }}
                 activeOpacity={0.9}
               >
-                <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
                 <Text style={styles.mPrimaryText}>Open Live Tracking</Text>
               </TouchableOpacity>
             )}
@@ -2283,7 +2261,7 @@ export default function ActivityScreen() {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Pickup Verification</Text>
             <TouchableOpacity onPress={() => setShowPickupQR(false)}>
-              <Ionicons name="close" size={22} color={colors.textPrimary} />
+              <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
             </TouchableOpacity>
           </View>
           <Text style={styles.modalSubtitle}>
@@ -2295,7 +2273,7 @@ export default function ActivityScreen() {
               <QRCode value={selectedDelivery.qr.pickup_qr} size={200} color="#111827" backgroundColor="#FFFFFF" />
             </View>
           ) : (
-            <ActivityIndicator color={ORANGE} style={{ margin: 40 }} />
+            <ActivityIndicator color={colors.accent} style={{ margin: 40 }} />
           )}
 
           {!!selectedDelivery?.qr?.pickup_pin && (
@@ -2348,7 +2326,7 @@ export default function ActivityScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Delivery OTP</Text>
               <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
 
@@ -2360,7 +2338,7 @@ export default function ActivityScreen() {
 
             {verified ? (
               <View style={styles.verifiedBox}>
-                <Ionicons name="checkmark-circle" size={40} color={colors.success} />
+                <PhIcon name="CheckCircle" size={40} color={colors.success} weight="fill" />
                 <Text style={styles.verifiedText}>Verified & Completed</Text>
               </View>
             ) : (
@@ -2372,13 +2350,13 @@ export default function ActivityScreen() {
 
                 {!!receiverPhone && (
                   <TouchableOpacity style={styles.otpSendBtn} onPress={sendSMS} disabled={!otp} activeOpacity={0.9}>
-                    <Ionicons name="chatbubble-ellipses" size={16} color="#FFF" />
+                    <PhIcon name="PaperPlaneTilt" size={16} color="#FFF" weight="fill" />
                     <Text style={styles.otpSendBtnText}>Send SMS to {receiverName}</Text>
                   </TouchableOpacity>
                 )}
 
                 <TouchableOpacity style={styles.otpCopyBtn} onPress={copySMS} disabled={!otp} activeOpacity={0.85}>
-                  <Ionicons name="copy-outline" size={16} color={ORANGE} />
+                  <PhIcon name="Copy" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.otpCopyBtnText}>Copy message</Text>
                 </TouchableOpacity>
               </>
@@ -2404,7 +2382,7 @@ export default function ActivityScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{item ? pkgCount(item) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgItem(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -2435,7 +2413,7 @@ export default function ActivityScreen() {
           onPress={() => setPhotoPreview(null)}
           activeOpacity={0.85}
         >
-          <Ionicons name="close" size={22} color="#FFFFFF" />
+          <PhIcon name="X" size={22} color="#FFFFFF" weight="bold" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -2445,7 +2423,7 @@ export default function ActivityScreen() {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading shipments...</Text>
       </View>
     );
@@ -2481,13 +2459,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
     backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
   },
-  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1.5 },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1.5 },
   tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: ORANGE },
+  tabTextActive: { color: c.accent },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
+  tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
   tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
-  tabCountTextActive: { color: ORANGE },
+  tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
@@ -2496,7 +2474,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
 
-  /* TaskScreen Shared Card & Route Styles */
+  /* Shared Card & Route Styles */
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
@@ -2513,7 +2491,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
   rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
   /* Completed Card POD Banner */
@@ -2545,7 +2523,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginTop: 2,
   },
 
-  oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
+  oCard: { 
+    backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 10, elevation: 3,
+  },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
   oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
@@ -2564,29 +2545,29 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
-  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14 },
+  oChatText: { color: c.accent, fontSize: 14, fontWeight: '800' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
   oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
 
-  /* TaskScreen Detail View Styles */
+  /* Detail View Styles */
   dMap: { overflow: 'hidden' },
   dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
   dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
+  dWhen: { fontSize: 12, fontWeight: '700', color: c.accent, marginTop: 2 },
   trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: c.accent },
 
   stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginTop: 14, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
   stepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  stepDotCurrent: { borderColor: ORANGE },
-  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
+  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  stepDotCurrent: { borderColor: c.accent },
+  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
   stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
@@ -2668,16 +2649,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   /* Rating Styles */
   sdRatedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.accentSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  sdRatedBadgeText: { fontSize: 10, fontWeight: '800', color: ORANGE },
+  sdRatedBadgeText: { fontSize: 10, fontWeight: '800', color: c.accent },
   sdStarsRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginVertical: 4 },
-  sdRatingLabel: { textAlign: 'center', fontSize: 14, fontWeight: '800', color: ORANGE, marginTop: 8 },
+  sdRatingLabel: { textAlign: 'center', fontSize: 14, fontWeight: '800', color: c.accent, marginTop: 8 },
   sdLockedNote: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
   sdLockedNoteText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
   sdTagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   sdTag: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
-  sdTagOn: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  sdTagOn: { backgroundColor: c.accentSoft, borderColor: c.accent },
   sdTagText: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
-  sdTagTextOn: { color: ORANGE },
+  sdTagTextOn: { color: c.accent },
   sdCommentInput: {
     marginTop: 14, minHeight: 74, borderWidth: 1, borderColor: c.border, borderRadius: 14,
     paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12, fontSize: 13, color: c.textPrimary,
@@ -2693,7 +2674,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 14,
   },
-  editBtnText: { color: ORANGE, fontWeight: '800', fontSize: 14 },
+  editBtnText: { color: c.accent, fontWeight: '800', fontSize: 14 },
   sdCancelBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 14, borderRadius: 14, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
@@ -2713,10 +2694,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   /* Bottom Sticky Bar */
   dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
+  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14 },
   mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 13, borderRadius: 14 },
-  mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  mSoftText: { color: c.accent, fontSize: 13, fontWeight: '800' },
 
   /* Full Map Modal */
   mapCloseBtn: {
@@ -2734,7 +2715,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowRadius: 12, elevation: 12, borderTopWidth: 1, borderColor: c.border,
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
+  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
   sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
   sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
   eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
@@ -2763,30 +2744,30 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   pinRevealBox: {
     width: '100%', backgroundColor: c.accentSoft, borderRadius: 16,
-    borderWidth: 1.5, borderColor: ORANGE,
+    borderWidth: 1.5, borderColor: c.accent,
     paddingVertical: 16, paddingHorizontal: 16, alignItems: 'center', marginBottom: 12,
   },
-  pinRevealLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 1.2, marginBottom: 6 },
+  pinRevealLabel: { fontSize: 10, fontWeight: '800', color: c.accent, letterSpacing: 1.2, marginBottom: 6 },
   pinRevealValue: { fontSize: 32, fontWeight: '900', color: c.textPrimary, letterSpacing: 10 },
   pinRevealHint: { fontSize: 11, color: c.textSecondary, marginTop: 8, textAlign: 'center', fontWeight: '600' },
 
   otpBigBox: {
-    backgroundColor: c.accentSoft, borderWidth: 2, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderWidth: 2, borderColor: c.accent,
     borderRadius: 16, paddingVertical: 20, paddingHorizontal: 16,
     alignItems: 'center', marginBottom: 16, width: '100%',
   },
-  otpBigLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 1, marginBottom: 8 },
+  otpBigLabel: { fontSize: 10, fontWeight: '800', color: c.accent, letterSpacing: 1, marginBottom: 8 },
   otpBigValue: { fontSize: 34, fontWeight: '900', color: c.textPrimary, letterSpacing: 6 },
   otpSendBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
+    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14,
     marginBottom: 10, width: '100%',
   },
   otpSendBtnText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
   otpCopyBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 12, width: '100%',
-    borderWidth: 1.5, borderColor: ORANGE, marginBottom: 4,
+    borderWidth: 1.5, borderColor: c.accent, marginBottom: 4,
   },
-  otpCopyBtnText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  otpCopyBtnText: { color: c.accent, fontSize: 13, fontWeight: '800' },
 });

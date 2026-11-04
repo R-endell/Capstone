@@ -57,9 +57,10 @@ const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
 type Props = {
   embedded?: boolean;
   role?: 'sender' | 'provider';
+  ListEmptyComponent?: React.ReactNode;
 };
 
-export default function NotificationsList({ embedded = false, role = 'sender' }: Props) {
+export default function NotificationsList({ embedded = false, role = 'sender', ListEmptyComponent }: Props) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
@@ -542,12 +543,17 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
       )}
 
       {items.length === 0 ? (
-        <View style={styles.center}>
-          <Ionicons name="notifications-outline" size={48} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>No notifications yet</Text>
-          <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
-        </View>
+        ListEmptyComponent ? (
+          <>{ListEmptyComponent}</>
+        ) : (
+          <View style={styles.center}>
+            <Ionicons name="notifications-outline" size={48} color={colors.textMuted} />
+            <Text style={styles.emptyTitle}>No notifications yet</Text>
+            <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
+          </View>
+        )
       ) : (
+
         <FlatList
           data={items}
           keyExtractor={i => String(i.notif_id)}

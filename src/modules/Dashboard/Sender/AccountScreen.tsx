@@ -1,20 +1,18 @@
 // src/modules/Dashboard/Sender/AccountScreen.tsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
   Alert, StatusBar, Animated, Easing, BackHandler, Switch, Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-
-const ORANGE = '#FF751F';
+import { PhIcon } from '../../../components/ui/PhIcon';
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -22,7 +20,7 @@ export default function AccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
   const { isDark, colors, toggleDark } = useTheme();
-  const styles = makeStyles(colors, isDark);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [firstName, setFirstName] = useState<string>('First');
   const [lastName, setLastName] = useState<string>('Last');
@@ -144,7 +142,6 @@ export default function AccountScreen() {
         (ur: any) => ur.roles?.role_name === 'Provider'
       );
 
-      // Also check provider_verifications directly in case they applied
       const { data: verif, error: verifError } = await supabase
         .from('provider_verifications')
         .select('verification_id, verification_status, rejection_reason, submitted_at')
@@ -193,7 +190,6 @@ export default function AccountScreen() {
     }, [fetchUserData])
   );
 
-  // Realtime subscription so if the admin rejects/approves while the user is on AccountScreen, it updates immediately
   useEffect(() => {
     if (!userId) return;
 
@@ -343,7 +339,7 @@ export default function AccountScreen() {
                     onError={() => setImageError(true)}
                   />
                 ) : (
-                  <Ionicons name="person" size={28} color={ORANGE} />
+                  <PhIcon name="User" size={28} color={colors.accent} weight="fill" />
                 )}
               </View>
             </Animated.View>
@@ -365,7 +361,7 @@ export default function AccountScreen() {
                       providerState === 'approved' ? colors.success
                       : providerState === 'pending' ? colors.warning
                       : providerState === 'rejected' ? colors.error
-                      : ORANGE,
+                      : colors.accent,
                   }]}>
                     {providerState === 'approved' ? 'PROVIDER'
                       : providerState === 'pending' ? 'PENDING'
@@ -382,7 +378,7 @@ export default function AccountScreen() {
               onPress={() => navigation.navigate('EditProfile')}
               activeOpacity={0.8}
             >
-              <Ionicons name="pencil" size={16} color={colors.textSecondary} />
+              <PhIcon name="PencilSimple" size={16} color={colors.textSecondary} weight="bold" />
             </TouchableOpacity>
           </View>
         </View>
@@ -395,7 +391,6 @@ export default function AccountScreen() {
       >
         <Animated.View style={[styles.bodyContentWrapper, fadeUp(contentAnim, 20)]}>
 
-          {/* Prominent Rejection Banner on Account Screen if rejected */}
           {providerState === 'rejected' && (
             <TouchableOpacity
               style={styles.rejectionAlertBanner}
@@ -403,7 +398,7 @@ export default function AccountScreen() {
               activeOpacity={0.85}
             >
               <View style={styles.rejectionBannerIconWrap}>
-                <Ionicons name="alert-circle" size={22} color={colors.error} />
+                <PhIcon name="WarningCircle" size={22} color={colors.error} weight="fill" />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rejectionBannerTitle}>Provider Application Rejected</Text>
@@ -425,7 +420,7 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToProvider} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <Ionicons name="swap-horizontal-outline" size={19} color={ORANGE} />
+                  <PhIcon name="ArrowsLeftRight" size={19} color={colors.accent} weight="bold" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>{providerMenuTitle}</Text>
@@ -441,18 +436,18 @@ export default function AccountScreen() {
               )}
               {providerState === 'pending' && (
                 <View style={styles.pendingBadge}>
-                  <Ionicons name="time-outline" size={10} color={colors.warning} />
+                  <PhIcon name="Clock" size={10} color={colors.warning} weight="bold" />
                   <Text style={styles.pendingBadgeText}>Pending</Text>
                 </View>
               )}
               {providerState === 'rejected' && (
                 <View style={styles.rejectedBadge}>
-                  <Ionicons name="close-circle-outline" size={10} color={colors.error} />
+                  <PhIcon name="XCircle" size={10} color={colors.error} weight="fill" />
                   <Text style={styles.rejectedBadgeText}>Rejected</Text>
                 </View>
               )}
               {providerState === 'none' && (
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
               )}
             </TouchableOpacity>
 
@@ -461,14 +456,14 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#16243B' : '#EFF6FF' }]}>
-                  <Ionicons name="card-outline" size={19} color="#3B82F6" />
+                  <PhIcon name="CreditCard" size={19} color="#3B82F6" weight="bold" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Payment Methods</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -476,14 +471,14 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DisputeCenter' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#2A1F0A' : '#FEF3C7' }]}>
-                  <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
+                  <PhIcon name="ShieldCheck" size={19} color="#D97706" weight="fill" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Dispute Center</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem with a delivery</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -491,14 +486,14 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'sender' })} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <Ionicons name="headset-outline" size={19} color={ORANGE} />
+                  <PhIcon name="Headset" size={19} color={colors.accent} weight="fill" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
             </TouchableOpacity>
           </View>
 
@@ -508,14 +503,14 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('Settings')} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#1F262E' : '#F3F4F6' }]}>
-                  <Ionicons name="settings-outline" size={19} color={colors.textSecondary} />
+                  <PhIcon name="Gear" size={19} color={colors.textSecondary} weight="bold" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Settings</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>App preferences & notifications</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -523,11 +518,7 @@ export default function AccountScreen() {
             <View style={styles.menuItem}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
-                  <Ionicons
-                    name={isDark ? 'moon' : 'moon-outline'}
-                    size={19}
-                    color={ORANGE}
-                  />
+                  <PhIcon name="Moon" size={19} color={colors.accent} weight="fill" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Dark Mode</Text>
@@ -539,7 +530,7 @@ export default function AccountScreen() {
               <Switch
                 value={isDark}
                 onValueChange={toggleDark}
-                trackColor={{ false: '#D1D5DB', true: ORANGE }}
+                trackColor={{ false: '#D1D5DB', true: colors.accent }}
                 thumbColor="#FFFFFF"
                 ios_backgroundColor="#D1D5DB"
               />
@@ -550,14 +541,14 @@ export default function AccountScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.errorBg }]}>
-                  <Ionicons name="log-out-outline" size={19} color={colors.error} />
+                  <PhIcon name="SignOut" size={19} color={colors.error} weight="bold" />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.logoutText}>Log out</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Sign out of your account</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#FCA5A5" />
+              <PhIcon name="CaretRight" size={16} color={colors.error} weight="bold" />
             </TouchableOpacity>
           </View>
 
@@ -577,7 +568,7 @@ export default function AccountScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalIconCircle}>
-              <Ionicons name="close-circle" size={38} color={colors.error} />
+              <PhIcon name="XCircle" size={38} color={colors.error} weight="fill" />
             </View>
 
             <Text style={styles.modalTitle}>Application Rejected</Text>
@@ -610,7 +601,7 @@ export default function AccountScreen() {
                 onPress={handleReapplyProvider}
                 activeOpacity={0.85}
               >
-                <Ionicons name="refresh-outline" size={17} color="#FFFFFF" />
+                <PhIcon name="ArrowsClockwise" size={17} color="#FFFFFF" weight="bold" />
                 <Text style={styles.modalPrimaryBtnText}>Register Again</Text>
               </TouchableOpacity>
             </View>
@@ -636,44 +627,45 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   headerTitle: {
     fontSize: 30, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5,
   },
+  
   profileContainerCard: {
     backgroundColor: c.card,
-    borderRadius: 20,
-    padding: 14,
+    borderRadius: 24,
+    padding: 18,
     borderWidth: 1,
     borderColor: c.border,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.2 : 0.05,
+    shadowRadius: 12,
+    elevation: 3,
   },
   profileRow: { flexDirection: 'row', alignItems: 'center' },
   profilePicContainer: {
-    width: 54, height: 54, borderRadius: 27,
+    width: 58, height: 58, borderRadius: 29,
     backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, overflow: 'hidden',
-    borderWidth: 1.5, borderColor: c.border,
+    marginRight: 14, overflow: 'hidden',
+    borderWidth: 1.5, borderColor: c.accent,
   },
   profileImage: { width: '100%', height: '100%' },
   nameContainer: { flex: 1, marginRight: 8, justifyContent: 'center' },
   nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  profileName: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  profileEmail: { fontSize: 12, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  profileName: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  profileEmail: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 4 },
   editIconBtn: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: c.divider,
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: c.border,
   },
 
-  roleBadgeInline: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
+  roleBadgeInline: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeProvider: { backgroundColor: c.successBg, borderColor: c.success },
   roleBadgeSender:   { backgroundColor: c.accentSoft, borderColor: c.accent },
   roleBadgePending:  { backgroundColor: c.warningBg, borderColor: c.warning },
   roleBadgeRejected: { backgroundColor: c.errorBg, borderColor: c.error },
-  roleBadgeTextInline: { fontSize: 9, fontWeight: '800', letterSpacing: 0.6 },
+  roleBadgeTextInline: { fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
 
   mainContent: { flex: 1 },
   mainScrollContent: { paddingBottom: 40 },
@@ -691,15 +683,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 12,
   },
   rejectionBannerIconWrap: {
-    width: 38,
-    height: 38,
+    width: 42,
+    height: 42,
     borderRadius: 12,
     backgroundColor: isDark ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
     justifyContent: 'center',
     alignItems: 'center',
   },
   rejectionBannerTitle: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '800',
     color: c.error,
   },
@@ -707,12 +699,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     color: c.textSecondary,
-    marginTop: 2,
+    marginTop: 3,
+    lineHeight: 16,
   },
   rejectionBannerActionPill: {
     backgroundColor: c.error,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
     borderRadius: 10,
   },
   rejectionBannerActionText: {
@@ -728,51 +721,51 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   menuCard: {
     backgroundColor: c.card,
-    borderRadius: 20,
-    paddingHorizontal: 6, paddingVertical: 4,
+    borderRadius: 22,
+    paddingHorizontal: 6, paddingVertical: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25,
-    shadowRadius: 8, elevation: 2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.2 : 0.05,
+    shadowRadius: 12, elevation: 3,
     borderWidth: 1, borderColor: c.border,
   },
   menuItem: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: 10, borderRadius: 14,
+    paddingVertical: 14, paddingHorizontal: 10, borderRadius: 16,
   },
   menuItemLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
   menuIconWrapper: {
-    width: 42, height: 42, borderRadius: 13,
+    width: 42, height: 42, borderRadius: 14,
     justifyContent: 'center', alignItems: 'center', marginRight: 14,
   },
   menuTextWrapper: { flex: 1 },
-  menuText: { fontSize: 15, fontWeight: '700', color: c.textPrimary },
-  menuSubtext: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  menuText: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.1 },
+  menuSubtext: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500' },
   menuDivider: { height: 1, backgroundColor: c.divider, marginLeft: 66, marginRight: 10 },
 
   providerBadge: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 10, gap: 4, borderWidth: 1, borderColor: c.success,
+    backgroundColor: c.successBg, paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.success,
   },
-  providerBadgeDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: c.success },
+  providerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.success },
   providerBadgeText: { color: c.success, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
 
   pendingBadge: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.warningBg, paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 10, gap: 4, borderWidth: 1, borderColor: c.warning,
+    backgroundColor: c.warningBg, paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.warning,
   },
   pendingBadgeText: { color: c.warning, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
 
   rejectedBadge: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.errorBg, paddingHorizontal: 8, paddingVertical: 4,
-    borderRadius: 10, gap: 4, borderWidth: 1, borderColor: c.error,
+    backgroundColor: c.errorBg, paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.error,
   },
   rejectedBadgeText: { color: c.error, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
 
-  logoutText: { fontSize: 15, fontWeight: '700', color: c.error },
+  logoutText: { fontSize: 15, fontWeight: '800', color: c.error, letterSpacing: -0.1 },
   versionText: {
     textAlign: 'center', color: c.textMuted, fontSize: 11,
     fontWeight: '600', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
@@ -790,8 +783,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     backgroundColor: c.card,
-    borderRadius: 26,
-    padding: 24,
+    borderRadius: 28,
+    padding: 26,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: c.border,
@@ -802,30 +795,31 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     elevation: 10,
   },
   modalIconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: c.errorBg,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
+    marginBottom: 18,
+    borderWidth: 1.5,
     borderColor: c.error,
   },
   modalTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '800',
     color: c.textPrimary,
     textAlign: 'center',
-    marginBottom: 6,
+    marginBottom: 8,
+    letterSpacing: -0.3,
   },
   modalDescription: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '500',
     color: c.textSecondary,
     textAlign: 'center',
-    lineHeight: 19,
-    marginBottom: 18,
+    lineHeight: 20,
+    marginBottom: 20,
   },
   reasonBox: {
     width: '100%',
@@ -833,15 +827,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: c.error,
     borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
+    padding: 16,
+    marginBottom: 18,
   },
   reasonLabel: {
     fontSize: 10,
     fontWeight: '800',
     color: c.error,
-    letterSpacing: 0.8,
-    marginBottom: 6,
+    letterSpacing: 1,
+    marginBottom: 8,
   },
   reasonValue: {
     fontSize: 14,
@@ -850,12 +844,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     lineHeight: 20,
   },
   modalHint: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '500',
     color: c.textMuted,
     textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 22,
+    lineHeight: 19,
+    marginBottom: 24,
   },
   modalActionsRow: {
     flexDirection: 'row',
@@ -864,31 +858,36 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   modalSecondaryBtn: {
     flex: 1,
-    height: 48,
-    borderRadius: 14,
+    height: 50,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: c.border,
-    backgroundColor: c.divider,
+    backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalSecondaryBtnText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     color: c.textSecondary,
   },
   modalPrimaryBtn: {
-    flex: 1.4,
-    height: 48,
-    borderRadius: 14,
-    backgroundColor: ORANGE,
+    flex: 1.6,
+    height: 50,
+    borderRadius: 16,
+    backgroundColor: c.accent,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   modalPrimaryBtnText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '800',
     color: '#FFFFFF',
   },
