@@ -478,7 +478,11 @@ export default function TaskScreen() {
       const senderId = (verifyTarget?.delivery_requests as any)?.sender_id
         ?? (verifyTarget?.delivery_requests as any)?.sender?.user_id;
       if (senderId) {
-        notifyUser(senderId, 'Package picked up', 'Your courier picked up your parcel and is now in transit.', { deliveryId: verifyTarget?.delivery_id });
+        try {
+          await notifyUser(senderId, 'Package picked up', 'Your courier picked up your parcel and is now in transit.', { deliveryId: verifyTarget?.delivery_id });
+        } catch (err) {
+          console.warn('[Task] notify sender pickup failed', err);
+        }
       }
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
@@ -681,7 +685,11 @@ export default function TaskScreen() {
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
       if (senderId) {
-        notifyUser(senderId, 'Delivery complete 📦', `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered with photo proof.`, { deliveryId });
+        try {
+          await notifyUser(senderId, 'Delivery complete 📦', `Parcel #PNS-${String(requestId).padStart(4, '0')} was delivered with photo proof.`, { deliveryId });
+        } catch (err) {
+          console.warn('[Task] notify sender delivery complete failed', err);
+        }
       }
       try { await clearLocationFix(deliveryId); } catch {}
       closeDeliveryOTPModal();
@@ -1157,6 +1165,7 @@ export default function TaskScreen() {
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={insets.top + 70} padBottom={60}
+                userInterfaceStyle="light" // ✅ FIX: Force light theme
               />
             </View>
           </View>
@@ -1467,12 +1476,14 @@ export default function TaskScreen() {
                 onInfo={setNavInfo}
                 style={{ bottom: 150 + insets.bottom }}
                 padTop={20} padBottom={30}
+                userInterfaceStyle="light" // ✅ FIX: Force light theme
               />
             ) : (
               <RoutePreviewMap
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={100} padBottom={260}
+                userInterfaceStyle="light" // ✅ FIX: Force light theme
               />
             );
           })()}

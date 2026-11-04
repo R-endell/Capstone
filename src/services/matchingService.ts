@@ -113,8 +113,19 @@ export function calculateDistance(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function computeCargoVolumeLiters(cargo: any): number {
-  const c = Array.isArray(cargo) ? cargo[0] : cargo;
+export function computeCargoVolumeLiters(cargoOrItems: any): number {
+  if (!cargoOrItems) return 15;
+
+  // Handle direct array of JobItem[] ({ size: 'Small' | 'Medium' | 'Large' })
+  if (Array.isArray(cargoOrItems) && cargoOrItems.length > 0 && !('small_box_qty' in cargoOrItems[0])) {
+    return cargoOrItems.reduce((acc, it) => {
+      if (it?.size === 'Large') return acc + 95;
+      if (it?.size === 'Medium') return acc + 45;
+      return acc + 15;
+    }, 0);
+  }
+
+  const c = Array.isArray(cargoOrItems) ? cargoOrItems[0] : cargoOrItems;
   if (!c) return 15;
   const s = Number(c.small_box_qty) || 0;
   const m = Number(c.medium_box_qty) || 0;
@@ -122,7 +133,6 @@ export function computeCargoVolumeLiters(cargo: any): number {
   const total = s * 15 + m * 45 + l * 95;
   if (total > 0) return total;
 
-  // Fallback to items_json if box quantities weren't set directly
   let items: any = c.items_json;
   if (typeof items === 'string') {
     try { items = JSON.parse(items); } catch { items = null; }

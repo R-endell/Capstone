@@ -2,7 +2,6 @@
   "expo": {
     "name": "Pack-N-Ship",
     "slug": "Pack-N-Ship",
-    "newArchEnabled": false, 
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/appiconfixed.png",

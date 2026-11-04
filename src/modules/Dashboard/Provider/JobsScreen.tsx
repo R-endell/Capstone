@@ -551,6 +551,7 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
     <MapView
       ref={mapRef}
       {...MAP_PROPS}
+      userInterfaceStyle="light" // ✅ FIX: Force light theme
       style={{ flex: 1 }}
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
@@ -1021,6 +1022,7 @@ const RouteLocationPickerModal = ({
           <MapView
             ref={mapRef}
             provider={PROVIDER_GOOGLE}
+            userInterfaceStyle="light" // ✅ FIX: Force light theme
             style={StyleSheet.absoluteFill}
             initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
             onMapReady={() => setMapLoaded(true)}
@@ -1426,7 +1428,7 @@ export default function JobsScreen() {
       ]),
     );
     pulse.start();
-    return () => pulse.stop(); // <--- FIX: Change bellPulse.stop() to pulse.stop()
+    return () => pulse.stop();
   }, [isFocused, bellPulse]);
 
   const loadNotifs = useCallback(async () => {
@@ -2101,12 +2103,16 @@ export default function JobsScreen() {
 
         if (requestData.sender_id) {
           const code = requestCode(req.request_id);
-          notifyUser(
-            requestData.sender_id,
-            'Route-Matched Courier Accepted! 🚚',
-            `Your courier accepted parcel #${code} along the declared route.`,
-            { deliveryId: delivery.delivery_id },
-          ).catch(() => {});
+          try {
+            await notifyUser(
+              requestData.sender_id,
+              'Route-Matched Courier Accepted! 🚚',
+              `Your courier accepted parcel #${code} along the declared route.`,
+              { deliveryId: delivery.delivery_id },
+            );
+          } catch (err) {
+            console.warn('[Jobs] notify sender accept failed', err);
+          }
         }
       }
 
@@ -2584,12 +2590,19 @@ export default function JobsScreen() {
       setRoutePickerVisible(true);
     };
 
+    const handleToggleDemo = async (val: boolean) => {
+      setDemoModeState(val);
+      await setDemoMode(val);
+      setTimeout(refreshMatches, 150);
+    };
+
     return (
-      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 12 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 22, borderTopWidth: isOnline ? 2 : 1 }]}>
+      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 14 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 20, borderTopWidth: isOnline ? 2 : 1 }]}>
         <View style={[styles.dashBar, { backgroundColor: isOnline ? GREEN : 'rgba(100,116,139,0.35)' }]} />
 
         <Animated.View style={{ opacity: modeFade }}>
-          <View style={[styles.dashHead, isOnline && { marginBottom: 12 }]}>
+          {/* Header: Renamed to "My Route Requests" per PDF Section 5 */}
+          <View style={[styles.dashHead, { marginBottom: 10 }]}>
             <View style={styles.dashHeadLeft}>
               <View style={styles.liveBadge}>
                 {isOnline && (
@@ -2598,9 +2611,15 @@ export default function JobsScreen() {
                 <View style={[styles.liveCore, { backgroundColor: isOnline ? GREEN : '#475569' }]} />
               </View>
               <View>
-                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>{isOnline ? 'Route Scanner Active' : 'Route Scanner Paused'}</Text>
+                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>My Route Requests</Text>
                 <Text style={[styles.dashSub, !isOnline && { color: OFF.sub }]}>
-                  {isOnline ? (checkingMatches ? 'Scanning corridor...' : `${requests.length} matched requests`) : 'Post or select a route to begin'}
+                  {!activeRoute
+                    ? 'Post a route to see matched deliveries.'
+                    : checkingMatches
+                      ? 'Scanning route corridor...'
+                      : requests.length === 0
+                        ? 'No matches on your route yet.'
+                        : `${requests.length} matched request${requests.length === 1 ? '' : 's'} on your route`}
                 </Text>
               </View>
             </View>
@@ -2610,8 +2629,28 @@ export default function JobsScreen() {
             </View>
           </View>
 
-          {/* Active Route Display / Rule 1 Empty State */}
-          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 0 } : styles.routeBlockOff]}>
+          {/* Defense DEMO_MODE Toggle Bar (PDF Section 4) */}
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+            paddingHorizontal: 12, paddingVertical: 6, marginBottom: 10, borderRadius: 12,
+            backgroundColor: isOnline ? colors.accentSoft : 'rgba(255,117,31,0.14)',
+            borderWidth: 1, borderColor: 'rgba(255,117,31,0.35)',
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+              <Ionicons name="flask-outline" size={14} color={ORANGE} />
+              <Text style={{ fontSize: 11.5, fontWeight: '700', color: isOnline ? colors.textPrimary : '#E2E8F0' }}>
+                Defense DEMO_MODE (1-min fallback & lock)
+              </Text>
+            </View>
+            <Switch
+              value={demoMode}
+              onValueChange={handleToggleDemo}
+              trackColor={{ false: colors.border, true: ORANGE }}
+            />
+          </View>
+
+          {/* Active Route Block */}
+          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 10 } : styles.routeBlockOff]}>
             <View style={[styles.vehicleChip, isOnline ? { backgroundColor: 'rgba(255,117,31,0.10)' } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
               <Text style={{ fontSize: 22 }}>🚐</Text>
               <Animated.View
@@ -2623,21 +2662,22 @@ export default function JobsScreen() {
               />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>ACTIVE CORRIDOR</Text>
+              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>
+                ACTIVE CORRIDOR ({usedTodayCount}/3 ROUTES TODAY)
+              </Text>
               {activeRoute ? (
                 <>
                   <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
                     {startAddr.main} <Text style={{ color: isOnline ? ORANGE : OFF.label, fontWeight: '900' }}>→</Text> {endAddr.main}
                   </Text>
-                  {activeRoute.remaining_weight_kg != null && (
-                    <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>
-                      Trunk: {Number(activeRoute.remaining_weight_kg).toFixed(0)} kg · {Number(activeRoute.remaining_volume_liters || 0).toFixed(0)} L left
-                    </Text>
-                  )}
+                  <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>
+                    Trunk: {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg · {Number(activeRoute.remaining_volume_liters ?? 200).toFixed(0)} L left
+                    {activeRoute.fallback_unlocked ? ` · Fallback: ${activeRoute.fallback_used ? 'Used' : 'Unlocked'}` : ''}
+                  </Text>
                 </>
               ) : (
                 <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
-                  No route posted yet
+                  Post a route to see matched deliveries.
                 </Text>
               )}
             </View>
@@ -2652,25 +2692,61 @@ export default function JobsScreen() {
             </TouchableOpacity>
           </View>
 
-          {!activeRoute && (
-            <View style={{ marginTop: 12, backgroundColor: 'rgba(255,117,31,0.1)', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)' }}>
-              <Text style={{ fontSize: 12, fontWeight: '800', color: ORANGE, marginBottom: 2 }}>Rule 1: Route First, Requests Second</Text>
-              <Text style={{ fontSize: 11.5, color: colors.textPrimary, fontWeight: '600', lineHeight: 16 }}>
-                You must post a route before you can see or accept matched delivery requests. There is no general pool browsing.
+          {/* Two Required Empty States (PDF Section 2 Rule 1 & Section 5) */}
+          {!activeRoute ? (
+            <View style={{
+              marginBottom: 12, backgroundColor: 'rgba(255,117,31,0.12)',
+              padding: 14, borderRadius: 14, borderWidth: 1, borderColor: ORANGE,
+              alignItems: 'center',
+            }}>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: ORANGE, textAlign: 'center' }}>
+                Post a route to see matched deliveries.
               </Text>
+              <Text style={{ fontSize: 11.5, color: isOnline ? colors.textSecondary : '#94A3B8', fontWeight: '600', textAlign: 'center', marginTop: 4, lineHeight: 16 }}>
+                Rule 1: Providers see zero requests until they post a forward route.
+              </Text>
+              <TouchableOpacity
+                style={{
+                  marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
+                  backgroundColor: ORANGE, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12,
+                }}
+                onPress={openAddRouteModal}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="add-circle" size={16} color="#FFFFFF" />
+                <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
+                  Post Route ({Math.max(0, 3 - usedTodayCount)} left today)
+                </Text>
+              </TouchableOpacity>
             </View>
-          )}
+          ) : isOnline && requests.length === 0 ? (
+            <View style={{
+              marginBottom: 4, backgroundColor: colors.background,
+              padding: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.divider,
+              flexDirection: 'row', alignItems: 'center', gap: 10,
+            }}>
+              <Ionicons name="compass-outline" size={20} color={ORANGE} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                  No matches on your route yet.
+                </Text>
+                <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600', marginTop: 1 }}>
+                  Filtering for ≤500 m (Curb-side) or ≤1.5 km (Door-to-Door), forward direction, ≥60% score.
+                </Text>
+              </View>
+            </View>
+          ) : null}
 
           {isOnline ? null : (
-            <View style={{ marginTop: 14 }}>
+            <View style={{ marginTop: 4 }}>
               <TouchableOpacity
                 style={styles.ctaBtn}
-                onPress={() => toggleOnlineStatus(true)}
+                onPress={() => (activeRoute ? toggleOnlineStatus(true) : openAddRouteModal())}
                 activeOpacity={0.9}
                 onLayout={e => setCtaW(e.nativeEvent.layout.width)}
               >
                 <Animated.View pointerEvents="none" style={[styles.ctaShineWrap, { transform: [{ translateX: shineX }] }]}><View style={styles.ctaShine} /></Animated.View>
-                <Text style={styles.ctaText}>Go Online & Scan Corridor</Text>
+                <Text style={styles.ctaText}>{activeRoute ? 'Go Online & Scan Corridor' : 'Post Route to Start'}</Text>
                 <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
               </TouchableOpacity>
 
@@ -2923,6 +2999,7 @@ export default function JobsScreen() {
                   ref={addRoutePreviewMapRef}
                   style={StyleSheet.absoluteFill}
                   provider={PROVIDER_GOOGLE}
+                  userInterfaceStyle="light" // ✅ FIX: Force light theme
                   initialRegion={{
                     latitude: newRouteStart.latitude,
                     longitude: newRouteStart.longitude,

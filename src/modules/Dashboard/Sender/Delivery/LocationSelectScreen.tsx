@@ -22,12 +22,6 @@ const RED = '#DC2626';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 
-/**
- * Strict road-level accuracy:
- * Pin MUST be within 45 meters of the provider's road polyline between Point A and Point B.
- * If it is off by 100m, it will be rejected as disaligned.
- */
-const MAX_ROUTE_CORRIDOR_METERS = 45;
 const ENDPOINT_OVERSHOOT_TOLERANCE_M = 25;
 
 const GOOGLE_MAPS_API_KEY: string =
@@ -109,10 +103,10 @@ function evaluateRouteAlignment(
   pointA: Coord,
   pointB: Coord,
   polyline: Coord[],
+  maxCorridorMeters: number, // ✅ Pass the dynamic limit (500 or 1500)
 ) {
   const path = polyline.length >= 2 ? polyline : [pointA, pointB];
 
-  // Check endpoint overshoot on first and last segments
   const firstSeg = pointToSegmentInfo(point, path[0], path[Math.min(1, path.length - 1)]);
   const lastSeg = pointToSegmentInfo(point, path[Math.max(0, path.length - 2)], path[path.length - 1]);
   const abInfo = pointToSegmentInfo(point, pointA, pointB);
@@ -171,13 +165,13 @@ function evaluateRouteAlignment(
     };
   }
 
-  if (minDistance > MAX_ROUTE_CORRIDOR_METERS) {
+  if (minDistance > maxCorridorMeters) {
     return {
       aligned: false,
       distanceMeters: minDistance,
       progress,
       nearestCoordOnRoute,
-      reason: `Selected pin is ${fmtDist(minDistance)} off the route (max ${MAX_ROUTE_CORRIDOR_METERS}m). Place the pin directly on the orange route line between Point A and Point B.`,
+      reason: `Selected pin is ${fmtDist(minDistance)} off the route. The limit is ${fmtDist(maxCorridorMeters)} for this delivery type. Place the pin on or near the orange route line.`,
     };
   }
 
@@ -219,6 +213,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const isPickup = type === 'pickup';
   const pinColor = isPickup ? ORANGE : BLACK;
   const tint = isPickup ? 'rgba(242,112,36,0.09)' : 'rgba(17,24,39,0.06)';
+
+  // ✅ Apply PDF Rule 2: 1500m for Door-to-Door, 500m for Curb-side
+  const isDoorToDoor = /door/i.test(String(state.dropoffType || ''));
+  const maxCorridorM = isDoorToDoor ? 1500 : 500;
 
   const preferredRoute = state.preferredRoute ?? null;
   const hasPreferredRoute = !!(
@@ -349,7 +347,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         reason: null as string | null,
       };
     }
-    const baseCheck = evaluateRouteAlignment(markerCoord, routePointA, routePointB, providerRouteCoords);
+    // ✅ Pass maxCorridorM to validation
+    const baseCheck = evaluateRouteAlignment(markerCoord, routePointA, routePointB, providerRouteCoords, maxCorridorM);
     if (!baseCheck.aligned) return baseCheck;
 
     if (!isPickup && state.pickupLocation) {
@@ -357,7 +356,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         latitude: state.pickupLocation.latitude,
         longitude: state.pickupLocation.longitude,
       };
-      const pickupCheck = evaluateRouteAlignment(pickupCoord, routePointA, routePointB, providerRouteCoords);
+      const pickupCheck = evaluateRouteAlignment(pickupCoord, routePointA, routePointB, providerRouteCoords, maxCorridorM);
       const distFromPickup = metersBetween(pickupCoord, markerCoord);
 
       if (distFromPickup < 30) {
@@ -391,6 +390,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     providerRouteCoords,
     isPickup,
     state.pickupLocation,
+    maxCorridorM, // ✅ Added to dependencies
   ]);
 
   /* ------------------------------ animations ------------------------------ */
@@ -719,7 +719,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       Alert.alert(
         'Location Disaligned With Route',
         routeAlignment.reason ||
-          `The selected location is outside the provider’s route between Point A and Point B (must be within ${MAX_ROUTE_CORRIDOR_METERS}m of the route line).`,
+          `The selected location is outside the provider’s route between Point A and Point B (must be within ${fmtDist(maxCorridorM)} of the route line).`,
         [
           { text: 'Snap Pin to Route', onPress: snapPinToRoute },
           { text: 'View Full Route', onPress: fitProviderRoute },
@@ -795,7 +795,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
-  // Filter nearby places when on a provider's route so only places strictly within the 45m route corridor are suggested
+  // Filter nearby places when on a provider's route so only places strictly within the route corridor are suggested
   const alignedNearby = useMemo(() => {
     if (!hasPreferredRoute || !routePointA || !routePointB) return nearby;
     return nearby.filter(p => {
@@ -804,10 +804,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         routePointA,
         routePointB,
         providerRouteCoords,
+        maxCorridorM,
       );
       return check.aligned;
     });
-  }, [nearby, hasPreferredRoute, routePointA, routePointB, providerRouteCoords]);
+  }, [nearby, hasPreferredRoute, routePointA, routePointB, providerRouteCoords, maxCorridorM]);
 
   return (
     <View style={[styles.container, { paddingBottom: kbH }]}>
@@ -826,6 +827,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           onPoiClick={onPoiClick}
           onPress={onMapPress}
           showsUserLocation
+          userInterfaceStyle="light"
           showsMyLocationButton={false}
           showsCompass={false}
           toolbarEnabled={false}
@@ -930,7 +932,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                   >
                     {routeAlignment.aligned
                       ? `On Route (${fmtDist(routeAlignment.distanceMeters)} from line)`
-                      : `Disaligned · ${fmtDist(routeAlignment.distanceMeters)} off route`}
+                      : `Disaligned · ${fmtDist(routeAlignment.distanceMeters)} off route (max ${fmtDist(maxCorridorM)})`}
                   </Text>
                 </View>
 
@@ -1111,7 +1113,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 {busy
                   ? 'Looking for nearby places...'
                   : hasPreferredRoute
-                    ? 'Drag the pin directly along the orange route line between Point A and Point B.'
+                    ? `Drag the pin along the orange route line (max ${fmtDist(maxCorridorM)} away).`
                     : 'No named places nearby. Drag the map or search.'}
               </Text>
             )}
