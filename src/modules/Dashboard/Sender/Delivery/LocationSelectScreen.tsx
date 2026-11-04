@@ -10,12 +10,11 @@ import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Ionicons } from '@expo/vector-icons';
+import { PhIcon } from '../../../../components/ui/PhIcon';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS } from '../../../../utils/mapConfig';
 
-const ORANGE = '#F27024';
 const BLACK = '#111827';
 const GREEN = '#16A34A';
 const RED = '#DC2626';
@@ -217,8 +216,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const isPickup = type === 'pickup';
-  const pinColor = isPickup ? ORANGE : BLACK;
-  const tint = isPickup ? 'rgba(242,112,36,0.09)' : 'rgba(17,24,39,0.06)';
+  const pinColor = isPickup ? colors.accent : BLACK;
+  const tint = isPickup
+    ? (isDark ? 'rgba(242,112,36,0.16)' : 'rgba(242,112,36,0.09)')
+    : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17,24,39,0.06)');
 
   const preferredRoute = state.preferredRoute ?? null;
   const hasPreferredRoute = !!(
@@ -794,6 +795,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
+  const misaligned = hasPreferredRoute && !routeAlignment.aligned;
 
   // Filter nearby places when on a provider's route so only places strictly within the 45m route corridor are suggested
   const alignedNearby = useMemo(() => {
@@ -811,7 +813,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   return (
     <View style={[styles.container, { paddingBottom: kbH }]}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
 
       {/* ============================== MAP AREA ============================== */}
       <View style={styles.mapArea}>
@@ -836,7 +838,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             <>
               <Polyline
                 coordinates={providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB]}
-                strokeColor={routeAlignment.aligned ? ORANGE : RED}
+                strokeColor={routeAlignment.aligned ? colors.accent : RED}
                 strokeWidth={6}
                 tappable
                 onPress={(e: any) => {
@@ -856,7 +858,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                   })
                 }
               >
-                <View style={styles.routeEndpointMarkerA}>
+                <View style={[styles.routeEndpointMarkerA, { backgroundColor: colors.accent }]}>
                   <Text style={styles.routeEndpointText}>A</Text>
                 </View>
               </Marker>
@@ -872,7 +874,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                   })
                 }
               >
-                <View style={styles.routeEndpointMarkerB}>
+                <View style={[styles.routeEndpointMarkerB, { backgroundColor: BLACK }]}>
                   <Text style={styles.routeEndpointText}>B</Text>
                 </View>
               </Marker>
@@ -888,8 +890,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               anchor={{ x: 0.5, y: 0.5 }}
               tracksViewChanges={false}
             >
-              <View style={styles.confirmedPickupMarker}>
-                <Ionicons name="cube" size={12} color="#FFFFFF" />
+              <View style={[styles.confirmedPickupMarker, { backgroundColor: colors.accent }]}>
+                <PhIcon name="Cube" size={12} color="#FFFFFF" weight="fill" />
               </View>
             </Marker>
           )}
@@ -897,19 +899,14 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
         {!mapLoaded && (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color={ORANGE} />
+            <ActivityIndicator size="large" color={colors.accent} />
           </View>
         )}
 
         {/* Provider Route Banner & Alignment Status */}
         {hasPreferredRoute && preferredRoute && (
-          <View style={[styles.routeBannerWrapper, { top: insets.top + 66 }]} pointerEvents="box-none">
-            <View
-              style={[
-                styles.routeBanner,
-                !routeAlignment.aligned && styles.routeBannerError,
-              ]}
-            >
+          <View style={[styles.routeBannerWrapper, { top: insets.top + 72 }]} pointerEvents="box-none">
+            <View style={[styles.routeBanner, misaligned && styles.routeBannerError]}>
               <View style={styles.routeBannerTop}>
                 <View
                   style={[
@@ -917,10 +914,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                     { backgroundColor: routeAlignment.aligned ? 'rgba(22,163,74,0.14)' : 'rgba(220,38,38,0.14)' },
                   ]}
                 >
-                  <Ionicons
-                    name={routeAlignment.aligned ? 'checkmark-circle' : 'alert-circle'}
+                  <PhIcon
+                    name={routeAlignment.aligned ? 'CheckCircle' : 'WarningCircle'}
                     size={15}
                     color={routeAlignment.aligned ? GREEN : RED}
+                    weight="fill"
                   />
                   <Text
                     style={[
@@ -936,22 +934,26 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
                 {!routeAlignment.aligned ? (
                   <TouchableOpacity style={styles.snapRouteBtn} onPress={snapPinToRoute} activeOpacity={0.85}>
-                    <Ionicons name="magnet-outline" size={14} color="#FFFFFF" />
+                    <PhIcon name="Magnet" size={14} color="#FFFFFF" weight="bold" />
                     <Text style={styles.snapRouteBtnText}>Snap to Route</Text>
                   </TouchableOpacity>
                 ) : (
-                  <TouchableOpacity style={styles.fitRouteBtn} onPress={fitProviderRoute} activeOpacity={0.85}>
-                    <Ionicons name="git-branch-outline" size={14} color={ORANGE} />
-                    <Text style={styles.fitRouteBtnText}>Show Route</Text>
+                  <TouchableOpacity
+                    style={[styles.fitRouteBtn, { backgroundColor: isDark ? 'rgba(242,112,36,0.22)' : 'rgba(242,112,36,0.12)' }]}
+                    onPress={fitProviderRoute}
+                    activeOpacity={0.85}
+                  >
+                    <PhIcon name="GitBranch" size={14} color={colors.accent} weight="bold" />
+                    <Text style={[styles.fitRouteBtnText, { color: colors.accent }]}>Show Route</Text>
                   </TouchableOpacity>
                 )}
               </View>
 
-              <Text style={styles.routeCorridorText} numberOfLines={1}>
+              <Text style={[styles.routeCorridorText, { color: colors.textSecondary }]} numberOfLines={1}>
                 A: {preferredRoute.pickup.split(',')[0]} → B: {preferredRoute.dropoff.split(',')[0]}
               </Text>
 
-              {!routeAlignment.aligned && !!routeAlignment.reason && (
+              {misaligned && !!routeAlignment.reason && (
                 <Text style={styles.routeErrorSub} numberOfLines={2}>
                   {routeAlignment.reason}
                 </Text>
@@ -963,11 +965,15 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         {/* name bubble + pin, centred in the visible map */}
         <View style={styles.centerStack} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
-            <TouchableOpacity style={styles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
-              <Text style={styles.bubbleText} numberOfLines={1}>{addressName}</Text>
+            <TouchableOpacity
+              style={[styles.bubble, { backgroundColor: colors.card, borderColor: colors.border }]}
+              activeOpacity={0.9}
+              onPress={() => setIsSearching(true)}
+            >
+              <Text style={[styles.bubbleText, { color: colors.textPrimary }]} numberOfLines={1}>{addressName}</Text>
               {busy
                 ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
-                : <Ionicons name="chevron-forward" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
+                : <PhIcon name="CaretRight" size={14} color={colors.textMuted} weight="bold" style={{ marginLeft: 6 }} />}
             </TouchableOpacity>
           </Animated.View>
 
@@ -977,7 +983,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 style={[
                   styles.pinHalo,
                   {
-                    backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor,
+                    backgroundColor: misaligned ? RED : pinColor,
                     transform: [{ scale: pulseScale }],
                     opacity: pulseOpacity,
                   },
@@ -986,7 +992,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               <View
                 style={[
                   styles.pinDot,
-                  { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                  { backgroundColor: misaligned ? RED : pinColor },
                 ]}
               >
                 <View style={styles.pinDotInner} />
@@ -994,7 +1000,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               <View
                 style={[
                   styles.pinStem,
-                  { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                  { backgroundColor: misaligned ? RED : pinColor },
                 ]}
               />
             </Animated.View>
@@ -1002,32 +1008,51 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         </View>
 
+        {/* Back button — glass premium floating */}
         <TouchableOpacity
-          style={[styles.iconBtn, { top: insets.top + 10 }]}
+          style={[styles.backBtn, { top: insets.top + 10 }]}
           onPress={() => navigation.goBack()}
           activeOpacity={0.85}
         >
-          <Ionicons name="arrow-back" size={22} color="#111827" />
+          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
+
+        {/* Section pill — replaces "Step X of 4" for map context */}
+        <View
+          style={[styles.topPill, { top: insets.top + 14, backgroundColor: colors.card, borderColor: colors.border }]}
+          pointerEvents="none"
+        >
+          <View style={[styles.topPillDot, { backgroundColor: pinColor }]} />
+          <Text style={[styles.topPillText, { color: colors.textPrimary }]}>
+            {isPickup ? 'Pickup location' : 'Drop-off location'}
+          </Text>
+        </View>
 
         {hasPreferredRoute && (
           <TouchableOpacity
-            style={[styles.fitRouteFab, { bottom: 96 }]}
+            style={[styles.fitRouteFab, { bottom: 96, backgroundColor: colors.card, borderColor: colors.border }]}
             onPress={fitProviderRoute}
             activeOpacity={0.85}
           >
-            <Ionicons name="map-outline" size={22} color={ORANGE} />
+            <PhIcon name="MapTrifold" size={22} color={colors.accent} weight="bold" />
           </TouchableOpacity>
         )}
 
-        <TouchableOpacity style={styles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
-          {locating ? <ActivityIndicator size="small" color="#111827" /> : <Ionicons name="locate" size={24} color="#111827" />}
+        <TouchableOpacity
+          style={[styles.locateMeBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={handleLocateMe}
+          disabled={locating}
+          activeOpacity={0.85}
+        >
+          {locating
+            ? <ActivityIndicator size="small" color={colors.textPrimary} />
+            : <PhIcon name="Crosshair" size={22} color={colors.textPrimary} weight="bold" />}
         </TouchableOpacity>
       </View>
 
       {/* ============================== BOTTOM SHEET ============================== */}
       <Animated.View style={[styles.sheet, { opacity: sheetAnim }]}>
-        <View style={styles.dragHandle} />
+        <View style={[styles.dragHandle, { backgroundColor: colors.border }]} />
 
         {!editingNote && (
           <ScrollView
@@ -1039,7 +1064,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             {hasPreferredRoute && routePointA && routePointB && preferredRoute && (
               <View style={styles.quickEndpointsRow}>
                 <TouchableOpacity
-                  style={styles.quickEndpointChip}
+                  style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]}
                   activeOpacity={0.85}
                   onPress={() =>
                     moveTo(routePointA, {
@@ -1048,14 +1073,14 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                     })
                   }
                 >
-                  <View style={[styles.quickDot, { backgroundColor: ORANGE }]} />
-                  <Text style={styles.quickEndpointText} numberOfLines={1}>
+                  <View style={[styles.quickDot, { backgroundColor: colors.accent }]} />
+                  <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>
                     Point A: {preferredRoute.pickup.split(',')[0]}
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.quickEndpointChip}
+                  style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]}
                   activeOpacity={0.85}
                   onPress={() =>
                     moveTo(routePointB, {
@@ -1065,7 +1090,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                   }
                 >
                   <View style={[styles.quickDot, { backgroundColor: BLACK }]} />
-                  <Text style={styles.quickEndpointText} numberOfLines={1}>
+                  <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>
                     Point B: {preferredRoute.dropoff.split(',')[0]}
                   </Text>
                 </TouchableOpacity>
@@ -1077,37 +1102,37 @@ export default function LocationSelectScreen({ route, navigation }: any) {
                 <View
                   style={[
                     styles.rowIcon,
-                    { backgroundColor: hasPreferredRoute && !routeAlignment.aligned ? RED : pinColor },
+                    { backgroundColor: misaligned ? RED : pinColor },
                   ]}
                 >
-                  <Ionicons name="location" size={18} color="#FFFFFF" />
+                  <PhIcon name="MapPin" size={18} color="#FFFFFF" weight="fill" />
                 </View>
               </View>
               <View style={styles.rowText}>
-                <Text style={styles.rowTitle} numberOfLines={1}>{addressName}</Text>
-                <Text style={styles.rowSub} numberOfLines={1}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{addressName}</Text>
+                <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>
                   {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
                 </Text>
               </View>
-              <Ionicons name="pencil" size={18} color={colors.textSecondary} />
+              <PhIcon name="PencilSimple" size={18} color={colors.textSecondary} weight="bold" />
             </TouchableOpacity>
 
             {alignedNearby.map(p => (
               <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
                 <View style={styles.rowIconCol}>
-                  <View style={styles.rowIconMuted}>
-                    <Ionicons name="location-outline" size={18} color={colors.textSecondary} />
+                  <View style={[styles.rowIconMuted, { backgroundColor: colors.background }]}>
+                    <PhIcon name="MapPin" size={18} color={colors.textSecondary} weight="bold" />
                   </View>
-                  <Text style={styles.rowDist}>{fmtDist(p.dist)}</Text>
+                  <Text style={[styles.rowDist, { color: colors.textSecondary }]}>{fmtDist(p.dist)}</Text>
                 </View>
                 <View style={styles.rowText}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>{p.name}</Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>{p.address}</Text>
+                  <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{p.name}</Text>
+                  <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>{p.address}</Text>
                 </View>
               </TouchableOpacity>
             ))}
             {alignedNearby.length === 0 && (
-              <Text style={styles.emptyNearby}>
+              <Text style={[styles.emptyNearby, { color: colors.textMuted }]}>
                 {busy
                   ? 'Looking for nearby places...'
                   : hasPreferredRoute
@@ -1118,12 +1143,12 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </ScrollView>
         )}
 
-        <View style={styles.noteBar}>
+        <View style={[styles.noteBar, { borderTopColor: colors.divider }]}>
           {editingNote ? (
             <View style={styles.noteEditRow}>
-              <Ionicons name="create-outline" size={22} color={pinColor} style={{ marginTop: 6 }} />
+              <PhIcon name="NotePencil" size={22} color={pinColor} weight="bold" style={{ marginTop: 6 }} />
               <TextInput
-                style={styles.noteInput}
+                style={[styles.noteInput, { color: colors.textPrimary }]}
                 value={note}
                 onChangeText={setNote}
                 autoFocus
@@ -1141,24 +1166,30 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             </View>
           ) : (
             <TouchableOpacity style={styles.noteRow} activeOpacity={0.8} onPress={() => setEditingNote(true)}>
-              <Ionicons name="create-outline" size={22} color={pinColor} />
+              <PhIcon name="NotePencil" size={22} color={pinColor} weight="bold" />
               <Text
-                style={[styles.noteText, note ? { color: colors.textPrimary, fontWeight: '600' } : { color: pinColor }]}
+                style={[
+                  styles.noteText,
+                  note
+                    ? { color: colors.textPrimary, fontWeight: '600' }
+                    : { color: pinColor },
+                ]}
                 numberOfLines={2}
               >
                 {note || 'Enter note for driver.'}
               </Text>
-              {!!note && <Ionicons name="pencil" size={16} color={colors.textSecondary} />}
+              {!!note && <PhIcon name="PencilSimple" size={16} color={colors.textSecondary} weight="bold" />}
             </TouchableOpacity>
           )}
-          {editingNote && <Text style={styles.noteCount}>{note.length}/200</Text>}
+          {editingNote && <Text style={[styles.noteCount, { color: colors.textMuted }]}>{note.length}/200</Text>}
         </View>
 
         <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
           <TouchableOpacity
             style={[
               styles.confirmBtn,
-              hasPreferredRoute && !routeAlignment.aligned && styles.confirmBtnDisaligned,
+              { backgroundColor: colors.accent, shadowColor: colors.accent },
+              misaligned && styles.confirmBtnDisaligned,
               busy && { opacity: 0.6 },
             ]}
             onPress={() => { Keyboard.dismiss(); confirmLocation(); }}
@@ -1170,7 +1201,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             <Text style={styles.confirmBtnText}>
               {busy
                 ? 'Updating...'
-                : hasPreferredRoute && !routeAlignment.aligned
+                : misaligned
                   ? 'Disaligned · Tap to Snap to Route'
                   : isPickup
                     ? 'Confirm pickup'
@@ -1183,15 +1214,18 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
       {/* ============================== SEARCH OVERLAY ============================== */}
       {isSearching && (
-        <View style={[styles.searchOverlay, { paddingTop: insets.top + 10 }]}>
-          <View style={styles.searchModalHeader}>
-            <TouchableOpacity style={styles.searchBackBtn} onPress={closeSearch}>
-              <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <View style={[styles.searchOverlay, { paddingTop: insets.top + 10, backgroundColor: colors.background }]}>
+          <View style={[styles.searchModalHeader, { borderBottomColor: colors.divider }]}>
+            <TouchableOpacity
+              style={[styles.searchBackBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+              onPress={closeSearch}
+            >
+              <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
             </TouchableOpacity>
-            <View style={styles.searchInputWrapper}>
-              <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+            <View style={[styles.searchInputWrapper, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <PhIcon name="MagnifyingGlass" size={18} color={colors.textMuted} weight="bold" style={{ marginRight: 8 }} />
               <TextInput
-                style={styles.searchInput}
+                style={[styles.searchInput, { color: colors.textPrimary }]}
                 placeholder="Search mall, school, landmark..."
                 placeholderTextColor={colors.textMuted}
                 value={searchQuery}
@@ -1201,19 +1235,23 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               />
               {searchQuery.length > 0 && (
                 <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
-                  <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+                  <PhIcon name="XCircle" size={18} color={colors.textMuted} weight="fill" />
                 </TouchableOpacity>
               )}
             </View>
           </View>
 
-          {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginTop: 20 }} />}
-          {!!searchError && !searchLoading && <Text style={styles.searchErrorText}>{searchError}</Text>}
+          {searchLoading && <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 20 }} />}
+          {!!searchError && !searchLoading && (
+            <Text style={[styles.searchErrorText, { color: colors.textMuted }]}>{searchError}</Text>
+          )}
 
           {searchQuery.trim().length === 0 && recents.length > 0 && (
             <View style={styles.recentsHeader}>
-              <Text style={styles.recentsLabel}>RECENT</Text>
-              <TouchableOpacity onPress={clearRecents}><Text style={styles.clearText}>Clear</Text></TouchableOpacity>
+              <Text style={[styles.recentsLabel, { color: colors.textMuted }]}>RECENT</Text>
+              <TouchableOpacity onPress={clearRecents}>
+                <Text style={[styles.clearText, { color: colors.accent }]}>Clear</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -1226,15 +1264,22 @@ export default function LocationSelectScreen({ route, navigation }: any) {
               const isRecent = !('place_id' in item);
               return (
                 <TouchableOpacity
-                  style={styles.searchResultItem}
+                  style={[styles.searchResultItem, { borderBottomColor: colors.divider }]}
                   onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
                 >
-                  <View style={styles.searchResultIconBox}>
-                    <Ionicons name={isRecent ? 'time-outline' : 'location-outline'} size={18} color={pinColor} />
+                  <View style={[styles.searchResultIconBox, { backgroundColor: colors.background }]}>
+                    <PhIcon
+                      name={isRecent ? 'ClockCounterClockwise' : 'MapPin'}
+                      size={18}
+                      color={pinColor}
+                      weight={isRecent ? 'bold' : 'fill'}
+                    />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.searchResultTitle} numberOfLines={1}>{item.name}</Text>
-                    <Text style={styles.searchResultSub} numberOfLines={2}>
+                    <Text style={[styles.searchResultTitle, { color: colors.textPrimary }]} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={[styles.searchResultSub, { color: colors.textSecondary }]} numberOfLines={2}>
                       {isRecent ? (item as RecentEntry).address : (item as SearchResult).formatted_address}
                     </Text>
                   </View>
@@ -1249,76 +1294,71 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 }
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: c.card },
-  mapArea: { flex: 1, backgroundColor: '#F5F5F5', overflow: 'hidden' },
-  loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  container: { flex: 1, backgroundColor: c.background },
+  mapArea: { flex: 1, backgroundColor: isDark ? '#0B0F17' : '#F5F5F5', overflow: 'hidden' },
+  loadingOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: isDark ? '#0B0F17' : '#F5F5F5',
+    justifyContent: 'center', alignItems: 'center', zIndex: 10,
+  },
   routeEndpointMarkerA: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: ORANGE,
+    width: 28, height: 28, borderRadius: 14,
     borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
   },
   routeEndpointMarkerB: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: BLACK,
+    width: 28, height: 28, borderRadius: 14,
     borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
   },
   routeEndpointText: { fontSize: 12, fontWeight: '900', color: '#FFFFFF' },
   confirmedPickupMarker: {
-    width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE,
+    width: 24, height: 24, borderRadius: 12,
     borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
   },
-  routeBannerWrapper: {
-    position: 'absolute', left: 16, right: 16, zIndex: 6,
-  },
+  routeBannerWrapper: { position: 'absolute', left: 16, right: 16, zIndex: 6 },
   routeBanner: {
-    backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10,
-    borderWidth: 1.5, borderColor: 'rgba(22,163,74,0.35)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.14, shadowRadius: 8, elevation: 5,
+    backgroundColor: c.card, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(22,163,74,0.35)' : 'rgba(22,163,74,0.28)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.1,
+    shadowRadius: 10, elevation: 5,
   },
   routeBannerError: {
-    borderColor: RED, backgroundColor: '#FEF2F2',
+    borderColor: RED,
+    backgroundColor: isDark ? 'rgba(220,38,38,0.12)' : '#FEF2F2',
   },
-  routeBannerTop: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-  },
+  routeBannerTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   routeStatusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 9, paddingVertical: 4, borderRadius: 999, flexShrink: 1,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, flexShrink: 1,
   },
   routeStatusText: { fontSize: 12, fontWeight: '800', flexShrink: 1 },
   fitRouteBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
-    backgroundColor: 'rgba(242,112,36,0.12)',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
   },
-  fitRouteBtnText: { fontSize: 11, fontWeight: '800', color: ORANGE },
+  fitRouteBtnText: { fontSize: 11, fontWeight: '800' },
   snapRouteBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
     backgroundColor: RED,
   },
   snapRouteBtnText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
-  routeCorridorText: {
-    fontSize: 12, fontWeight: '700', color: '#374151', marginTop: 6,
-  },
-  routeErrorSub: {
-    fontSize: 11, fontWeight: '600', color: RED, marginTop: 4, lineHeight: 15,
-  },
+  routeCorridorText: { fontSize: 12, fontWeight: '700', marginTop: 6 },
+  routeErrorSub: { fontSize: 11, fontWeight: '600', color: RED, marginTop: 4, lineHeight: 15 },
   fitRouteFab: {
-    position: 'absolute', right: 16, width: 52, height: 52, borderRadius: 14, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
+    position: 'absolute', right: 16, width: 52, height: 52, borderRadius: 16,
+    justifyContent: 'center', alignItems: 'center', zIndex: 5, borderWidth: 1,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.12,
+    shadowRadius: 10, elevation: 5,
   },
-  quickEndpointsRow: {
-    flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10,
-  },
+  quickEndpointsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
   quickEndpointChip: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
-    borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8,
+    borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8,
   },
   quickDot: { width: 8, height: 8, borderRadius: 4 },
-  quickEndpointText: { flex: 1, fontSize: 12, fontWeight: '700', color: c.textPrimary },
+  quickEndpointText: { flex: 1, fontSize: 12, fontWeight: '700' },
   centerStack: {
     position: 'absolute', left: 0, right: 0, top: '50%',
     marginTop: -(32 + 8 + 42), height: 42 + 8 + 32,
@@ -1326,11 +1366,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   bubble: {
     height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#FFFFFF', borderRadius: 21, paddingHorizontal: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: 'rgba(0,0,0,0.05)',
+    borderRadius: 21, paddingHorizontal: 16, borderWidth: 1,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.18,
+    shadowRadius: 10, elevation: 6,
   },
-  bubbleText: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: '#111827' },
+  bubbleText: { flexShrink: 1, fontSize: 15, fontWeight: '800' },
   pinContainer: { marginTop: 8, alignItems: 'center' },
   pinWrapper: { alignItems: 'center' },
   pinHalo: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, opacity: 0.3 },
@@ -1342,63 +1382,80 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
   pinShadow: { position: 'absolute', bottom: -2, width: 8, height: 3, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.25)' },
-  iconBtn: {
-    position: 'absolute', left: 16, width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFFFFF',
+  backBtn: {
+    position: 'absolute', left: 16, width: 48, height: 48, borderRadius: 24,
+    backgroundColor: isDark ? 'rgba(30,36,48,0.88)' : 'rgba(255,255,255,0.94)',
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.7)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 10, elevation: 6,
   },
+  topPill: {
+    position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: isDark ? 0.35 : 0.12,
+    shadowRadius: 8, elevation: 4,
+  },
+  topPillDot: { width: 8, height: 8, borderRadius: 4 },
+  topPillText: { fontSize: 13, fontWeight: '800', letterSpacing: 0.2 },
   locateMeBtn: {
-    position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
+    position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 16,
+    justifyContent: 'center', alignItems: 'center', zIndex: 5, borderWidth: 1,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.12,
+    shadowRadius: 10, elevation: 5,
   },
   sheet: {
     backgroundColor: c.card,
-    borderTopLeftRadius: 22, borderTopRightRadius: 22, marginTop: -22,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 12, elevation: 12,
-    zIndex: 6,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -22,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 14, elevation: 12, zIndex: 6,
   },
-  dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
+  dragHandle: { width: 44, height: 5, borderRadius: 3, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
   list: { maxHeight: 232 },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 14 },
   rowIconCol: { width: 56, alignItems: 'center' },
   rowIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  rowIconMuted: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.background, alignItems: 'center', justifyContent: 'center' },
-  rowDist: { fontSize: 11, color: c.textSecondary, marginTop: 4, fontWeight: '500' },
+  rowIconMuted: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  rowDist: { fontSize: 11, marginTop: 4, fontWeight: '600' },
   rowText: { flex: 1 },
-  rowTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
-  rowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  emptyNearby: { textAlign: 'center', fontSize: 12, color: c.textMuted, paddingVertical: 14, paddingHorizontal: 20 },
-  noteBar: { borderTopWidth: 1, borderTopColor: c.divider, paddingHorizontal: 20, paddingVertical: 14 },
+  rowTitle: { fontSize: 16, fontWeight: '700' },
+  rowSub: { fontSize: 13, marginTop: 2, fontWeight: '500' },
+  emptyNearby: { textAlign: 'center', fontSize: 12, paddingVertical: 14, paddingHorizontal: 20, fontWeight: '500' },
+  noteBar: { borderTopWidth: 1, paddingHorizontal: 20, paddingVertical: 14 },
   noteRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   noteText: { flex: 1, fontSize: 16, fontWeight: '700' },
   noteEditRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  noteInput: { flex: 1, fontSize: 15, color: c.textPrimary, minHeight: 40, maxHeight: 90, padding: 0, paddingTop: 8, textAlignVertical: 'top' },
+  noteInput: { flex: 1, fontSize: 15, minHeight: 40, maxHeight: 90, padding: 0, paddingTop: 8, textAlignVertical: 'top' },
   noteDone: { fontSize: 15, fontWeight: '800', marginTop: 8 },
-  noteCount: { fontSize: 10, color: c.textMuted, textAlign: 'right', marginTop: 4 },
+  noteCount: { fontSize: 10, textAlign: 'right', marginTop: 4, fontWeight: '600' },
   confirmBtn: {
-    marginHorizontal: 20, backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
+    marginHorizontal: 20, borderRadius: 30, paddingVertical: 16,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6,
   },
-  confirmBtnDisaligned: {
-    backgroundColor: RED, shadowColor: RED,
-  },
+  confirmBtnDisaligned: { backgroundColor: RED, shadowColor: RED },
   confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
-  searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.background, zIndex: 20 },
-  searchModalHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
-  searchBackBtn: {
-    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card, justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, borderWidth: 1, borderColor: c.border,
+  searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20 },
+  searchModalHeader: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1,
   },
-  searchInputWrapper: { flex: 1, height: 48, backgroundColor: c.card, borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: c.border },
-  searchInput: { flex: 1, fontSize: 15, color: c.textPrimary, fontWeight: '500' },
-  searchErrorText: { textAlign: 'center', marginTop: 24, fontSize: 13, color: c.textMuted },
-  searchResultItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: c.divider, gap: 14 },
-  searchResultIconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: c.background, justifyContent: 'center', alignItems: 'center' },
-  searchResultTitle: { fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 3 },
-  searchResultSub: { fontSize: 12, color: c.textSecondary, fontWeight: '400', lineHeight: 16 },
+  searchBackBtn: {
+    width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center',
+    marginRight: 12, borderWidth: 1,
+  },
+  searchInputWrapper: {
+    flex: 1, height: 48, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, borderWidth: 1,
+  },
+  searchInput: { flex: 1, fontSize: 15, fontWeight: '500' },
+  searchErrorText: { textAlign: 'center', marginTop: 24, fontSize: 13, fontWeight: '500' },
+  searchResultItem: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16,
+    borderBottomWidth: 1, gap: 14,
+  },
+  searchResultIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  searchResultTitle: { fontSize: 15, fontWeight: '700', marginBottom: 3 },
+  searchResultSub: { fontSize: 12, fontWeight: '400', lineHeight: 16 },
   recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
-  recentsLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
-  clearText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  recentsLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  clearText: { fontSize: 12, fontWeight: '700' },
 });

@@ -113,7 +113,8 @@
         }
       ],
       "expo-font",
-      "expo-image"
+      "expo-image",
+      "expo-secure-store"
     ],
     "extra": {
       "owner": "junjosephps-team",

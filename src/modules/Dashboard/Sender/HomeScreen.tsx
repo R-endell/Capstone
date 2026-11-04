@@ -491,11 +491,11 @@ export default function HomeScreen() {
               return (
                 <View key={key} style={!isLast && styles.rowDivider}>
                   <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
-                    <View style={[styles.rowIcon, danger && { backgroundColor: 'rgba(220,38,38,0.1)' }]}>
-                      <PhIcon name={g.icon as any} size={18} color={danger ? colors.error : colors.accent} />
+                    <View style={[styles.rowIcon, danger && { backgroundColor: isDark ? 'rgba(220,38,38,0.15)' : 'rgba(220,38,38,0.1)' }]}>
+                      <PhIcon name={g.icon as any} weight="fill" size={18} color={danger ? colors.error : colors.accent} />
                     </View>
                     <Text style={styles.rowTitle} numberOfLines={1}>{g.title}</Text>
-                    <PhIcon name={open ? 'CaretUp' : 'CaretDown'} size={16} color={colors.textMuted} />
+                    <PhIcon name={open ? 'CaretUp' : 'CaretDown'} size={16} color={colors.textMuted} weight="bold" />
                   </TouchableOpacity>
                   {open && (
                     <View style={styles.rowBody}>
@@ -520,7 +520,7 @@ export default function HomeScreen() {
                 <View key={key} style={!isLast && styles.rowDivider}>
                   <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
                     <Text style={[styles.rowTitle, { flex: 1 }]} numberOfLines={2}>{f.q}</Text>
-                    <PhIcon name={open ? 'Minus' : 'Plus'} size={18} color={colors.accent} />
+                    <PhIcon name={open ? 'Minus' : 'Plus'} size={18} color={colors.accent} weight="bold" />
                   </TouchableOpacity>
                   {open && <Text style={styles.rowBodyText}>{f.a}</Text>}
                 </View>
@@ -529,9 +529,9 @@ export default function HomeScreen() {
           </View>
 
           <TouchableOpacity style={styles.supportLink} activeOpacity={0.8} onPress={() => (navigation as any).navigate('Support')}>
-            <PhIcon name="ChatCircleText" size={16} color={colors.accent} />
+            <PhIcon name="ChatCircleText" size={16} color={colors.accent} weight="fill" />
             <Text style={styles.supportLinkText}>Still need help? Contact support</Text>
-            <PhIcon name="CaretRight" size={14} color={colors.accent} />
+            <PhIcon name="CaretRight" size={14} color={colors.accent} weight="bold" />
           </TouchableOpacity>
         </Animated.View>
       </ScrollView>
@@ -560,7 +560,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   greetingTitle: { fontSize: 26, fontWeight: '800', letterSpacing: -0.5, marginBottom: 4 },
   greetingSubtitle: { fontSize: 15, fontWeight: '400' },
   
-    glassBell: {
+  glassBell: {
     width: 46, height: 46, borderRadius: 23,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, 
@@ -582,23 +582,41 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     zIndex: 2, 
   },
 
-  sectionContainer: { paddingHorizontal: 24, zIndex: 0, marginTop: 10 },
-  sectionTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4, marginBottom: 14 },
-  subHeader: { fontSize: 12, fontWeight: '800', color: c.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8, marginTop: 4 },
+  sectionContainer: { paddingHorizontal: 24, zIndex: 0, marginTop: 16 },
+  sectionTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4, marginBottom: 16 },
+  subHeader: { fontSize: 11, fontWeight: '800', color: c.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10, marginTop: 8 },
 
-  groupCard: { backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border, overflow: 'hidden', marginBottom: 20 },
+  // ✨ THE 3D ELEVATED CARD STYLE ✨
+  groupCard: { 
+    backgroundColor: c.card, 
+    borderRadius: 20, 
+    borderWidth: 1, 
+    borderColor: c.border, 
+    overflow: 'hidden', 
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: isDark ? 0.2 : 0.05,
+    shadowRadius: 12,
+    elevation: 3,
+  },
   rowDivider: { borderBottomWidth: 1, borderBottomColor: c.divider },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 14, minHeight: 52 },
-  rowIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  rowTitle: { flex: 1, fontSize: 14.5, fontWeight: '700', color: c.textPrimary },
-  rowBody: { paddingHorizontal: 14, paddingBottom: 14, paddingTop: 0, gap: 8 },
-  rowBodyText: { fontSize: 13, color: c.textSecondary, lineHeight: 19, paddingHorizontal: 14, paddingBottom: 14 },
+  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, paddingHorizontal: 16, minHeight: 56 },
+  rowIcon: { 
+    width: 38, height: 38, borderRadius: 12, 
+    backgroundColor: c.accentSoft, 
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(242,112,36,0.2)' : 'rgba(242,112,36,0.1)',
+  },
+  rowTitle: { flex: 1, fontSize: 15, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
+  rowBody: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 0, gap: 10 },
+  rowBodyText: { fontSize: 13.5, color: c.textSecondary, lineHeight: 20, paddingHorizontal: 16, paddingBottom: 16, fontWeight: '500' },
   bulletRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
-  bulletDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: c.accent, marginTop: 7 },
-  bulletText: { flex: 1, fontSize: 13, color: c.textSecondary, lineHeight: 19 },
+  bulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.accent, marginTop: 7 },
+  bulletText: { flex: 1, fontSize: 13.5, color: c.textSecondary, lineHeight: 20, fontWeight: '500' },
 
-  supportLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12, marginTop: -6 },
-  supportLinkText: { fontSize: 13, fontWeight: '700', color: c.accent },
+  supportLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, marginTop: -8 },
+  supportLinkText: { fontSize: 14, fontWeight: '700', color: c.accent, letterSpacing: -0.1 },
 
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
   modalCard: { backgroundColor: c.card, borderRadius: 20, paddingTop: 6, paddingBottom: 4, maxHeight: '78%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5, shadowRadius: 20, elevation: 12, borderWidth: 1, borderColor: c.border },
@@ -618,4 +636,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   modalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
   modalFooterText: { color: c.accent, fontWeight: '800', fontSize: 13 },
+  
+  fullListHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 60, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: c.divider },
+  fullListBackBtn: { padding: 4 },
+  fullListTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
 });

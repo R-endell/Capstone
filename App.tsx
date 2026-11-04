@@ -6,6 +6,8 @@ import {
   useNavigation,
   useNavigationContainerRef,
 } from '@react-navigation/native';
+import ScheduleIntroScreen from './src/modules/Dashboard/Sender/Delivery/ScheduleIntroScreen';
+import SendNowIntroScreen from './src/modules/Dashboard/Sender/Delivery/SendNowIntroScreen';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -138,6 +140,8 @@ export type RootStackParamList = {
   LegalPolicies: undefined;
   PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
+  SendNowIntro: undefined;
+  ScheduleIntro: undefined; 
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
@@ -921,6 +925,8 @@ function AppInner() {
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
         <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+        <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
+        <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
         <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
         <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
         <Stack.Screen name="AddItem" component={AddItemScreen} />
@@ -996,4 +1002,3 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
-

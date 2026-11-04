@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+// src/modules/Authentication/LoadingScreen.tsx
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -15,8 +16,7 @@ import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
 import { registerPushToken } from '../../services/pushService';
-/** Brand */
-const ORANGE = '#F27024';
+import { useTheme, ThemeColors } from '../../utils/themeContext';
 
 /** Timing */
 const SPLASH_DURATION = 2500;
@@ -28,8 +28,9 @@ const STATUS_MESSAGES = [
 ];
 
 export default function LoadingScreen() {
-  const navigation =
-    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   /** Animated values */
   const logoAnim = useRef(new Animated.Value(0)).current;
@@ -38,9 +39,6 @@ export default function LoadingScreen() {
   const footerAnim = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const statusAnim = useRef(new Animated.Value(1)).current;
-  const dotAnims = useRef(
-    [0, 1, 2].map(() => new Animated.Value(0)),
-  ).current;
 
   const [statusIndex, setStatusIndex] = useState(0);
   const [trackWidth, setTrackWidth] = useState(200);
@@ -61,31 +59,27 @@ export default function LoadingScreen() {
           return;
         }
 
-                // Restore the mode the user was last in
-                // Only an approved provider (checked against the database) may
-                // be restored into the Provider interface; everyone else -> Sender.
-                const route = await resolveHomeRoute(session.user.id);
+        const route = await resolveHomeRoute(session.user.id);
 
-                // Fire-and-forget push token registration (does not block nav)
-                (async () => {
-                  try {
-                    const { data: userRow } = await supabase
-                      .from('users')
-                      .select('user_id')
-                      .eq('auth_id', session.user.id)
-                      .maybeSingle();
-                    if (userRow?.user_id) {
-                      await registerPushToken(userRow.user_id);
-                    }
-                  } catch (e) {
-                    console.warn('[push] boot registration skipped:', e);
-                  }
-                })();
+        (async () => {
+          try {
+            const { data: userRow } = await supabase
+              .from('users')
+              .select('user_id')
+              .eq('auth_id', session.user.id)
+              .maybeSingle();
+            if (userRow?.user_id) {
+              await registerPushToken(userRow.user_id);
+            }
+          } catch (e) {
+            console.warn('[push] boot registration skipped:', e);
+          }
+        })();
 
-                navigation.reset({
-                  index: 0,
-                  routes: [{ name: route }],
-                });
+        navigation.reset({
+          index: 0,
+          routes: [{ name: route }],
+        });
       } catch (error) {
         console.error('Session restore error:', error);
         navigation.reset({
@@ -171,35 +165,6 @@ export default function LoadingScreen() {
       useNativeDriver: true,
     }).start();
   }, [progressAnim]);
-
-  /* ------------------------------------------------------------------ */
-  /* Loading dots                                                        */
-  /* ------------------------------------------------------------------ */
-  useEffect(() => {
-    const loops = dotAnims.map((value, index) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(index * 160),
-          Animated.timing(value, {
-            toValue: 1,
-            duration: 380,
-            easing: Easing.out(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.timing(value, {
-            toValue: 0,
-            duration: 380,
-            easing: Easing.in(Easing.ease),
-            useNativeDriver: true,
-          }),
-          Animated.delay((dotAnims.length - 1 - index) * 160),
-        ]),
-      ),
-    );
-
-    loops.forEach((loop) => loop.start());
-    return () => loops.forEach((loop) => loop.stop());
-  }, [dotAnims]);
 
   /* ------------------------------------------------------------------ */
   /* Status message rotation                                             */
@@ -296,11 +261,8 @@ export default function LoadingScreen() {
           </Animated.View>
 
           <Text style={styles.logoText}>
-            Pack-<Text style={styles.logoTextOrange}>N</Text>
-            <Text style={styles.logoTextOrange}>-Ship</Text>
+            Pack-<Text style={styles.logoTextOrange}>N</Text>-Ship
           </Text>
-
-          <Text style={styles.tagline}>FAST · SECURE · RELIABLE</Text>
         </Animated.View>
 
         <Animated.View
@@ -321,31 +283,6 @@ export default function LoadingScreen() {
             />
           </View>
 
-          <View style={styles.dotsRow}>
-            {dotAnims.map((value, index) => (
-              <Animated.View
-                key={index}
-                style={[
-                  styles.dot,
-                  {
-                    opacity: value.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0.25, 1],
-                    }),
-                    transform: [
-                      {
-                        translateY: value.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0, -4],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
-            ))}
-          </View>
-
           <Animated.Text style={[styles.loadingText, { opacity: statusAnim }]}>
             {STATUS_MESSAGES[statusIndex]}
           </Animated.Text>
@@ -355,19 +292,19 @@ export default function LoadingScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: c.background,
   },
   backgroundLayer: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
   },
   glow: {
     position: 'absolute',
     borderRadius: 999,
-    backgroundColor: 'rgba(242, 112, 36, 0.07)',
+    backgroundColor: isDark ? 'rgba(242, 112, 36, 0.1)' : 'rgba(242, 112, 36, 0.07)',
   },
   glowTop: {
     width: 340,
@@ -395,24 +332,16 @@ const styles = StyleSheet.create({
   logoImage: {
     width: 260,
     height: 140,
-    marginBottom: -30,
+    marginBottom: -20,
   },
   logoText: {
     fontSize: 44,
     fontWeight: '900',
-    fontStyle: 'italic',
-    color: '#111827',
-    letterSpacing: -0.5,
+    color: c.textPrimary, // Removed italic
+    letterSpacing: -1,
   },
   logoTextOrange: {
-    color: ORANGE,
-  },
-  tagline: {
-    marginTop: 12,
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 3,
-    color: '#9CA3AF',
+    color: c.accent,
   },
   bottomSection: {
     width: '100%',
@@ -423,33 +352,20 @@ const styles = StyleSheet.create({
     width: 200,
     height: 4,
     borderRadius: 999,
-    backgroundColor: '#E5E7EB',
+    backgroundColor: c.border,
     overflow: 'hidden',
+    marginBottom: 16, // Added spacing since dots are gone
   },
   progressFill: {
     width: '100%',
     height: '100%',
     borderRadius: 999,
-    backgroundColor: ORANGE,
-  },
-  dotsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 8,
-    marginTop: 24,
-    marginBottom: 12,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: ORANGE,
-    marginHorizontal: 3,
+    backgroundColor: c.accent,
   },
   loadingText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#6B7280',
+    color: c.textSecondary,
     letterSpacing: 0.2,
     textAlign: 'center',
   },

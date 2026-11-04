@@ -5,13 +5,11 @@ import {
   Dimensions, Platform, Animated, Easing, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { PhIcon } from '../../../../components/ui/PhIcon';
 
-const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
 const MONTHS_FULL = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WEEK_DAYS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
 
@@ -122,18 +120,30 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
 
-      <Animated.View style={[styles.headerContainer, { paddingTop: insets.top + 10 }, fadeUp(headerAnim, -14)]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backCircleBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
-        </TouchableOpacity>
-
-        <View style={styles.headerTextContainer}>
-          <View style={styles.stepBadge}>
-            <Text style={styles.stepBadgeText}>STEP 3 OF 4</Text>
+      {/* Premium Header */}
+      <Animated.View style={[styles.headerBackground, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
+        <View style={styles.headerInnerContent}>
+          <View style={styles.stepRow}>
+            <View style={styles.stepPill}>
+              <Text style={styles.stepText}>STEP 3 OF 4</Text>
+            </View>
           </View>
-          <Text style={styles.headerTitle}>Schedule Delivery</Text>
+
+          <View style={styles.headerTopRow}>
+            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
+              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.headerSub}>Send Package Now</Text>
+              <Text style={styles.headerTitle}>Schedule Delivery</Text>
+            </View>
+          </View>
+
+          <Text style={styles.headerSubtitle}>
+            Choose the exact date and time you want your package picked up.
+          </Text>
         </View>
       </Animated.View>
 
@@ -145,7 +155,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
         <Animated.View style={[styles.card, fadeUp(cardAnim, 20)]}>
           <View style={styles.cardTitleRow}>
             <View style={styles.cardIconBox}>
-              <Ionicons name="calendar-outline" size={18} color={ORANGE} />
+              <PhIcon name="Calendar" size={20} color={colors.accent} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>Pick a Date & Time</Text>
@@ -156,7 +166,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
           <Animated.View style={[styles.calendarContainer, fadeUp(gridAnim, 20)]}>
             <View style={styles.monthSelectorRow}>
               <TouchableOpacity onPress={goPrevMonth} style={styles.navBtn} activeOpacity={0.7}>
-                <Ionicons name="chevron-back" size={16} color={colors.textPrimary} />
+                <PhIcon name="CaretLeft" size={18} color={colors.textPrimary} />
               </TouchableOpacity>
 
               <View style={styles.monthTitleBox}>
@@ -164,7 +174,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               </View>
 
               <TouchableOpacity onPress={goNextMonth} style={styles.navBtn} activeOpacity={0.7}>
-                <Ionicons name="chevron-forward" size={16} color={colors.textPrimary} />
+                <PhIcon name="CaretRight" size={18} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -219,10 +229,11 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             </View>
           </Animated.View>
 
+          {/* Time Section */}
           <View style={styles.timeSection}>
             <View style={styles.timeSectionLeft}>
               <View style={styles.timeIconBox}>
-                <Ionicons name="time-outline" size={18} color={ORANGE} />
+                <PhIcon name="Clock" size={20} color={colors.accent} />
               </View>
               <View>
                 <Text style={styles.timeLabel}>PICKUP TIME</Text>
@@ -237,7 +248,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               onPress={() => !showTimePicker && setShowTimePicker(true)}
               activeOpacity={0.85}
             >
-              <Ionicons name="create-outline" size={13} color={ORANGE} />
+              <PhIcon name="PencilSimple" size={14} color={colors.accent} />
               <Text style={styles.changeTimeText}>Change</Text>
             </TouchableOpacity>
           </View>
@@ -247,6 +258,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               value={selectedTime}
               mode="time"
               display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              themeVariant={isDark ? 'dark' : 'light'}
               onChange={(event, time) => {
                 if (Platform.OS === 'android') setShowTimePicker(false);
                 if (event.type === 'set' && time) {
@@ -256,9 +268,10 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             />
           )}
 
+          {/* Summary Card */}
           {selectedDate && (
             <View style={styles.summaryCard}>
-              <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+              <PhIcon name="CheckCircle" weight="fill" size={20} color={colors.success} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.summaryLabel}>Selected schedule</Text>
                 <Text style={styles.summaryValue} numberOfLines={1}>
@@ -270,6 +283,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
             </View>
           )}
 
+          {/* Continue Button */}
           <Animated.View style={[fadeUp(buttonAnim, 20), { transform: [{ scale: buttonScale }] }]}>
             <TouchableOpacity
               style={[styles.nextBtn, !selectedDate && styles.disabledBtn]}
@@ -282,7 +296,7 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
               <Text style={[styles.nextBtnText, !selectedDate && styles.disabledBtnText]}>
                 Continue to Location
               </Text>
-              <Ionicons name="arrow-forward" size={16} color={selectedDate ? colors.card : colors.textMuted} />
+              <PhIcon name="ArrowRight" size={18} color={selectedDate ? '#FFFFFF' : colors.textMuted} />
             </TouchableOpacity>
           </Animated.View>
         </Animated.View>
@@ -294,69 +308,74 @@ export default function ScheduleCalendarScreen({ navigation }: any) {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  headerContainer: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingBottom: 12,
-    borderBottomWidth: 1, borderBottomColor: c.divider,
-    backgroundColor: c.card,
+  headerBackground: {
+    backgroundColor: c.accent,
+    position: 'relative',
+    overflow: 'hidden',
+    paddingBottom: 24,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+    zIndex: 1,
   },
-  backCircleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+  headerInnerContent: { paddingHorizontal: 24 },
+  stepRow: { flexDirection: 'row', marginBottom: 12 },
+  stepPill: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  stepText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 16 },
+  backButton: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 6, elevation: 3,
-    marginRight: 12, borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  headerTextContainer: { flex: 1 },
-  stepBadge: {
-    alignSelf: 'flex-start', backgroundColor: c.accentSoft,
-    paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
-    borderWidth: 1, borderColor: ORANGE, marginBottom: 2,
+  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { fontSize: 24, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
+  headerSubtitle: {
+    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontWeight: '500', marginTop: 4,
   },
-  stepBadgeText: { color: ORANGE, fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
-  headerTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
 
-  scrollView: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 16 },
+  scrollView: { flex: 1, backgroundColor: c.background, zIndex: 3, elevation: 3 },
+  scrollContent: { paddingHorizontal: 24, paddingTop: 24 },
 
   card: {
-    backgroundColor: c.card, borderRadius: 20, padding: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.4 : 0.06, shadowRadius: 12, elevation: 3,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background,
   },
-  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
   cardIconBox: {
-    width: 38, height: 38, borderRadius: 12, backgroundColor: c.accentSoft,
+    width: 44, height: 44, borderRadius: 14, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
-  cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  cardSubtitle: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  cardTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  cardSubtitle: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
 
   calendarContainer: {
-    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 12,
-    marginBottom: 12, backgroundColor: c.background,
+    borderWidth: 1, borderColor: c.border, borderRadius: 20, padding: 16,
+    marginBottom: 16, backgroundColor: c.card,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.03, shadowRadius: 8, elevation: 2,
   },
   monthSelectorRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16,
   },
   navBtn: {
-    width: 32, height: 32, borderRadius: 16, backgroundColor: c.card,
+    width: 36, height: 36, borderRadius: 18, backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 2, elevation: 1,
   },
   monthTitleBox: { alignItems: 'center' },
-  monthTitle: { fontSize: 13, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  monthTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
 
-  weekRow: { flexDirection: 'row', marginBottom: 8 },
+  weekRow: { flexDirection: 'row', marginBottom: 12 },
   weekDay: {
     flex: 1, textAlign: 'center', fontWeight: '800', color: c.textMuted,
-    fontSize: 10, letterSpacing: 0.5,
+    fontSize: 11, letterSpacing: 0.5,
   },
-  weekDayWeekend: { color: ORANGE },
+  weekDayWeekend: { color: c.accent },
 
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   dayCellContainer: {
@@ -365,64 +384,71 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   dayCell: {
     width: '100%', height: '100%',
-    justifyContent: 'center', alignItems: 'center', borderRadius: 10,
+    justifyContent: 'center', alignItems: 'center', borderRadius: 12,
   },
-  dayText: { fontSize: 12, color: c.textPrimary, fontWeight: '700' },
+  dayText: { fontSize: 14, color: c.textPrimary, fontWeight: '600' },
+  
   selectedDay: {
-    backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25, shadowRadius: 4, elevation: 3,
+    backgroundColor: c.accent,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
   },
   selectedDayText: { color: '#FFFFFF', fontWeight: '800' },
+  
   todayCell: {
     backgroundColor: c.accentSoft,
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1.5, borderColor: c.accent,
   },
-  todayDayText: { color: ORANGE, fontWeight: '800' },
-  pastDayText: { color: c.textMuted },
-  trailingDayText: { color: c.textMuted, fontSize: 12, fontWeight: '500', opacity: 0.5 },
+  todayDayText: { color: c.accent, fontWeight: '800' },
+  
+  pastDayText: { color: c.textMuted, opacity: 0.4 },
+  trailingDayText: { color: c.textMuted, fontSize: 14, fontWeight: '500', opacity: 0.3 },
 
   timeSection: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: c.background, borderRadius: 14, padding: 12, marginBottom: 12,
+    backgroundColor: c.card, borderRadius: 20, padding: 16, marginBottom: 16,
     borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.03, shadowRadius: 8, elevation: 2,
   },
-  timeSectionLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  timeSectionLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
   timeIconBox: {
-    width: 36, height: 36, borderRadius: 10, backgroundColor: c.accentSoft,
+    width: 44, height: 44, borderRadius: 14, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
-  timeLabel: { fontSize: 8, color: c.textSecondary, fontWeight: '800', letterSpacing: 0.8 },
-  timeValue: { fontSize: 14, color: c.textPrimary, fontWeight: '800', marginTop: 1, letterSpacing: -0.2 },
+  timeLabel: { fontSize: 10, color: c.textMuted, fontWeight: '800', letterSpacing: 0.8 },
+  timeValue: { fontSize: 16, color: c.textPrimary, fontWeight: '800', marginTop: 2, letterSpacing: -0.2 },
+  
   changeTimeBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12,
     backgroundColor: c.accentSoft,
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
-  changeTimeText: { color: ORANGE, fontSize: 11, fontWeight: '800', letterSpacing: 0.2 },
+  changeTimeText: { color: c.accent, fontSize: 12, fontWeight: '800', letterSpacing: 0.2 },
 
   summaryCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: c.successBg, borderRadius: 12, padding: 12, marginBottom: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: c.successBg, borderRadius: 16, padding: 14, marginBottom: 20,
     borderWidth: 1, borderColor: c.success,
   },
   summaryLabel: {
-    fontSize: 9, color: c.success, fontWeight: '800',
+    fontSize: 10, color: c.success, fontWeight: '800',
     letterSpacing: 0.8, textTransform: 'uppercase',
   },
-  summaryValue: { fontSize: 12, color: c.success, fontWeight: '700', marginTop: 1 },
+  summaryValue: { fontSize: 14, color: c.success, fontWeight: '700', marginTop: 2 },
 
   nextBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.accent, borderRadius: 16, paddingVertical: 18, gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   disabledBtn: {
     backgroundColor: c.divider, shadowOpacity: 0, elevation: 0,
+    borderWidth: 1, borderColor: c.border,
   },
-  nextBtnText: { color: c.card, fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
+  nextBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 16, letterSpacing: 0.2 },
   disabledBtnText: { color: c.textMuted },
 });

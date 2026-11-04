@@ -7,44 +7,37 @@ import {
   StyleSheet,
   ScrollView,
   Image,
-  Dimensions,
   Animated,
   Easing,
   StatusBar,
   Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-
-const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { PhIcon } from '../../../../components/ui/PhIcon';
 
 const SIZE_META = {
   Small: {
-    image: require('../../../../../assets/package-size.png'),
+    image: require('../../../../../assets/small-package-icon.png'),
     range: 'Less than 5 kg',
     color: '#3B82F6',
     bg: '#EFF6FF',
     bgDark: '#0F2744',
-    imgSize: 26,
   },
   Medium: {
-    image: require('../../../../../assets/package-size.png'),
+    image: require('../../../../../assets/medium-package-icon.png'),
     range: '5 – 20 kg',
-    color: ORANGE,
+    color: '#F27024',
     bg: '#FFF7ED',
     bgDark: '#2A1A0E',
-    imgSize: 36,
   },
   Large: {
-    image: require('../../../../../assets/package-size.png'),
+    image: require('../../../../../assets/large-package-icon.png'),
     range: 'More than 20 kg',
     color: '#8B5CF6',
     bg: '#F5F3FF',
     bgDark: '#231542',
-    imgSize: 48,
   },
 } as const;
 
@@ -59,7 +52,6 @@ export default function ShipmentSizeScreen({ navigation }: any) {
   const [fullScreenImage, setFullScreenImage] = useState<any>(null);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
-  const carAnim = useRef(new Animated.Value(0)).current;
   const titleAnim = useRef(new Animated.Value(0)).current;
   const smallAnim = useRef(new Animated.Value(0)).current;
   const mediumAnim = useRef(new Animated.Value(0)).current;
@@ -77,7 +69,6 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(carAnim, 120),
       animate(titleAnim, 200),
       animate(smallAnim, 320),
       animate(mediumAnim, 400),
@@ -85,7 +76,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
       animate(listAnim, 560),
       animate(buttonAnim, 640),
     ]).start();
-  }, [headerAnim, carAnim, titleAnim, smallAnim, mediumAnim, largeAnim, listAnim, buttonAnim]);
+  }, [headerAnim, titleAnim, smallAnim, mediumAnim, largeAnim, listAnim, buttonAnim]);
 
   const fadeUp = (value: Animated.Value, distance = 20) => ({
     opacity: value,
@@ -93,13 +84,6 @@ export default function ShipmentSizeScreen({ navigation }: any) {
       translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
     }],
   });
-
-  const carSlide = {
-    opacity: carAnim,
-    transform: [{
-      translateX: carAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }),
-    }],
-  };
 
   const addItem = (size: 'Small' | 'Medium' | 'Large') => {
     navigation.navigate('AddItem', { size, mode });
@@ -134,7 +118,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
               <Text style={styles.itemSizeLabel}>{item.size} item</Text>
               {item.fragile && (
                 <View style={styles.fragileTag}>
-                  <Ionicons name="warning-outline" size={9} color={colors.error} />
+                  <PhIcon name="WarningCircle" size={10} color={colors.error} />
                   <Text style={styles.fragileTagText}>Fragile</Text>
                 </View>
               )}
@@ -151,7 +135,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
           style={styles.removeBtn}
           activeOpacity={0.7}
         >
-          <Ionicons name="close" size={14} color={colors.error} />
+          <PhIcon name="X" size={14} color={colors.error} />
         </TouchableOpacity>
       </View>
     );
@@ -165,7 +149,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
       <Animated.View style={[styles.sizeItemWrapper, fadeUp(anim, 20)]}>
         <TouchableOpacity style={styles.sizeItem} onPress={() => addItem(size)} activeOpacity={0.85}>
           <View style={[styles.sizeIconCircle, { backgroundColor: sizeBg(size) }]}>
-            <Image source={meta.image} style={{ width: meta.imgSize, height: meta.imgSize }} resizeMode="contain" />
+            <Image source={meta.image} style={styles.sizeIconImage} resizeMode="contain" />
             {count > 0 && (
               <View style={[styles.countBadge, { backgroundColor: meta.color }]}>
                 <Text style={styles.countBadgeText}>{count}</Text>
@@ -181,8 +165,9 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
 
+      {/* Clean Premium Header */}
       <Animated.View style={[styles.headerBackground, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
         <View style={styles.headerInnerContent}>
           <View style={styles.stepRow}>
@@ -193,7 +178,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
           <View style={styles.headerTopRow}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.headerSub}>
@@ -207,12 +192,6 @@ export default function ShipmentSizeScreen({ navigation }: any) {
             Add the items you're sending so we can estimate your cost.
           </Text>
         </View>
-
-        <Animated.Image
-          source={require('../../../../../assets/Car-Grey.png')}
-          style={[styles.headerGraphicImage, carSlide]}
-          resizeMode="contain"
-        />
       </Animated.View>
 
       <ScrollView
@@ -248,13 +227,9 @@ export default function ShipmentSizeScreen({ navigation }: any) {
             </View>
 
             {state.items.length === 0 ? (
-              <View style={styles.emptyDashedBox}>
+              <View style={styles.emptyBox}>
                 <View style={styles.emptyIconCircle}>
-                  <Image
-                    source={require('../../../../../assets/package-size.png')}
-                    style={styles.emptyImagePlaceholder}
-                    resizeMode="contain"
-                  />
+                  <PhIcon name="Package" size={32} color={colors.textMuted} />
                 </View>
                 <Text style={styles.emptyTitle}>No items yet</Text>
                 <Text style={styles.emptyText}>Tap a size above to add your first item</Text>
@@ -283,8 +258,8 @@ export default function ShipmentSizeScreen({ navigation }: any) {
               <Text style={[styles.confirmButtonText, state.items.length === 0 && styles.confirmButtonTextDisabled]}>
                 Continue
               </Text>
-              <Ionicons
-                name="arrow-forward"
+              <PhIcon
+                name="ArrowRight"
                 size={16}
                 color={state.items.length === 0 ? colors.textMuted : '#FFFFFF'}
               />
@@ -302,7 +277,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Item Details</Text>
                   <TouchableOpacity onPress={() => setSelectedItem(null)} style={styles.modalCloseBtn}>
-                    <Ionicons name="close" size={20} color={colors.textSecondary} />
+                    <PhIcon name="X" size={20} color={colors.textSecondary} />
                   </TouchableOpacity>
                 </View>
 
@@ -322,7 +297,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                       />
                     )}
                     <View style={styles.zoomIconIndicator}>
-                      <Ionicons name="expand-outline" size={14} color="#FFFFFF" />
+                      <PhIcon name="ArrowsOut" size={14} color="#FFFFFF" />
                     </View>
                   </TouchableOpacity>
 
@@ -333,7 +308,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
                   {selectedItem.fragile && (
                     <View style={styles.modalFragileLarge}>
-                      <Ionicons name="warning" size={16} color={colors.error} />
+                      <PhIcon name="Warning" size={16} color={colors.error} />
                       <Text style={styles.modalFragileTextLarge}>This item is marked as fragile</Text>
                     </View>
                   )}
@@ -353,7 +328,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
             onPress={() => setFullScreenImage(null)}
           />
           <TouchableOpacity style={styles.fsCloseBtn} onPress={() => setFullScreenImage(null)}>
-            <Ionicons name="close" size={28} color="#FFFFFF" />
+            <PhIcon name="X" size={28} color="#FFFFFF" />
           </TouchableOpacity>
           {fullScreenImage && (
             <Image
@@ -376,155 +351,144 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: c.background,
-    position: 'relative',
   },
   headerBackground: {
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     position: 'relative',
     overflow: 'hidden',
-    paddingBottom: 22,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
     zIndex: 1,
   },
   headerInnerContent: { paddingHorizontal: 24 },
-  stepRow: { flexDirection: 'row', marginBottom: 10 },
+  stepRow: { flexDirection: 'row', marginBottom: 12 },
   stepPill: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
   stepText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 12 },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 16 },
   backButton: {
-    width: 38, height: 38, borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  headerSub: { fontSize: 11, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
+  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { fontSize: 24, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
   headerSubtitle: {
-    fontSize: 13, color: '#FFE0C7', lineHeight: 18, maxWidth: '52%', fontWeight: '500',
-  },
-  headerGraphicImage: {
-    position: 'absolute', right: -45, bottom: -10,
-    width: 220, height: 145, zIndex: 2,
+    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontWeight: '500', marginTop: 4,
   },
 
   scrollView: { flex: 1, backgroundColor: c.background, zIndex: 3, elevation: 3 },
   scrollContent: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40 },
-  card: { backgroundColor: c.background, borderRadius: 0, padding: 0 },
-  textTitleContainer: { marginBottom: 20, paddingBottom: 4 },
-  titleWithBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4,
-  },
-  cardTitle: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3,
-  },
-  cardSubtitle: {
-    fontSize: 13, color: c.textSecondary, fontWeight: '400', lineHeight: 18,
-  },
+  card: { backgroundColor: c.background },
+  textTitleContainer: { marginBottom: 20 },
+  titleWithBadge: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
+  cardTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  cardSubtitle: { fontSize: 14, color: c.textSecondary, fontWeight: '400', lineHeight: 20 },
+  
   totalBadge: {
-    minWidth: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE,
+    minWidth: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8,
   },
   totalBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
 
-  sizesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 26, gap: 12 },
+  sizesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 28, gap: 12 },
   sizeItemWrapper: { flex: 1 },
   sizeItem: {
     alignItems: 'center',
     backgroundColor: c.card,
-    borderRadius: 16,
-    paddingVertical: 20, paddingHorizontal: 6,
+    borderRadius: 20,
+    paddingVertical: 20, paddingHorizontal: 8,
     borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
   },
   sizeIconCircle: {
-    width: 60, height: 60, borderRadius: 16,
+    width: 64, height: 64, borderRadius: 20,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: 12, position: 'relative',
+    marginBottom: 14, position: 'relative',
     borderWidth: 1, borderColor: c.divider,
   },
+  sizeIconImage: { width: 40, height: 40 },
   countBadge: {
     position: 'absolute', top: -6, right: -6,
     minWidth: 22, height: 22, borderRadius: 11,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 2, borderColor: c.card,
     paddingHorizontal: 4, elevation: 2,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1, shadowRadius: 3,
   },
   countBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  sizeLabel: {
-    fontSize: 14, fontWeight: '700', color: c.textPrimary, marginBottom: 3, letterSpacing: -0.2,
-  },
-  sizeSub: { fontSize: 10, color: c.textSecondary, fontWeight: '500', textAlign: 'center' },
+  sizeLabel: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
+  sizeSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', textAlign: 'center' },
 
-  itemsListContainer: { marginBottom: 10 },
+  itemsListContainer: { marginBottom: 16 },
   itemsHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     marginBottom: 12, paddingHorizontal: 2,
   },
-  itemsTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  itemsCount: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
+  itemsTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  itemsCount: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
 
-  emptyDashedBox: {
-    borderWidth: 1.5, borderStyle: 'dashed', borderColor: c.border,
-    borderRadius: 16, paddingVertical: 32,
+  emptyBox: {
+    borderRadius: 20, paddingVertical: 40,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.background,
+    backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border,
   },
   emptyIconCircle: {
-    width: 60, height: 60, borderRadius: 20, backgroundColor: c.card,
+    width: 64, height: 64, borderRadius: 22, backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: 12, borderWidth: 1, borderColor: c.divider,
+    marginBottom: 16, borderWidth: 1, borderColor: c.divider,
   },
-  emptyImagePlaceholder: { width: 32, height: 32, opacity: 0.5 },
-  emptyTitle: {
-    fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 4, letterSpacing: -0.2,
-  },
-  emptyText: {
-    fontSize: 12, color: c.textMuted, fontWeight: '500',
-    textAlign: 'center', paddingHorizontal: 20,
-  },
+  emptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 6 },
+  emptyText: { fontSize: 13, color: c.textSecondary, fontWeight: '500', textAlign: 'center' },
 
   itemCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderRadius: 14, padding: 10, marginBottom: 10,
+    backgroundColor: c.card, borderRadius: 16, padding: 12, marginBottom: 12,
     borderWidth: 1, borderColor: c.border,
   },
   itemCardContent: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   itemSizeIcon: {
-    width: 44, height: 44, borderRadius: 12,
+    width: 48, height: 48, borderRadius: 14,
     justifyContent: 'center', alignItems: 'center',
     marginRight: 14, overflow: 'hidden',
     borderWidth: 1, borderColor: c.divider,
   },
-  itemPhotoPlaceholder: { width: 24, height: 24 },
-  itemPhoto: { width: 44, height: 44, borderRadius: 12 },
+  itemPhotoPlaceholder: { width: 28, height: 28 },
+  itemPhoto: { width: 48, height: 48, borderRadius: 14 },
   itemInfo: { flex: 1, marginRight: 8 },
   itemTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  itemSizeLabel: { fontSize: 14, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
+  itemSizeLabel: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
   fragileTag: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: c.errorBg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.errorBg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
   },
-  fragileTagText: { fontSize: 10, fontWeight: '700', color: c.error, letterSpacing: 0.3 },
-  itemDesc: { fontSize: 12, color: c.textSecondary, fontWeight: '400' },
+  fragileTagText: { fontSize: 10, fontWeight: '800', color: c.error },
+  itemDesc: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
   removeBtn: {
-    width: 32, height: 32, borderRadius: 16, backgroundColor: c.errorBg,
+    width: 34, height: 34, borderRadius: 17, backgroundColor: c.errorBg,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: c.error, marginLeft: 8,
   },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    borderRadius: 16, paddingVertical: 18, marginTop: 16, gap: 8,
+    borderRadius: 16, paddingVertical: 18, marginTop: 10, gap: 8,
   },
   confirmBtnDisabled: {
     backgroundColor: c.divider, borderWidth: 1, borderColor: c.border,
   },
-  confirmButtonActive: { backgroundColor: c.textPrimary },
-  confirmButtonText: { color: c.card, fontSize: 16, fontWeight: '700' },
+  confirmButtonActive: { 
+    backgroundColor: c.accent,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+  },
+  confirmButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
   confirmButtonTextDisabled: { color: c.textMuted },
 
   modalOverlay: {
@@ -540,39 +504,37 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20,
   },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
   modalCloseBtn: {
-    width: 32, height: 32, borderRadius: 16, backgroundColor: c.divider,
+    width: 34, height: 34, borderRadius: 17, backgroundColor: c.divider,
     justifyContent: 'center', alignItems: 'center',
   },
   modalBody: { alignItems: 'center', paddingBottom: 8 },
   modalIconBox: {
-    width: 80, height: 80, borderRadius: 24,
+    width: 88, height: 88, borderRadius: 28,
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 16, borderWidth: 1, borderColor: c.divider,
     position: 'relative',
   },
   zoomIconIndicator: {
     position: 'absolute', bottom: -6, right: -6,
-    width: 26, height: 26, borderRadius: 13, backgroundColor: c.textPrimary,
+    width: 28, height: 28, borderRadius: 14, backgroundColor: c.textPrimary,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 2, borderColor: c.card,
   },
-  modalPhoto: { width: 80, height: 80, borderRadius: 24 },
-  modalImagePlaceholder: { width: 48, height: 48 },
-  modalSize: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.3,
-  },
+  modalPhoto: { width: 88, height: 88, borderRadius: 28 },
+  modalImagePlaceholder: { width: 52, height: 52 },
+  modalSize: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8 },
   modalDesc: {
-    fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 20,
-    paddingHorizontal: 12, marginBottom: 16,
+    fontSize: 14, color: c.textSecondary, textAlign: 'center', lineHeight: 20,
+    paddingHorizontal: 12, marginBottom: 16, fontWeight: '500',
   },
   modalFragileLarge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.errorBg, paddingHorizontal: 12, paddingVertical: 8,
-    borderRadius: 10, borderWidth: 1, borderColor: c.error,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.errorBg, paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 12, borderWidth: 1, borderColor: c.error,
   },
-  modalFragileTextLarge: { fontSize: 12, fontWeight: '700', color: c.error },
+  modalFragileTextLarge: { fontSize: 13, fontWeight: '800', color: c.error },
 
   fsOverlay: {
     flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.92)',
