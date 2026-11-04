@@ -1,6 +1,8 @@
 // src/services/matchingService.ts
 import { supabase } from '../utils/supabase';
-import { getActiveRouteId, setActiveRouteId } from './activeRouteStore';
+import { getActiveRouteId, setActiveRouteId, getDemoMode } from './activeRouteStore';
+import { fetchRouteCorridorAndDistance } from './routeService';
+import { notifyUser } from './pushService';
 import { Alert } from 'react-native';
 
 export interface Location {
@@ -10,6 +12,9 @@ export interface Location {
   street_address?: string;
   road?: string;
   barangay?: string;
+  city?: string;
+  province?: string;
+  zip_code?: string;
 }
 
 export interface ProviderRoute {
@@ -17,12 +22,24 @@ export interface ProviderRoute {
   provider_id: number;
   vehicle_id: number;
   departure_time: string;
+  end_time?: string | null;
+  route_frequency?: string;
+  route_distance_km?: number;
+  remaining_weight_kg?: number;
+  remaining_volume_liters?: number;
+  fallback_unlocked?: boolean;
+  fallback_reason?: 'CONDITION_A' | 'CONDITION_B' | null;
+  fallback_used?: boolean;
+  admin_review_flag?: boolean;
+  is_deleted?: boolean;
+  is_active?: boolean;
   start_location: Location;
   end_location: Location;
 }
 
 export interface DeliveryRequest {
   request_id: number;
+  pickup_type?: string;
   scheduled_time: string | null;
   estimated_cost: number;
   emergency_flag: boolean;
@@ -31,25 +48,43 @@ export interface DeliveryRequest {
   preferred_route_id?: number | null;
   pickup_location: Location;
   dropoff_location: Location;
+  cargo?: any;
+  receiver?: any;
+}
+
+export interface RouteMatchRow {
+  match_id: number;
+  route_id: number;
+  request_id: number;
+  provider_id: number;
+  match_score: number;
+  is_fallback: boolean;
+  fallback_type: 'CONDITION_A' | 'CONDITION_B' | null;
+  pickup_dist_m: number;
+  dropoff_dist_m: number;
+  pickup_fraction: number;
+  dropoff_fraction: number;
+  extra_detour_km: number;
+  status: string;
+  request: any;
 }
 
 export interface MatchResult {
   request: DeliveryRequest;
   route: ProviderRoute;
   matchScore: number;
-}
-
-export interface NearbyRequestResult {
-  request: any;
-  route: ProviderRoute;
-  pickupDistToCorridorKm: number;
-  dropoffDistToCorridorKm: number;
-  extraDetourKm: number;
-  isDirectRequest?: boolean;
+  isFallback?: boolean;
+  fallbackType?: 'CONDITION_A' | 'CONDITION_B' | null;
+  pickupDistM?: number;
+  dropoffDistM?: number;
+  pickupFraction?: number;
+  dropoffFraction?: number;
+  extraDetourKm?: number;
+  matchId?: number;
 }
 
 /* ------------------------------------------------------------------ */
-/* Distance helpers                                                    */
+/* Geometry & Box Volume Helpers                                      */
 /* ------------------------------------------------------------------ */
 export function calculateDistance(
   lat1: number | string,
@@ -78,430 +113,190 @@ export function calculateDistance(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+export function computeCargoVolumeLiters(cargo: any): number {
+  const c = Array.isArray(cargo) ? cargo[0] : cargo;
+  if (!c) return 15;
+  const s = Number(c.small_box_qty) || 0;
+  const m = Number(c.medium_box_qty) || 0;
+  const l = Number(c.large_box_qty) || 0;
+  const total = s * 15 + m * 45 + l * 95;
+  if (total > 0) return total;
+
+  // Fallback to items_json if box quantities weren't set directly
+  let items: any = c.items_json;
+  if (typeof items === 'string') {
+    try { items = JSON.parse(items); } catch { items = null; }
+  }
+  if (Array.isArray(items) && items.length > 0) {
+    return items.reduce((acc, it) => {
+      if (it?.size === 'Large') return acc + 95;
+      if (it?.size === 'Medium') return acc + 45;
+      return acc + 15;
+    }, 0);
+  }
+  return 15;
+}
+
 /**
- * Shortest distance (in km) from point P to line segment A -> B
+ * Ensures older routes that were created before the PostGIS migration have
+ * a valid `corridor_path` and remaining vehicle capacity so `evaluate_route_matches` works.
  */
-export function distanceToSegmentKm(
-  pLat: number,
-  pLng: number,
-  aLat: number,
-  aLng: number,
-  bLat: number,
-  bLng: number,
-): number {
-  const latScale = 111.32;
-  const lngScale = 111.32 * Math.cos(((aLat + bLat) / 2) * (Math.PI / 180));
+export async function ensureRouteCorridorBackfilled(routeId: number): Promise<void> {
+  try {
+    const { data: route } = await supabase
+      .from('provider_routes')
+      .select(`
+        route_id, corridor_path, remaining_weight_kg, remaining_volume_liters, vehicle_id,
+        start_location:locations!provider_routes_start_location_id_fkey(*),
+        end_location:locations!provider_routes_end_location_id_fkey(*),
+        vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
+      `)
+      .eq('route_id', routeId)
+      .maybeSingle();
 
-  const ax = 0;
-  const ay = 0;
-  const bx = (bLng - aLng) * lngScale;
-  const by = (bLat - aLat) * latScale;
-  const px = (pLng - aLng) * lngScale;
-  const py = (pLat - aLat) * latScale;
+    if (!route) return;
 
-  const segLenSq = bx * bx + by * by;
-  if (segLenSq === 0) {
-    return calculateDistance(pLat, pLng, aLat, aLng);
+    const pathArr = Array.isArray(route.corridor_path) ? route.corridor_path : [];
+    const needsCorridor = pathArr.length < 2;
+    const needsCapacity =
+      !route.remaining_weight_kg || Number(route.remaining_weight_kg) <= 0 ||
+      !route.remaining_volume_liters || Number(route.remaining_volume_liters) <= 0;
+
+    if (!needsCorridor && !needsCapacity) return;
+
+    const sLoc: any = Array.isArray(route.start_location) ? route.start_location[0] : route.start_location;
+    const eLoc: any = Array.isArray(route.end_location) ? route.end_location[0] : route.end_location;
+    const veh: any = Array.isArray(route.vehicle) ? route.vehicle[0] : route.vehicle;
+
+    const patch: Record<string, any> = {};
+
+    if (needsCorridor && sLoc?.latitude != null && eLoc?.latitude != null) {
+      const { coords, distanceKm } = await fetchRouteCorridorAndDistance(
+        { latitude: Number(sLoc.latitude), longitude: Number(sLoc.longitude) },
+        { latitude: Number(eLoc.latitude), longitude: Number(eLoc.longitude) },
+      );
+      patch.corridor_path = coords;
+      patch.route_distance_km = distanceKm;
+    }
+
+    if (needsCapacity) {
+      patch.remaining_weight_kg = Number(veh?.max_weight_kg) || 100;
+      patch.remaining_volume_liters = Number(veh?.max_volume_liters) || 300;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await supabase.from('provider_routes').update(patch).eq('route_id', routeId);
+    }
+  } catch (err) {
+    console.warn('[matchingService] ensureRouteCorridorBackfilled warning:', err);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Core Route-First & Fallback Matching (Rules 1, 2, 3, 4)            */
+/* ------------------------------------------------------------------ */
+export async function evaluateAndFetchRouteMatches(
+  routeId: number,
+  demoMode?: boolean,
+): Promise<RouteMatchRow[]> {
+  if (!routeId) return [];
+
+  const isDemo = demoMode !== undefined ? demoMode : await getDemoMode();
+
+  // 1. Ensure route has PostGIS corridor geometry & trunk capacity
+  await ensureRouteCorridorBackfilled(routeId);
+
+  // 2. Run PostGIS corridor matching + Fallback Condition A/B check in Supabase
+  const { error: rpcErr } = await supabase.rpc('evaluate_route_matches', {
+    p_route_id: routeId,
+    p_demo_mode: isDemo,
+  });
+  if (rpcErr) {
+    console.warn('[matchingService] evaluate_route_matches RPC warning:', rpcErr.message);
   }
 
-  let t = (px * bx + py * by) / segLenSq;
-  t = Math.max(0, Math.min(1, t));
-
-  const projLat = aLat + t * (bLat - aLat);
-  const projLng = aLng + t * (bLng - aLng);
-
-  return calculateDistance(pLat, pLng, projLat, projLng);
-}
-
-/* ------------------------------------------------------------------ */
-/* Route Detour Logic                                                  */
-/* ------------------------------------------------------------------ */
-function isReasonableDetour(
-  start: Location,
-  end: Location,
-  pickup: Location,
-  dropoff: Location,
-  maxDetourMultiplier: number = 1.5,
-): boolean {
-  const directDist = calculateDistance(start.latitude, start.longitude, end.latitude, end.longitude);
-
-  if (directDist < 1) return false;
-
-  const leg1 = calculateDistance(start.latitude, start.longitude, pickup.latitude, pickup.longitude);
-  const leg2 = calculateDistance(pickup.latitude, pickup.longitude, dropoff.latitude, dropoff.longitude);
-  const leg3 = calculateDistance(dropoff.latitude, dropoff.longitude, end.latitude, end.longitude);
-
-  const detourDist = leg1 + leg2 + leg3;
-
-  if (leg1 > 5 || leg3 > 5) return false;
-
-  return detourDist <= directDist * maxDetourMultiplier;
-}
-
-/* ------------------------------------------------------------------ */
-/* Time helpers (Manila, UTC+8)                                        */
-/* ------------------------------------------------------------------ */
-const toInstant = (input: string | Date | null | undefined): Date | null => {
-  if (!input) return null;
-  if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
-  let str = String(input).trim().replace(' ', 'T');
-  if (!/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(str.slice(10))) str += '+08:00';
-  else if (/[+-]\d{2}$/.test(str)) str += ':00';
-  const d = new Date(str);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-const getManilaDateString = (input: string | Date): string => {
-  const d = toInstant(input);
-  if (!d) return '';
-  return new Date(d.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-};
-
-function isSameDay(time1: string | null | undefined, time2: string | null | undefined): boolean {
-  if (!time1 || !time2) return false;
-  const d1 = getManilaDateString(time1);
-  const d2 = getManilaDateString(time2);
-  return !!d1 && !!d2 && d1 === d2;
-}
-
-const minutesBetween = (from: string | Date, to: string | Date): number | null => {
-  const a = toInstant(from), b = toInstant(to);
-  return a && b ? (b.getTime() - a.getTime()) / 60000 : null;
-};
-
-/* ------------------------------------------------------------------ */
-/* Data fetchers                                                       */
-/* ------------------------------------------------------------------ */
-export async function getPendingRequests(): Promise<any[]> {
-  const { data } = await supabase
-    .from('delivery_requests')
-    .select(
-      '*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)',
-    )
-    .eq('delivery_status', 'Pending')
-    .order('created_at', { ascending: false });
-
-  // Include requests where payment is held OR a preferred provider was explicitly selected
-  return (data || []).filter(
-    (r: any) =>
-      r.payment_status === 'held' ||
-      r.escrow_status === 'held' ||
-      r.preferred_provider_id != null,
-  );
-}
-
-async function getActiveProviderRoutes(targetRouteId?: number | null): Promise<ProviderRoute[]> {
-  const pastDay = new Date();
-  pastDay.setHours(pastDay.getHours() - 24);
-
-  let query = supabase
-    .from('provider_routes')
-    .select(
-      '*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*), provider:users!provider_id(is_active, is_online)',
-    );
-
-  if (targetRouteId) {
-    query = query.eq('route_id', targetRouteId);
-  } else {
-    query = query.gte('departure_time', pastDay.toISOString());
-  }
-
-  const { data, error } = await query;
+  // 3. Query strictly from route_request_matches (enforced by RLS)
+  const { data: rows, error } = await supabase
+    .from('route_request_matches')
+    .select(`
+      *,
+      request:delivery_requests (
+        *,
+        pickup_location:locations!delivery_requests_pickup_location_id_fkey(*),
+        dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*),
+        cargo:cargo_id(*),
+        receiver:receiver_id(*)
+      )
+    `)
+    .eq('route_id', routeId)
+    .eq('status', 'matched')
+    .order('is_fallback', { ascending: true })
+    .order('match_score', { ascending: false });
 
   if (error) {
-    console.error('Error fetching provider routes:', error);
+    console.error('[matchingService] error fetching route_request_matches:', error);
     return [];
   }
 
-  if (targetRouteId) {
-    return (data || []) as ProviderRoute[];
-  }
-
-  return (data || []).filter((r: any) => r.provider?.is_active !== false);
+  return (rows || [])
+    .filter((m: any) => m.request && m.request.delivery_status === 'Pending')
+    .map((m: any) => ({
+      match_id: Number(m.match_id),
+      route_id: Number(m.route_id),
+      request_id: Number(m.request_id),
+      provider_id: Number(m.provider_id),
+      match_score: Number(m.match_score),
+      is_fallback: !!m.is_fallback,
+      fallback_type: m.fallback_type || null,
+      pickup_dist_m: Number(m.pickup_dist_m),
+      dropoff_dist_m: Number(m.dropoff_dist_m),
+      pickup_fraction: Number(m.pickup_fraction),
+      dropoff_fraction: Number(m.dropoff_fraction),
+      extra_detour_km: Number(m.extra_detour_km),
+      status: m.status,
+      request: m.request,
+    }));
 }
 
-/* ------------------------------------------------------------------ */
-/* findMatches — read-only match query                                 */
-/* ------------------------------------------------------------------ */
-const SEND_NOW_MAX_LOOKAHEAD_MINUTES = 180;
-const SEND_NOW_GRACE_PAST_MINUTES = 120;
-const DEBUG_MATCH = __DEV__;
-const SCHEDULED_WINDOW_MINUTES = 240;
+/**
+ * Compatibility wrapper for findMatches(routeId):
+ * Rule 1: If no routeId is provided, returns [] (zero requests until a route is posted).
+ */
+export async function findMatches(routeId?: number | null): Promise<MatchResult[]> {
+  const targetRouteId = routeId ?? (await getActiveRouteId());
+  if (!targetRouteId) return [];
 
-export async function findMatches(
-  routeId?: number | null,
-): Promise<MatchResult[]> {
-  const [pendingRequests, providerRoutes] = await Promise.all([
-    getPendingRequests(),
-    getActiveProviderRoutes(routeId),
-  ]);
+  const { data: routeData } = await supabase
+    .from('provider_routes')
+    .select(`
+      *,
+      start_location:locations!provider_routes_start_location_id_fkey(*),
+      end_location:locations!provider_routes_end_location_id_fkey(*)
+    `)
+    .eq('route_id', targetRouteId)
+    .maybeSingle();
 
-  const routesToCheck = routeId
-    ? providerRoutes.filter((r) => r.route_id === routeId)
-    : providerRoutes;
-
-  // Exclude requests that already have a delivery record
-  const reqIds = pendingRequests.map((r: any) => r.request_id);
-  const { data: existingDeliveries } = reqIds.length > 0
-    ? await supabase.from('deliveries').select('request_id').in('request_id', reqIds)
-    : { data: [] };
-  const takenIds = new Set((existingDeliveries || []).map((d: any) => d.request_id));
-
-  const matches: MatchResult[] = [];
-  const nowIso = new Date().toISOString();
-  if (DEBUG_MATCH) console.log(`[match] ${pendingRequests.length} pending request(s), ${routesToCheck.length} route(s)`);
-
-  for (const request of pendingRequests) {
-    if (takenIds.has(request.request_id)) continue;
-    if (!request.pickup_location || !request.dropoff_location) continue;
-
-    const isSendNow = !request.scheduled_time;
-    const effectiveRequestTime = request.scheduled_time || nowIso;
-
-    for (const route of routesToCheck) {
-      // Never match a provider with their own sender request
-      if (Number(request.sender_id) === Number(route.provider_id)) continue;
-
-      // If the sender specifically chose a preferred provider, ONLY match that provider
-      if (request.preferred_provider_id != null) {
-        if (Number(request.preferred_provider_id) === Number(route.provider_id)) {
-          matches.push({ request, route, matchScore: 100 });
-        }
-        continue;
-      }
-
-      // Standard open request: require provider to be online
-      const providerInfo: any = (route as any).provider;
-      if (providerInfo && providerInfo.is_online === false && !routeId) {
-        continue;
-      }
-
-      const tag = `req ${request.request_id} × route ${route.route_id}`;
-      if (!route.start_location || !route.end_location) {
-        if (DEBUG_MATCH) console.log(`[match] ${tag}: route has no start/end location`);
-        continue;
-      }
-
-      if (!isReasonableDetour(route.start_location, route.end_location, request.pickup_location, request.dropoff_location)) {
-        if (DEBUG_MATCH) console.log(`[match] ${tag}: rejected by detour/distance`);
-        continue;
-      }
-
-      if (!isSameDay(effectiveRequestTime, route.departure_time)) {
-        if (DEBUG_MATCH) console.log(`[match] ${tag}: different day (${effectiveRequestTime} vs ${route.departure_time})`);
-        continue;
-      }
-
-      const diff = minutesBetween(effectiveRequestTime, route.departure_time);
-      if (diff == null) continue;
-      const ok = isSendNow
-        ? diff >= -SEND_NOW_GRACE_PAST_MINUTES && diff <= SEND_NOW_MAX_LOOKAHEAD_MINUTES
-        : Math.abs(diff) <= SCHEDULED_WINDOW_MINUTES;
-      if (!ok) {
-        if (DEBUG_MATCH) console.log(`[match] ${tag}: time window (route leaves ${Math.round(diff)} min from request time)`);
-        continue;
-      }
-
-      matches.push({ request, route, matchScore: 100 });
-    }
-  }
-  return matches;
-}
-
-/* ------------------------------------------------------------------ */
-/* getNearbyUnmatchedRequests — nearby & direct requests for provider  */
-/* ------------------------------------------------------------------ */
-const MAX_PICKUP_CORRIDOR_KM = 8;   // Pickup must be within 8 km of provider's route line
-const MAX_DROPOFF_CORRIDOR_KM = 12; // Drop-off must be within 12 km of provider's route line
-
-export async function getNearbyUnmatchedRequests(
-  providerId: number,
-): Promise<NearbyRequestResult[]> {
-  try {
-    const activeRouteId = await getActiveRouteId();
-
-    // 1. Load provider's routes
-    const { data: providerRoutesRaw } = await supabase
-      .from('provider_routes')
-      .select(
-        '*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*)',
-      )
-      .eq('provider_id', providerId)
-      .order('created_at', { ascending: false });
-
-    const allProviderRoutes = (providerRoutesRaw || []) as ProviderRoute[];
-
-    // Prioritize current active route; fallback to most recent route
-    let candidateRoutes: ProviderRoute[] = [];
-    if (activeRouteId) {
-      const found = allProviderRoutes.find((r) => r.route_id === activeRouteId);
-      if (found) candidateRoutes.push(found);
-    }
-    if (candidateRoutes.length === 0 && allProviderRoutes.length > 0) {
-      candidateRoutes.push(allProviderRoutes[0]);
-    }
-
-    // Also include active delivery routes if provider has an active task
-    const { data: activeDelivs } = await supabase
-      .from('deliveries')
-      .select(
-        '*, delivery_requests:request_id(*, pickup_location:pickup_location_id(*), dropoff_location:dropoff_location_id(*))',
-      )
-      .eq('provider_id', providerId)
-      .is('completed_at', null);
-
-    const fallbackRouteId = candidateRoutes[0]?.route_id ?? allProviderRoutes[0]?.route_id ?? 0;
-    const fallbackVehicleId = candidateRoutes[0]?.vehicle_id ?? allProviderRoutes[0]?.vehicle_id ?? 0;
-
-    for (const d of activeDelivs || []) {
-      const req = d.delivery_requests;
-      if (req?.pickup_location?.latitude != null && req?.dropoff_location?.latitude != null) {
-        candidateRoutes.push({
-          route_id: d.route_id || fallbackRouteId,
-          provider_id: providerId,
-          vehicle_id: d.vehicle_id || fallbackVehicleId,
-          departure_time: req.scheduled_time || new Date().toISOString(),
-          start_location: req.pickup_location,
-          end_location: req.dropoff_location,
-        });
-      }
-    }
-
-    // 2. Fetch all open Pending requests
-    const pendingRequests = await getPendingRequests();
-    if (pendingRequests.length === 0) return [];
-
-    const reqIds = pendingRequests.map((r: any) => r.request_id);
-    const { data: existingDeliveries } = await supabase
-      .from('deliveries')
-      .select('request_id')
-      .in('request_id', reqIds);
-
-    const takenIds = new Set((existingDeliveries || []).map((d: any) => d.request_id));
-
-    const results: NearbyRequestResult[] = [];
-
-    for (const req of pendingRequests) {
-      if (takenIds.has(req.request_id)) continue;
-      if (Number(req.sender_id) === Number(providerId)) continue;
-
-      // If this request was sent to a specific preferred provider, hide it from all other providers
-      if (
-        req.preferred_provider_id != null &&
-        Number(req.preferred_provider_id) !== Number(providerId)
-      ) {
-        continue;
-      }
-
-      const pu = req.pickup_location;
-      const dr = req.dropoff_location;
-      if (!pu || !dr || pu.latitude == null || pu.longitude == null || dr.latitude == null || dr.longitude == null) {
-        continue;
-      }
-
-      const isDirectToThisProvider =
-        req.preferred_provider_id != null &&
-        Number(req.preferred_provider_id) === Number(providerId);
-
-      // If direct to this provider and they have a preferred_route_id, make sure that route is checked
-      const preferredRouteInAll = req.preferred_route_id
-        ? allProviderRoutes.find((r) => Number(r.route_id) === Number(req.preferred_route_id))
-        : null;
-
-      let routesForThisReq =
-        preferredRouteInAll && !candidateRoutes.some((r) => r.route_id === preferredRouteInAll.route_id)
-          ? [preferredRouteInAll, ...candidateRoutes]
-          : [...candidateRoutes];
-
-      // Even if the provider has no active route in candidateRoutes yet, synthesize one for direct requests
-      if (isDirectToThisProvider && routesForThisReq.length === 0) {
-        routesForThisReq = [
-          {
-            route_id: req.preferred_route_id || fallbackRouteId,
-            provider_id: providerId,
-            vehicle_id: fallbackVehicleId,
-            departure_time: req.scheduled_time || new Date().toISOString(),
-            start_location: pu,
-            end_location: dr,
-          },
-        ];
-      }
-
-      if (routesForThisReq.length === 0) continue;
-
-      let bestMatch: NearbyRequestResult | null = null;
-
-      for (const route of routesForThisReq) {
-        const s = route.start_location || pu;
-        const e = route.end_location || dr;
-        if (s.latitude == null || s.longitude == null || e.latitude == null || e.longitude == null) {
-          continue;
-        }
-
-        const pickupDist = distanceToSegmentKm(
-          Number(pu.latitude),
-          Number(pu.longitude),
-          Number(s.latitude),
-          Number(s.longitude),
-          Number(e.latitude),
-          Number(e.longitude),
-        );
-
-        const dropoffDist = distanceToSegmentKm(
-          Number(dr.latitude),
-          Number(dr.longitude),
-          Number(s.latitude),
-          Number(s.longitude),
-          Number(e.latitude),
-          Number(e.longitude),
-        );
-
-        if (
-          isDirectToThisProvider ||
-          (pickupDist <= MAX_PICKUP_CORRIDOR_KM && dropoffDist <= MAX_DROPOFF_CORRIDOR_KM)
-        ) {
-          const directDist = calculateDistance(s.latitude, s.longitude, e.latitude, e.longitude);
-          const detourTotal =
-            calculateDistance(s.latitude, s.longitude, pu.latitude, pu.longitude) +
-            calculateDistance(pu.latitude, pu.longitude, dr.latitude, dr.longitude) +
-            calculateDistance(dr.latitude, dr.longitude, e.latitude, e.longitude);
-          const extraDetourKm = Math.max(0, detourTotal - directDist);
-
-          if (!bestMatch || pickupDist < bestMatch.pickupDistToCorridorKm) {
-            bestMatch = {
-              request: req,
-              route,
-              pickupDistToCorridorKm: Number.isFinite(pickupDist) ? pickupDist : 0,
-              dropoffDistToCorridorKm: Number.isFinite(dropoffDist) ? dropoffDist : 0,
-              extraDetourKm: Number.isFinite(extraDetourKm) ? extraDetourKm : 0,
-              isDirectRequest: isDirectToThisProvider,
-            };
-          }
-        }
-      }
-
-      if (bestMatch) {
-        results.push(bestMatch);
-      }
-    }
-
-    // Sort direct preferred requests first, then by closest pickup to provider's route
-    results.sort((a, b) => {
-      const aDirect = a.isDirectRequest ? 0 : 1;
-      const bDirect = b.isDirectRequest ? 0 : 1;
-      if (aDirect !== bDirect) return aDirect - bDirect;
-      return a.pickupDistToCorridorKm - b.pickupDistToCorridorKm;
-    });
-    return results;
-  } catch (error) {
-    console.error('Error fetching nearby unmatched requests:', error);
+  if (!routeData || routeData.is_deleted || routeData.is_active === false) {
     return [];
   }
+
+  const matchRows = await evaluateAndFetchRouteMatches(targetRouteId);
+
+  return matchRows.map((m) => ({
+    request: m.request as DeliveryRequest,
+    route: routeData as ProviderRoute,
+    matchScore: m.match_score,
+    isFallback: m.is_fallback,
+    fallbackType: m.fallback_type,
+    pickupDistM: m.pickup_dist_m,
+    dropoffDistM: m.dropoff_dist_m,
+    pickupFraction: m.pickup_fraction,
+    dropoffFraction: m.dropoff_fraction,
+    extraDetourKm: m.extra_detour_km,
+    matchId: m.match_id,
+  }));
 }
 
-/* ------------------------------------------------------------------ */
-/* autoMatchAndCreateDeliveries — READ-ONLY                            */
-/* ------------------------------------------------------------------ */
 export async function autoMatchAndCreateDeliveries(
   routeId?: number | null,
 ): Promise<any[]> {
@@ -509,6 +304,8 @@ export async function autoMatchAndCreateDeliveries(
   return matches.map((m) => ({
     request_id: m.request.request_id,
     route_id: m.route.route_id,
+    match_score: m.matchScore,
+    is_fallback: m.isFallback,
   }));
 }
 
@@ -581,120 +378,108 @@ export function subscribeToDeliveryUpdates(
     .subscribe();
 }
 
+/* ------------------------------------------------------------------ */
+/* 5-Minute Background Fallback & Realtime Matcher (PDF Section 5 #4) */
+/* ------------------------------------------------------------------ */
 let globalMatchChannel: any = null;
+let fallbackIntervalId: ReturnType<typeof setInterval> | null = null;
+const notifiedMatchIds = new Set<number>();
 
 export function stopBackgroundMatcher() {
   if (globalMatchChannel) {
     supabase.removeChannel(globalMatchChannel);
     globalMatchChannel = null;
   }
+  if (fallbackIntervalId) {
+    clearInterval(fallbackIntervalId);
+    fallbackIntervalId = null;
+  }
+}
+
+export async function runPeriodicFallbackAndMatchCheck() {
+  try {
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) return;
+
+    const { data: userRow } = await supabase
+      .from('users')
+      .select('user_id, is_active, is_online')
+      .eq('auth_id', authUser.id)
+      .maybeSingle();
+
+    if (!userRow?.user_id || userRow.is_active === false) return;
+
+    const demoMode = await getDemoMode();
+    const { data: activeRoutes } = await supabase
+      .from('provider_routes')
+      .select('route_id, departure_time, fallback_unlocked, fallback_used')
+      .eq('provider_id', userRow.user_id)
+      .eq('is_active', true)
+      .eq('is_deleted', false);
+
+    if (!activeRoutes || activeRoutes.length === 0) return;
+
+    for (const r of activeRoutes) {
+      const matches = await evaluateAndFetchRouteMatches(r.route_id, demoMode);
+      for (const m of matches) {
+        if (!notifiedMatchIds.has(m.match_id)) {
+          notifiedMatchIds.add(m.match_id);
+          if (m.is_fallback) {
+            await notifyUser(
+              userRow.user_id,
+              'Fallback Request Unlocked! 🔓',
+              m.fallback_type === 'CONDITION_B'
+                ? '1 hour before departure with 0 matches: 1 wider 3 km fallback request is now available on your route.'
+                : 'Add-On Fallback unlocked! You have remaining trunk space for 1 extra delivery within 3 km.',
+              { routeId: r.route_id, requestId: m.request_id },
+            );
+          } else {
+            await notifyUser(
+              userRow.user_id,
+              `New ${Math.round(m.match_score)}% Route Match! 🎯`,
+              'A delivery request along your declared forward route corridor is available.',
+              { routeId: r.route_id, requestId: m.request_id },
+            );
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[matchingService] periodic fallback check error:', err);
+  }
 }
 
 export function startBackgroundMatcher() {
   stopBackgroundMatcher();
 
-  (async () => {
-    const routeId = await getActiveRouteId();
-    if (!routeId) return;
-    try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser) return;
+  // Run immediately on boot
+  runPeriodicFallbackAndMatchCheck();
 
-      const { data: routeRow } = await supabase
-        .from('provider_routes')
-        .select('route_id, provider_id, provider:users!provider_id(auth_id, is_active, is_online)')
-        .eq('route_id', routeId)
-        .maybeSingle();
-
-      const providerInfo: any = Array.isArray(routeRow?.provider) ? routeRow.provider[0] : routeRow?.provider;
-      if (!routeRow || providerInfo?.auth_id !== authUser.id) {
-        await setActiveRouteId(null);
-        return;
-      }
-
-      const proposals = await autoMatchAndCreateDeliveries(routeId);
-      console.log(`📊 Initial matching proposed ${proposals.length} requests for route ${routeId}`);
-    } catch (err) {
-      console.error('❌ Initial match error:', err);
-    }
-  })();
-
-  const handleIncoming = async (row: any) => {
-    if (row.delivery_status !== 'Pending') return;
-    if (row.payment_status !== 'held' && row.preferred_provider_id == null) return;
-
-    const routeId = await getActiveRouteId();
-    if (!routeId) return;
-
-    try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser) return;
-
-      const { data: route } = await supabase
-        .from('provider_routes')
-        .select('provider_id, provider:users!provider_id(auth_id, is_active, is_online)')
-        .eq('route_id', routeId)
-        .maybeSingle();
-
-      const providerInfo: any = Array.isArray(route?.provider) ? route.provider[0] : route?.provider;
-      if (!route || providerInfo?.auth_id !== authUser.id || providerInfo?.is_active === false) {
-        return;
-      }
-
-      // If this request has a preferred_provider_id for a different provider, ignore it
-      if (
-        row.preferred_provider_id != null &&
-        Number(row.preferred_provider_id) !== Number(route.provider_id)
-      ) {
-        return;
-      }
-
-      if (
-        row.preferred_provider_id != null &&
-        Number(row.preferred_provider_id) === Number(route.provider_id)
-      ) {
-        Alert.alert(
-          '📦 New Route Delivery Request!',
-          'A sender requested a delivery directly along your route. Open the Jobs or Tasks tab to accept it.',
-          [{ text: 'Got it', style: 'default' }],
-        );
-        return;
-      }
-
-      if (!providerInfo?.is_online) return;
-
-      const proposals = await autoMatchAndCreateDeliveries(routeId);
-      const matchesThisRequest = proposals.some(
-        (d: any) => d.request_id === row.request_id,
-      );
-
-      if (matchesThisRequest) {
-        Alert.alert(
-          '🎯 New Delivery Match!',
-          'A new sender request matches your route. Open the Jobs tab to review and accept it.',
-          [{ text: 'Got it', style: 'default' }],
-        );
-      }
-    } catch (err) {
-      console.error('❌ Global match check error:', err);
-    }
-  };
+  // PDF Backend Requirement #4: 5-minute background job to check Condition B / matches
+  fallbackIntervalId = setInterval(() => {
+    runPeriodicFallbackAndMatchCheck();
+  }, 5 * 60 * 1000);
 
   globalMatchChannel = supabase
     .channel('realtime-global-matcher')
     .on(
       'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'delivery_requests' },
-      (payload) => handleIncoming(payload.new),
-    )
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'delivery_requests' },
-      (payload) => {
-        const before = payload.old?.payment_status;
-        const after = payload.new?.payment_status;
-        if (before !== 'held' && after === 'held') {
-          handleIncoming(payload.new);
+      { event: '*', schema: 'public', table: 'route_request_matches' },
+      async (payload) => {
+        const row: any = payload.new;
+        if (!row || row.status !== 'matched') return;
+        const activeRouteId = await getActiveRouteId();
+        if (!activeRouteId || Number(row.route_id) !== Number(activeRouteId)) return;
+
+        if (!notifiedMatchIds.has(Number(row.match_id))) {
+          notifiedMatchIds.add(Number(row.match_id));
+          Alert.alert(
+            row.is_fallback ? '🔓 Fallback Request Unlocked!' : `🎯 ${Math.round(Number(row.match_score))}% Route Match!`,
+            row.is_fallback
+              ? 'A 3 km fallback delivery request along your route is now available in My Route Requests.'
+              : 'A new sender request along your route corridor matched (≥60%). Open My Route Requests to review.',
+            [{ text: 'Got it', style: 'default' }],
+          );
         }
       },
     )
@@ -721,18 +506,21 @@ export async function getMatchingStats(providerId: number) {
       .select('*')
       .eq('provider_id', providerId);
 
-    const { data: pending } = await supabase
-      .from('delivery_requests')
+    const { data: matches } = await supabase
+      .from('route_request_matches')
       .select('*')
-      .eq('delivery_status', 'Pending')
-      .eq('payment_status', 'held');
+      .eq('provider_id', providerId)
+      .eq('status', 'matched');
+
+    const totalDeliveries = deliveries?.length || 0;
+    const pendingMatches = matches?.length || 0;
 
     return {
-      totalDeliveries: deliveries?.length || 0,
-      pendingRequests: pending?.length || 0,
+      totalDeliveries,
+      pendingRequests: pendingMatches,
       matchRate:
-        deliveries?.length && pending?.length
-          ? ((deliveries.length / (deliveries.length + pending.length)) * 100).toFixed(1)
+        totalDeliveries + pendingMatches > 0
+          ? ((totalDeliveries / (totalDeliveries + pendingMatches)) * 100).toFixed(1)
           : '0',
     };
   } catch (error) {

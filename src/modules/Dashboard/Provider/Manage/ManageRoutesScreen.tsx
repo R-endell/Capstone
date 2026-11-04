@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, Modal, StatusBar,
   Alert, ActivityIndicator, ScrollView, Platform, Animated, Easing,
-  TextInput, Keyboard,
+  TextInput, Keyboard, Switch,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,10 +16,20 @@ import Constants from 'expo-constants';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
+import {
+  getTodayRouteStats,
+  createProviderRouteWithGuardrails,
+  updateProviderRouteWithGuardrails,
+  canEditRoute,
+  softDeleteProviderRoute,
+  MAX_DAILY_ROUTES,
+} from '../../../../services/routeService';
+import { getDemoMode, setDemoMode, subscribeDemoMode } from '../../../../services/activeRouteStore';
 
 const ORANGE = '#FF751F';
 const BLUE = '#3B82F6';
 const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
 const BLACK = '#111827';
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
@@ -46,16 +56,32 @@ interface LocationType {
   latitude: number;
   longitude: number;
 }
-interface Vehicle { vehicle_id: number; vehicle_type: string; plate_number: string; }
+interface Vehicle {
+  vehicle_id: number;
+  vehicle_type: string;
+  plate_number: string;
+  max_weight_kg?: number;
+  max_volume_liters?: number;
+}
 interface Route {
   route_id: number;
   departure_time: string;
+  end_time?: string | null;
   route_frequency: string;
   created_at: string;
   start_location_id: number;
   end_location_id: number;
   provider_id: number;
   vehicle_id: number;
+  route_distance_km?: number;
+  remaining_weight_kg?: number;
+  remaining_volume_liters?: number;
+  fallback_unlocked?: boolean;
+  fallback_reason?: 'CONDITION_A' | 'CONDITION_B' | null;
+  fallback_used?: boolean;
+  admin_review_flag?: boolean;
+  is_deleted?: boolean;
+  is_active?: boolean;
   start_location?: LocationType;
   end_location?: LocationType;
   vehicle?: Vehicle;
@@ -78,15 +104,6 @@ const splitAddress = (full?: string | null) => {
   return { main: parts[0], sub: parts.slice(1).join(', ') };
 };
 
-const toNaiveIsoString = (dateObj: Date, timeObj: Date) => {
-  const y = dateObj.getFullYear();
-  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const d = String(dateObj.getDate()).padStart(2, '0');
-  const hh = String(timeObj.getHours()).padStart(2, '0');
-  const mm = String(timeObj.getMinutes()).padStart(2, '0');
-  return `${y}-${m}-${d}T${hh}:${mm}:00`;
-};
-
 const parseNaiveIsoString = (isoString: string) => {
   if (!isoString) return new Date();
   const parts = isoString.split(/[-T:+Z]/);
@@ -99,11 +116,20 @@ const parseNaiveIsoString = (isoString: string) => {
   return new Date(y, m, d, hh, mm);
 };
 
-export const isRouteExpired = (route: { route_frequency: string; departure_time: string }): boolean => {
+export const isRouteExpired = (route: {
+  route_frequency: string;
+  departure_time: string;
+  end_time?: string | null;
+  is_deleted?: boolean;
+  is_active?: boolean;
+}): boolean => {
+  if (route.is_deleted || route.is_active === false) return true;
   const freq = (route.route_frequency || '').trim().toLowerCase();
   if (freq === 'one-time' || freq === 'custom') {
-    const dt = parseNaiveIsoString(route.departure_time);
-    return dt.getTime() < Date.now();
+    const endDt = route.end_time
+      ? parseNaiveIsoString(route.end_time)
+      : new Date(parseNaiveIsoString(route.departure_time).getTime() + 4 * 60 * 60 * 1000);
+    return endDt.getTime() < Date.now();
   }
   return false;
 };
@@ -117,6 +143,7 @@ const nextWeekday = (weekday: number, from = new Date()): Date => {
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
+const DURATION_OPTIONS = [1, 2, 3, 4] as const; // Rule: Max 4 hours per route
 type Frequency = typeof FREQUENCIES[number];
 type RouteTab = 'active' | 'expired';
 
@@ -214,7 +241,6 @@ const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
   return [];
 };
 
-/* Shared S/E marker styling — identical to JobsScreen's ProviderMap */
 const previewMapStyles = StyleSheet.create({
   mkDot: {
     width: 26, height: 26, borderRadius: 13,
@@ -837,12 +863,15 @@ export default function ManageRoutesScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<RouteTab>('active');
+  const [usedTodayCount, setUsedTodayCount] = useState(0);
+  const [demoMode, setDemoModeState] = useState(false);
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
   const [selectedFrequency, setSelectedFrequency] = useState<Frequency>('Daily');
   const [departureDate, setDepartureDate] = useState(new Date());
   const [departureTime, setDepartureTime] = useState(new Date());
+  const [routeDurationHours, setRouteDurationHours] = useState<number>(2); // Max 4 hours cap
   const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
 
@@ -855,7 +884,6 @@ export default function ManageRoutesScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
 
-  // ── Interactive preview map ref ──
   const previewMapRef = useRef<MapView>(null);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -866,6 +894,11 @@ export default function ManageRoutesScreen() {
       Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
     Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
   }, [headerAnim, contentAnim]);
+
+  useEffect(() => {
+    getDemoMode().then(setDemoModeState);
+    return subscribeDemoMode(setDemoModeState);
+  }, []);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -880,7 +913,11 @@ export default function ManageRoutesScreen() {
   };
 
   const fetchVehicles = async (providerId: number) => {
-    const { data } = await supabase.from('vehicles').select('vehicle_id, vehicle_type, plate_number').eq('provider_id', providerId).eq('verification_status', 'Verified');
+    const { data } = await supabase
+      .from('vehicles')
+      .select('vehicle_id, vehicle_type, plate_number, max_weight_kg, max_volume_liters')
+      .eq('provider_id', providerId)
+      .eq('verification_status', 'Verified');
     return data || [];
   };
 
@@ -889,12 +926,23 @@ export default function ManageRoutesScreen() {
     const id = await fetchUserId();
     if (!id) return setLoading(false);
     setUserId(id);
+
+    try {
+      const stats = await getTodayRouteStats(id);
+      setUsedTodayCount(stats.usedTodayCount);
+    } catch {
+      // ignore
+    }
+
     const { data } = await supabase
       .from('provider_routes')
       .select('*, start_location:start_location_id (*), end_location:end_location_id (*), vehicle:vehicle_id (*)')
       .eq('provider_id', id)
       .order('route_id', { ascending: false });
-    setRoutes(data || []);
+
+    // Hide soft-deleted routes from UI list while keeping them counted in usedTodayCount
+    const nonDeleted = (data || []).filter((r: Route) => r.is_deleted !== true);
+    setRoutes(nonDeleted);
     setVehicles(await fetchVehicles(id));
     setLoading(false);
   };
@@ -912,6 +960,11 @@ export default function ManageRoutesScreen() {
   }, [routes]);
 
   const displayedRoutes = activeTab === 'active' ? activeRoutes : expiredRoutes;
+
+  const handleToggleDemo = async (val: boolean) => {
+    setDemoModeState(val);
+    await setDemoMode(val);
+  };
 
   const handleLocationSelect = async (locData: any, type: 'start' | 'end') => {
     try {
@@ -1004,65 +1057,108 @@ export default function ManageRoutesScreen() {
       }
     }
 
+    const endTimeObj = new Date(combined.getTime() + routeDurationHours * 60 * 60 * 1000);
+
     setSubmitting(true);
     try {
-      const departureValue = toNaiveIsoString(effectiveDate, departureTime);
-      const routeData = {
-        departure_time: departureValue,
-        route_frequency: selectedFrequency,
-        start_location_id: startLocation.location_id,
-        end_location_id: endLocation.location_id,
-        provider_id: userId,
-        vehicle_id: selectedVehicleId,
-      };
-
-      let error;
       if (editingRoute) {
-        const { error: updateError } = await supabase.from('provider_routes').update(routeData).eq('route_id', editingRoute.route_id);
-        error = updateError;
+        const res = await updateProviderRouteWithGuardrails(
+          editingRoute.route_id,
+          editingRoute.departure_time,
+          {
+            providerId: userId,
+            vehicleId: selectedVehicleId,
+            startLocation,
+            endLocation,
+            departureDateObj: combined,
+            endTimeObj,
+            routeFrequency: selectedFrequency,
+          },
+        );
+        Alert.alert(
+          'Route Updated',
+          res.adminReviewFlag
+            ? `Route updated (${res.distanceKm} km). Note: Routes over 25 km are flagged for Admin coverage review.`
+            : 'Route updated and corridor matches refreshed!',
+        );
       } else {
-        const { error: insertError } = await supabase.from('provider_routes').insert(routeData);
-        error = insertError;
+        const res = await createProviderRouteWithGuardrails({
+          providerId: userId,
+          vehicleId: selectedVehicleId,
+          startLocation,
+          endLocation,
+          departureDateObj: combined,
+          endTimeObj,
+          routeFrequency: selectedFrequency,
+        });
+        Alert.alert(
+          'Route Posted!',
+          res.adminReviewFlag
+            ? `Route saved (${res.distanceKm} km). Note: Routes over 25 km are flagged for Admin coverage review.`
+            : 'Your route corridor is active and scanning for forward matches!',
+        );
       }
 
-      if (error) throw error;
-
-      Alert.alert('Success', editingRoute ? 'Route updated successfully!' : 'Route added successfully!');
       resetForm();
       setModalVisible(false);
       setActiveTab('active');
       fetchRoutes();
-    } catch (err) {
-      Alert.alert('Error', editingRoute ? 'Failed to update route' : 'Failed to save route');
+    } catch (err: any) {
+      Alert.alert('Guardrail Check', err?.message || (editingRoute ? 'Failed to update route' : 'Failed to save route'));
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleDelete = (route: Route) => {
-    Alert.alert('Delete Route', 'Are you sure you want to delete this route?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete', style: 'destructive', onPress: async () => {
-          await supabase.from('provider_routes').delete().eq('route_id', route.route_id);
-          setRoutes(prev => prev.filter(r => r.route_id !== route.route_id));
+    Alert.alert(
+      'Delete Route?',
+      'Anti-Gaming Guardrail: Deleted routes STILL count toward your 3-route daily limit. You will not regain this daily slot if you delete it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Route',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await softDeleteProviderRoute(route.route_id);
+              await fetchRoutes();
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Could not delete route.');
+            }
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   const handleEdit = (route: Route) => {
+    const expired = isRouteExpired(route);
+    if (!expired) {
+      const check = canEditRoute(route.departure_time, demoMode);
+      if (!check.allowed) {
+        Alert.alert('Route Edit Locked 🔒', check.reason);
+        return;
+      }
+    }
+
     setEditingRoute(route);
     const dt = parseNaiveIsoString(route.departure_time);
-    const expired = isRouteExpired(route);
-
-    const defaultFuture = new Date(Date.now() + 15 * 60 * 1000);
+    const defaultFuture = new Date(Date.now() + 2 * 60 * 60 * 1000 + 15 * 60 * 1000);
     const baseDate = expired ? defaultFuture : dt;
     const baseTime = expired ? defaultFuture : dt;
 
     setDepartureDate(baseDate);
     setDepartureTime(baseTime);
     setSelectedWeekday(baseDate.getDay());
+
+    if (route.end_time) {
+      const endDt = parseNaiveIsoString(route.end_time);
+      const hrs = Math.round((endDt.getTime() - dt.getTime()) / (1000 * 60 * 60));
+      setRouteDurationHours(hrs >= 1 && hrs <= 4 ? hrs : 2);
+    } else {
+      setRouteDurationHours(2);
+    }
 
     const freq = (route.route_frequency || 'Daily') as Frequency;
     setSelectedFrequency(FREQUENCIES.includes(freq) ? freq : 'Daily');
@@ -1073,17 +1169,26 @@ export default function ManageRoutesScreen() {
   };
 
   const handleAdd = () => {
+    if (usedTodayCount >= MAX_DAILY_ROUTES) {
+      Alert.alert(
+        'Daily Route Limit Reached (3/3)',
+        'You can post a maximum of 3 routes per day. Deleted routes still count toward your daily limit.',
+      );
+      return;
+    }
     resetForm();
     setModalVisible(true);
   };
 
   const resetForm = () => {
-    const initial = new Date(Date.now() + 15 * 60 * 1000);
+    // Default 2h 15m ahead so Condition B (>= 2 hours before departure) is naturally satisfied
+    const initial = new Date(Date.now() + 135 * 60 * 1000);
     setSelectedFrequency('Daily');
     setDepartureDate(initial);
     setDepartureTime(initial);
+    setRouteDurationHours(2);
     setSelectedWeekday(initial.getDay());
-    setSelectedVehicleId(null);
+    setSelectedVehicleId(vehicles[0]?.vehicle_id ?? null);
     setStartLocation(null);
     setEndLocation(null);
     setEditingRoute(null);
@@ -1108,7 +1213,6 @@ export default function ManageRoutesScreen() {
     })();
   }, [startLocation, endLocation]);
 
-  // Auto-fit the interactive preview map to the route once the polyline resolves
   useEffect(() => {
     if (!startLocation || !endLocation) return;
     const pts = previewCoords.length >= 2
@@ -1139,6 +1243,7 @@ export default function ManageRoutesScreen() {
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
     const expired = isRouteExpired(item);
+    const editLock = !expired ? canEditRoute(item.departure_time, demoMode) : { allowed: true };
     const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const scheduleText = (() => {
       if (item.route_frequency === 'Daily') return `Every day · ${timeStr}`;
@@ -1160,17 +1265,34 @@ export default function ManageRoutesScreen() {
       >
         <View style={styles.oPad}>
           <View style={styles.oTopRow}>
-            <View style={styles.svcPill}>
-              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
-              <Text style={styles.svcPillText}>
-                {item.vehicle ? item.vehicle.vehicle_type : 'Vehicle'}
-              </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+              <View style={styles.svcPill}>
+                <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+                <Text style={styles.svcPillText}>
+                  {item.vehicle ? item.vehicle.vehicle_type : 'Vehicle'}
+                </Text>
+              </View>
+              {item.route_distance_km != null && Number(item.route_distance_km) > 0 && (
+                <View style={styles.distPill}>
+                  <Ionicons name="git-branch-outline" size={12} color={ORANGE} />
+                  <Text style={styles.distPillText}>{Number(item.route_distance_km).toFixed(1)} km</Text>
+                </View>
+              )}
             </View>
             <View style={[styles.stPill, { backgroundColor: meta.bg }]}>
               <View style={[styles.stDot, { backgroundColor: meta.fg }]} />
               <Text style={[styles.stPillText, { color: meta.fg }]}>{meta.label.toUpperCase()}</Text>
             </View>
           </View>
+
+          {item.admin_review_flag && (
+            <View style={styles.flagBanner}>
+              <Ionicons name="warning-outline" size={14} color={ORANGE} />
+              <Text style={styles.flagBannerText}>
+                Coverage Flag (&gt;25 km): Queued for Admin coverage review
+              </Text>
+            </View>
+          )}
 
           <View>
             {[
@@ -1208,13 +1330,24 @@ export default function ManageRoutesScreen() {
             <Ionicons name="time-outline" size={14} color={expired ? colors.error : ORANGE} />
             <Text style={styles.oChipText}>{scheduleText}</Text>
           </View>
-          {item.vehicle?.plate_number && (
+          {item.remaining_weight_kg != null && Number(item.remaining_weight_kg) > 0 && (
             <View style={styles.oChip}>
-              <Ionicons name="pricetag-outline" size={14} color={ORANGE} />
-              <Text style={styles.oChipText}>{item.vehicle.plate_number}</Text>
+              <Ionicons name="cube-outline" size={14} color={BLUE} />
+              <Text style={styles.oChipText}>
+                {Number(item.remaining_weight_kg).toFixed(0)} kg · {Number(item.remaining_volume_liters || 0).toFixed(0)} L left
+              </Text>
             </View>
           )}
-          <View style={{ flex: 1 }} />
+          <View style={[styles.oChip, item.fallback_unlocked && { borderColor: PURPLE }]}>
+            <Ionicons
+              name={item.fallback_used ? 'checkmark-done' : item.fallback_unlocked ? 'Locate' : 'lock-closed-outline'}
+              size={13}
+              color={item.fallback_unlocked ? PURPLE : colors.textMuted}
+            />
+            <Text style={[styles.oChipText, item.fallback_unlocked && { color: PURPLE }]}>
+              Fallback: {item.fallback_used ? 'Used (1/1)' : item.fallback_unlocked ? 'Unlocked (1/1)' : '0/1'}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.oActions}>
@@ -1227,12 +1360,18 @@ export default function ManageRoutesScreen() {
             <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={styles.oRouteBtn}
+            style={[styles.oRouteBtn, !editLock.allowed && { backgroundColor: colors.textMuted }]}
             onPress={() => handleEdit(item)}
             activeOpacity={0.9}
           >
-            <Ionicons name={expired ? 'calendar-outline' : 'create-outline'} size={16} color="#FFFFFF" />
-            <Text style={styles.oRouteText}>{expired ? 'Reschedule' : 'Edit Route'}</Text>
+            <Ionicons
+              name={expired ? 'calendar-outline' : editLock.allowed ? 'create-outline' : 'lock-closed'}
+              size={16}
+              color="#FFFFFF"
+            />
+            <Text style={styles.oRouteText}>
+              {expired ? 'Reschedule' : editLock.allowed ? 'Edit Route' : 'Locked (24h)'}
+            </Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -1250,13 +1389,32 @@ export default function ManageRoutesScreen() {
         <View style={{ flex: 1, paddingLeft: 14 }}>
           <Text style={styles.headerTitle}>Manage Routes</Text>
           <Text style={styles.headerSubtitle}>
-            {activeRoutes.length} active · {expiredRoutes.length} expired
+            {usedTodayCount}/{MAX_DAILY_ROUTES} routes used today · {activeRoutes.length} active
           </Text>
         </View>
-        <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
+        <TouchableOpacity
+          style={[styles.headerAddBtn, usedTodayCount >= MAX_DAILY_ROUTES && { opacity: 0.45 }]}
+          onPress={handleAdd}
+          activeOpacity={0.9}
+        >
           <Ionicons name="add" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
+
+      {/* Defense DEMO_MODE banner */}
+      <View style={styles.demoStrip}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+          <Ionicons name="flask-outline" size={16} color={ORANGE} />
+          <Text style={styles.demoStripText}>
+            Defense DEMO_MODE (1-min fallback & edit lock)
+          </Text>
+        </View>
+        <Switch
+          value={demoMode}
+          onValueChange={handleToggleDemo}
+          trackColor={{ false: colors.border, true: ORANGE }}
+        />
+      </View>
 
       <View style={styles.tabContainer}>
         <TouchableOpacity
@@ -1305,17 +1463,19 @@ export default function ManageRoutesScreen() {
             />
           </View>
           <Text style={styles.emptyTitle}>
-            {activeTab === 'active' ? 'No active routes' : 'No expired routes'}
+            {activeTab === 'active' ? 'Post a route to see matched deliveries.' : 'No expired routes'}
           </Text>
           <Text style={styles.emptySubtext}>
             {activeTab === 'active'
-              ? 'Add your regular travel routes so senders along your way can book deliveries with you.'
-              : 'One-time or custom routes that have passed their departure time will appear here.'}
+              ? 'Declare the forward travel route you are already driving (max 3 routes/day, ≥3 km apart). Only requests along your corridor will match.'
+              : 'One-time or custom routes that have passed their departure window will appear here.'}
           </Text>
           {activeTab === 'active' && (
             <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
               <Ionicons name="add-circle" size={18} color="#FFFFFF" />
-              <Text style={styles.emptyAddBtnText}>Add Route</Text>
+              <Text style={styles.emptyAddBtnText}>
+                Post Route ({Math.max(0, MAX_DAILY_ROUTES - usedTodayCount)} left today)
+              </Text>
             </TouchableOpacity>
           )}
         </Animated.View>
@@ -1340,11 +1500,20 @@ export default function ManageRoutesScreen() {
               <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCloseBtn}>
                 <Ionicons name="close" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
-              <Text style={styles.modalTitle}>{editingRoute ? 'Edit Route' : 'Add Route'}</Text>
+              <Text style={styles.modalTitle}>
+                {editingRoute ? 'Edit Route' : `Post Route (${usedTodayCount}/${MAX_DAILY_ROUTES} today)`}
+              </Text>
               <View style={{ width: 40 }} />
             </View>
 
             <ScrollView contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
+              <View style={styles.guardrailNotice}>
+                <Ionicons name="shield-checkmark-outline" size={16} color={ORANGE} />
+                <Text style={styles.guardrailNoticeText}>
+                  Guardrails: Post ≥2 hrs early to qualify for Condition B fallback · Destinations must be ≥3 km apart · Max 4-hr window · Locked 24h before departure.
+                </Text>
+              </View>
+
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Route Locations</Text>
                 <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('start'); setPickerVisible(true); }}>
@@ -1361,12 +1530,11 @@ export default function ManageRoutesScreen() {
                     <Ionicons name="location" size={14} color="#FFF" />
                   </View>
                   <Text style={styles.locationSelectorText} numberOfLines={1}>
-                    {endLocation ? endLocation.street_address : 'Set Destination'}
+                    {endLocation ? endLocation.street_address : 'Set Destination (≥3 km from other routes)'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              {/* ── Interactive route preview map with S / E markers ── */}
               {startLocation && endLocation && (
                 <View style={styles.modalMapContainer}>
                   <MapView
@@ -1419,6 +1587,24 @@ export default function ManageRoutesScreen() {
                     >
                       <Text style={[styles.frequencyOptionText, selectedFrequency === freq && styles.frequencyOptionTextSelected]}>
                         {freq}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Time Window Cap (Max 4 Hours) */}
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Active Time Window (Max 4 Hours)</Text>
+                <View style={styles.frequencyOptions}>
+                  {DURATION_OPTIONS.map(hr => (
+                    <TouchableOpacity
+                      key={hr}
+                      style={[styles.frequencyOption, routeDurationHours === hr && styles.frequencyOptionSelected]}
+                      onPress={() => setRouteDurationHours(hr)}
+                    >
+                      <Text style={[styles.frequencyOptionText, routeDurationHours === hr && styles.frequencyOptionTextSelected]}>
+                        {hr} {hr === 1 ? 'hr' : 'hrs'}
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -1542,7 +1728,7 @@ export default function ManageRoutesScreen() {
               </View>
 
               <TouchableOpacity style={[styles.submitBtn, submitting && { opacity: 0.7 }]} onPress={handleSubmit} disabled={submitting}>
-                {submitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitBtnText}>{editingRoute ? 'Update Route' : 'Save Route'}</Text>}
+                {submitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitBtnText}>{editingRoute ? 'Update Route' : 'Post Route'}</Text>}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -1578,15 +1764,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1, borderColor: c.border,
   },
   headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
-  headerSubtitle: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 1 },
+  headerSubtitle: { fontSize: 13, color: c.textSecondary, fontWeight: '600', marginTop: 1 },
   headerAddBtn: {
     width: 42, height: 42, borderRadius: 21,
     backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
   },
 
+  demoStrip: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginHorizontal: 20, marginTop: 12, paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: c.accentSoft, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
+  },
+  demoStripText: { fontSize: 12, fontWeight: '700', color: c.textPrimary },
+
   tabContainer: {
     flexDirection: 'row',
-    marginHorizontal: 20, marginTop: 14, marginBottom: 4,
+    marginHorizontal: 20, marginTop: 10, marginBottom: 4,
     padding: 4, backgroundColor: c.card, borderRadius: 14,
     borderWidth: 1, borderColor: c.border, gap: 6,
   },
@@ -1612,7 +1805,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
     marginBottom: 14, borderWidth: 1, borderColor: c.border,
   },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, textAlign: 'center' },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19, marginBottom: 20 },
   emptyAddBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
@@ -1626,19 +1819,31 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   oCardExpired: { opacity: 0.88 },
   oPad: { padding: 16 },
-  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 8 },
   svcPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
   },
   svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  distPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.accentSoft, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 8,
+  },
+  distPillText: { fontSize: 11.5, fontWeight: '800', color: ORANGE },
   stPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
   },
   stDot: { width: 7, height: 7, borderRadius: 4 },
   stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+
+  flagBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(255,117,31,0.12)', paddingHorizontal: 10, paddingVertical: 7,
+    borderRadius: 10, marginBottom: 12,
+  },
+  flagBannerText: { flex: 1, fontSize: 11.5, fontWeight: '700', color: ORANGE },
 
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
@@ -1664,7 +1869,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
     paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
   },
-  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+  oChipText: { fontSize: 12.5, fontWeight: '700', color: c.textPrimary },
 
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oDeleteBtn: {
@@ -1683,8 +1888,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 6, marginBottom: 6 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
   modalCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
   modalScrollContent: { padding: 20, paddingBottom: 40 },
+
+  guardrailNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)', marginBottom: 16,
+  },
+  guardrailNoticeText: { flex: 1, fontSize: 11.5, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
 
   modalMapContainer: { height: 180, borderRadius: 16, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: c.border },
 

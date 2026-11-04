@@ -437,7 +437,12 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
-  const markPickupVerified = async (deliveryId: number, requestId: number) => {
+    const markPickupVerified = async (deliveryId: number, requestId: number) => {
+    if (!requestId) {
+      Alert.alert('Error', 'Request ID is missing. Cannot update delivery status.');
+      return;
+    }
+
     try {
       const { error: qrErr } = await supabase
         .from('qr_verifications')
@@ -482,13 +487,14 @@ export default function TaskScreen() {
     }
   };
 
-  const handleBarcodeScanned = async ({ data }: { data: string }) => {
+    const handleBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanned || !verifyTarget) return;
     setScanned(true);
     try {
+      const qrData = data.trim(); // ✅ FIX: Trim whitespace from QR
       const { data: row, error } = await supabase
         .from('qr_verifications').select('*')
-        .eq('pickup_qr', data).eq('delivery_id', verifyTarget.delivery_id).single();
+        .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single();
 
       if (error || !row) {
         Alert.alert('Invalid QR', 'This QR does not match the selected delivery.', [
@@ -502,7 +508,9 @@ export default function TaskScreen() {
         ]);
         return;
       }
-      await markPickupVerified(row.delivery_id, verifyTarget.request_id);
+      // ✅ FIX: Safely fallback to delivery_requests.request_id if request_id is undefined
+      const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
+      await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
       Alert.alert('Error', e.message || 'QR scan failed.', [
         { text: 'Try Again', onPress: () => setScanned(false) },

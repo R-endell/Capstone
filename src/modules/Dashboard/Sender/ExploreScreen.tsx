@@ -152,6 +152,8 @@ export default function ExploreScreen() {
           end_location:locations!provider_routes_end_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
           vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
         `)
+        .eq('is_deleted', false) // ✅ Hides soft-deleted routes
+        .eq('is_active', true)   // ✅ Hides inactive routes
         .order('departure_time', { ascending: true });
 
       // Exclude the current user's own provider routes
