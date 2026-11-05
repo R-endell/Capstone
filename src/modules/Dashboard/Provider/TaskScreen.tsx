@@ -191,47 +191,10 @@ const enrichDeliveries = async (list: any[]) => {
   return list.map(d => {
     const rawEscrow = d.escrow || escrows[d.delivery_id] || null;
     const provider = d.delivery_requests?.payment_provider || null;
-    const [acceptingRequestId, setAcceptingRequestId] = useState<number | null>(null);
     return {
       ...d,
       sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
       escrow: rawEscrow ? { ...rawEscrow, payment_method: provider } : (provider ? { payment_method: provider } : null),
-    };
-  });
-};
-
-const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[], providerId: number) => {
-  if (!nearbyList || nearbyList.length === 0) return [];
-  const senderIds = Array.from(new Set(nearbyList.map(n => n.request?.sender_id).filter(Boolean)));
-  const senders: Record<number, any> = {};
-  try {
-    if (senderIds.length) {
-      const { data } = await supabase.from('users').select('user_id, first_name, last_name, phone_number').in('user_id', senderIds as number[]);
-      (data || []).forEach((u: any) => { senders[u.user_id] = u; });
-    }
-  } catch { }
-
-  return nearbyList.map(n => {
-    const isDirect =
-      !!n.isDirectRequest ||
-      (n.request?.preferred_provider_id != null && Number(n.request.preferred_provider_id) === Number(providerId));
-
-    return {
-      ...n,
-      syntheticDelivery: {
-        delivery_id: -n.request.request_id,
-        request_id: n.request.request_id,
-        delivery_requests: n.request,
-        sender: senders[n.request.sender_id] || null,
-        escrow: n.request.payment_provider ? { payment_method: n.request.payment_provider } : null,
-        nearbyMeta: {
-          route: n.route,
-          pickupDistToCorridorKm: n.pickupDistToCorridorKm,
-          dropoffDistToCorridorKm: n.dropoffDistToCorridorKm,
-          extraDetourKm: n.extraDetourKm,
-          isDirectRequest: isDirect,
-        },
-      },
     };
   });
 };
@@ -420,155 +383,6 @@ export default function TaskScreen() {
     }
   };
 
-  const doAcceptNearbyRequest = async (syntheticTask: any) => {
-    const req = syntheticTask?.delivery_requests;
-    if (!providerId || !req) return;
-
-    setAcceptingRequestId(req.request_id);
-    try {
-      const { data: v } = await supabase
-        .from('vehicles')
-        .select('vehicle_id')
-        .eq('provider_id', providerId)
-        .eq('verification_status', 'Verified')
-        .limit(1)
-        .maybeSingle();
-
-      let vehicleId = v?.vehicle_id ?? syntheticTask?.nearbyMeta?.route?.vehicle_id ?? null;
-      if (!vehicleId) {
-        const { data: anyVeh } = await supabase
-          .from('vehicles')
-          .select('vehicle_id')
-          .eq('provider_id', providerId)
-          .limit(1)
-          .maybeSingle();
-        vehicleId = anyVeh?.vehicle_id ?? null;
-      }
-      if (!vehicleId) {
-        Alert.alert('Vehicle Not Found', 'You need a registered vehicle before you can accept deliveries.');
-        return;
-      }
-
-      let routeId: number | null =
-        req.preferred_route_id ||
-        syntheticTask?.nearbyMeta?.route?.route_id ||
-        (await getActiveRouteId());
-      if (!routeId) {
-        const { data: latestRoute } = await supabase
-          .from('provider_routes')
-          .select('route_id')
-          .eq('provider_id', providerId)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        routeId = latestRoute?.route_id ?? null;
-      }
-
-      const { data: fresh } = await supabase
-        .from('delivery_requests')
-        .select('delivery_status')
-        .eq('request_id', req.request_id)
-        .maybeSingle();
-      const { data: existing } = await supabase
-        .from('deliveries')
-        .select('delivery_id')
-        .eq('request_id', req.request_id)
-        .limit(1);
-
-      if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
-        Alert.alert('Request Unavailable', 'This delivery request was already accepted or cancelled.');
-        await fetchDeliveries(providerId);
-        return;
-      }
-
-      const { data: delivery, error: deliveryError } = await supabase
-        .from('deliveries')
-        .insert({
-          request_id: req.request_id,
-          provider_id: providerId,
-          vehicle_id: vehicleId,
-          route_id: routeId,
-          accepted_at: new Date().toISOString(),
-          estimated_eta: new Date(Date.now() + 3600000).toISOString(),
-        })
-        .select('*')
-        .single();
-      if (deliveryError) throw deliveryError;
-
-      const { error: qrError } = await supabase.from('qr_verifications').insert({
-        delivery_id: delivery.delivery_id,
-        pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
-        dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
-        pickup_pin: randPin(),
-        dropoff_pin: randPin(),
-      });
-      if (qrError) {
-        await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
-        throw qrError;
-      }
-
-      const { error: reqUpdateError } = await supabase
-        .from('delivery_requests')
-        .update({ delivery_status: 'Accepted' })
-        .eq('request_id', req.request_id);
-      if (reqUpdateError) throw reqUpdateError;
-
-      const { data: requestData } = await supabase
-        .from('delivery_requests')
-        .select('estimated_cost, sender_id')
-        .eq('request_id', req.request_id)
-        .single();
-
-      if (requestData) {
-        await supabase.from('escrow_payments').insert({
-          amount: requestData.estimated_cost,
-          delivery_id: delivery.delivery_id,
-          sender_id: requestData.sender_id,
-          provider_id: providerId,
-          escrow_status: 'On hold',
-          emergency_frozen: false,
-          created_at: new Date().toISOString(),
-        });
-
-        if (requestData.sender_id) {
-          const code = trackingCode(req.request_id);
-          notifyUser(
-            requestData.sender_id,
-            'Courier Accepted Your Delivery! 🚚',
-            `Your courier accepted parcel #${code} and will head to the pickup location.`,
-            { deliveryId: delivery.delivery_id },
-          ).catch(() => {});
-        }
-      }
-
-      setSelectedId(null);
-      setActiveTab('active');
-      await fetchDeliveries(providerId);
-      Alert.alert(
-        '✅ Delivery Accepted!',
-        'The route is now in your Active tasks. Ask the sender for their pickup QR or PIN when you arrive.',
-      );
-    } catch (error: any) {
-      Alert.alert('Error', error?.message || 'Failed to accept delivery.');
-    } finally {
-      setAcceptingRequestId(null);
-    }
-  };
-
-  const confirmAcceptNearby = (syntheticTask: any) => {
-    if (acceptingRequestId != null) return;
-    const info = buildTaskInfo(syntheticTask);
-    const isDirect = !!syntheticTask?.nearbyMeta?.isDirectRequest;
-    Alert.alert(
-      isDirect ? 'Accept Direct Route Request?' : 'Accept Nearby Delivery?',
-      `You will earn ${money(info.earnings)} for delivering from ${info.pickup.main} to ${info.dropoff.main}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Accept Delivery', onPress: () => doAcceptNearbyRequest(syntheticTask) },
-      ],
-    );
-  };
-
   const handlePingSender = async (delivery: any) => {
     const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
@@ -619,7 +433,7 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
-    const markPickupVerified = async (deliveryId: number, requestId: number) => {
+  const markPickupVerified = async (deliveryId: number, requestId: number) => {
     if (!requestId) {
       Alert.alert('Error', 'Request ID is missing. Cannot update delivery status.');
       return;
@@ -673,11 +487,11 @@ export default function TaskScreen() {
     }
   };
 
-    const handleBarcodeScanned = async ({ data }: { data: string }) => {
+  const handleBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanned || !verifyTarget) return;
     setScanned(true);
     try {
-      const qrData = data.trim(); 
+      const qrData = data.trim();
       const { data: row, error } = await supabase
         .from('qr_verifications').select('*')
         .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single();
@@ -694,7 +508,6 @@ export default function TaskScreen() {
         ]);
         return;
       }
-      // ✅ FIX: Safely fallback to delivery_requests.request_id if request_id is undefined
       const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
       await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
@@ -945,10 +758,6 @@ export default function TaskScreen() {
 
   const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
     switch (stage) {
-      case 'awaiting_acceptance':
-        return { label: 'Waiting for Acceptance', bg: colors.accentSoft, fg: colors.accent, icon: 'Hourglass' };
-      case 'nearby':
-        return { label: 'Nearby Route', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Compass' };
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
@@ -1164,8 +973,6 @@ export default function TaskScreen() {
         key={d.delivery_id}
         style={[
           styles.oCard,
-          isDirect && { borderColor: colors.accent, borderWidth: 1.5 },
-          !active && !isUnaccepted && { opacity: 0.88 },
           !active && { opacity: 0.88 },
         ]}
         onPress={() => setSelectedId(d.delivery_id)}
@@ -1176,34 +983,6 @@ export default function TaskScreen() {
             {renderServicePill(info)}
             {renderStatusPill(meta)}
           </View>
-
-          {isUnaccepted && d.nearbyMeta && (
-            <View style={styles.nearbyBadgeRow}>
-              {isDirect ? (
-                <View style={styles.nearbyDistPill}>
-                  <PhIcon name="UserCircle" size={14} color={colors.accent} weight="fill" />
-                  <Text style={styles.nearbyDistText}>
-                    Sender selected your route · Waiting for your acceptance
-                  </Text>
-                </View>
-              ) : (
-                <>
-                  <View style={styles.nearbyDistPill}>
-                    <PhIcon name="GitBranch" size={13} color={colors.accent} weight="bold" />
-                    <Text style={styles.nearbyDistText}>
-                      {d.nearbyMeta.pickupDistToCorridorKm.toFixed(1)} km from your route
-                    </Text>
-                  </View>
-                  <View style={styles.nearbyDetourPill}>
-                    <PhIcon name="NavigationArrow" size={12} color={colors.textSecondary} weight="bold" />
-                    <Text style={styles.nearbyDetourText}>
-                      +{d.nearbyMeta.extraDetourKm.toFixed(1)} km detour
-                    </Text>
-                  </View>
-                </>
-              )}
-            </View>
-          )}
 
           {renderRoute(info)}
 
@@ -1262,34 +1041,6 @@ export default function TaskScreen() {
             </TouchableOpacity>
           </View>
         )}
-
-        {isUnaccepted && (
-          <View style={styles.oActions}>
-            <TouchableOpacity
-              style={styles.oChatBtn}
-              onPress={() => setSelectedId(d.delivery_id)}
-              activeOpacity={0.85}
-            >
-              <PhIcon name="Eye" size={16} color={colors.accent} weight="bold" />
-              <Text style={styles.oChatText}>Details</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.oRouteBtn, isAcceptingThis && { opacity: 0.7 }]}
-              onPress={() => confirmAcceptNearby(d)}
-              disabled={isAcceptingThis}
-              activeOpacity={0.9}
-            >
-              {isAcceptingThis ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <PhIcon name="CheckCircle" size={17} color="#FFFFFF" weight="fill" />
-                  <Text style={styles.oRouteText}>Accept Delivery</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -1306,9 +1057,6 @@ export default function TaskScreen() {
             const label = t.charAt(0).toUpperCase() + t.slice(1);
             return (
               <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
-                {t === 'nearby' && (
-                  <PhIcon name="Compass" size={14} color={on ? colors.accent : colors.textSecondary} weight={on ? 'fill' : 'bold'} />
-                )}
                 <Text style={[styles.tabText, on && styles.tabTextActive]}>
                   {label}
                 </Text>
@@ -1330,27 +1078,14 @@ export default function TaskScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
-          {activeTab === 'nearby' && nearbyDeliveries.length > 0 && (
-            <View style={styles.nearbyInfoBanner}>
-              <PhIcon name="MapPin" size={16} color={colors.accent} weight="fill" />
-              <Text style={styles.nearbyInfoBannerText}>
-                Showing direct route requests and unassigned sender routes close to your current route corridor.
-              </Text>
-            </View>
-          )}
-
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
                 <PhIcon
                   name={
                     activeTab === 'cancelled' ? 'XCircle'
-                      : activeTab === 'nearby' ? 'Compass'
                       : allTasks.length === 0 ? 'Briefcase'
                       : 'MagnifyingGlass'
-                    activeTab === 'cancelled' ? 'close-circle-outline'
-                      : allTasks.length === 0 ? 'briefcase-outline'
-                      : 'search-outline'
                   }
                   size={30}
                   color={colors.accent}
@@ -1494,8 +1229,7 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <PhIcon name={isDirect ? 'Hourglass' : isUnaccepted ? 'Compass' : 'Info'} size={18} color={colors.accent} weight="fill" />
-                <Ionicons name={'information-circle'} size={18} color={ORANGE} />
+                <PhIcon name="Info" size={18} color={colors.accent} weight="fill" />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1641,30 +1375,6 @@ export default function TaskScreen() {
             </TouchableOpacity>
           </View>
         )}
-
-        {isUnaccepted && (
-          <View style={styles.dBar}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.eyebrow}>YOU EARN</Text>
-              <Text style={{ fontSize: 22, fontWeight: '900', color: colors.accent }}>{money(info.earnings)}</Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.5 }, isAcceptingThis && { opacity: 0.7 }]}
-              onPress={() => confirmAcceptNearby(d)}
-              disabled={isAcceptingThis}
-              activeOpacity={0.9}
-            >
-              {isAcceptingThis ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
-                  <Text style={styles.mPrimaryText}>Accept Delivery</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
       </View>
     );
   };
@@ -1791,18 +1501,6 @@ export default function TaskScreen() {
             </View>
             {(() => {
               const st = stageOf(selectedTask);
-              if (st === 'nearby' || st === 'awaiting_acceptance') {
-                return (
-                  <TouchableOpacity
-                    style={[styles.actionBtn, { justifyContent: 'center', marginTop: 14, paddingVertical: 14 }]}
-                    onPress={() => { setMapModalVisible(false); confirmAcceptNearby(selectedTask); }}
-                    activeOpacity={0.9}
-                  >
-                    <PhIcon name="CheckCircle" size={16} color="#FFFFFF" weight="fill" />
-                    <Text style={styles.actionBtnText}>Accept This Delivery</Text>
-                  </TouchableOpacity>
-                );
-              }
               if (st !== 'pickup' && st !== 'transit') return null;
               return (
                 <TouchableOpacity
@@ -2089,26 +1787,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
   emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
-
-  nearbyInfoBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: 'rgba(242,112,36,0.3)',
-    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
-  },
-  nearbyInfoBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
-  nearbyBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 },
-  nearbyDistPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(242,112,36,0.3)',
-  },
-  nearbyDistText: { fontSize: 11.5, fontWeight: '800', color: c.accent },
-  nearbyDetourPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.background, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 8, borderWidth: 1, borderColor: c.divider,
-  },
-  nearbyDetourText: { fontSize: 11.5, fontWeight: '700', color: c.textSecondary },
 
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,

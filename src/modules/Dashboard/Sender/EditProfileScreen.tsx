@@ -419,12 +419,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   headerTitle: { fontSize: 19, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
   scrollContent: { paddingBottom: 60, paddingTop: 10 },
   bottomSpacer: { height: 40 },
-<<<<<<< HEAD
 
   imageUploadSection: { alignItems: 'center', marginTop: 10, marginBottom: 24, zIndex: 5 },
-=======
-  imageUploadSection: { alignItems: 'center', marginTop: -42, marginBottom: 24, zIndex: 5 },
->>>>>>> origin/feature/follow-rendell-pdf
   imagePicker: {
     width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
     borderWidth: 4, borderColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 6 },

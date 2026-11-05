@@ -349,37 +349,15 @@ export default function AccountScreen() {
                 <Text style={styles.profileName} numberOfLines={1}>
                   {firstName} {lastName}
                 </Text>
-<<<<<<< HEAD
-                <View style={[
-                  styles.roleBadgeInline,
-                  providerState === 'approved' ? styles.roleBadgeProvider
-                    : providerState === 'pending' ? styles.roleBadgePending
-                    : providerState === 'rejected' ? styles.roleBadgeRejected
-                    : styles.roleBadgeSender,
-                ]}>
-                  <Text style={[styles.roleBadgeTextInline, {
-                    color:
-                      providerState === 'approved' ? colors.success
-                      : providerState === 'pending' ? colors.warning
-                      : providerState === 'rejected' ? colors.error
-                      : colors.accent,
-                  }]}>
-                    {providerState === 'approved' ? 'PROVIDER'
-                      : providerState === 'pending' ? 'PENDING'
-                      : providerState === 'rejected' ? 'REJECTED'
-                      : 'SENDER'}
-                  </Text>
-=======
-                                {/* Always show Sender */}
-                <View style={[styles.roleBadgeInline, { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' }]}>
-                  <Text style={[styles.roleBadgeTextInline, { color: '#3B82F6' }]}>SENDER</Text>
->>>>>>> origin/feature/follow-rendell-pdf
+                {/* Always show Sender */}
+                <View style={styles.roleBadgeSender}>
+                  <Text style={[styles.roleBadgeTextInline, { color: colors.accent }]}>SENDER</Text>
                 </View>
 
                 {/* Show Provider only if they are approved */}
                 {providerState === 'approved' && (
-                  <View style={[styles.roleBadgeInline, { backgroundColor: '#FFF7ED', borderColor: ORANGE }]}>
-                    <Text style={[styles.roleBadgeTextInline, { color: ORANGE }]}>PROVIDER</Text>
+                  <View style={styles.roleBadgeProvider}>
+                    <Text style={[styles.roleBadgeTextInline, { color: colors.success }]}>PROVIDER</Text>
                   </View>
                 )}
               </View>
@@ -674,10 +652,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
 
   roleBadgeInline: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
-  roleBadgeProvider: { backgroundColor: c.successBg, borderColor: c.success },
-  roleBadgeSender:   { backgroundColor: c.accentSoft, borderColor: c.accent },
-  roleBadgePending:  { backgroundColor: c.warningBg, borderColor: c.warning },
-  roleBadgeRejected: { backgroundColor: c.errorBg, borderColor: c.error },
+  roleBadgeProvider: { backgroundColor: c.successBg, borderColor: c.success, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  roleBadgeSender:   { backgroundColor: c.accentSoft, borderColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  roleBadgePending:  { backgroundColor: c.warningBg, borderColor: c.warning, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  roleBadgeRejected: { backgroundColor: c.errorBg, borderColor: c.error, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeTextInline: { fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
 
   mainContent: { flex: 1 },
