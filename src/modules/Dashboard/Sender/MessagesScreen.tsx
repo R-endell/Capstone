@@ -20,9 +20,9 @@ import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { PhIcon } from '../../../components/ui/PhIcon';
 
-const CHAT_ICON = require('../../../../assets/bublechat-icon.png');
-const ARCHIVED_ICON = require('../../../../assets/archivedchat-icon.png');
-const NOTIFICATION_ICON = require('../../../../assets/notification-icon-bell.png');
+const CHAT_ICON = require('../../../../assets/empty-state-chathead-icon.png');
+const ARCHIVED_ICON = require('../../../../assets/empty-state-archived-icon.png');
+const NOTIFICATION_ICON = require('../../../../assets/empty-state-notification-bell-icon.png');
 
 const PAGE_SIZE = 30;
 const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
@@ -1151,7 +1151,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <PhIcon name="Image" size={20} color={colors.accent} weight="fill" />
+              <PhIcon name="Images" size={20} color={colors.accent} weight="fill" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Choose from gallery</Text>

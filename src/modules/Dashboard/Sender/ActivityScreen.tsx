@@ -21,7 +21,7 @@ import { PhIcon } from '../../../components/ui/PhIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
-const SEARCH_ICON = require('../../../../assets/magnifying-glass-icon.png');
+const SEARCH_ICON = require('../../../../assets/empty-state-magnifying-glass-icon.png');
 
 const BLUE = '#3B82F6';
 const PURPLE = '#8B5CF6';
@@ -1154,7 +1154,7 @@ export default function ActivityScreen() {
       default:
         return hasPreferredProvider
           ? { label: 'Waiting for Acceptance', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Hourglass' }
-          : { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
+          : { label: 'Finding Courier', bg: colors.warningBg, fg: colors.warning, icon: 'Hourglass' };
     }
   };
 
@@ -1301,20 +1301,20 @@ export default function ActivityScreen() {
     };
 
     return (
-      <TouchableOpacity style={styles.mcCard} onPress={handlePress} activeOpacity={0.7}>
-        <View style={[styles.mcAvatar, { backgroundColor: o.color }]}>
-          <Text style={styles.mcAvatarText}>{initials(o.name)}</Text>
+      <TouchableOpacity style={styles.mcRow} onPress={handlePress} activeOpacity={0.7}>
+        <View style={[styles.mcAvatarSmall, { backgroundColor: o.color }]}>
+          <Text style={styles.mcAvatarTextSmall}>{initials(o.name)}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.mcRole}>{o.role}</Text>
-          <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+          <Text style={styles.mcRoleSmall}>{o.role}</Text>
+          <Text style={styles.mcNameSmall} numberOfLines={1}>{o.name || 'N/A'}</Text>
           {!!o.subBadge && (
-            <Text style={styles.mcSubBadge} numberOfLines={1}>{o.subBadge}</Text>
+            <Text style={styles.mcSubBadgeSmall} numberOfLines={1}>{o.subBadge}</Text>
           )}
         </View>
         {canCall && (
           <TouchableOpacity
-            style={styles.mcCall}
+            style={styles.mcCallSmall}
             onPress={(e) => {
               e.stopPropagation();
               triggerCall();
@@ -1322,7 +1322,7 @@ export default function ActivityScreen() {
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <PhIcon name="PhoneCall" size={14} color={colors.accent} weight="fill" />
+            <PhIcon name="PhoneCall" size={13} color={colors.accent} weight="fill" />
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -1391,7 +1391,7 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           )}
 
-          <View style={styles.oContacts}>
+          <View style={styles.oContactsRow}>
             {renderMiniContact({
               role: 'COURIER',
               name: courierName,
@@ -1447,7 +1447,7 @@ export default function ActivityScreen() {
             >
               {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <PhIcon name="ChatCircle" size={16} color={colors.accent} weight="bold" />
+                  <PhIcon name="ChatCircleDots" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
@@ -1541,21 +1541,21 @@ export default function ActivityScreen() {
           />
         }
       >
-                <Animated.View style={{ opacity: contentAnim }}>
-                  {filteredDeliveries.length === 0 ? (
-                    <View style={styles.emptyContainer}>
-                      {deliveries.length === 0 ? (
-                        <View style={styles.emptyIconCircle}>
-                          <PhIcon name="Cube" size={30} color={colors.accent} weight="fill" />
-                        </View>
-                      ) : (
-                        <Image 
-                          source={SEARCH_ICON} 
-                          style={{ width: 140, height: 140, marginBottom: 20 }} 
-                          resizeMode="contain" 
-                        />
-                      )}
-                      <Text style={styles.emptyTitle}>
+        <Animated.View style={{ opacity: contentAnim }}>
+          {filteredDeliveries.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              {deliveries.length === 0 ? (
+                <View style={styles.emptyIconCircle}>
+                  <PhIcon name="Cube" size={30} color={colors.accent} weight="fill" />
+                </View>
+              ) : (
+                <Image 
+                  source={SEARCH_ICON} 
+                  style={{ width: 140, height: 140, marginBottom: 20 }} 
+                  resizeMode="contain" 
+                />
+              )}
+              <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
                   : deliveries.length === 0 ? 'No shipments yet' : 'Nothing here'}
@@ -1745,7 +1745,7 @@ export default function ActivityScreen() {
 
             <View style={{ marginTop: 18 }}>{renderRoute(d, { notes: true })}</View>
 
-            <View style={styles.oContacts}>
+            <View style={styles.oContactsRow}>
               {renderMiniContact({
                 role: 'COURIER',
                 name: (d.isMatched || d.hasPreferredProvider) ? d.provider_name : 'Searching...',
@@ -1941,7 +1941,7 @@ export default function ActivityScreen() {
                     </Text>
                   ) : (
                     <View style={styles.sdLockedNote}>
-                      <PhIcon name="Lock" size={12} color={colors.textMuted} weight="bold" />
+                      <PhIcon name="LockSimple" size={12} color={colors.textMuted} weight="bold" />
                       <Text style={styles.sdLockedNoteText}>
                         {d.isMatched ? 'You can rate once the delivery is completed.' : 'Available after a courier is assigned.'}
                       </Text>
@@ -2035,7 +2035,7 @@ export default function ActivityScreen() {
               disabled={openingChat}
               activeOpacity={0.85}
             >
-              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircle" size={20} color={colors.accent} weight="bold" />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircleDots" size={20} color={colors.accent} weight="bold" />}
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mSoftBtn, { flex: 1 }]}
@@ -2529,14 +2529,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
-  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  mcSubBadge: { fontSize: 10, fontWeight: '700', color: BLUE, marginTop: 1 },
-  mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  
+  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
+  mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  mcRoleSmall: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  mcNameSmall: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
+  mcSubBadgeSmall: { fontSize: 10, fontWeight: '700', color: BLUE, marginTop: 1 },
+  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
 
   oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },

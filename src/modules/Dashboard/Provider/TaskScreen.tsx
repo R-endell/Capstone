@@ -6,7 +6,6 @@ import {
   Dimensions, Image, Linking, Share, BackHandler, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -26,15 +25,15 @@ import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { PhIcon } from '../../../components/ui/PhIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
-
-const ORANGE = '#FF751F';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
@@ -123,7 +122,6 @@ const buildCargoItems = (cargo: any) => {
   }];
 };
 
-/** Count packages per size across ALL items (not just the first one). */
 const summarizeSizes = (items: any[], cargo: any): { full: string; short: string } => {
   const counts: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
   items.forEach(it => { if (it?.size && counts[it.size] != null) counts[it.size] += 1; });
@@ -224,7 +222,7 @@ const enrichNearbyRequests = async (nearbyList: NearbyRequestResult[], providerI
     return {
       ...n,
       syntheticDelivery: {
-        delivery_id: -n.request.request_id, // negative ID distinguishes nearby/direct preview from accepted delivery
+        delivery_id: -n.request.request_id,
         request_id: n.request.request_id,
         delivery_requests: n.request,
         sender: senders[n.request.sender_id] || null,
@@ -298,9 +296,7 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
 /* TaskScreen                                                           */
 /* ==================================================================== */
 const BLUE = '#3B82F6';
-const RED = '#EF4444';
 const PURPLE = '#8B5CF6';
-const BLACK = '#111827';
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
@@ -309,8 +305,8 @@ type TabType = 'active' | 'nearby' | 'completed' | 'cancelled' | 'all';
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { colors } = useTheme();
-  const styles = makeStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const hasLoadedRef = useRef(false);
   const [loading, setLoading] = useState(true);
@@ -339,7 +335,7 @@ export default function TaskScreen() {
   const [mapModalVisible, setMapModalVisible] = useState(false);
   const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [pkgInfo, setPkgInfo] = useState<any | null>(null);   // package breakdown pop-up
+  const [pkgInfo, setPkgInfo] = useState<any | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
 
@@ -438,9 +434,6 @@ export default function TaskScreen() {
     }
   };
 
-  /* ------------------------------------------------------------------ */
-  /* Accept Nearby / Direct Delivery Request                            */
-  /* ------------------------------------------------------------------ */
   const doAcceptNearbyRequest = async (syntheticTask: any) => {
     const req = syntheticTask?.delivery_requests;
     if (!providerId || !req) return;
@@ -954,18 +947,18 @@ export default function TaskScreen() {
   const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled' | 'nearby' | 'awaiting_acceptance') => {
     switch (stage) {
       case 'awaiting_acceptance':
-        return { label: 'Waiting for Acceptance', bg: colors.accentSoft, fg: ORANGE, icon: 'hourglass-outline' };
+        return { label: 'Waiting for Acceptance', bg: colors.accentSoft, fg: colors.accent, icon: 'Hourglass' };
       case 'nearby':
-        return { label: 'Nearby Route', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'compass-outline' };
+        return { label: 'Nearby Route', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Compass' };
       case 'done':
-        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
+        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
-        return { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' };
+        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'NavigationArrow' };
       case 'cancelled':
-        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'XCircle' };
       case 'pickup':
       default:
-        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
     }
   };
 
@@ -1047,7 +1040,7 @@ export default function TaskScreen() {
   /* --------------------------- shared pieces --------------------------- */
   const renderServicePill = (info: any) => (
     <View style={styles.svcPill}>
-      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <PhIcon name="Package" size={12} color={BLUE} weight="fill" />
       <Text style={styles.svcPillText}>{serviceLabel(info.request?.pickup_type)}</Text>
     </View>
   );
@@ -1062,8 +1055,8 @@ export default function TaskScreen() {
   const renderRoute = (info: any, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', pt: info.pickup, color: ORANGE, note: info.pickupNote },
-        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: BLACK, note: info.dropoffNote },
+        { key: 'p', label: 'PICKUP', pt: info.pickup, color: colors.accent, note: info.pickupNote },
+        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: colors.textPrimary, note: info.dropoffNote },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
@@ -1074,20 +1067,17 @@ export default function TaskScreen() {
               </View>
             )}
           </View>
-          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 16 }]}>
             <Text style={styles.rtLabel}>{r.label}</Text>
             <Text style={styles.rtMain} numberOfLines={1}>{r.pt.main}</Text>
 
-            {!!r.pt.road && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                <Ionicons name="map-outline" size={12} color={colors.textMuted} />
-                <Text style={styles.rtSub} numberOfLines={1}>{r.pt.road}</Text>
-              </View>
+            {!!r.pt.sub && (
+              <Text style={styles.rtSub} numberOfLines={1}>{r.pt.sub}</Text>
             )}
 
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <PhIcon name="ChatCircleDots" size={12} color={colors.accent} weight="fill" />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -1132,17 +1122,17 @@ export default function TaskScreen() {
     };
 
     return (
-      <TouchableOpacity style={styles.mcCard} onPress={handlePress} activeOpacity={0.7}>
-        <View style={[styles.mcAvatar, { backgroundColor: o.color }]}>
-          <Text style={styles.mcAvatarText}>{initials(o.name)}</Text>
+      <TouchableOpacity style={styles.mcRow} onPress={handlePress} activeOpacity={0.7}>
+        <View style={[styles.mcAvatarSmall, { backgroundColor: o.color }]}>
+          <Text style={styles.mcAvatarTextSmall}>{initials(o.name)}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.mcRole}>{o.role}</Text>
-          <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+          <Text style={styles.mcRoleSmall}>{o.role}</Text>
+          <Text style={styles.mcNameSmall} numberOfLines={1}>{o.name || 'N/A'}</Text>
         </View>
         {canCall && (
           <TouchableOpacity
-            style={styles.mcCall}
+            style={styles.mcCallSmall}
             onPress={(e) => {
               e.stopPropagation();
               triggerCall();
@@ -1150,7 +1140,7 @@ export default function TaskScreen() {
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <Ionicons name="call" size={14} color={ORANGE} />
+            <PhIcon name="PhoneCall" size={13} color={colors.accent} weight="fill" />
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -1188,7 +1178,7 @@ export default function TaskScreen() {
         key={d.delivery_id}
         style={[
           styles.oCard,
-          isDirect && { borderColor: ORANGE, borderWidth: 1.5 },
+          isDirect && { borderColor: colors.accent, borderWidth: 1.5 },
           !active && !isUnaccepted && { opacity: 0.88 },
         ]}
         onPress={() => setSelectedId(d.delivery_id)}
@@ -1204,7 +1194,7 @@ export default function TaskScreen() {
             <View style={styles.nearbyBadgeRow}>
               {isDirect ? (
                 <View style={styles.nearbyDistPill}>
-                  <Ionicons name="person-circle-outline" size={14} color={ORANGE} />
+                  <PhIcon name="UserCircle" size={14} color={colors.accent} weight="fill" />
                   <Text style={styles.nearbyDistText}>
                     Sender selected your route · Waiting for your acceptance
                   </Text>
@@ -1212,13 +1202,13 @@ export default function TaskScreen() {
               ) : (
                 <>
                   <View style={styles.nearbyDistPill}>
-                    <Ionicons name="git-branch-outline" size={13} color={ORANGE} />
+                    <PhIcon name="GitBranch" size={13} color={colors.accent} weight="bold" />
                     <Text style={styles.nearbyDistText}>
                       {d.nearbyMeta.pickupDistToCorridorKm.toFixed(1)} km from your route
                     </Text>
                   </View>
                   <View style={styles.nearbyDetourPill}>
-                    <Ionicons name="navigate-outline" size={12} color={colors.textSecondary} />
+                    <PhIcon name="NavigationArrow" size={12} color={colors.textSecondary} weight="bold" />
                     <Text style={styles.nearbyDetourText}>
                       +{d.nearbyMeta.extraDetourKm.toFixed(1)} km detour
                     </Text>
@@ -1230,7 +1220,7 @@ export default function TaskScreen() {
 
           {renderRoute(info)}
 
-          <View style={styles.oContacts}>
+          <View style={styles.oContactsRow}>
             {renderMiniContact({
               role: 'SENDER',
               name: info.senderName,
@@ -1254,13 +1244,12 @@ export default function TaskScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
+            <PhIcon name="Cube" size={14} color={colors.accent} weight="fill" />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
-            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
           </TouchableOpacity>
           {info.fragile && (
             <View style={styles.oChip}>
-              <Ionicons name="star-outline" size={14} color={ORANGE} />
+              <PhIcon name="Star" size={14} color={colors.accent} weight="fill" />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
@@ -1273,15 +1262,15 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.oActions}>
             <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : (
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  <PhIcon name="ChatCircle" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.oRouteBtn} onPress={() => openRoute(d)} activeOpacity={0.9}>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <PhIcon name="ArrowRight" size={16} color="#FFFFFF" weight="bold" />
               <Text style={styles.oRouteText}>Start Route</Text>
             </TouchableOpacity>
           </View>
@@ -1294,7 +1283,7 @@ export default function TaskScreen() {
               onPress={() => setSelectedId(d.delivery_id)}
               activeOpacity={0.85}
             >
-              <Ionicons name="eye-outline" size={16} color={ORANGE} />
+              <PhIcon name="Eye" size={16} color={colors.accent} weight="bold" />
               <Text style={styles.oChatText}>Details</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1307,7 +1296,7 @@ export default function TaskScreen() {
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle-outline" size={17} color="#FFFFFF" />
+                  <PhIcon name="CheckCircle" size={17} color="#FFFFFF" weight="fill" />
                   <Text style={styles.oRouteText}>Accept Delivery</Text>
                 </>
               )}
@@ -1331,7 +1320,7 @@ export default function TaskScreen() {
             return (
               <TouchableOpacity key={t} style={[styles.tabItem, on && styles.tabItemActive]} onPress={() => setActiveTab(t)} activeOpacity={0.8}>
                 {t === 'nearby' && (
-                  <Ionicons name="compass-outline" size={14} color={on ? ORANGE : colors.textSecondary} />
+                  <PhIcon name="Compass" size={14} color={on ? colors.accent : colors.textSecondary} weight={on ? 'fill' : 'bold'} />
                 )}
                 <Text style={[styles.tabText, on && styles.tabTextActive]}>
                   {label}
@@ -1351,12 +1340,12 @@ export default function TaskScreen() {
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
           {activeTab === 'nearby' && nearbyDeliveries.length > 0 && (
             <View style={styles.nearbyInfoBanner}>
-              <Ionicons name="location-outline" size={16} color={ORANGE} />
+              <PhIcon name="MapPin" size={16} color={colors.accent} weight="fill" />
               <Text style={styles.nearbyInfoBannerText}>
                 Showing direct route requests and unassigned sender routes close to your current route corridor.
               </Text>
@@ -1366,15 +1355,16 @@ export default function TaskScreen() {
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
               <View style={styles.emptyIconCircle}>
-                <Ionicons
+                <PhIcon
                   name={
-                    activeTab === 'cancelled' ? 'close-circle-outline'
-                      : activeTab === 'nearby' ? 'compass-outline'
-                      : allTasks.length === 0 ? 'briefcase-outline'
-                      : 'search-outline'
+                    activeTab === 'cancelled' ? 'XCircle'
+                      : activeTab === 'nearby' ? 'Compass'
+                      : allTasks.length === 0 ? 'Briefcase'
+                      : 'MagnifyingGlass'
                   }
                   size={30}
-                  color={ORANGE}
+                  color={colors.accent}
+                  weight="fill"
                 />
               </View>
               <Text style={styles.emptyTitle}>
@@ -1436,10 +1426,10 @@ export default function TaskScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]} onPress={() => setSelectedId(null)} activeOpacity={0.85}>
-          <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]} onPress={() => setMapModalVisible(true)} activeOpacity={0.85}>
-          <Ionicons name="expand-outline" size={20} color={colors.textPrimary} />
+          <PhIcon name="ArrowsOut" size={20} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
 
         <ScrollView
@@ -1468,7 +1458,7 @@ export default function TaskScreen() {
             <View style={styles.dCodeRow}>
               <Text style={styles.dCode} selectable numberOfLines={1}>#{code}</Text>
               <TouchableOpacity onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.trackTextCopy}>
-                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <PhIcon name={copied ? 'CheckCircle' : 'Copy'} size={16} color={colors.accent} weight={copied ? 'fill' : 'bold'} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1485,12 +1475,12 @@ export default function TaskScreen() {
                   return (
                     <View key={label} style={styles.stepCol}>
                       <View style={styles.stepLineRow}>
-                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                          {done ? <PhIcon name="Check" size={12} color="#FFFFFF" weight="bold" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
-                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
                       </View>
                       <Text style={[styles.stepLabel, reached && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
                     </View>
@@ -1502,7 +1492,7 @@ export default function TaskScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <PhIcon name="XCircle" size={22} color={colors.error} weight="fill" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1513,7 +1503,7 @@ export default function TaskScreen() {
               </View>
             ) : stage === 'done' ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
+                <View style={styles.doneIcon}><PhIcon name="Check" size={20} color={colors.success} weight="bold" /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1524,14 +1514,14 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={isDirect ? 'hourglass-outline' : isUnaccepted ? 'compass' : 'information-circle'} size={18} color={ORANGE} />
+                <PhIcon name={isDirect ? 'Hourglass' : isUnaccepted ? 'Compass' : 'Info'} size={18} color={colors.accent} weight="fill" />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
 
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
-            <View style={styles.oContacts}>
+            <View style={styles.oContactsRow}>
               {renderMiniContact({
                 role: 'SENDER',
                 name: info.senderName,
@@ -1554,10 +1544,10 @@ export default function TaskScreen() {
             {stage === 'pickup' && (
               <TouchableOpacity style={[styles.mSoftBtn, { marginTop: 14, flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
                 {pingingId === d.delivery_id ? (
-                  <ActivityIndicator size="small" color={ORANGE} />
+                  <ActivityIndicator size="small" color={colors.accent} />
                 ) : (
                   <>
-                    <Ionicons name="notifications" size={16} color={ORANGE} />
+                    <PhIcon name="Bell" size={16} color={colors.accent} weight="fill" />
                     <Text style={styles.mSoftText}>Let sender know I’m on my way</Text>
                   </>
                 )}
@@ -1567,7 +1557,7 @@ export default function TaskScreen() {
             {!!d.pod_photo_url && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="shield-checkmark-outline" size={17} color={colors.success} />
+                  <PhIcon name="ShieldCheck" size={17} color={colors.success} weight="fill" />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                 </View>
                 <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pod_photo_url)}>
@@ -1583,7 +1573,7 @@ export default function TaskScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="images-outline" size={17} color={ORANGE} />
+                  <PhIcon name="Images" size={17} color={colors.accent} weight="fill" />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1602,7 +1592,7 @@ export default function TaskScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <Ionicons name="cube-outline" size={17} color={ORANGE} />
+              <PhIcon name="Cube" size={17} color={colors.accent} weight="fill" />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {items.some((it: any) => !!it.description) && (
@@ -1630,7 +1620,7 @@ export default function TaskScreen() {
               <View style={styles.tile}><Text style={styles.tileLabel}>WEIGHT</Text><Text style={styles.tileValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text></View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
-                <Text style={[styles.tileValue, info.fragile && { color: ORANGE }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
+                <Text style={[styles.tileValue, info.fragile && { color: colors.accent }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>{isCancelled ? 'EARNINGS' : 'YOU EARN'}</Text>
@@ -1654,10 +1644,10 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircle" size={20} color={colors.accent} weight="bold" />}
             </TouchableOpacity>
             <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+              <PhIcon name="ArrowRight" size={16} color={colors.accent} weight="bold" />
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1665,7 +1655,7 @@ export default function TaskScreen() {
               onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
               activeOpacity={0.9}
             >
-              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color="#FFFFFF" />
+              <PhIcon name={stage === 'pickup' ? 'QrCode' : 'CheckCircle'} size={18} color="#FFFFFF" weight="fill" />
               <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
             </TouchableOpacity>
           </View>
@@ -1675,7 +1665,7 @@ export default function TaskScreen() {
           <View style={styles.dBar}>
             <View style={{ flex: 1 }}>
               <Text style={styles.eyebrow}>YOU EARN</Text>
-              <Text style={{ fontSize: 22, fontWeight: '900', color: ORANGE }}>{money(info.earnings)}</Text>
+              <Text style={{ fontSize: 22, fontWeight: '900', color: colors.accent }}>{money(info.earnings)}</Text>
             </View>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.5 }, isAcceptingThis && { opacity: 0.7 }]}
@@ -1687,7 +1677,7 @@ export default function TaskScreen() {
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
                   <Text style={styles.mPrimaryText}>Accept Delivery</Text>
                 </>
               )}
@@ -1730,7 +1720,7 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
           <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
-            <Ionicons name="close" size={24} color="#FFF" />
+            <PhIcon name="X" size={24} color="#FFF" weight="bold" />
           </TouchableOpacity>
         </View>
 
@@ -1797,7 +1787,7 @@ export default function TaskScreen() {
             );
           })()}
           <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+            <PhIcon name="ArrowLeft" size={20} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -1810,7 +1800,7 @@ export default function TaskScreen() {
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinDropoff}><Ionicons name="person" size={14} color="#000000" /></View>
+              <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
@@ -1825,7 +1815,7 @@ export default function TaskScreen() {
                     onPress={() => { setMapModalVisible(false); confirmAcceptNearby(selectedTask); }}
                     activeOpacity={0.9}
                   >
-                    <Ionicons name="checkmark-circle" size={16} color="#FFFFFF" />
+                    <PhIcon name="CheckCircle" size={16} color="#FFFFFF" weight="fill" />
                     <Text style={styles.actionBtnText}>Accept This Delivery</Text>
                   </TouchableOpacity>
                 );
@@ -1837,7 +1827,7 @@ export default function TaskScreen() {
                   onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
                   activeOpacity={0.9}
                 >
-                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
                   <Text style={styles.actionBtnText}>Open Route</Text>
                 </TouchableOpacity>
               );
@@ -1853,7 +1843,7 @@ export default function TaskScreen() {
       <View style={styles.previewOverlay}>
         {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
         <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
-          <Ionicons name="close" size={22} color="#FFFFFF" />
+          <PhIcon name="X" size={22} color="#FFFFFF" weight="bold" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1876,7 +1866,7 @@ export default function TaskScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{info ? pkgCount(info) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgInfo(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -1906,7 +1896,7 @@ export default function TaskScreen() {
           <CameraView ref={podCameraRef} style={StyleSheet.absoluteFill} facing="back" />
           <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
             <TouchableOpacity style={styles.scannerCloseBtn} onPress={() => setPodCameraOpen(false)}>
-              <Ionicons name="close" size={24} color="#FFF" />
+              <PhIcon name="X" size={24} color="#FFF" weight="bold" />
             </TouchableOpacity>
           </View>
           <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
@@ -1925,7 +1915,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="camera" size={20} color="#FFF" />
+                  <PhIcon name="Camera" size={20} color="#FFF" weight="fill" />
                   <Text style={styles.mPrimaryText}>Capture Photo</Text>
                 </>
               )}
@@ -1937,10 +1927,10 @@ export default function TaskScreen() {
           <View style={styles.otpModalCard}>
             <View style={styles.otpModalHeader}>
               <View style={styles.otpModalIconBox}>
-                <Ionicons name="shield-checkmark" size={24} color={colors.success} />
+                <PhIcon name="ShieldCheck" size={24} color={colors.success} weight="fill" />
               </View>
               <TouchableOpacity onPress={closeDeliveryOTPModal}>
-                <Ionicons name="close" size={24} color={colors.textPrimary} />
+                <PhIcon name="X" size={24} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
 
@@ -1961,7 +1951,7 @@ export default function TaskScreen() {
                   }}
                   onPress={openPodCamera}
                 >
-                  <Ionicons name="camera-reverse-outline" size={14} color="#FFF" />
+                  <PhIcon name="Camera" size={14} color="#FFF" weight="fill" />
                   <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>Retake</Text>
                 </TouchableOpacity>
               </View>
@@ -1969,14 +1959,14 @@ export default function TaskScreen() {
               <TouchableOpacity
                 style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
+                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: colors.accent,
                   backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 14, marginBottom: 14,
                 }}
                 onPress={openPodCamera}
                 activeOpacity={0.85}
               >
-                <Ionicons name="camera-outline" size={20} color={ORANGE} />
-                <Text style={{ color: ORANGE, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
+                <PhIcon name="Camera" size={20} color={colors.accent} weight="fill" />
+                <Text style={{ color: colors.accent, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
               </TouchableOpacity>
             )}
 
@@ -1993,7 +1983,7 @@ export default function TaskScreen() {
             </View>
 
             <View style={styles.otpInfoBox}>
-              <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
+              <PhIcon name="Info" size={16} color={colors.textSecondary} weight="bold" />
               <Text style={styles.otpInfoText} numberOfLines={2}>
                 Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
                 {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
@@ -2022,7 +2012,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                  <PhIcon name="CheckCircle" size={18} color="#FFF" weight="fill" />
                   <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
                 </>
               )}
@@ -2066,7 +2056,7 @@ export default function TaskScreen() {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading tasks...</Text>
       </View>
     );
@@ -2086,7 +2076,7 @@ export default function TaskScreen() {
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
@@ -2102,13 +2092,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
     backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
   },
-  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1.5 },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1.5 },
   tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: ORANGE },
+  tabTextActive: { color: c.accent },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
+  tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
   tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
-  tabCountTextActive: { color: ORANGE },
+  tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
@@ -2119,7 +2109,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
 
   nearbyInfoBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: 'rgba(242,112,36,0.3)',
     borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
   },
   nearbyInfoBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
@@ -2127,9 +2117,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   nearbyDistPill: {
     flexDirection: 'row', alignItems: 'center', gap: 5,
     backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 5,
-    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
+    borderRadius: 8, borderWidth: 1, borderColor: 'rgba(242,112,36,0.3)',
   },
-  nearbyDistText: { fontSize: 11.5, fontWeight: '800', color: ORANGE },
+  nearbyDistText: { fontSize: 11.5, fontWeight: '800', color: c.accent },
   nearbyDetourPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: c.background, paddingHorizontal: 10, paddingVertical: 5,
@@ -2138,9 +2128,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   nearbyDetourText: { fontSize: 11.5, fontWeight: '700', color: c.textSecondary },
 
   actionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,
     paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
   actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
 
@@ -2163,23 +2153,24 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
   stepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  stepDotCurrent: { borderColor: ORANGE },
-  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
+  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  stepDotCurrent: { borderColor: c.accent },
+  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
   stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
+  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14 },
   mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
-  mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  mSoftText: { color: c.accent, fontSize: 13, fontWeight: '800' },
 
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
   stDot: { width: 7, height: 7, borderRadius: 4 },
   stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
   rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
@@ -2190,32 +2181,48 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
   rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
+
+  oCard: { 
+    backgroundColor: c.card, 
+    borderRadius: 22, 
+    marginBottom: 14, 
+    borderWidth: 1, 
+    borderColor: c.border, 
+    overflow: 'hidden',
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 3 }, 
+    shadowOpacity: isDark ? 0.2 : 0.04, 
+    shadowRadius: 8, 
+    elevation: 2,
+  },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
-  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  
+  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
+  mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  mcRoleSmall: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  mcNameSmall: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
+  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
   oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
   oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
   oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
-  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14 },
+  oChatText: { color: c.accent, fontSize: 14, fontWeight: '800' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
   oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+
   dMap: { overflow: 'hidden' },
   dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
   dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
+  dWhen: { fontSize: 12, fontWeight: '700', color: c.accent, marginTop: 2 },
   dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 10 },
   dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
   dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
@@ -2242,7 +2249,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
   trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: c.accent },
 
   doneCard: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
@@ -2262,13 +2269,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   sdRoutePad: { padding: 18 },
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
+  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
   sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
   sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
   sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
-  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(242,112,36,0.1)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
 
   contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
@@ -2299,7 +2306,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
 
   scannerRoot: { flex: 1, backgroundColor: '#000' },
-  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 1, shadowRadius: 8 },
+  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: c.accent, shadowColor: c.accent, shadowOpacity: 1, shadowRadius: 8 },
   corner: { position: 'absolute', width: 40, height: 40, borderColor: '#FFFFFF' },
   cornerTL: { top: 0, left: 0, borderTopWidth: 5, borderLeftWidth: 5, borderTopLeftRadius: 16 },
   cornerTR: { top: 0, right: 0, borderTopWidth: 5, borderRightWidth: 5, borderTopRightRadius: 16 },
@@ -2337,9 +2344,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     color: c.textPrimary, fontWeight: '700', textAlign: 'center', backgroundColor: c.background,
   },
   pinBtn: {
-    backgroundColor: ORANGE, paddingHorizontal: 24, justifyContent: 'center',
+    backgroundColor: c.accent, paddingHorizontal: 24, justifyContent: 'center',
     borderRadius: 14, alignItems: 'center', minWidth: 100,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
   },
   pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
 

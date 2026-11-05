@@ -513,7 +513,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   scrollContent: { paddingBottom: 60, paddingTop: 10 },
   bottomSpacer: { height: 40 },
 
-  imageUploadSection: { alignItems: 'center', marginTop: -42, marginBottom: 24, zIndex: 5 },
+  imageUploadSection: { alignItems: 'center', marginTop: 10, marginBottom: 24, zIndex: 5 },
   imagePicker: {
     width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE,
     justifyContent: 'center', alignItems: 'center',
