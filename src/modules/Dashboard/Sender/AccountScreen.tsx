@@ -349,6 +349,7 @@ export default function AccountScreen() {
                 <Text style={styles.profileName} numberOfLines={1}>
                   {firstName} {lastName}
                 </Text>
+<<<<<<< HEAD
                 <View style={[
                   styles.roleBadgeInline,
                   providerState === 'approved' ? styles.roleBadgeProvider
@@ -368,7 +369,19 @@ export default function AccountScreen() {
                       : providerState === 'rejected' ? 'REJECTED'
                       : 'SENDER'}
                   </Text>
+=======
+                                {/* Always show Sender */}
+                <View style={[styles.roleBadgeInline, { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: '#3B82F6' }]}>SENDER</Text>
+>>>>>>> origin/feature/follow-rendell-pdf
                 </View>
+
+                {/* Show Provider only if they are approved */}
+                {providerState === 'approved' && (
+                  <View style={[styles.roleBadgeInline, { backgroundColor: '#FFF7ED', borderColor: ORANGE }]}>
+                    <Text style={[styles.roleBadgeTextInline, { color: ORANGE }]}>PROVIDER</Text>
+                  </View>
+                )}
               </View>
               <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
             </View>

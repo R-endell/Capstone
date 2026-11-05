@@ -3,19 +3,16 @@ import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Image,
   KeyboardAvoidingView, Platform, ActivityIndicator, Switch,
-  Animated, Easing, Modal
+  Animated, Easing
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
-import * as Location from 'expo-location';
 import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'react-native';
-import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
 
 const ORANGE = '#FA7A25';
 
@@ -30,17 +27,12 @@ export default function EditProfileScreen() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   
-  // Location State
-  const [address, setAddress] = useState('');
-  const [lat, setLat] = useState<number | null>(null);
-  const [lng, setLng] = useState<number | null>(null);
+  // Text-Only Address State
+  const [streetAddress, setStreetAddress] = useState('');
+  const [unitInfo, setUnitInfo] = useState('');
+  const [cityState, setCityState] = useState('');
+  const [zipCode, setZipCode] = useState('');
   const [locationId, setLocationId] = useState<number | null>(null);
-
-  // Map Modal State
-  const [isMapVisible, setIsMapVisible] = useState(false);
-  const [isGeocoding, setIsGeocoding] = useState(false);
-  const [mapCenter, setMapCenter] = useState({ lat: 10.3157, lng: 123.8854 });
-  const mapRef = useRef<MapView>(null);
 
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -79,20 +71,18 @@ export default function EditProfileScreen() {
         // Fetch Location Details
         const { data: userData } = await supabase
           .from('users')
-          .select('location_id, locations (street_address, latitude, longitude)')
+          .select('location_id, locations (street_address, barangay, city, province, zip_code)')
           .eq('auth_id', user.id)
           .maybeSingle();
 
         if (userData?.locations) {
           const loc: any = userData.locations;
-          setAddress(loc.street_address || '');
-          setLat(loc.latitude || null);
-          setLng(loc.longitude || null);
+          // Reconstruct the text fields from what's saved in DB
+          setStreetAddress(loc.street_address || '');
+          setUnitInfo(loc.barangay !== 'Unknown' ? loc.barangay : ''); // using barangay as line 2 for legacy data
+          setCityState(loc.city && loc.city !== 'Unknown' ? `${loc.city}, ${loc.province}` : '');
+          setZipCode(loc.zip_code !== '0000' ? loc.zip_code : '');
           setLocationId(userData.location_id || null);
-          setMapCenter({ 
-            lat: loc.latitude || 10.3157, 
-            lng: loc.longitude || 123.8854 
-          });
         }
       }
       setLoading(false);
@@ -112,68 +102,31 @@ export default function EditProfileScreen() {
     } catch { Alert.alert('Error', 'Could not pick an image.'); }
   };
 
-  // --- MAP LOGIC ---
-  const handleLocateMe = async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission denied', 'Location is needed to find your current position.');
-        return;
-      }
-      const loc = await Location.getCurrentPositionAsync({});
-      const newCoords = { lat: loc.coords.latitude, lng: loc.coords.longitude };
-      
-      setMapCenter(newCoords);
-      
-      if (mapRef.current) {
-        mapRef.current.animateToRegion({
-          latitude: newCoords.lat,
-          longitude: newCoords.lng,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        }, 500);
-      }
-    } catch {
-      Alert.alert('Error', 'Could not fetch your current location.');
-    }
-  };
-
-  const confirmMapLocation = async () => {
-    setIsGeocoding(true);
+  // Background Geocoding: Converts text to lat/lng
+  const geocodeAddress = async (fullAddress: string) => {
     try {
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${mapCenter.lat}&lon=${mapCenter.lng}&addressdetails=1`,
-        {
-          headers: { 'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)', 'Accept': 'application/json' },
-        }
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fullAddress)}&limit=1&countrycodes=ph`,
+        { headers: { 'User-Agent': 'PackNShipMobileApp/1.0 (capstone.ctu@gmail.com)' } }
       );
-      const json = await response.json();
-      
-      let street = 'Selected Location';
-      let city = 'Unknown City';
-      
-      if (json && json.address) {
-        const a = json.address;
-        const streetParts = [a.house_number, a.road].filter(Boolean);
-        street = streetParts.length > 0 ? streetParts.join(' ') : (json.display_name ? json.display_name.split(',')[0] : 'Selected Location');
-        city = a.city || a.town || a.municipality || 'Unknown City';
+      const data = await response.json();
+      if (data && data.length > 0) {
+        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
       }
-
-      setAddress(`${street}, ${city}`);
-      setLat(mapCenter.lat);
-      setLng(mapCenter.lng);
-      setIsMapVisible(false);
-    } catch (err) {
-      Alert.alert('Error', 'Could not get the address for this location.');
-    } finally {
-      setIsGeocoding(false);
+    } catch (e) {
+      console.warn('Geocode error', e);
     }
+    return null;
   };
 
   const handleSaveProfile = async () => {
     if (!firstName.trim() || !lastName.trim()) { 
       Alert.alert('Error', 'Please enter both first and last name.'); 
       return; 
+    }
+    if (!streetAddress.trim() || !cityState.trim()) {
+      Alert.alert('Error', 'Please enter at least a Street Address and City/State.');
+      return;
     }
     
     setSaving(true);
@@ -197,7 +150,6 @@ export default function EditProfileScreen() {
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        // Update users table
         const { error: tableError } = await supabase
           .from('users')
           .update({ first_name: firstName, last_name: lastName, profile_photo: finalAvatarUrl })
@@ -205,21 +157,44 @@ export default function EditProfileScreen() {
         
         if (tableError) console.warn('Could not update users table:', tableError);
 
-        // Update or Insert Location
-        if (address && lat && lng) {
-          if (locationId) {
-            await supabase.from('locations').update({
-              street_address: address, latitude: lat, longitude: lng
-            }).eq('location_id', locationId);
-          } else {
-            const { data: newLoc } = await supabase.from('locations').insert({
-              street_address: address, latitude: lat, longitude: lng,
-              barangay: 'Unknown', city: 'Unknown', province: 'Unknown', zip_code: '0000'
-            }).select('location_id').single();
-            
-            if (newLoc) {
-              await supabase.from('users').update({ location_id: newLoc.location_id }).eq('auth_id', user.id);
-            }
+        // Combine for geocoding
+        const fullTextAddress = `${streetAddress}${unitInfo ? ', ' + unitInfo : ''}, ${cityState} ${zipCode}`;
+        
+        // Convert to coordinates behind the scenes
+        const coords = await geocodeAddress(fullTextAddress);
+        
+        // Fallback to Cebu center if the address is not found on the map
+        const finalLat = coords?.lat || 10.3157;
+        const finalLng = coords?.lng || 123.8854;
+        
+        // Split CityState back for database columns (assuming "City, Province")
+        const cityParts = cityState.split(',');
+        const finalCity = cityParts[0]?.trim() || 'Unknown';
+        const finalProvince = cityParts[1]?.trim() || 'Unknown';
+
+        if (locationId) {
+          await supabase.from('locations').update({
+            street_address: streetAddress, 
+            barangay: unitInfo || 'Unknown',
+            city: finalCity,
+            province: finalProvince,
+            zip_code: zipCode || '0000',
+            latitude: finalLat, 
+            longitude: finalLng
+          }).eq('location_id', locationId);
+        } else {
+          const { data: newLoc } = await supabase.from('locations').insert({
+            street_address: streetAddress,
+            barangay: unitInfo || 'Unknown',
+            city: finalCity,
+            province: finalProvince,
+            zip_code: zipCode || '0000',
+            latitude: finalLat, 
+            longitude: finalLng,
+          }).select('location_id').single();
+          
+          if (newLoc) {
+            await supabase.from('users').update({ location_id: newLoc.location_id }).eq('auth_id', user.id);
           }
         }
       }
@@ -280,20 +255,14 @@ export default function EditProfileScreen() {
 
           <Animated.View style={[styles.formContainer, fadeUp(formAnim, 20)]}>
             
-            {/* First Name & Last Name Row */}
             <View style={styles.row}>
               <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
                 <Text style={styles.label}>First Name</Text>
                 <View style={[styles.inputWrapper, focusedInput === 'firstName' && styles.inputWrapperFocused]}>
-                  <Ionicons name="person-outline" size={18} color={focusedInput === 'firstName' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
-                    style={styles.input}
-                    value={firstName}
-                    onChangeText={setFirstName}
-                    placeholderTextColor={colors.textMuted}
-                    placeholder="Juan"
-                    onFocus={() => setFocusedInput('firstName')}
-                    onBlur={() => setFocusedInput(null)}
+                    style={styles.input} value={firstName} onChangeText={setFirstName}
+                    placeholderTextColor={colors.textMuted} placeholder="Juan"
+                    onFocus={() => setFocusedInput('firstName')} onBlur={() => setFocusedInput(null)}
                   />
                 </View>
               </View>
@@ -301,15 +270,10 @@ export default function EditProfileScreen() {
               <View style={[styles.inputGroup, { flex: 1, marginLeft: 8 }]}>
                 <Text style={styles.label}>Last Name</Text>
                 <View style={[styles.inputWrapper, focusedInput === 'lastName' && styles.inputWrapperFocused]}>
-                  <Ionicons name="person-outline" size={18} color={focusedInput === 'lastName' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                   <TextInput
-                    style={styles.input}
-                    value={lastName}
-                    onChangeText={setLastName}
-                    placeholderTextColor={colors.textMuted}
-                    placeholder="Dela Cruz"
-                    onFocus={() => setFocusedInput('lastName')}
-                    onBlur={() => setFocusedInput(null)}
+                    style={styles.input} value={lastName} onChangeText={setLastName}
+                    placeholderTextColor={colors.textMuted} placeholder="Dela Cruz"
+                    onFocus={() => setFocusedInput('lastName')} onBlur={() => setFocusedInput(null)}
                   />
                 </View>
               </View>
@@ -318,16 +282,10 @@ export default function EditProfileScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Mobile Number</Text>
               <View style={[styles.inputWrapper, focusedInput === 'phone' && styles.inputWrapperFocused]}>
-                <Ionicons name="call-outline" size={18} color={focusedInput === 'phone' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                 <TextInput
-                  style={styles.input}
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                  placeholderTextColor={colors.textMuted}
-                  placeholder="09123456789"
-                  onFocus={() => setFocusedInput('phone')}
-                  onBlur={() => setFocusedInput(null)}
+                  style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad"
+                  placeholderTextColor={colors.textMuted} placeholder="09123456789"
+                  onFocus={() => setFocusedInput('phone')} onBlur={() => setFocusedInput(null)}
                 />
               </View>
             </View>
@@ -335,37 +293,62 @@ export default function EditProfileScreen() {
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Email Address</Text>
               <View style={[styles.inputWrapper, styles.inputWrapperDisabled]}>
-                <Ionicons name="mail-outline" size={18} color={colors.textMuted} style={styles.inputIcon} />
                 <TextInput
                   style={[styles.input, { color: colors.textMuted }]}
-                  value={email}
-                  editable={false}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
+                  value={email} editable={false}
                   placeholderTextColor={colors.textMuted}
-                  placeholder="you@example.com"
                 />
                 <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} style={{ marginRight: 14 }} />
               </View>
-              <Text style={styles.helperText}>Email cannot be changed</Text>
             </View>
 
-            {/* Home Address Dropdown */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Home Address</Text>
-              <TouchableOpacity 
-                style={[styles.inputWrapper, { justifyContent: 'space-between' }]} 
-                onPress={() => setIsMapVisible(true)}
-                activeOpacity={0.7}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                  <Ionicons name="home-outline" size={18} color={ORANGE} style={styles.inputIcon} />
-                  <Text style={[styles.input, { color: address ? colors.textPrimary : colors.textMuted }]} numberOfLines={1}>
-                    {address || 'Select Home Address on Map'}
-                  </Text>
+                        {/* --- TEXT-BASED ADDRESS SECTION --- */}
+            <View style={{ marginTop: 10 }}>
+              <Text style={[styles.label, { fontSize: 15, marginBottom: 12, color: ORANGE }]}>Home Address</Text>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Building No. & Street (Line 1)</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'street' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input} value={streetAddress} onChangeText={setStreetAddress}
+                    placeholder="e.g., Bldg 12, 123 Main St." placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('street')} onBlur={() => setFocusedInput(null)}
+                  />
                 </View>
-                <Ionicons name="chevron-down" size={18} color={colors.textSecondary} style={{ marginRight: 14 }} />
-              </TouchableOpacity>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Unit / Floor / Apt (Line 2)</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'unit' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input} value={unitInfo} onChangeText={setUnitInfo}
+                    placeholder="e.g., Apt 4B, 3rd Floor (Optional)" placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('unit')} onBlur={() => setFocusedInput(null)}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>City and Province</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'city' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input} value={cityState} onChangeText={setCityState}
+                    placeholder="e.g., Cebu City, Cebu" placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('city')} onBlur={() => setFocusedInput(null)}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Postal Code</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'zip' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input} value={zipCode} onChangeText={setZipCode} keyboardType="number-pad"
+                    placeholder="e.g., 6000" placeholderTextColor={colors.textMuted} maxLength={4}
+                    onFocus={() => setFocusedInput('zip')} onBlur={() => setFocusedInput(null)}
+                  />
+                </View>
+              </View>
             </View>
 
             <TouchableOpacity
@@ -390,15 +373,11 @@ export default function EditProfileScreen() {
 
           <Animated.View style={[styles.linkedAccountsSection, fadeUp(linkedAnim, 20)]}>
             <Text style={styles.sectionTitle}>Linked Accounts</Text>
-
             <View style={styles.linkedCard}>
               <View style={styles.linkedRow}>
                 <View style={styles.linkedLeft}>
                   <View style={styles.googleIconWrapper}>
-                    <Image
-                      source={require('../../../../assets/google.png')}
-                      style={styles.googleIcon}
-                    />
+                    <Image source={require('../../../../assets/google.png')} style={styles.googleIcon} />
                   </View>
                   <View>
                     <Text style={styles.linkedText}>Google</Text>
@@ -419,72 +398,6 @@ export default function EditProfileScreen() {
           <View style={styles.bottomSpacer} />
         </ScrollView>
       </KeyboardAvoidingView>
-
-      {/* MAP MODAL */}
-      <Modal visible={isMapVisible} animationType="slide" transparent={false}>
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <MapView
-            ref={mapRef}
-            provider={PROVIDER_GOOGLE}
-            style={{ flex: 1 }}
-            googleMapId={GOOGLE_MAP_ID}
-            userInterfaceStyle="light"
-            initialRegion={{
-              latitude: mapCenter.lat,
-              longitude: mapCenter.lng,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-            onRegionChangeComplete={(region) => {
-              setMapCenter({ lat: region.latitude, lng: region.longitude });
-            }}
-            showsUserLocation={true}
-            showsMyLocationButton={false}
-            showsCompass={false}
-            toolbarEnabled={false}
-          />
-          
-          <View style={styles.mapPinContainer} pointerEvents="none">
-            <View style={styles.mapPinHead}>
-              <Ionicons name="home" size={22} color="#FFFFFF" />
-            </View>
-            <View style={styles.mapPinPoint} />
-          </View>
-
-          <View style={[styles.mapTopOverlay, { paddingTop: insets.top + 10 }]}>
-            <TouchableOpacity style={styles.mapBackBtn} onPress={() => setIsMapVisible(false)}>
-              <Ionicons name="close" size={24} color="#111" />
-            </TouchableOpacity>
-            <View style={styles.mapInstructionBox}>
-              <Text style={styles.mapInstructionText}>Drag map to select exact location</Text>
-            </View>
-          </View>
-
-          <TouchableOpacity 
-            style={[styles.mapLocateBtn, { bottom: insets.bottom + 100 }]} 
-            onPress={handleLocateMe}
-          >
-            <Ionicons name="locate" size={24} color={ORANGE} />
-          </TouchableOpacity>
-
-          <View style={[styles.mapBottomOverlay, { paddingBottom: insets.bottom + 20 }]}>
-            <TouchableOpacity 
-              style={[styles.mapConfirmBtn, isGeocoding && { opacity: 0.7 }]} 
-              onPress={confirmMapLocation}
-              disabled={isGeocoding}
-            >
-              {isGeocoding ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle" size={20} color="#FFF" />
-                  <Text style={styles.mapConfirmText}>Confirm Home Address</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -493,32 +406,28 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: c.background, gap: 12 },
   loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
-
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: ORANGE, paddingHorizontal: 20, paddingBottom: 26,
     borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
-    zIndex: 10, 
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6, zIndex: 10, 
   },
   backButton: {
-    width: 42, height: 42, borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
   },
   headerTitle: { fontSize: 19, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
-
-  // Adjusted spacing to prevent overlapping with header
   scrollContent: { paddingBottom: 60, paddingTop: 10 },
   bottomSpacer: { height: 40 },
+<<<<<<< HEAD
 
   imageUploadSection: { alignItems: 'center', marginTop: 10, marginBottom: 24, zIndex: 5 },
+=======
+  imageUploadSection: { alignItems: 'center', marginTop: -42, marginBottom: 24, zIndex: 5 },
+>>>>>>> origin/feature/follow-rendell-pdf
   imagePicker: {
-    width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 4, borderColor: c.card,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 6 },
+    width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 4, borderColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.18, shadowRadius: 12, elevation: 6, overflow: 'visible',
   },
   profilePreview: { width: 102, height: 102, borderRadius: 51 },
@@ -529,104 +438,41 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderWidth: 3, borderColor: c.card,
   },
   uploadHint: { marginTop: 12, fontSize: 12, color: c.textSecondary, fontWeight: '500' },
-
   formContainer: { paddingHorizontal: 24 },
   row: { flexDirection: 'row', justifyContent: 'space-between' },
   inputGroup: { marginBottom: 18 },
   label: { fontSize: 13, color: c.textPrimary, fontWeight: '700', marginBottom: 8, letterSpacing: 0.2 },
-  
   inputWrapper: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
+    borderRadius: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
     shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.25, shadowRadius: 4, elevation: 1,
     paddingVertical: 14, paddingHorizontal: 12,
   },
-  inputWrapperFocused: {
-    borderColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 0.12, shadowRadius: 8, elevation: 2,
-  },
+  inputWrapperFocused: { borderColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 0.12, shadowRadius: 8, elevation: 2 },
   inputWrapperDisabled: { backgroundColor: c.divider },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '500', padding: 0 },
   helperText: { fontSize: 11, color: c.textMuted, marginTop: 6, marginLeft: 4, fontWeight: '500' },
-
   saveButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 16,
-    marginTop: 8, marginBottom: 8, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: ORANGE,
+    paddingVertical: 16, borderRadius: 16, marginTop: 8, marginBottom: 8, gap: 8,
+    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   saveButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
   savingContainer: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-
   linkedAccountsSection: { paddingHorizontal: 24, marginTop: 24 },
   sectionTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 12, letterSpacing: -0.2 },
   linkedCard: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16,
-    borderWidth: 1, borderColor: c.divider,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25, shadowRadius: 10, elevation: 2,
+    backgroundColor: c.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25, shadowRadius: 10, elevation: 2,
   },
   linkedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   linkedLeft: { flexDirection: 'row', alignItems: 'center' },
   googleIconWrapper: {
     width: 40, height: 40, borderRadius: 12, backgroundColor: c.background,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
-    borderWidth: 1, borderColor: c.divider,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: c.divider,
   },
   googleIcon: { width: 22, height: 22, resizeMode: 'contain' },
   linkedText: { fontSize: 14, color: c.textPrimary, fontWeight: '700' },
   linkedSubtext: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
-
-  // --- MAP MODAL STYLES ---
-  mapPinContainer: {
-    position: 'absolute', top: '50%', left: '50%',
-    marginLeft: -22, marginTop: -44,
-    alignItems: 'center', zIndex: 4,
-  },
-  mapPinHead: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 3, borderColor: '#FFFFFF',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25, shadowRadius: 8, elevation: 8,
-  },
-  mapPinPoint: {
-    width: 0, height: 0, backgroundColor: 'transparent', borderStyle: 'solid',
-    borderLeftWidth: 6, borderRightWidth: 6, borderTopWidth: 10,
-    borderLeftColor: 'transparent', borderRightColor: 'transparent',
-    borderTopColor: ORANGE, marginTop: -1,
-  },
-  mapTopOverlay: {
-    position: 'absolute', top: 0, left: 0, right: 0,
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, gap: 12,
-  },
-  mapBackBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFF',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
-  },
-  mapInstructionBox: {
-    flex: 1, backgroundColor: '#FFF', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
-  },
-  mapInstructionText: { fontWeight: '700', color: '#111827', textAlign: 'center' },
-  
-  mapLocateBtn: {
-    position: 'absolute', right: 20, width: 50, height: 50, borderRadius: 25, backgroundColor: '#FFF',
-    justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
-  },
-
-  mapBottomOverlay: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    paddingHorizontal: 20,
-  },
-  mapConfirmBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 16, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
-  },
-  mapConfirmText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
 });

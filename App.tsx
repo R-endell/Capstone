@@ -447,7 +447,14 @@ function ProviderTabsInner() {
       >
         <ProviderTab.Screen name="Task" component={TaskScreen} />
         <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+        <ProviderTab.Screen 
+            name="Jobs" 
+            component={JobsScreen} 
+            options={{ 
+              title: 'My Route Requests', // Changes the screen title
+              tabBarLabel: 'My Requests'  // Changes the text under the icon in the bottom tab (shorter to fit)
+            }} 
+          />
         <ProviderTab.Screen
           name="Messages"
           component={ProviderMessagesScreen}

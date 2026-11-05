@@ -26,6 +26,7 @@ const BLUE = '#3B82F6';
 
 const HIDE_DEPARTED_AFTER_MIN = 180;
 const SEND_NOW_WINDOW_MIN = 60;
+const HIDE_FINISHED_AFTER_MS = 2 * 60 * 60 * 1000; 
 
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
@@ -34,6 +35,17 @@ const splitAddress = (full?: string | null) => {
   if (!full) return { main: 'Selected location', sub: '' };
   const parts = full.split(', ');
   return { main: parts[0], sub: parts.slice(1).join(', ') };
+};
+
+// ✅ HELPER: Safely extract a timestamp from a possible Date or undefined value
+const safeTime = (d?: Date | null): number => {
+  if (!d) return Infinity;
+  try {
+    const t = d.getTime?.();
+    return typeof t === 'number' && !isNaN(t) ? t : Infinity;
+  } catch {
+    return Infinity;
+  }
 };
 
 type Trip = {
@@ -51,12 +63,13 @@ type Trip = {
   dropoffCoords: { lat: number; lng: number };
   timeLabel: string;
   departureTime: Date;
+  endTime?: Date | null; // ✅ Made optional/nullable to prevent type issues
   vehicleType: string;
   maxWeightKg: number | null;
   routeFrequency: string;
 };
 
-type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'offline';
+type TripState = 'live' | 'onRoad' | 'soon' | 'scheduled' | 'finished' | 'offline';
 
 type CardTrip = Trip & {
   fix: LiveFix | null;
@@ -86,10 +99,10 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
-const minutesUntil = (d: Date, now: number) => Math.round((d.getTime() - now) / 60000);
+const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
-  const diffMin = Math.round((dep.getTime() - Date.now()) / 60000);
+  const diffMin = Math.round((safeTime(dep) - Date.now()) / 60000);
   if (diffMin < 0) return 'On the road now';
   if (diffMin < 60) return `Leaves in ${diffMin} mins`;
   if (diffMin < 1440) {
@@ -144,12 +157,14 @@ export default function ExploreScreen() {
       let query = supabase
         .from('provider_routes')
         .select(`
-          route_id, departure_time, route_frequency, provider_id,
+          route_id, departure_time, end_time, route_frequency, provider_id,
           provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active ),
           start_location:locations!provider_routes_start_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
           end_location:locations!provider_routes_end_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
           vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
         `)
+        .eq('is_deleted', false)
+        .eq('is_active', true)
         .order('departure_time', { ascending: true });
 
       if (myUserId != null) {
@@ -165,7 +180,7 @@ export default function ExploreScreen() {
           const freq = (r.route_frequency || '').trim().toLowerCase();
           if (freq === 'one-time' || freq === 'custom') {
             const dep = r.departure_time ? new Date(r.departure_time) : new Date();
-            if (dep.getTime() < Date.now()) return false;
+            if (safeTime(dep) < Date.now()) return false;
           }
           return true;
         })
@@ -175,6 +190,16 @@ export default function ExploreScreen() {
           const start = r.start_location || {};
           const end = r.end_location || {};
           const dep = r.departure_time ? new Date(r.departure_time) : new Date();
+          
+          // ✅ Ensure endTime is always a valid Date
+          let endTimeObj: Date;
+          try {
+            endTimeObj = r.end_time && !isNaN(new Date(r.end_time).getTime())
+              ? new Date(r.end_time)
+              : new Date(dep.getTime() + 4 * 60 * 60 * 1000);
+          } catch {
+            endTimeObj = new Date(dep.getTime() + 4 * 60 * 60 * 1000);
+          }
 
           const startSplit = splitAddress(start.street_address);
           const endSplit = splitAddress(end.street_address);
@@ -196,6 +221,7 @@ export default function ExploreScreen() {
             dropoffCoords: { lat: Number(end.latitude) || 0, lng: Number(end.longitude) || 0 },
             timeLabel: formatTimeLabel(dep),
             departureTime: dep,
+            endTime: endTimeObj,
             vehicleType: vehicle.vehicle_type || 'Vehicle',
             maxWeightKg: vehicle.max_weight_kg != null ? Number(vehicle.max_weight_kg) : null,
             routeFrequency: r.route_frequency || 'Daily',
@@ -266,20 +292,26 @@ export default function ExploreScreen() {
 
       const freq = (t.routeFrequency || '').trim().toLowerCase();
       if (freq === 'one-time' || freq === 'custom') {
-        if (t.departureTime.getTime() < now) return;
+        if (safeTime(t.departureTime) < now) return;
       }
 
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
       const mins = minutesUntil(t.departureTime, now);
 
+      // ✅ Use safeTime to prevent crash if endTime is undefined
+      const endTimeMs = safeTime(t.endTime);
+      const isFinished = endTimeMs !== Infinity && now > endTimeMs;
+
       let state: TripState;
       if (live) state = 'live';
+      else if (isFinished) state = 'finished';
       else if (t.isActive && mins <= 0) state = 'onRoad';
       else if (mins > 0 && mins <= SEND_NOW_WINDOW_MIN) state = 'soon';
       else if (mins > SEND_NOW_WINDOW_MIN) state = 'scheduled';
       else state = 'offline';
 
+      if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) return;
       if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
       if (state === 'offline') return;
 
@@ -310,9 +342,12 @@ export default function ExploreScreen() {
       return true;
     });
     if (myCoords) {
-      list.sort((a, b) =>
-        (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity) ||
-        a.departureTime.getTime() - b.departureTime.getTime());
+      // ✅ Safe sort that prevents crash if departureTime is missing
+      list.sort((a, b) => {
+        const distDiff = (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
+        if (distDiff !== 0) return distDiff;
+        return safeTime(a.departureTime) - safeTime(b.departureTime);
+      });
     }
     return list;
   }, [cardTrips, filters, myCoords]);
@@ -328,6 +363,11 @@ export default function ExploreScreen() {
 
   const requestAlongRoute = async (trip: TrackTrip) => {
     if (requesting) return;
+    if ((trip as any).state === 'finished') {
+      Alert.alert('Route Finished', 'This provider has already arrived at their destination and cannot accept new deliveries on this route.');
+      return;
+    }
+
     setRequesting(true);
     try {
       const startCoords = trip.pickupCoords?.lat && trip.pickupCoords?.lng
@@ -385,7 +425,9 @@ export default function ExploreScreen() {
       case 'onRoad':
         return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' as const };
       case 'soon':
-        return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' as const };
+        return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'time-outline' as const };
+      case 'finished':
+        return { label: 'Route Finished', color: '#64748B', bg: '#F1F5F9', icon: 'flag' as const };
       default:
         return { label: 'Scheduled', color: BLUE, bg: 'rgba(59,130,246,0.14)', icon: 'Clock' as const };
     }
@@ -395,18 +437,19 @@ export default function ExploreScreen() {
     const badge = stateBadge(item.state);
     const pickupMain = splitAddress(item.pickup).main;
     const dropoffMain = splitAddress(item.dropoff).main;
+    const isFinished = item.state === 'finished';
 
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[styles.oCard, isFinished && { opacity: 0.65 }]}
         activeOpacity={0.92}
         onPress={() => setTrackRouteId(item.routeId)}
       >
-        <View style={styles.cardPad}>
-          <View style={styles.cardTopRow}>
-            <View style={styles.vehiclePill}>
-              <PhIcon name="Package" size={14} color={BLUE} />
-              <Text style={styles.vehiclePillText} numberOfLines={1}>{item.vehicleType}</Text>
+        <View style={styles.oPad}>
+          <View style={styles.oTopRow}>
+            <View style={styles.svcPill}>
+              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <Text style={styles.svcPillText} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
             <View style={[styles.statusPill, { backgroundColor: badge.bg }]}>
               <PhIcon name={badge.icon} size={12} color={badge.color} />
@@ -414,7 +457,7 @@ export default function ExploreScreen() {
             </View>
           </View>
 
-          <View style={styles.routeContainer}>
+          <View>
             {[
               { key: 'p', label: 'START', main: pickupMain, sub: item.pickupSub, color: ORANGE },
               { key: 'd', label: 'DESTINATION', main: dropoffMain, sub: item.dropoffSub, color: colors.textPrimary },
@@ -441,39 +484,47 @@ export default function ExploreScreen() {
             ))}
           </View>
 
-          <View style={styles.courierCard}>
-            <View style={[styles.courierAvatar, { backgroundColor: BLUE }]}>
-              <Text style={styles.courierAvatarText}>{initials(item.name)}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.courierRole}>COURIER PARTNER</Text>
-              <Text style={styles.courierName} numberOfLines={1}>{item.name}</Text>
-            </View>
-            <View style={styles.ratingBadge}>
-              <PhIcon name="Star" weight="fill" size={12} color={colors.warning} />
-              <Text style={styles.ratingText}>{item.rating}</Text>
+          <View style={styles.oContacts}>
+            <View style={styles.mcCard}>
+              <View style={[styles.mcAvatar, { backgroundColor: BLUE }]}>
+                <Text style={styles.mcAvatarText}>{initials(item.name)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.mcRole}>COURIER PARTNER</Text>
+                <Text style={styles.mcName} numberOfLines={1}>{item.name}</Text>
+              </View>
+              <View style={styles.mcRatingBadge}>
+                <Ionicons name="star" size={13} color={colors.warning} />
+                <Text style={styles.mcRatingText}>{item.rating}</Text>
+              </View>
             </View>
           </View>
         </View>
 
-        <View style={styles.cardFooter}>
-          <View style={styles.infoPill}>
-            <PhIcon name={item.state === 'scheduled' ? 'Clock' : 'Clock'} size={14} color={ORANGE} />
-            <Text style={styles.infoPillText} numberOfLines={1}>{item.timeLabel}</Text>
+        <View style={styles.oFooter}>
+          <View style={styles.oChip}>
+            <Ionicons
+              name={isFinished ? 'flag-outline' : item.state === 'scheduled' ? 'calendar-outline' : 'time-outline'}
+              size={14}
+              color={isFinished ? '#64748B' : ORANGE}
+            />
+            <Text style={[styles.oChipText, isFinished && { color: '#64748B' }]} numberOfLines={1}>
+              {isFinished ? 'Arrived at destination' : item.timeLabel}
+            </Text>
           </View>
           {item.maxWeightKg != null && (
-            <View style={styles.infoPill}>
-              <PhIcon name="Package" size={14} color={ORANGE} />
-              <Text style={styles.infoPillText}>{item.maxWeightKg} kg</Text>
+            <View style={styles.oChip}>
+              <Ionicons name="cube-outline" size={14} color={isFinished ? '#64748B' : ORANGE} />
+              <Text style={[styles.oChipText, isFinished && { color: '#64748B' }]}>{item.maxWeightKg} kg</Text>
             </View>
           )}
           <View style={{ flex: 1 }} />
           {item.distanceKm !== null && (
-            <Text style={styles.distanceText}>{formatKm(item.distanceKm)}</Text>
+            <Text style={[styles.oDistPrice, isFinished && { color: '#64748B' }]}>{formatKm(item.distanceKm)}</Text>
           )}
         </View>
 
-        <View style={styles.cardActions}>
+        <View style={styles.oActions}>
           <TouchableOpacity
             style={styles.trackBtn}
             onPress={() => setTrackRouteId(item.routeId)}
@@ -482,13 +533,19 @@ export default function ExploreScreen() {
             <PhIcon name="NavigationArrow" size={16} color={ORANGE} />
             <Text style={styles.trackBtnText}>Track</Text>
           </TouchableOpacity>
+          
           <TouchableOpacity
-            style={styles.requestBtn}
+            style={[
+              styles.oRouteBtn,
+              isFinished && { backgroundColor: '#94A3B8' }
+            ]}
             onPress={() => requestAlongRoute(item)}
             activeOpacity={0.9}
           >
-            <PhIcon name="PaperPlaneTilt" weight="fill" size={16} color="#FFFFFF" />
-            <Text style={styles.requestBtnText}>Request Delivery</Text>
+            <Ionicons name={isFinished ? 'close-circle' : 'paper-plane'} size={16} color="#FFFFFF" />
+            <Text style={styles.oRouteText}>
+              {isFinished ? 'Route Finished' : 'Request Delivery'}
+            </Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -663,14 +720,16 @@ export default function ExploreScreen() {
         />
       )}
 
-      <ProviderTrackModal
-        visible={!!trackTrip}
-        trip={trackTrip}
-        fix={trackTrip ? fixes[trackTrip.providerId] ?? null : null}
-        myCoords={myCoords}
-        onClose={() => setTrackRouteId(null)}
-        onRequest={requestAlongRoute}
-      />
+      {!!trackTrip && (
+        <ProviderTrackModal
+          visible={!!trackTrip}
+          trip={trackTrip}
+          fix={trackTrip ? fixes[trackTrip.providerId] ?? null : null}
+          myCoords={myCoords}
+          onClose={() => setTrackRouteId(null)}
+          onRequest={requestAlongRoute}
+        />
+      )}
 
       <Modal visible={filterModalVisible} transparent animationType="slide" onRequestClose={() => setFilterModalVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -742,7 +801,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   headerContainer: { paddingTop: 25, backgroundColor: c.background },
   pageTitle: { fontSize: 32, fontWeight: '800', color: c.textPrimary, marginBottom: 20, letterSpacing: -0.5 },
 
-  /* Action Cards */
   actionContainer: { marginHorizontal: 4, marginBottom: 20 },
   actionCard: {
     flexDirection: 'row', alignItems: 'center',
@@ -776,7 +834,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
   },
 
-  /* Section Header */
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
   sectionTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
   sectionSubtitleTight: { fontSize: 13, color: c.textSecondary, lineHeight: 18 },
@@ -808,9 +865,35 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  /* Provider Card */
-  card: {
-    backgroundColor: c.card, borderRadius: 22, marginBottom: 16,
+  svcPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
+    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
+  },
+  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  stPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
+  },
+  stDot: { width: 7, height: 7, borderRadius: 4 },
+  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+
+  rtRow: { flexDirection: 'row', gap: 14 },
+  rtRail: { alignItems: 'center', width: 26 },
+  rtRing: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 3,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
+  },
+  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
+  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtText: { flex: 1 },
+  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
+  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+
+  oCard: {
+    backgroundColor: c.card, borderRadius: 22, marginBottom: 14,
     borderWidth: 1, borderColor: c.border, overflow: 'hidden',
   },
   cardPad: { padding: 16 },

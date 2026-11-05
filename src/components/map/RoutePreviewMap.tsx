@@ -181,6 +181,7 @@ export default function RoutePreviewMap({
       toolbarEnabled={false}
       showsCompass={false}
       showsMyLocationButton={false}
+      userInterfaceStyle="light"
       showsUserLocation={false}
     >
       {/* faint full track so the fill reads as "filling up" */}

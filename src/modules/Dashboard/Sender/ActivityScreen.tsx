@@ -1662,6 +1662,7 @@ export default function ActivityScreen() {
                 dropoffLng={d.coords.dropoff.longitude}
                 padTop={insets.top + 70}
                 padBottom={60}
+                userInterfaceStyle="light" // ✅ FIX: Force light theme
               />
             </View>
           </View>
@@ -2210,6 +2211,7 @@ export default function ActivityScreen() {
             dropoffLng={selectedDelivery.coords.dropoff.longitude}
             padTop={100}
             padBottom={260}
+            userInterfaceStyle="light" // ✅ FIX: Force light theme
           />
           <TouchableOpacity
             style={[styles.mapCloseBtn, { top: insets.top + 12 }]}

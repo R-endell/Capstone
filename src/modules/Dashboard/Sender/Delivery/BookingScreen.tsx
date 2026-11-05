@@ -287,10 +287,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const cancellingRef = useRef(false);
 
   // ---- PREFERRED-PROVIDER SNAPSHOT ----
+<<<<<<< HEAD
   // Captured right before navigating to DeliveryPayment. Used by the
   // post-payment effect and by resumeBooking so we NEVER accidentally
   // enter the finding radar for route bookings, even if the Schedule
   // context is reset by the payment screen or the DB write fails.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
   const preferredAtPaymentRef = useRef<PreferredSnapshot>({
     requestId: null,
     providerId: null,
@@ -770,9 +773,12 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
+<<<<<<< HEAD
       // If this booking was made for a specific preferred provider from Explore,
       // do NOT show the finding radar. Read from DB first, then fall back to the
       // snapshot captured just before navigating to payment.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
       const preferredFromRequest = req.preferred_provider_id ? Number(req.preferred_provider_id) : null;
       const snapshotMatches = preferredAtPaymentRef.current.requestId === requestId;
       const preferredFromSnapshot = snapshotMatches ? preferredAtPaymentRef.current.providerId : null;
@@ -866,6 +872,7 @@ export default function BookingScreen({ route, navigation }: any) {
   }, [bookingState, resumeSubId]);
 
   // ---- Handle return from DeliveryPaymentScreen ----
+<<<<<<< HEAD
   //
   // Route bookings (Explore → Request Delivery):
   //   provider is already chosen → NO radar, NO matched screen.
@@ -873,6 +880,8 @@ export default function BookingScreen({ route, navigation }: any) {
   //
   // Generic bookings (Send Package Now / Schedule a Delivery):
   //   run the provider-matching radar as usual.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
   useEffect(() => {
     const justPaid = route.params?.paymentJustCompleted;
     const reqId = route.params?.requestId;
@@ -883,10 +892,13 @@ export default function BookingScreen({ route, navigation }: any) {
     setSavedRequestId(numericReqId);
 
     (async () => {
+<<<<<<< HEAD
       // Resolve preferred provider using three layers of defence:
       //   1) live Schedule context (fastest, but can be reset by payment screen)
       //   2) snapshot captured in handleProceedToPayment (survives context reset)
       //   3) DB row (survives app restarts; backed by our belt-and-suspenders write)
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
       let prefProviderId: number | null = state.preferredProviderId ?? null;
       let prefRouteId: number | null = state.preferredRouteId ?? null;
       let prefProviderName: string | null = state.preferredProviderName ?? null;
@@ -912,7 +924,10 @@ export default function BookingScreen({ route, navigation }: any) {
       if (prefProviderId) {
         // ============================================================
         // ROUTE BOOKING — provider already chosen.
+<<<<<<< HEAD
         // NO radar, NO matched screen. Notify + go home.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
         // ============================================================
         try {
           const { data: provider } = await supabase
@@ -953,6 +968,7 @@ export default function BookingScreen({ route, navigation }: any) {
           searchTimeoutRef.current = null;
         }
 
+<<<<<<< HEAD
         dispatch({ type: 'RESET' });
         proceedingRef.current = false;
         proceedReturnToRef.current = null;
@@ -965,13 +981,33 @@ export default function BookingScreen({ route, navigation }: any) {
       // GENERIC BOOKING (Send Package Now / Schedule a Delivery) —
       // run the provider-matching radar.
       // ============================================================
+=======
+        // ✅ FIX: Finalize the UI to show "Request Sent to Provider!"
+        await finalizePreferredProviderBooking({
+          requestId: numericReqId,
+          providerId: prefProviderId,
+          routeId: prefRouteId ?? null,
+          notifyProvider: false, // Already notified above
+        });
+
+        proceedingRef.current = false;
+        proceedReturnToRef.current = null;
+        setSavingBooking(false);
+        return;
+      }
+
+      // GENERIC BOOKING (Send Package Now / Schedule a Delivery)
+>>>>>>> origin/feature/follow-rendell-pdf
       searchStartRef.current = Date.now();
       setBookingState('finding');
       startMatching({ reuseRequestId: numericReqId });
     })();
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
+<<<<<<< HEAD
   // ---- DOUBLE-TAP SAFE ----
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
   const handleProceedToPayment = async () => {
     if (proceedingRef.current) return;
     proceedingRef.current = true;
@@ -1013,9 +1049,12 @@ export default function BookingScreen({ route, navigation }: any) {
         requestId = savedRequest.request_id;
       }
 
+<<<<<<< HEAD
       // Belt-and-suspenders: explicitly persist preferred_provider_id so the
       // post-payment effect and resume flow can always detect route bookings,
       // even if saveScheduleToDB doesn't copy these fields.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
       if (state.preferredProviderId) {
         try {
           await supabase
@@ -1030,9 +1069,12 @@ export default function BookingScreen({ route, navigation }: any) {
         }
       }
 
+<<<<<<< HEAD
       // Snapshot preferred-provider info so the post-payment effect can
       // still detect a route booking even if the Schedule context has been
       // reset by the payment screen.
+=======
+>>>>>>> origin/feature/follow-rendell-pdf
       preferredAtPaymentRef.current = {
         requestId,
         providerId: state.preferredProviderId ?? null,

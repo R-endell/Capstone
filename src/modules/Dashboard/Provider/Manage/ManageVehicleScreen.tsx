@@ -42,7 +42,7 @@ interface Vehicle {
   provider_id: number;
 }
 
-const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck', 'Motorcycle'];
+const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck'];
 
 export default function ManageVehicleScreen() {
   const navigation = useNavigation();

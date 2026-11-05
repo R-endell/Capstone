@@ -1,20 +1,31 @@
 // src/modules/Dashboard/Provider/JobsScreen.tsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, Image, TouchableOpacity,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
   Animated, Easing, Linking, StatusBar, FlatList, Pressable, Dimensions,
+  TextInput, Keyboard, Switch,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, Circle } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
-import { getActiveRouteId, setActiveRouteId } from '../../../services/activeRouteStore';
-import { findMatches } from '../../../services/matchingService';
+import {
+  getActiveRouteId,
+  setActiveRouteId,
+  subscribeActiveRoute,
+  getDemoMode,
+  setDemoMode,
+  subscribeDemoMode,
+} from '../../../services/activeRouteStore';
+import { evaluateAndFetchRouteMatches, computeCargoVolumeLiters, RouteMatchRow } from '../../../services/matchingService';
+import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
@@ -25,9 +36,30 @@ import { isRouteExpired } from './Manage/ManageRoutesScreen';
 
 const ORANGE = '#FF751F';
 const GREEN = '#10B981';
+const BLUE = '#3B82F6';
+const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
+const BLACK = '#111827';
 const OFFER_SECONDS = 45;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
+type Frequency = typeof FREQUENCIES[number];
+
+const RECENTS_KEY = '@pns:recent_locations:v1';
+const MAX_RECENTS = 6;
+const ZOOM_DELTA = 0.003;
+const SAME_SPOT_METERS = 8;
+const NEARBY_RADIUS_M = 200;
+const LABEL_SNAP_M = 60;
+const REJECTED_PLACE_TYPES = new Set(['route', 'street_address', 'postal_code', 'plus_code']);
+
+const GOOGLE_MAPS_API_KEY: string =
+  (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string | undefined) ||
+  (Constants.expoConfig as any)?.android?.config?.googleMaps?.apiKey ||
+  (Constants.expoConfig as any)?.ios?.config?.googleMapsApiKey ||
+  '';
+const HAS_API_KEY = GOOGLE_MAPS_API_KEY.length > 10;
 
 interface Location {
   location_id?: number;
@@ -45,15 +77,22 @@ interface Vehicle {
   plate_number: string;
   max_volume_liters: number;
   max_weight_kg: number;
-  cargo_length_cm: number;
-  cargo_width_cm: number;
-  cargo_height_cm: number;
   verification_status: string;
 }
 interface Route {
   route_id: number;
   departure_time: string;
+  end_time?: string | null;
   route_frequency: string;
+  route_distance_km?: number;
+  remaining_weight_kg?: number;
+  remaining_volume_liters?: number;
+  fallback_unlocked?: boolean;
+  fallback_reason?: 'CONDITION_A' | 'CONDITION_B' | null;
+  fallback_used?: boolean;
+  admin_review_flag?: boolean;
+  is_deleted?: boolean;
+  is_active?: boolean;
   start_location_id: number;
   end_location_id: number;
   provider_id: number;
@@ -89,7 +128,7 @@ interface JobRequest {
   dropoffNote: string | null;
   items: JobItem[];
   totalItems: number;
-  sizeSummary: string;   // e.g. "1 Small · 1 Medium · 1 Large"
+  sizeSummary: string;
   weightKg: number | null;
   fragile: boolean;
   dims: string | null;
@@ -98,18 +137,23 @@ interface JobRequest {
   preferred_provider_id?: number | null;
   preferred_route_id?: number | null;
   isDirectRequest?: boolean;
+  matchScore?: number;
+  isFallback?: boolean;
+  fallbackType?: 'CONDITION_A' | 'CONDITION_B' | null;
+  pickupDistM?: number;
+  dropoffDistM?: number;
+  matchId?: number;
 }
 
 type Notif = NotifRow;
-
-const toNaiveIsoString = (date: Date): string => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${y}-${m}-${d}T${hh}:${mm}:00`;
+type Coord = { latitude: number; longitude: number };
+type RecentEntry = { name: string; address: string; latitude: number; longitude: number; ts: number };
+type SearchResult = {
+  place_id: string; name: string; formatted_address: string;
+  geometry: { location: { lat: number; lng: number } };
 };
+type NearbyPlace = { id: string; name: string; address: string; latitude: number; longitude: number; dist: number };
+type Label = { name: string; sub?: string };
 
 const parseNaiveIsoString = (s: string): Date => {
   if (!s) return new Date();
@@ -179,6 +223,17 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const roadKm = (aLat: number, aLng: number, bLat: number, bLng: number) => haversineKm(aLat, aLng, bLat, bLng) * 1.3;
 
+const metersBetween = (a: Coord, b: Coord) => {
+  const R = 6371000;
+  const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+  const dLng = ((b.longitude - a.longitude) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((a.latitude * Math.PI) / 180) * Math.cos((b.latitude * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+};
+const fmtDist = (m: number) => (m < 1000 ? `${Math.max(1, Math.round(m))} m` : `${(m / 1000).toFixed(1)} km`);
+
 const ago = (iso: string) => {
   const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   if (m < 1) return 'Just now';
@@ -213,7 +268,6 @@ const titleForType = (type: string, fallback: string): string => {
   return fallback;
 };
 
-/** Count packages per size across ALL items (not just the first one). */
 const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
   const counts: Record<string, number> = {};
   sizes.forEach(z => { if (z) counts[z] = (counts[z] || 0) + 1; });
@@ -223,7 +277,8 @@ const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
     .join(' · ');
 };
 
-const normalizeRequest = (r: any, senders: Record<number, string>, currentProviderId?: number | null): JobRequest => {
+const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, currentProviderId?: number | null): JobRequest => {
+  const r = m.request;
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
   let itemsJson: any = cargo?.items_json;
@@ -267,7 +322,6 @@ const normalizeRequest = (r: any, senders: Record<number, string>, currentProvid
   const dr = splitAddress(r.dropoff_location?.street_address);
 
   const prefProviderId = r.preferred_provider_id != null ? Number(r.preferred_provider_id) : null;
-  const prefRouteId = r.preferred_route_id != null ? Number(r.preferred_route_id) : null;
   const isDirectRequest =
     prefProviderId != null &&
     currentProviderId != null &&
@@ -294,8 +348,14 @@ const normalizeRequest = (r: any, senders: Record<number, string>, currentProvid
     senderName: senders[r.sender_id] || 'Sender',
     receiverName: r.receiver?.receiver_name || [r.receiver?.first_name, r.receiver?.last_name].filter(Boolean).join(' ') || null,
     preferred_provider_id: prefProviderId,
-    preferred_route_id: prefRouteId,
+    preferred_route_id: r.preferred_route_id ?? m.route_id ?? null,
     isDirectRequest,
+    matchScore: m.match_score,
+    isFallback: m.is_fallback,
+    fallbackType: m.fallback_type,
+    pickupDistM: m.pickup_dist_m,
+    dropoffDistM: m.dropoff_dist_m,
+    matchId: m.match_id,
   };
 };
 
@@ -313,14 +373,6 @@ const mapStyles = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
   },
   mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
-  zoneBadge: {
-    backgroundColor: '#FFFFFF', borderRadius: 10,
-    paddingHorizontal: 7, paddingVertical: 2,
-    borderWidth: 1, borderColor: '#FFD2B0',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15, shadowRadius: 2, elevation: 1,
-  },
-  zoneBadgeText: { fontSize: 10, fontWeight: '800', color: '#9A4A12' },
   meMarker: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center' },
   meHalo: {
     position: 'absolute', width: 76, height: 76, borderRadius: 38,
@@ -370,11 +422,10 @@ const fetchRoadCoords = async (
 /* ==================================================================== */
 /* ProviderMap                                                          */
 /* ==================================================================== */
-const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, online = true }: any) => {
+const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online = true }: any) => {
   const mapRef = useRef<MapView>(null);
   const haloAnim = useRef(new Animated.Value(0)).current;
   const focused = useIsFocused();
-  // the pulse is restarted every time the tab comes back into view (native loops stop while a tab is detached)
   useEffect(() => {
     haloAnim.setValue(0);
     if (!online || !focused) return;
@@ -387,7 +438,6 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
   const haloScale = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1.5] });
   const haloOpacity = haloAnim.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.55, 0.18, 0] });
 
-  // live compass: which way the phone is facing (smoothed, ~10 updates/s)
   const [compass, setCompass] = useState<number | null>(null);
   const compassRaw = useRef<number | null>(null);
   const compassShown = useRef<number | null>(null);
@@ -472,7 +522,7 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
       });
     }, 150);
     return () => clearTimeout(t);
-  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
+  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng, padBottom, provider]);
 
   useEffect(() => {
     if (!provider || order) return;
@@ -494,21 +544,13 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
       { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
       400,
     );
-  }, [recenterTick]);
-
-  const demandZones = provider && demand
-    ? [
-        { dLat: 0.007, dLng: 0.005, mult: 1.8, label: '1.8x' },
-        { dLat: -0.006, dLng: 0.008, mult: 1.4, label: '1.4x' },
-        { dLat: 0.004, dLng: -0.009, mult: 1.6, label: '1.6x' },
-        { dLat: -0.008, dLng: -0.005, mult: 1.1, label: '1.1x' },
-      ]
-    : [];
+  }, [recenterTick, provider]);
 
   return (
     <MapView
       ref={mapRef}
       {...MAP_PROPS}
+      userInterfaceStyle="light"
       style={{ flex: 1 }}
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
@@ -521,20 +563,6 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
       showsCompass={false}
       toolbarEnabled={false}
     >
-      {demandZones.map((z, i) => {
-        const center = { latitude: provider.lat + z.dLat, longitude: provider.lng + z.dLng };
-        return (
-          <React.Fragment key={`dz-${i}`}>
-            <Circle center={center} radius={450 + z.mult * 300} strokeColor="rgba(255,117,31,0.9)" strokeWidth={1} fillColor="rgba(255,117,31,0.25)" />
-            <Marker coordinate={center} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-              <View style={mapStyles.zoneBadge}>
-                <Text style={mapStyles.zoneBadgeText}>{z.label} demand</Text>
-              </View>
-            </Marker>
-          </React.Fragment>
-        );
-      })}
-
       {route && (
         <>
           <Marker coordinate={{ latitude: route.start.lat, longitude: route.start.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
@@ -599,23 +627,689 @@ const ProviderMap = ({ provider, route, order, demand, recenterTick, padBottom, 
   );
 };
 
-const BLUE = '#3B82F6';
-const RED = '#EF4444';
-const PURPLE = '#8B5CF6';
+/* ==================================================================== */
+/* Reverse-geocode helpers (shared by picker)                           */
+/* ==================================================================== */
+const reverseGeocodeGoogle = async (coords: Coord) => {
+  if (!HAS_API_KEY) return null;
+  try {
+    const response = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${coords.latitude},${coords.longitude}&key=${GOOGLE_MAPS_API_KEY}`,
+    );
+    const json = await response.json();
+    if (json.status === 'OK' && json.results.length > 0) {
+      const result =
+        json.results.find((r: any) =>
+          (r.types || []).some((t: string) => ['point_of_interest', 'establishment', 'premise', 'street_address'].includes(t)),
+        ) || json.results[0];
+      const components = result.address_components || [];
+      const get = (t: string) => components.find((c: any) => c.types.includes(t))?.long_name || '';
+      const street = get('route') || result.formatted_address.split(',')[0];
+      return {
+        name: get('point_of_interest') || get('establishment') || get('premise') || street,
+        sub: result.formatted_address as string,
+        structured: {
+          street_address: street,
+          barangay: get('sublocality') || get('sublocality_level_1') || get('neighborhood') || 'Unknown',
+          city: get('locality') || get('administrative_area_level_2') || 'Unknown',
+          province: get('administrative_area_level_1') || 'Unknown',
+          zip_code: get('postal_code') || '0000',
+        },
+      };
+    }
+  } catch (err) { console.warn(err); }
+  return null;
+};
 
+const reverseGeocodeExpo = async (coords: Coord) => {
+  try {
+    const [addr] = await Location.reverseGeocodeAsync(coords);
+    if (!addr) return null;
+    const mainName = addr.name || addr.street || 'Selected Location';
+    const subParts = [addr.street !== addr.name ? addr.street : null, addr.district || addr.subregion, addr.city, addr.region]
+      .filter(Boolean).join(', ');
+    return {
+      name: mainName,
+      sub: subParts || `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`,
+      structured: {
+        street_address: mainName, barangay: addr.district || 'Unknown', city: addr.city || 'Unknown',
+        province: addr.region || 'Unknown', zip_code: addr.postalCode || '0000',
+      },
+    };
+  } catch (err) { console.warn(err); }
+  return null;
+};
+
+const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
+  if (!HAS_API_KEY) return [];
+  try {
+    const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+      },
+      body: JSON.stringify({
+        maxResultCount: 12,
+        rankPreference: 'DISTANCE',
+        locationRestriction: { circle: { center: coords, radius: NEARBY_RADIUS_M } },
+      }),
+    });
+    const data = await response.json();
+    return (data.places || [])
+      .filter((p: any) => p.displayName?.text && p.location && !(p.types || []).some((t: string) => REJECTED_PLACE_TYPES.has(t)))
+      .map((p: any) => {
+        const pc = { latitude: p.location.latitude, longitude: p.location.longitude };
+        return {
+          id: p.id, name: p.displayName.text, address: p.formattedAddress || '',
+          ...pc, dist: metersBetween(coords, pc),
+        } as NearbyPlace;
+      })
+      .sort((a: NearbyPlace, b: NearbyPlace) => a.dist - b.dist);
+  } catch (e) {
+    console.warn('Nearby lookup failed', e);
+  }
+  return [];
+};
+
+/* ==================================================================== */
+/* RouteLocationPickerModal                                             */
+/* ==================================================================== */
+const RouteLocationPickerModal = ({
+  visible, onClose, onSelect, initialCoords, title, pinColor, colors, isDark,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSelect: (loc: any) => void;
+  initialCoords?: Coord | null;
+  title: string;
+  pinColor: string;
+  colors: ThemeColors;
+  isDark: boolean;
+}) => {
+  const insets = useSafeAreaInsets();
+  const mapRef = useRef<MapView>(null);
+  const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resolveSeq = useRef(0);
+  const lastResolved = useRef<Coord | null>(null);
+  const lastPoiTap = useRef(0);
+  const markerRef = useRef<Coord>(initialCoords || DEFAULT_CENTER);
+
+  const [markerCoord, setMarkerCoord] = useState<Coord>(initialCoords || DEFAULT_CENTER);
+  markerRef.current = markerCoord;
+
+  const [addressName, setAddressName] = useState('Locating...');
+  const [addressSub, setAddressSub] = useState('');
+  const [nearby, setNearby] = useState<NearbyPlace[]>([]);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [isDraggingMap, setIsDraggingMap] = useState(false);
+  const [validatingPin, setValidatingPin] = useState(false);
+  const [structuredAddress, setStructuredAddress] = useState({
+    street_address: '', barangay: '', city: '', province: '', zip_code: '',
+  });
+
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [recents, setRecents] = useState<RecentEntry[]>([]);
+  const [kbH, setKbH] = useState(0);
+
+  const pinBounce = useRef(new Animated.Value(0)).current;
+  const pinPulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!visible) return;
+    if (initialCoords) {
+      setMarkerCoord(initialCoords);
+      resolveAt(initialCoords);
+      const t = setTimeout(() => {
+        mapRef.current?.animateToRegion({ ...initialCoords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 0);
+      }, 50);
+      return () => clearTimeout(t);
+    }
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') { resolveAt(markerRef.current); return; }
+        const loc = await Location.getCurrentPositionAsync({});
+        moveTo({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+      } catch { resolveAt(markerRef.current); }
+    })();
+    loadRecents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, initialCoords?.latitude, initialCoords?.longitude]);
+
+  useEffect(() => {
+    Animated.spring(pinBounce, { toValue: isDraggingMap ? 1 : 0, friction: 6, tension: 40, useNativeDriver: true }).start();
+  }, [isDraggingMap, pinBounce]);
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pinPulse, { toValue: 1, duration: 1500, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pinPulse, { toValue: 0, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pinPulse]);
+
+  useEffect(() => () => {
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const show = Keyboard.addListener('keyboardWillShow', e => setKbH(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKbH(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  const loadRecents = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(RECENTS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as RecentEntry[];
+        setRecents(Array.isArray(parsed) ? parsed : []);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const saveRecent = async (entry: RecentEntry) => {
+    try {
+      const next = [
+        entry,
+        ...recents.filter(r => Math.abs(r.latitude - entry.latitude) > 1e-4 || Math.abs(r.longitude - entry.longitude) > 1e-4),
+      ].slice(0, MAX_RECENTS);
+      setRecents(next);
+      await AsyncStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+    } catch { /* ignore */ }
+  };
+
+  const resolveAt = async (coords: Coord, label?: Label) => {
+    const seq = ++resolveSeq.current;
+    lastResolved.current = coords;
+    setValidatingPin(true);
+    if (label) { setAddressName(label.name); setAddressSub(label.sub || ''); }
+
+    const [geo, list] = await Promise.all([reverseGeocodeGoogle(coords), fetchNearbyPlaces(coords)]);
+    if (seq !== resolveSeq.current) return;
+
+    let g = geo;
+    if (!g) g = await reverseGeocodeExpo(coords);
+    if (seq !== resolveSeq.current) return;
+
+    const close = label ? null : list.find(p => p.dist <= LABEL_SNAP_M) || null;
+    const name = label?.name || close?.name || g?.name || 'Pinned location';
+    const sub =
+      label?.sub ||
+      (close ? close.address || g?.sub || '' : g?.sub) ||
+      `${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}`;
+
+    setAddressName(name);
+    setAddressSub(sub);
+    setNearby(list.filter(p => p.name !== name));
+    setStructuredAddress(
+      g?.structured || { street_address: name, barangay: 'Unknown', city: 'Unknown', province: 'Unknown', zip_code: '0000' },
+    );
+    setValidatingPin(false);
+  };
+
+  const moveTo = (coords: Coord, label?: Label) => {
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    setMarkerCoord(coords);
+    mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
+    resolveAt(coords, label);
+  };
+
+  const handleLocateMe = async () => {
+    if (locating) return;
+    Keyboard.dismiss();
+    try {
+      setLocating(true);
+      let perm = await Location.getForegroundPermissionsAsync();
+      if (perm.status !== 'granted') perm = await Location.requestForegroundPermissionsAsync();
+      if (perm.status !== 'granted') {
+        Alert.alert('Location is off', 'Allow location access so the map can jump to where you are.');
+        return;
+      }
+      let first: Coord | null = null;
+      try {
+        const last = await Location.getLastKnownPositionAsync();
+        if (last) { first = { latitude: last.coords.latitude, longitude: last.coords.longitude }; moveTo(first); }
+      } catch { /* ignore */ }
+      const fresh = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const here = { latitude: fresh.coords.latitude, longitude: fresh.coords.longitude };
+      if (!first || metersBetween(first, here) > 15) moveTo(here);
+    } catch {
+      Alert.alert('Error', 'Could not fetch your current location.');
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const runSearch = async (text: string) => {
+    setSearchError(null);
+    if (!text.trim()) { setSearchResults([]); return; }
+    if (!HAS_API_KEY) { setSearchError('Search unavailable.'); return; }
+    try {
+      setSearchLoading(true);
+      const c = markerRef.current;
+      const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+        },
+        body: JSON.stringify({
+          textQuery: text, languageCode: 'en', regionCode: 'PH',
+          locationBias: { circle: { center: { latitude: c.latitude, longitude: c.longitude }, radius: 50000.0 } },
+        }),
+      });
+      const data = await response.json();
+      if (data.error) { setSearchError(data.error.message); setSearchResults([]); return; }
+      const detailed: SearchResult[] = (data.places || [])
+        .filter((p: any) => !(p.types || []).some((t: string) => REJECTED_PLACE_TYPES.has(t)))
+        .map((p: any) => ({
+          place_id: p.id,
+          name: p.displayName?.text || '',
+          formatted_address: p.formattedAddress || '',
+          geometry: { location: { lat: p.location.latitude, lng: p.location.longitude } },
+        }));
+      setSearchResults(detailed);
+      if (detailed.length === 0) setSearchError('Only streets matched.');
+    } catch {
+      setSearchError('Search failed.');
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const handleSearchChange = (text: string) => {
+    setSearchQuery(text);
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    if (!text.trim()) { setSearchResults([]); setSearchError(null); return; }
+    searchDebounce.current = setTimeout(() => runSearch(text), 350);
+  };
+
+  const closeSearch = () => {
+    setIsSearching(false); setSearchQuery(''); setSearchResults([]); setSearchError(null);
+    Keyboard.dismiss();
+  };
+
+  const selectSearchResult = (item: SearchResult) => {
+    const coords = { latitude: item.geometry.location.lat, longitude: item.geometry.location.lng };
+    moveTo(coords, { name: item.name, sub: item.formatted_address });
+    saveRecent({ name: item.name, address: item.formatted_address, latitude: coords.latitude, longitude: coords.longitude, ts: Date.now() });
+    closeSearch();
+  };
+
+  const pickRecent = (r: RecentEntry) => {
+    moveTo({ latitude: r.latitude, longitude: r.longitude }, { name: r.name, sub: r.address });
+    closeSearch();
+  };
+
+  const pickNearby = (p: NearbyPlace) => {
+    Keyboard.dismiss();
+    moveTo({ latitude: p.latitude, longitude: p.longitude }, { name: p.name, sub: p.address });
+  };
+
+  const confirm = () => {
+    const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
+    const locationInfo = {
+      address: fullAddress,
+      latitude: markerCoord.latitude,
+      longitude: markerCoord.longitude,
+      ...structuredAddress,
+    };
+    saveRecent({ name: addressName, address: addressSub || addressName, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ts: Date.now() });
+    onSelect(locationInfo);
+  };
+
+  const onPanDrag = () => {
+    if (!isDraggingMap) setIsDraggingMap(true);
+  };
+
+  const onRegionChangeComplete = (region: Region) => {
+    setIsDraggingMap(false);
+    const center = { latitude: region.latitude, longitude: region.longitude };
+    if (lastResolved.current && metersBetween(lastResolved.current, center) < SAME_SPOT_METERS) return;
+    setMarkerCoord(center);
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => resolveAt(center), 350);
+  };
+
+  const onPoiClick = (e: any) => {
+    const { coordinate, name } = e.nativeEvent || {};
+    if (!coordinate) return;
+    lastPoiTap.current = Date.now();
+    moveTo(
+      { latitude: coordinate.latitude, longitude: coordinate.longitude },
+      name ? { name: String(name).replace(/\n/g, ' ') } : undefined,
+    );
+  };
+
+  const onMapPress = (e: any) => {
+    Keyboard.dismiss();
+    if (Date.now() - lastPoiTap.current < 500) return;
+    const c = e.nativeEvent?.coordinate;
+    if (!c) return;
+    moveTo({ latitude: c.latitude, longitude: c.longitude });
+  };
+
+  const pinTranslateY = pinBounce.interpolate({ inputRange: [0, 1], outputRange: [0, -12] });
+  const pinScale = pinBounce.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
+  const pulseScale = pinPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] });
+  const pulseOpacity = pinPulse.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0] });
+
+  const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
+  const busy = validatingPin || isDraggingMap;
+
+  return (
+    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+      <View style={[pickerStyles.container, { paddingBottom: kbH }]}>
+        <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
+
+        <View style={pickerStyles.mapArea}>
+          <MapView
+            ref={mapRef}
+            provider={PROVIDER_GOOGLE}
+            userInterfaceStyle="light"
+            style={StyleSheet.absoluteFill}
+            initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
+            onMapReady={() => setMapLoaded(true)}
+            onPanDrag={onPanDrag}
+            onRegionChangeComplete={onRegionChangeComplete}
+            onPoiClick={onPoiClick}
+            onPress={onMapPress}
+            showsUserLocation
+            showsMyLocationButton={false}
+            showsCompass={false}
+            toolbarEnabled={false}
+            rotateEnabled={false}
+            pitchEnabled={false}
+          />
+
+          {!mapLoaded && (
+            <View style={pickerStyles.loadingOverlay}>
+              <ActivityIndicator size="large" color={ORANGE} />
+            </View>
+          )}
+
+          <View style={pickerStyles.centerStack} pointerEvents="box-none">
+            <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
+              <TouchableOpacity style={pickerStyles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
+                <Text style={pickerStyles.bubbleText} numberOfLines={1}>{addressName}</Text>
+                {busy
+                  ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
+                  : <Ionicons name="chevron-forward" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
+              </TouchableOpacity>
+            </Animated.View>
+
+            <View style={pickerStyles.pinContainer} pointerEvents="none">
+              <Animated.View style={[pickerStyles.pinWrapper, { transform: [{ translateY: pinTranslateY }, { scale: pinScale }] }]}>
+                <Animated.View
+                  style={[pickerStyles.pinHalo, { backgroundColor: pinColor, transform: [{ scale: pulseScale }], opacity: pulseOpacity }]}
+                />
+                <View style={[pickerStyles.pinDot, { backgroundColor: pinColor }]}>
+                  <View style={pickerStyles.pinDotInner} />
+                </View>
+                <View style={[pickerStyles.pinStem, { backgroundColor: pinColor }]} />
+              </Animated.View>
+              <View style={pickerStyles.pinShadow} />
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[pickerStyles.iconBtn, { top: insets.top + 10 }]}
+            onPress={onClose}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="arrow-back" size={22} color="#111827" />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={pickerStyles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
+            {locating ? <ActivityIndicator size="small" color="#111827" /> : <Ionicons name="locate" size={24} color="#111827" />}
+          </TouchableOpacity>
+        </View>
+
+        <View style={[pickerStyles.sheet, { backgroundColor: colors.card }]}>
+          <View style={[pickerStyles.dragHandle, { backgroundColor: colors.border }]} />
+
+          <ScrollView
+            style={pickerStyles.list}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+          >
+            <TouchableOpacity style={[pickerStyles.row, { backgroundColor: 'rgba(242,112,36,0.09)' }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
+              <View style={pickerStyles.rowIconCol}>
+                <View style={[pickerStyles.rowIcon, { backgroundColor: pinColor }]}>
+                  <Ionicons name="location" size={18} color="#FFFFFF" />
+                </View>
+              </View>
+              <View style={pickerStyles.rowText}>
+                <Text style={pickerStyles.rowTitle} numberOfLines={1}>{addressName}</Text>
+                <Text style={pickerStyles.rowSub} numberOfLines={1}>
+                  {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
+                </Text>
+              </View>
+              <Ionicons name="pencil" size={18} color={colors.textSecondary} />
+            </TouchableOpacity>
+
+            {nearby.map(p => (
+              <TouchableOpacity key={p.id} style={pickerStyles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
+                <View style={pickerStyles.rowIconCol}>
+                  <View style={[pickerStyles.rowIconMuted, { backgroundColor: colors.background }]}>
+                    <Ionicons name="location-outline" size={18} color={colors.textSecondary} />
+                  </View>
+                  <Text style={pickerStyles.rowDist}>{fmtDist(p.dist)}</Text>
+                </View>
+                <View style={pickerStyles.rowText}>
+                  <Text style={pickerStyles.rowTitle} numberOfLines={1}>{p.name}</Text>
+                  <Text style={pickerStyles.rowSub} numberOfLines={1}>{p.address}</Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+            {nearby.length === 0 && (
+              <Text style={pickerStyles.emptyNearby}>
+                {busy ? 'Looking for nearby places...' : 'No named places nearby. Drag the map or search.'}
+              </Text>
+            )}
+          </ScrollView>
+
+          <TouchableOpacity
+            style={[pickerStyles.confirmBtn, { backgroundColor: pinColor }, busy && { opacity: 0.6 }]}
+            onPress={() => { Keyboard.dismiss(); confirm(); }}
+            activeOpacity={0.9}
+            disabled={busy}
+          >
+            <Text style={pickerStyles.confirmBtnText}>
+              {busy ? 'Updating...' : `Confirm ${title}`}
+            </Text>
+          </TouchableOpacity>
+          <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
+        </View>
+
+        {isSearching && (
+          <View style={[pickerStyles.searchOverlay, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
+            <View style={[pickerStyles.searchModalHeader, { borderBottomColor: colors.divider }]}>
+              <TouchableOpacity style={[pickerStyles.searchBackBtn, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={closeSearch}>
+                <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <View style={[pickerStyles.searchInputWrapper, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+                <TextInput
+                  style={[pickerStyles.searchInput, { color: colors.textPrimary }]}
+                  placeholder="Search mall, school, landmark..."
+                  placeholderTextColor={colors.textMuted}
+                  value={searchQuery}
+                  onChangeText={handleSearchChange}
+                  autoFocus
+                  returnKeyType="search"
+                />
+                {searchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
+                    <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginTop: 20 }} />}
+            {!!searchError && !searchLoading && <Text style={pickerStyles.searchErrorText}>{searchError}</Text>}
+
+            {searchQuery.trim().length === 0 && recents.length > 0 && (
+              <View style={pickerStyles.recentsHeader}>
+                <Text style={[pickerStyles.recentsLabel, { color: colors.textMuted }]}>RECENT</Text>
+                <TouchableOpacity onPress={async () => { try { await AsyncStorage.removeItem(RECENTS_KEY); setRecents([]); } catch { /* ignore */ } }}>
+                  <Text style={pickerStyles.clearText}>Clear</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <FlatList
+              data={displayList}
+              keyExtractor={(item: any, index) => (item.place_id || item.name) + index}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 40 }}
+              renderItem={({ item }) => {
+                const isRecent = !('place_id' in item);
+                return (
+                  <TouchableOpacity
+                    style={[pickerStyles.searchResultItem, { borderBottomColor: colors.divider }]}
+                    onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
+                  >
+                    <View style={[pickerStyles.searchResultIconBox, { backgroundColor: colors.background }]}>
+                      <Ionicons name={isRecent ? 'time-outline' : 'location-outline'} size={18} color={pinColor} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[pickerStyles.searchResultTitle, { color: colors.textPrimary }]} numberOfLines={1}>{item.name}</Text>
+                      <Text style={[pickerStyles.searchResultSub, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {isRecent ? (item as RecentEntry).address : (item as SearchResult).formatted_address}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+};
+
+const pickerStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#fff' },
+  mapArea: { flex: 1, backgroundColor: '#F5F5F5', overflow: 'hidden' },
+  loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  centerStack: {
+    position: 'absolute', left: 0, right: 0, top: '50%',
+    marginTop: -(32 + 8 + 42), height: 42 + 8 + 32,
+    alignItems: 'center', zIndex: 4,
+  },
+  bubble: {
+    height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#FFFFFF', borderRadius: 21, paddingHorizontal: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
+    borderWidth: 1, borderColor: 'rgba(0,0,0,0.05)',
+  },
+  bubbleText: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: '#111827' },
+  pinContainer: { marginTop: 8, alignItems: 'center' },
+  pinWrapper: { alignItems: 'center' },
+  pinHalo: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, opacity: 0.3 },
+  pinDot: {
+    width: 24, height: 24, borderRadius: 12, borderWidth: 3, borderColor: '#FFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6, zIndex: 2,
+  },
+  pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
+  pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
+  pinShadow: { position: 'absolute', bottom: -2, width: 8, height: 3, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.25)' },
+  iconBtn: {
+    position: 'absolute', left: 16, width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
+  },
+  locateMeBtn: {
+    position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
+  },
+  sheet: {
+    borderTopLeftRadius: 22, borderTopRightRadius: 22, marginTop: -22,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 12,
+    zIndex: 6,
+  },
+  dragHandle: { width: 44, height: 5, borderRadius: 3, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
+  list: { maxHeight: 232 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 14 },
+  rowIconCol: { width: 56, alignItems: 'center' },
+  rowIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  rowIconMuted: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  rowDist: { fontSize: 11, color: '#6B7280', marginTop: 4, fontWeight: '500' },
+  rowText: { flex: 1 },
+  rowTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
+  rowSub: { fontSize: 13, color: '#6B7280', marginTop: 2 },
+  emptyNearby: { textAlign: 'center', fontSize: 12, color: '#9CA3AF', paddingVertical: 14, paddingHorizontal: 20 },
+  confirmBtn: {
+    marginHorizontal: 20, marginTop: 6, borderRadius: 30, paddingVertical: 16,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 5,
+  },
+  confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
+  searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20 },
+  searchModalHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1 },
+  searchBackBtn: {
+    width: 46, height: 46, borderRadius: 23, justifyContent: 'center', alignItems: 'center',
+    marginRight: 12, borderWidth: 1,
+  },
+  searchInputWrapper: { flex: 1, height: 48, borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderWidth: 1 },
+  searchInput: { flex: 1, fontSize: 15, fontWeight: '500' },
+  searchErrorText: { textAlign: 'center', marginTop: 24, fontSize: 13, color: '#9CA3AF' },
+  searchResultItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: 1, gap: 14 },
+  searchResultIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  searchResultTitle: { fontSize: 15, fontWeight: '700', marginBottom: 3 },
+  searchResultSub: { fontSize: 12, fontWeight: '400', lineHeight: 16 },
+  recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
+  recentsLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  clearText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+});
+
+/* ==================================================================== */
+/* Main Screen                                                          */
+/* ==================================================================== */
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const { colors, isDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const [isOnline, setIsOnline] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   const [providerId, setProviderId] = useState<number | null>(null);
   const [routes, setRoutes] = useState<Route[]>([]);
   const [activeRoute, setActiveRoute] = useState<Route | null>(null);
+  const [usedTodayCount, setUsedTodayCount] = useState(0);
+  const [demoMode, setDemoModeState] = useState(false);
+
+  // Refs so async callbacks & realtime listeners always see latest values without waiting for re-render
+  const providerIdRef = useRef<number | null>(null);
+  const activeRouteRef = useRef<Route | null>(null);
+  const routesRef = useRef<Route[]>([]);
+
+  useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
+  useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
+  useEffect(() => { routesRef.current = routes; }, [routes]);
 
   const [requests, setRequests] = useState<JobRequest[]>([]);
   const [checkingMatches, setCheckingMatches] = useState(false);
@@ -623,27 +1317,16 @@ export default function JobsScreen() {
   const [previewPhoto, setPreviewPhoto] = useState<string | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
 
-  // Full-screen details for an offer
   const [detailRequestId, setDetailRequestId] = useState<number | null>(null);
-
   const [routePickerVisible, setRoutePickerVisible] = useState(false);
 
   const [myLoc, setMyLoc] = useState<{ lat: number; lng: number; heading: number | null } | null>(null);
   const [locDenied, setLocDenied] = useState(false);
   const [recenterTick, setRecenterTick] = useState(0);
-  const [showDemand, setShowDemand] = useState(false);
 
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
   const [offerSecondsLeft, setOfferSecondsLeft] = useState(OFFER_SECONDS);
   const [todayStats, setTodayStats] = useState<{ count: number; earned: number; rating: number | null }>({ count: 0, earned: 0, rating: null });
-
-  const [confirmSheetVisible, setConfirmSheetVisible] = useState(false);
-  const [pendingRoute, setPendingRoute] = useState<Route | null>(null);
-  const [departureDate, setDepartureDate] = useState(new Date());
-  const [departureTime, setDepartureTime] = useState(new Date());
-  const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [showTimePicker, setShowTimePicker] = useState(false);
 
   const [notifModalOpen, setNotifModalOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notif[]>([]);
@@ -655,6 +1338,25 @@ export default function JobsScreen() {
 
   const [fullListOpen, setFullListOpen] = useState(false);
 
+  // Add Route Modal State
+  const [addRouteModalVisible, setAddRouteModalVisible] = useState(false);
+  const [routeLocationPickerVisible, setRouteLocationPickerVisible] = useState(false);
+  const [routeLocationPickerType, setRouteLocationPickerType] = useState<'start' | 'end'>('start');
+  const [newRouteStart, setNewRouteStart] = useState<Location | null>(null);
+  const [newRouteEnd, setNewRouteEnd] = useState<Location | null>(null);
+  const [newRouteFrequency, setNewRouteFrequency] = useState<Frequency>('Daily');
+  const [newRouteDepartureDate, setNewRouteDepartureDate] = useState(new Date());
+  const [newRouteDepartureTime, setNewRouteDepartureTime] = useState(new Date(Date.now() + 135 * 60 * 1000));
+  const [newRouteDurationHours, setNewRouteDurationHours] = useState<number>(2);
+  const [newRouteSelectedWeekday, setNewRouteSelectedWeekday] = useState<number>(new Date().getDay());
+  const [newRouteVehicleId, setNewRouteVehicleId] = useState<number | null>(null);
+  const [newRouteVehicles, setNewRouteVehicles] = useState<Vehicle[]>([]);
+  const [newRouteSubmitting, setNewRouteSubmitting] = useState(false);
+  const [newRouteShowDatePicker, setNewRouteShowDatePicker] = useState(false);
+  const [newRouteShowTimePicker, setNewRouteShowTimePicker] = useState(false);
+  const [newRoutePreviewCoords, setNewRoutePreviewCoords] = useState<Coord[]>([]);
+
+  const addRoutePreviewMapRef = useRef<MapView>(null);
   const notifiedMatchIdsRef = useRef<Set<number>>(new Set());
 
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -668,7 +1370,25 @@ export default function JobsScreen() {
   const modeFade = useRef(new Animated.Value(1)).current;
   const swapAnim = useRef(new Animated.Value(0)).current;
   const [ctaW, setCtaW] = useState(320);
-  const isFocused = useIsFocused();   // loops are restarted on every return to this tab
+  const isFocused = useIsFocused();
+
+  useEffect(() => {
+    getDemoMode().then(setDemoModeState);
+    return subscribeDemoMode(setDemoModeState);
+  }, []);
+
+  // Listen to active route changes made from ManageRoutesScreen or App.tsx
+  useEffect(() => {
+    return subscribeActiveRoute((newRouteId) => {
+      if (!newRouteId) return;
+      const found = routesRef.current.find(r => r.route_id === newRouteId);
+      if (found && activeRouteRef.current?.route_id !== newRouteId) {
+        setActiveRoute(found);
+        activeRouteRef.current = found;
+        void refreshMatches(providerIdRef.current, found, routesRef.current);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const animate = (v: Animated.Value, delay: number, duration = 600) =>
@@ -762,6 +1482,7 @@ export default function JobsScreen() {
         const t = (row?.type || '').toLowerCase();
         if (t === 'match' || t.includes('direct')) {
           fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
+          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
@@ -773,7 +1494,7 @@ export default function JobsScreen() {
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: '🎯 New Delivery Request!',
+          title: '🎯 Route Match Available!',
           body,
           data: { type: 'match' },
           sound: true,
@@ -798,18 +1519,10 @@ export default function JobsScreen() {
   const handleNotifPress = async (n: Notif) => {
     await markNotifRead(n);
     setNotifModalOpen(false);
-
     const type = (n.type || '').toLowerCase();
-
-    if (type.startsWith('support')) {
-      setFullListOpen(true);
-      return;
-    }
-
+    if (type.startsWith('support')) { setFullListOpen(true); return; }
     const handled = await routeNotification(navigation, n, { role: 'provider' });
-    if (!handled) {
-      Alert.alert(n.title || 'Notification', n.body || '');
-    }
+    if (!handled) { Alert.alert(n.title || 'Notification', n.body || ''); }
   };
 
   const loadTodayStats = async (pid: number) => {
@@ -835,13 +1548,14 @@ export default function JobsScreen() {
     } catch { /* keep zeros */ }
   };
 
-  const getProviderData = async () => {
+  const getProviderData = async (): Promise<number | null> => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
       const { data: userData, error } = await supabase.from('users').select('user_id, is_online').eq('auth_id', user.id).single();
       if (error) throw error;
       setProviderId(userData.user_id);
+      providerIdRef.current = userData.user_id;
       setIsOnline(!!(userData as any).is_online);
       void loadTodayStats(userData.user_id);
       return userData.user_id;
@@ -849,13 +1563,13 @@ export default function JobsScreen() {
   };
 
   const hasDirectOffers = requests.some(r => r.isDirectRequest && !dismissedIds.includes(r.request_id));
+  const hasAnyActiveOffers = requests.some(r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest));
 
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline && !hasDirectOffers);
+      setTabBarHidden(!loading && !isOnline && !hasDirectOffers && !hasAnyActiveOffers);
       return () => setTabBarHidden(false);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isOnline, loading, hasDirectOffers]),
+    }, [isOnline, loading, hasDirectOffers, hasAnyActiveOffers]),
   );
 
   const goToTasks = () => {
@@ -878,115 +1592,13 @@ export default function JobsScreen() {
     navigation.navigate('ManageRoutes');
   };
 
-  const createQuickRoute = async (pid: number) => {
+  /* ------------------ Fetch routes / vehicles (Returns resolved route immediately) ------------------ */
+  const fetchRoutes = async (pid: number): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
     try {
-      setLoading(true);
+      const stats = await getTodayRouteStats(pid);
+      setUsedTodayCount(stats.usedTodayCount);
 
-      let vehicleId: number | null = null;
-      const { data: vehData } = await supabase
-        .from('vehicles')
-        .select('vehicle_id, vehicle_type, plate_number')
-        .eq('provider_id', pid)
-        .limit(1)
-        .maybeSingle();
-
-      let resolvedVehicle: any = vehData;
-      if (vehData) {
-        vehicleId = vehData.vehicle_id;
-      } else {
-        const { data: newVeh, error: vehErr } = await supabase
-          .from('vehicles')
-          .insert({
-            provider_id: pid,
-            vehicle_type: 'Motorcycle / Van',
-            plate_number: 'PNS-999',
-            max_volume_liters: 500,
-            max_weight_kg: 100,
-            cargo_length_cm: 100,
-            cargo_width_cm: 100,
-            cargo_height_cm: 100,
-            verification_status: 'Verified',
-          })
-          .select('*')
-          .single();
-        if (vehErr) throw vehErr;
-        vehicleId = newVeh.vehicle_id;
-        resolvedVehicle = newVeh;
-      }
-
-      const curLat = myLoc?.lat ?? 10.3157;
-      const curLng = myLoc?.lng ?? 123.8854;
-
-      const resolveLocation = async (lat: number, lng: number, fallbackLabel: string) => {
-        const { data: existing } = await supabase
-          .from('locations')
-          .select('*')
-          .eq('latitude', lat)
-          .eq('longitude', lng)
-          .limit(1);
-
-        if (existing && existing.length > 0) return existing[0];
-
-        const { data: created, error } = await supabase
-          .from('locations')
-          .insert({
-            street_address: fallbackLabel,
-            barangay: 'Unknown',
-            city: 'Unknown',
-            province: 'Unknown',
-            zip_code: '0000',
-            latitude: lat,
-            longitude: lng,
-          })
-          .select('*')
-          .single();
-        if (error) throw error;
-        return created;
-      };
-
-      const startLoc = await resolveLocation(curLat, curLng, `Current Location (${curLat.toFixed(4)}, ${curLng.toFixed(4)})`);
-      const endLat = curLat + 0.03;
-      const endLng = curLng + 0.03;
-      const endLoc = await resolveLocation(endLat, endLng, `Destination (${endLat.toFixed(4)}, ${endLng.toFixed(4)})`);
-
-      const nowIso = toNaiveIsoString(new Date());
-      const { data: simpleRoute, error: simpleErr } = await supabase
-        .from('provider_routes')
-        .insert({
-          provider_id: pid,
-          vehicle_id: vehicleId,
-          start_location_id: startLoc.location_id,
-          end_location_id: endLoc.location_id,
-          departure_time: nowIso,
-          route_frequency: 'On-Demand',
-        })
-        .select('*')
-        .single();
-      if (simpleErr) throw simpleErr;
-
-      const builtRoute: Route = {
-        ...simpleRoute,
-        start_location: startLoc,
-        end_location: endLoc,
-        vehicle: resolvedVehicle,
-      };
-
-      setActiveRoute(builtRoute);
-      await setActiveRouteId(builtRoute.route_id);
-      await fetchRoutes(pid);
-      return builtRoute;
-    } catch (err: any) {
-      console.error('Failed to create quick route:', err);
-      Alert.alert('Error', err?.message || 'Could not create active route.');
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchRoutes = async (pid: number) => {
-    try {
-      let { data, error } = await supabase
+      const { data, error } = await supabase
         .from('provider_routes')
         .select(`
           *,
@@ -994,154 +1606,176 @@ export default function JobsScreen() {
           end_location:locations!provider_routes_end_location_id_fkey(*),
           vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
         `)
-        .eq('provider_id', pid).order('created_at', { ascending: false });
+        .eq('provider_id', pid)
+        .order('created_at', { ascending: false });
 
-      if (error || !data) {
-        const { data: fkData, error: fkError } = await supabase
-          .from('provider_routes')
-          .select(`
-            *,
-            start_location:locations!start_location_id(*),
-            end_location:locations!end_location_id(*),
-            vehicle:vehicles(*)
-          `)
-          .eq('provider_id', pid).order('created_at', { ascending: false });
-        if (!fkError && fkData) { data = fkData; error = null; }
-      }
+      if (error) throw error;
 
-      let list: Route[] = [];
-
-      if (error || !data || data.length === 0) {
-        const { data: simpleRoutes } = await supabase.from('provider_routes').select('*').eq('provider_id', pid).order('created_at', { ascending: false });
-        if (simpleRoutes && simpleRoutes.length > 0) {
-          const locIds = Array.from(new Set(simpleRoutes.flatMap((r) => [r.start_location_id, r.end_location_id]).filter(Boolean)));
-          const vIds = Array.from(new Set(simpleRoutes.map((r) => r.vehicle_id).filter(Boolean)));
-          const { data: locs } = locIds.length > 0
-            ? await supabase.from('locations').select('*').in('location_id', locIds)
-            : { data: [] };
-          const { data: vehs } = vIds.length > 0
-            ? await supabase.from('vehicles').select('*').in('vehicle_id', vIds)
-            : { data: [] };
-          const locMap = new Map((locs || []).map((l: any) => [l.location_id, l]));
-          const vehMap = new Map((vehs || []).map((v: any) => [v.vehicle_id, v]));
-          list = simpleRoutes.map((r: any) => ({
-            ...r,
-            start_location: locMap.get(r.start_location_id),
-            end_location: locMap.get(r.end_location_id),
-            vehicle: vehMap.get(r.vehicle_id),
-          }));
-        }
-      } else {
-        list = data as Route[];
-      }
-
-      const validRoutes = list.filter((r) => !isRouteExpired(r));
+      const nonDeleted = (data || []).filter((r: Route) => r.is_deleted !== true);
+      const validRoutes = nonDeleted.filter((r) => !isRouteExpired(r));
 
       setRoutes(validRoutes);
+      routesRef.current = validRoutes;
+
       const savedId = await getActiveRouteId();
       const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
       if (restored) {
         setActiveRoute(restored);
+        activeRouteRef.current = restored;
+        return { resolvedRoute: restored, validRoutes };
       } else if (validRoutes.length > 0) {
-        setActiveRoute(validRoutes[0]);
-        await setActiveRouteId(validRoutes[0].route_id);
+        const firstRoute = validRoutes[0];
+        setActiveRoute(firstRoute);
+        activeRouteRef.current = firstRoute;
+        await setActiveRouteId(firstRoute.route_id);
+        return { resolvedRoute: firstRoute, validRoutes };
       } else {
         setActiveRoute(null);
+        activeRouteRef.current = null;
         await setActiveRouteId(null);
+        return { resolvedRoute: null, validRoutes: [] };
       }
-    } catch (e) { console.error('fetchRoutes error:', e); }
+    } catch (e) {
+      console.error('fetchRoutes error:', e);
+      return { resolvedRoute: activeRouteRef.current, validRoutes: routesRef.current };
+    }
   };
 
-  const hydrateRequests = async (ids: number[], currentPid?: number | null): Promise<JobRequest[]> => {
-    if (ids.length === 0) return [];
+  /* ------------------ Automatic Route Match Evaluation & Auto-Selection ------------------ */
+  const refreshMatches = useCallback(async (
+    overridePid?: number | null,
+    overrideActiveRoute?: Route | null,
+    overrideAllRoutes?: Route[],
+  ) => {
+    const pid = overridePid ?? providerIdRef.current;
+    if (!pid) return;
 
-    const { data: reqs, error } = await supabase
-      .from('delivery_requests')
-      .select(`
-        request_id, pickup_type, scheduled_time, created_at, estimated_cost,
-        delivery_status, sender_id, receiver_id, receiver_phone,
-        pickup_note, dropoff_note, preferred_provider_id, preferred_route_id,
-        cargo:cargo_id ( * ),
-        pickup_location:locations!delivery_requests_pickup_location_id_fkey ( * ),
-        dropoff_location:locations!delivery_requests_dropoff_location_id_fkey ( * ),
-        receiver:receiver_id ( * )
-      `)
-      .in('request_id', ids).eq('delivery_status', 'Pending');
-    if (error) throw error;
-
-    const { data: taken } = await supabase.from('deliveries').select('request_id').in('request_id', ids);
-    const takenIds = new Set((taken || []).map((t: any) => t.request_id));
-    const open = (reqs || []).filter(
-      (r: any) => !takenIds.has(r.request_id) && (currentPid == null || Number(r.sender_id) !== Number(currentPid)),
-    );
-
-    const senderIds = Array.from(new Set(open.map((r: any) => r.sender_id).filter(Boolean)));
-    const senders: Record<number, string> = {};
-    if (senderIds.length > 0) {
-      const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
-      (users || []).forEach((u: any) => {
-        const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
-        senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
-      });
-    }
-
-    return open
-      .map((r: any) => normalizeRequest(r, senders, currentPid))
-      .sort((a, b) => {
-        const aDir = a.isDirectRequest ? 0 : 1;
-        const bDir = b.isDirectRequest ? 0 : 1;
-        if (aDir !== bDir) return aDir - bDir;
-        return b.estimated_cost - a.estimated_cost;
-      });
-  };
-
-  const refreshMatches = useCallback(async () => {
-    const pid = providerId;
-    if (!pid) {
-      setRefreshing(false);
-      return;
-    }
+    const currentActive = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
+    const allCandidateRoutes = overrideAllRoutes ?? routesRef.current;
 
     try {
       setCheckingMatches(true);
 
-      // 1. Always fetch any direct requests where the sender explicitly selected this provider
-      const { data: directRows } = await supabase
-        .from('delivery_requests')
-        .select('request_id')
-        .eq('preferred_provider_id', pid)
-        .eq('delivery_status', 'Pending');
-
-      const directIds = (directRows || []).map((r: any) => Number(r.request_id));
-
-      // 2. If provider is online with a valid active route, also include route matches
-      let matchedIds: number[] = [];
-      if (isOnline && activeRoute && !isRouteExpired(activeRoute)) {
-        const matches = await findMatches(activeRoute.route_id);
-        matchedIds = (matches || [])
-          .map((m: any) => Number(m?.request?.request_id))
-          .filter((id: number) => Number.isFinite(id));
+      // Build ordered list of routes to check: active route first, then any other valid routes
+      const orderedRoutes: Route[] = [];
+      if (currentActive) orderedRoutes.push(currentActive);
+      for (const r of allCandidateRoutes) {
+        if (!orderedRoutes.some(x => x.route_id === r.route_id)) {
+          orderedRoutes.push(r);
+        }
       }
 
-      const combinedIds = Array.from(new Set([...directIds, ...matchedIds]));
-      if (combinedIds.length === 0) {
+      // If no routes in memory yet, check storage/DB once
+      if (orderedRoutes.length === 0) {
+        const storedId = await getActiveRouteId();
+        if (storedId) {
+          orderedRoutes.push({ route_id: storedId } as Route);
+        } else {
+          // Rule 1: Zero requests until a route is posted
+          setRequests([]);
+          return;
+        }
+      }
+
+      const isDemo = await getDemoMode();
+      let winningRoute: Route | null = orderedRoutes[0] || null;
+      let winningMatches: RouteMatchRow[] = [];
+
+      // Evaluate routes in order; automatically switch to the first route that has a match!
+      for (const candidate of orderedRoutes) {
+        const rows = await evaluateAndFetchRouteMatches(candidate.route_id, isDemo);
+        if (rows.length > 0) {
+          winningRoute = candidate;
+          winningMatches = rows;
+          break;
+        }
+      }
+
+      // Also check if a sender sent a direct request (`preferred_provider_id = pid`) anchored to one of our routes
+      if (winningMatches.length === 0) {
+        const { data: directReqs } = await supabase
+          .from('delivery_requests')
+          .select(`
+            *,
+            pickup_location:locations!delivery_requests_pickup_location_id_fkey(*),
+            dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*),
+            cargo:cargo_id(*),
+            receiver:receiver_id(*)
+          `)
+          .eq('preferred_provider_id', pid)
+          .eq('delivery_status', 'Pending');
+
+        if (directReqs && directReqs.length > 0) {
+          const reqIds = directReqs.map((r: any) => r.request_id);
+          const { data: existingDelivs } = await supabase
+            .from('deliveries')
+            .select('request_id')
+            .in('request_id', reqIds);
+          const takenSet = new Set((existingDelivs || []).map((d: any) => d.request_id));
+          const openDirect = directReqs.filter((r: any) => !takenSet.has(r.request_id));
+
+          if (openDirect.length > 0) {
+            const firstPrefRouteId = openDirect[0].preferred_route_id;
+            const matchedRouteObj =
+              orderedRoutes.find(r => r.route_id === Number(firstPrefRouteId)) ||
+              orderedRoutes[0];
+
+            if (matchedRouteObj) {
+              winningRoute = matchedRouteObj;
+              winningMatches = openDirect.map((dr: any) => ({
+                match_id: 0,
+                route_id: matchedRouteObj.route_id,
+                request_id: dr.request_id,
+                provider_id: pid,
+                match_score: 100,
+                is_fallback: false,
+                fallback_type: null,
+                pickup_dist_m: 0,
+                dropoff_dist_m: 0,
+                pickup_fraction: 0,
+                dropoff_fraction: 1,
+                extra_detour_km: 0,
+                status: 'matched',
+                request: dr,
+              }));
+            }
+          }
+        }
+      }
+
+      // If a match was found on a different route than the currently displayed one, auto-select it!
+      if (winningRoute && winningRoute.start_location && activeRouteRef.current?.route_id !== winningRoute.route_id) {
+        setActiveRoute(winningRoute);
+        activeRouteRef.current = winningRoute;
+        await setActiveRouteId(winningRoute.route_id);
+      }
+
+      if (winningMatches.length === 0) {
         setRequests([]);
         return;
       }
 
-      const hydrated = await hydrateRequests(combinedIds, pid);
+      const senderIds = Array.from(new Set(winningMatches.map(m => m.request?.sender_id).filter(Boolean)));
+      const senders: Record<number, string> = {};
+      if (senderIds.length > 0) {
+        const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
+        (users || []).forEach((u: any) => {
+          const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
+          senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
+        });
+      }
+
+      const hydrated = winningMatches.map(m => normalizeMatchRow(m, senders, pid));
 
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
           notifiedMatchIdsRef.current.add(req.request_id);
-          if (isOnline || req.isDirectRequest) {
-            fireLocalMatchNotification(
-              req.isDirectRequest
-                ? `A sender requested your route from ${req.pickup.main} to ${req.dropoff.main}. Tap to accept!`
-                : `New package from ${req.pickup.main} to ${req.dropoff.main}. Tap to review.`,
-            );
-          }
+          fireLocalMatchNotification(
+            req.isDirectRequest
+              ? `A sender requested your route from ${req.pickup.main} to ${req.dropoff.main}.`
+              : `New ${Math.round(req.matchScore || 0)}% route match from ${req.pickup.main} to ${req.dropoff.main}.`,
+          );
         }
       }
 
@@ -1150,29 +1784,230 @@ export default function JobsScreen() {
       console.warn('refreshMatches error:', e);
     } finally {
       setCheckingMatches(false);
-      setRefreshing(false);
     }
-  }, [providerId, isOnline, activeRoute]);
+  }, []);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     const pid = await getProviderData();
-    if (pid) await fetchRoutes(pid);
+    if (pid) {
+      const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
+      await refreshMatches(pid, resolvedRoute, validRoutes);
+    }
     setLoading(false);
-  };
+  }, [refreshMatches]);
 
-  useFocusEffect(useCallback(() => { loadData(); }, []));
+  useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
   useEffect(() => {
     if (!providerId) return;
-    refreshMatches();
     const channel = supabase
       .channel(`jobs-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { refreshMatches(); })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => { refreshMatches(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [providerId, isOnline, activeRoute?.route_id, refreshMatches]);
+  }, [providerId, refreshMatches]);
+
+  /* ------------------------------ Add Route Modal helpers ------------------------------ */
+  const fetchVehiclesForNewRoute = async (pid: number) => {
+    const { data } = await supabase
+      .from('vehicles')
+      .select('vehicle_id, vehicle_type, plate_number, max_volume_liters, max_weight_kg, verification_status')
+      .eq('provider_id', pid)
+      .eq('verification_status', 'Verified');
+    return (data || []) as Vehicle[];
+  };
+
+  const openAddRouteModal = async () => {
+    const pid = providerId || (await getProviderData());
+    if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
+    if (usedTodayCount >= 3) {
+      Alert.alert('Daily Limit Reached (3/3)', 'You cannot post more than 3 routes per day.');
+      return;
+    }
+    setRoutePickerVisible(false);
+    const initial = new Date(Date.now() + 135 * 60 * 1000); // 2h 15m ahead
+    setNewRouteStart(null);
+    setNewRouteEnd(null);
+    setNewRouteFrequency('Daily');
+    setNewRouteDepartureDate(initial);
+    setNewRouteDepartureTime(initial);
+    setNewRouteDurationHours(2);
+    setNewRouteSelectedWeekday(initial.getDay());
+    setNewRouteVehicleId(null);
+    setNewRouteShowDatePicker(false);
+    setNewRouteShowTimePicker(false);
+    setNewRoutePreviewCoords([]);
+    const vehicles = await fetchVehiclesForNewRoute(pid);
+    setNewRouteVehicles(vehicles);
+    setAddRouteModalVisible(true);
+  };
+
+  const handleNewRouteLocationSelect = async (locData: any, type: 'start' | 'end') => {
+    try {
+      const { data: existing } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('latitude', locData.latitude)
+        .eq('longitude', locData.longitude)
+        .limit(1);
+
+      let location: Location | null = existing && existing.length > 0 ? existing[0] : null;
+
+      if (!location) {
+        const { data: newLoc, error } = await supabase.from('locations').insert({
+          street_address: locData.street_address,
+          barangay: locData.barangay,
+          city: locData.city,
+          province: locData.province,
+          zip_code: locData.zip_code,
+          latitude: locData.latitude,
+          longitude: locData.longitude,
+        }).select('*').single();
+        if (error) throw error;
+        location = newLoc;
+      }
+
+      if (type === 'start') setNewRouteStart(location);
+      else setNewRouteEnd(location);
+
+      setRouteLocationPickerVisible(false);
+    } catch (err: any) {
+      console.error(err);
+      Alert.alert('Error', 'Failed to save location to database.');
+    }
+  };
+
+  useEffect(() => {
+    if (!newRouteStart || !newRouteEnd) { setNewRoutePreviewCoords([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${newRouteStart.longitude},${newRouteStart.latitude};${newRouteEnd.longitude},${newRouteEnd.latitude}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (cancelled) return;
+        if (data?.routes?.[0]?.geometry?.coordinates) {
+          setNewRoutePreviewCoords(
+            data.routes[0].geometry.coordinates.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })),
+          );
+        } else {
+          setNewRoutePreviewCoords([
+            { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude },
+            { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude },
+          ]);
+        }
+      } catch {
+        if (!cancelled) {
+          setNewRoutePreviewCoords([
+            { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude },
+            { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude },
+          ]);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [newRouteStart?.location_id, newRouteEnd?.location_id, newRouteStart?.latitude, newRouteStart?.longitude, newRouteEnd?.latitude, newRouteEnd?.longitude]);
+
+  useEffect(() => {
+    if (!newRouteStart || !newRouteEnd) return;
+    const pts = newRoutePreviewCoords.length >= 2
+      ? newRoutePreviewCoords
+      : [
+          { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude },
+          { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude },
+        ];
+    const t = setTimeout(() => {
+      addRoutePreviewMapRef.current?.fitToCoordinates(pts, {
+        edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+        animated: true,
+      });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [newRouteStart?.location_id, newRouteEnd?.location_id, newRoutePreviewCoords.length]);
+
+  const computeNewRouteEffectiveDate = (): Date => {
+    if (newRouteFrequency === 'Daily') {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    if (newRouteFrequency === 'Weekly') {
+      return nextWeekday(newRouteSelectedWeekday);
+    }
+    return newRouteDepartureDate;
+  };
+
+  const handleAddRouteSubmit = async () => {
+    if (!providerId) { Alert.alert('Error', 'Provider not loaded.'); return; }
+    if (!newRouteStart || !newRouteEnd || !newRouteVehicleId || !newRouteStart.location_id || !newRouteEnd.location_id) {
+      Alert.alert('Required', 'Please select start location, destination, and vehicle.');
+      return;
+    }
+
+    const effectiveDate = computeNewRouteEffectiveDate();
+    const combined = new Date(
+      effectiveDate.getFullYear(),
+      effectiveDate.getMonth(),
+      effectiveDate.getDate(),
+      newRouteDepartureTime.getHours(),
+      newRouteDepartureTime.getMinutes(),
+      0,
+      0,
+    );
+
+    const endTimeObj = new Date(combined.getTime() + newRouteDurationHours * 60 * 60 * 1000);
+
+    setNewRouteSubmitting(true);
+    try {
+      const res = await createProviderRouteWithGuardrails({
+        providerId,
+        vehicleId: newRouteVehicleId,
+        startLocation: {
+          location_id: newRouteStart.location_id,
+          latitude: newRouteStart.latitude,
+          longitude: newRouteStart.longitude,
+          street_address: newRouteStart.street_address,
+        },
+        endLocation: {
+          location_id: newRouteEnd.location_id,
+          latitude: newRouteEnd.latitude,
+          longitude: newRouteEnd.longitude,
+          street_address: newRouteEnd.street_address,
+        },
+        departureDateObj: combined,
+        endTimeObj,
+        routeFrequency: newRouteFrequency,
+      });
+
+      Alert.alert(
+        'Route Posted Successfully!',
+        res.adminReviewFlag
+          ? `Route distance is ${res.distanceKm} km. Flagged for Admin coverage review (>25 km).`
+          : `Route corridor active (${res.distanceKm} km). Scanning for forward matches...`,
+      );
+
+      setAddRouteModalVisible(false);
+      if (res.route) {
+        await setActiveRouteId(res.route.route_id);
+      }
+      const { resolvedRoute, validRoutes } = await fetchRoutes(providerId);
+      await refreshMatches(providerId, resolvedRoute, validRoutes);
+    } catch (err: any) {
+      console.error('handleAddRouteSubmit error:', err);
+      Alert.alert('Guardrail Check', err?.message || 'Failed to save route.');
+    } finally {
+      setNewRouteSubmitting(false);
+    }
+  };
 
   const toggleOnlineStatus = async (online: boolean) => {
     const pid = providerId || (await getProviderData());
@@ -1184,18 +2019,21 @@ export default function JobsScreen() {
         if (routes.length > 0) {
           currentRoute = routes[0];
           setActiveRoute(currentRoute);
+          activeRouteRef.current = currentRoute;
           await setActiveRouteId(currentRoute.route_id);
         } else {
-          currentRoute = await createQuickRoute(pid);
+          await openAddRouteModal();
+          Alert.alert('Post a Route First', 'Pack-N-Ship requires an active route before going online.');
+          return;
         }
       }
-      if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route. Please try again.'); return; }
+      if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route.'); return; }
 
       await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
       setIsOnline(true);
-      setTimeout(refreshMatches, 200);
+      await refreshMatches(pid, currentRoute, routesRef.current);
     } else {
-      Alert.alert('Go Offline', 'Going offline will stop matching new requests. Your route will remain saved.', [
+      Alert.alert('Go Offline', 'Going offline will stop matching new requests.', [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
@@ -1206,129 +2044,6 @@ export default function JobsScreen() {
           },
         },
       ]);
-    }
-  };
-
-  const openConfirmSheet = (route: Route) => {
-    setPendingRoute(route);
-    const dt = parseNaiveIsoString(route.departure_time);
-    const now = new Date();
-    const freq = (route.route_frequency || '').trim();
-
-    if (freq === 'Daily') {
-      const todayAtStoredTime = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        dt.getHours(),
-        dt.getMinutes(),
-        0,
-        0,
-      );
-      const initialTime = todayAtStoredTime.getTime() < now.getTime() ? now : todayAtStoredTime;
-      setDepartureDate(now);
-      setDepartureTime(initialTime);
-      setSelectedWeekday(now.getDay());
-    } else if (freq === 'Weekly') {
-      const wDay = dt.getDay();
-      setSelectedWeekday(wDay);
-      setDepartureDate(nextWeekday(wDay, now));
-      setDepartureTime(dt);
-    } else {
-      const validFuture = dt.getTime() < now.getTime() ? now : dt;
-      setDepartureDate(validFuture);
-      setDepartureTime(validFuture);
-      setSelectedWeekday(validFuture.getDay());
-    }
-
-    setShowDatePicker(false);
-    setShowTimePicker(false);
-    setConfirmSheetVisible(true);
-  };
-
-  const confirmDeparture = async () => {
-    if (!pendingRoute || !providerId) return;
-
-    const now = new Date();
-    const freq = (pendingRoute.route_frequency || '').trim();
-
-    let effectiveDate = new Date(departureDate);
-    if (freq === 'Daily') {
-      effectiveDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    } else if (freq === 'Weekly') {
-      effectiveDate = nextWeekday(selectedWeekday, now);
-    }
-
-    const combined = new Date(
-      effectiveDate.getFullYear(),
-      effectiveDate.getMonth(),
-      effectiveDate.getDate(),
-      departureTime.getHours(),
-      departureTime.getMinutes(),
-      0,
-      0,
-    );
-
-    const isSameDayAsToday =
-      effectiveDate.getFullYear() === now.getFullYear() &&
-      effectiveDate.getMonth() === now.getMonth() &&
-      effectiveDate.getDate() === now.getDate();
-
-    if (freq === 'Daily') {
-      if (combined.getTime() < now.getTime()) {
-        Alert.alert(
-          'Invalid Time',
-          `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Please choose a departure time that has not passed yet today.`,
-        );
-        return;
-      }
-    } else if (freq === 'Weekly') {
-      if (isSameDayAsToday && combined.getTime() < now.getTime()) {
-        Alert.alert(
-          'Invalid Time',
-          `That time has already passed for today (${WEEKDAY_LABELS[selectedWeekday]}). Please choose a later time or another day.`,
-        );
-        return;
-      }
-    } else {
-      if (combined.getTime() < now.getTime()) {
-        Alert.alert('Invalid Time', 'You cannot schedule a departure in the past. Please choose a valid future date and time.');
-        return;
-      }
-    }
-
-    try {
-      const departureValue = toNaiveIsoString(combined);
-      const { error: updateErr } = await supabase
-        .from('provider_routes')
-        .update({ departure_time: departureValue })
-        .eq('route_id', pendingRoute.route_id);
-      if (updateErr) throw updateErr;
-
-      const { data: fullRoute } = await supabase
-        .from('provider_routes')
-        .select(`
-          *,
-          start_location:locations!provider_routes_start_location_id_fkey(*),
-          end_location:locations!provider_routes_end_location_id_fkey(*),
-          vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
-        `)
-        .eq('route_id', pendingRoute.route_id).single();
-      if (!fullRoute) throw new Error('Failed to reload route');
-
-      setActiveRoute(fullRoute as Route);
-      await setActiveRouteId(pendingRoute.route_id);
-      await fetchRoutes(providerId);
-      await supabase.from('users').update({ is_online: true }).eq('user_id', providerId);
-      setIsOnline(true);
-
-      setConfirmSheetVisible(false);
-      setRoutePickerVisible(false);
-      setPendingRoute(null);
-      setTimeout(refreshMatches, 200);
-    } catch (e: any) {
-      console.error('confirmDeparture error:', e);
-      Alert.alert('Error', e.message || 'Failed to set departure time');
     }
   };
 
@@ -1374,10 +2089,8 @@ export default function JobsScreen() {
     }, []),
   );
 
-  // Show offers whenever provider is online OR when a sender sent a direct request to this provider
-  const offers = requests.filter(
-    r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest),
-  );
+  // Show all non-dismissed route matches immediately when a route is active
+  const offers = requests.filter(r => !dismissedIds.includes(r.request_id));
   const currentOffer = offers[0] ?? null;
 
   const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
@@ -1387,11 +2100,8 @@ export default function JobsScreen() {
   useEffect(() => {
     if (!currentOffer) return;
     setOfferSecondsLeft(OFFER_SECONDS);
-    // Do not auto-expire direct requests where the sender specifically selected this provider
     if (currentOffer.isDirectRequest) return;
-    const t = setInterval(() => {
-      setOfferSecondsLeft(sec => sec - 1);
-    }, 1000);
+    const t = setInterval(() => { setOfferSecondsLeft(sec => sec - 1); }, 1000);
     return () => clearInterval(t);
   }, [currentOffer?.request_id, currentOffer?.isDirectRequest]);
 
@@ -1463,7 +2173,7 @@ export default function JobsScreen() {
         .limit(1);
       if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
         Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
-        refreshMatches();
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
         return;
       }
 
@@ -1495,6 +2205,29 @@ export default function JobsScreen() {
         .eq('request_id', req.request_id);
       if (reqUpdateError) throw reqUpdateError;
 
+      if (req.matchId) {
+        await supabase
+          .from('route_request_matches')
+          .update({ status: 'accepted' })
+          .eq('match_id', req.matchId);
+      }
+
+      // Update remaining trunk capacity & mark fallback used if applicable
+      if (activeRoute) {
+        const cargoWeight = req.weightKg || 5;
+        const cargoVol = computeCargoVolumeLiters(req.items);
+        const newWeight = Math.max(0, Number(activeRoute.remaining_weight_kg ?? 100) - cargoWeight);
+        const newVol = Math.max(0, Number(activeRoute.remaining_volume_liters ?? 300) - cargoVol);
+        await supabase
+          .from('provider_routes')
+          .update({
+            remaining_weight_kg: newWeight,
+            remaining_volume_liters: newVol,
+            ...(req.isFallback ? { fallback_used: true } : {}),
+          })
+          .eq('route_id', activeRoute.route_id);
+      }
+
       const { data: requestData } = await supabase
         .from('delivery_requests')
         .select('estimated_cost, sender_id')
@@ -1513,18 +2246,22 @@ export default function JobsScreen() {
 
         if (requestData.sender_id) {
           const code = requestCode(req.request_id);
-          notifyUser(
-            requestData.sender_id,
-            'Courier Accepted Your Delivery! 🚚',
-            `Your courier accepted parcel #${code} and will head to the pickup location.`,
-            { deliveryId: delivery.delivery_id },
-          ).catch(() => {});
+          try {
+            await notifyUser(
+              requestData.sender_id,
+              'Route-Matched Courier Accepted! 🚚',
+              `Your courier accepted parcel #${code} along the declared route.`,
+              { deliveryId: delivery.delivery_id },
+            );
+          } catch (err) {
+            console.warn('[Jobs] notify sender accept failed', err);
+          }
         }
       }
 
       setDetailRequestId(null);
       setDismissedIds(prev => [...prev, req.request_id]);
-      refreshMatches();
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
       if (!goToTaskTab()) {
         Alert.alert('Delivery accepted', 'Find it in the Task tab. Ask the sender to show their pickup QR when you arrive.');
       }
@@ -1535,16 +2272,13 @@ export default function JobsScreen() {
 
   const acceptRequest = (req: JobRequest) => {
     if (accepting) return;
-    if (!providerId) {
-      Alert.alert('Please wait', 'Your provider account is still loading.');
-      return;
-    }
+    if (!providerId) { Alert.alert('Please wait', 'Your provider account is still loading.'); return; }
     Alert.alert(
-      'Accept this delivery?',
+      'Accept this route match?',
       `You will earn ${money(req.estimated_cost)} for delivering from ${req.pickup.main} to ${req.dropoff.main}.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Accept', onPress: () => doAccept(req) },
+        { text: 'Accept Along Route', onPress: () => doAccept(req) },
       ],
     );
   };
@@ -1554,8 +2288,6 @@ export default function JobsScreen() {
   const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
 
   const markFailed = (uri: string) => setFailedPhotos(prev => ({ ...prev, [uri]: true }));
-
-  /* ----------------------- shared request pieces ----------------------- */
   const SCREEN_H = Dimensions.get('window').height;
 
   const distancesFor = (o: JobRequest) => {
@@ -1625,7 +2357,6 @@ export default function JobsScreen() {
     </View>
   );
 
-  /* ----------------------- full-screen package details ----------------------- */
   const renderFullDetails = () => {
     const o = detailRequestId != null ? requests.find(r => r.request_id === detailRequestId) : null;
     if (!o) return null;
@@ -1639,7 +2370,6 @@ export default function JobsScreen() {
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
-        {/* header bar */}
         <View
           style={{
             flexDirection: 'row', alignItems: 'center',
@@ -1662,45 +2392,47 @@ export default function JobsScreen() {
           <View style={{ width: 40 }} />
         </View>
 
-        {/* Scrollable Content */}
         <ScrollView
           style={{ flex: 1 }}
           contentContainerStyle={{ padding: 16, paddingBottom: 100 + insets.bottom }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Route card */}
           <View style={styles.card}>
             <View style={styles.oTopRow}>
               {renderServicePill(o)}
-              <View style={styles.chipSolid}>
-                <Ionicons name={o.isDirectRequest ? 'hourglass-outline' : 'flash'} size={11} color="#FFFFFF" />
-                <Text style={styles.chipSolidText}>
-                  {o.isDirectRequest ? 'AWAITING YOUR ACCEPTANCE' : 'MATCHED'}
-                </Text>
-              </View>
+              {o.matchScore != null && (
+                <View style={styles.scoreBadge}>
+                  <Ionicons name="analytics" size={13} color="#059669" />
+                  <Text style={styles.scoreBadgeText}>{Math.round(o.matchScore)}% Match</Text>
+                </View>
+              )}
+              {o.isFallback && (
+                <View style={styles.fallbackBadge}>
+                  <Ionicons name="Locate" size={12} color="#FFFFFF" />
+                  <Text style={styles.fallbackBadgeText}>FALLBACK ({o.fallbackType === 'CONDITION_A' ? 'ADD-ON' : '1H BACKUP'})</Text>
+                </View>
+              )}
             </View>
             {renderRingRoute(o, true)}
           </View>
 
-          {/* Earnings card */}
           <View style={styles.earnCard}>
             <Text style={styles.earnLabel}>YOU EARN</Text>
             <Text style={styles.earnValue}>{money(o.estimated_cost)}</Text>
             <View style={styles.earnNote}>
               <Ionicons name="shield-checkmark-outline" size={15} color="#FFFFFF" />
               <Text style={styles.earnNoteText}>
-                Held in escrow once you accept, then released to your wallet when the receiver confirms delivery.
+                Held in escrow once accepted, released to your wallet when delivery is verified.
               </Text>
             </View>
           </View>
 
-          {/* Trip summary */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
                 <Ionicons name="navigate-outline" size={15} color={ORANGE} />
               </View>
-              <Text style={styles.cardTitle}>Trip Summary</Text>
+              <Text style={styles.cardTitle}>Corridor & Trip Summary</Text>
             </View>
             <View style={styles.tileGrid}>
               <View style={styles.tile}>
@@ -1713,10 +2445,21 @@ export default function JobsScreen() {
                 <Text style={styles.tileLabel}>TRIP</Text>
                 <Text style={styles.tileValue}>{tripKm != null ? `${tripKm.toFixed(1)} km` : '—'}</Text>
               </View>
+              {o.pickupDistM != null && (
+                <View style={styles.tile}>
+                  <Text style={styles.tileLabel}>PICKUP FROM ROUTE</Text>
+                  <Text style={styles.tileValue}>{Math.round(o.pickupDistM)} m</Text>
+                </View>
+              )}
+              {o.dropoffDistM != null && (
+                <View style={styles.tile}>
+                  <Text style={styles.tileLabel}>DROPOFF FROM ROUTE</Text>
+                  <Text style={styles.tileValue}>{Math.round(o.dropoffDistM)} m</Text>
+                </View>
+              )}
             </View>
           </View>
 
-          {/* Photos */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
@@ -1736,15 +2479,12 @@ export default function JobsScreen() {
               <View style={styles.offerNoPhoto}>
                 <Ionicons name="image-outline" size={18} color={colors.warning} />
                 <Text style={styles.offerNoPhotoText}>
-                  {localOnly
-                    ? "The sender's package photo wasn't uploaded, so it can't be shown."
-                    : "The sender didn't add a photo of this package."}
+                  {localOnly ? "The sender's photo wasn't uploaded." : "The sender didn't add a photo."}
                 </Text>
               </View>
             )}
           </View>
 
-          {/* Package details */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
@@ -1783,24 +2523,17 @@ export default function JobsScreen() {
                   {o.fragile ? 'Fragile' : 'Standard'}
                 </Text>
               </View>
-              {!!o.dims && (
-                <View style={styles.tile}>
-                  <Text style={styles.tileLabel}>DIMENSIONS</Text>
-                  <Text style={styles.tileValue}>{o.dims}</Text>
-                </View>
-              )}
               {fits !== null && (
                 <View style={styles.tile}>
-                  <Text style={styles.tileLabel}>YOUR VEHICLE</Text>
+                  <Text style={styles.tileLabel}>VEHICLE CAPACITY</Text>
                   <Text style={[styles.tileValue, { color: fits ? colors.success : colors.error }]} numberOfLines={2}>
-                    {fits ? `Fits (${cap} kg max)` : `Too heavy (${cap} kg max)`}
+                    {fits ? `Fits (${cap} kg max)` : `Exceeds max (${cap} kg)`}
                   </Text>
                 </View>
               )}
             </View>
           </View>
 
-          {/* Notes */}
           {hasNotes && (
             <View style={styles.card}>
               <View style={styles.cardHeader}>
@@ -1824,7 +2557,6 @@ export default function JobsScreen() {
             </View>
           )}
 
-          {/* People */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
@@ -1833,13 +2565,10 @@ export default function JobsScreen() {
               <Text style={styles.cardTitle}>People</Text>
             </View>
             {renderPeople(o)}
-            <Text style={styles.privacyNote}>
-              Contact details are shared once you accept the delivery.
-            </Text>
+            <Text style={styles.privacyNote}>Contact details are shared once you accept the delivery.</Text>
           </View>
         </ScrollView>
 
-        {/* Fixed accept bar */}
         <View style={[styles.acceptBar, { paddingBottom: Math.max(16, insets.bottom) }]}>
           <View>
             <Text style={styles.eyebrow}>YOU EARN</Text>
@@ -1856,7 +2585,7 @@ export default function JobsScreen() {
             ) : (
               <>
                 <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
-                <Text style={styles.acceptBtnText}>Accept Delivery</Text>
+                <Text style={styles.acceptBtnText}>Accept Along Route</Text>
               </>
             )}
           </TouchableOpacity>
@@ -1865,10 +2594,9 @@ export default function JobsScreen() {
     );
   };
 
-  /* ------------------------------ offer popup (summary only) ------------------------------ */
   const renderOfferPopup = (o: JobRequest) => {
     const pct = o.isDirectRequest ? 100 : Math.max(0, Math.min(100, (offerSecondsLeft / OFFER_SECONDS) * 100));
-    const SHEET_H = Math.round(SCREEN_H * 0.48);
+    const SHEET_H = Math.round(SCREEN_H * 0.50);
 
     return (
       <View
@@ -1887,7 +2615,6 @@ export default function JobsScreen() {
           elevation: 16,
         }}
       >
-        {/* timer bar */}
         <View style={styles.offerTimerTrack}>
           <View
             style={[
@@ -1898,26 +2625,26 @@ export default function JobsScreen() {
           />
         </View>
 
-        {/* Main Content */}
         <View style={{ flex: 1, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 90 + insets.bottom }}>
-          {/* Top Row: Badge & Timer */}
           <View style={styles.oTopRow}>
             {renderServicePill(o)}
-            <View style={styles.chipSolid}>
-              <Ionicons name={o.isDirectRequest ? 'hourglass-outline' : 'flash'} size={11} color="#FFFFFF" />
-              <Text style={styles.chipSolidText}>
-                {o.isDirectRequest ? 'DIRECT REQUEST · AWAITING ACCEPTANCE' : 'NEW MATCH'}
-              </Text>
-            </View>
+            {o.matchScore != null && (
+              <View style={styles.scoreBadge}>
+                <Ionicons name="analytics" size={13} color="#059669" />
+                <Text style={styles.scoreBadgeText}>{Math.round(o.matchScore)}% Match</Text>
+              </View>
+            )}
+            {o.isFallback && (
+              <View style={styles.fallbackBadge}>
+                <Ionicons name="Locate" size={12} color="#FFFFFF" />
+                <Text style={styles.fallbackBadgeText}>FALLBACK</Text>
+              </View>
+            )}
             {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
             <View style={{ flex: 1 }} />
             {!o.isDirectRequest && (
               <View style={styles.offerTimerPill}>
-                <Ionicons
-                  name="timer-outline"
-                  size={13}
-                  color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary}
-                />
+                <Ionicons name="timer-outline" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} />
                 <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
                   {Math.max(0, offerSecondsLeft)}s
                 </Text>
@@ -1925,8 +2652,7 @@ export default function JobsScreen() {
             )}
           </View>
 
-          {/* Total Pay Row */}
-          <View style={[styles.offerMainRow, { marginTop: 8 }]}>
+          <View style={[styles.offerMainRow, { marginTop: 4 }]}>
             <View>
               <Text style={styles.eyebrow}>TOTAL PAY</Text>
               <Text style={styles.offerPrice}>{money(o.estimated_cost)}</Text>
@@ -1934,38 +2660,29 @@ export default function JobsScreen() {
             <Text style={styles.offerCode}>{requestCode(o.request_id)}</Text>
           </View>
 
-          {/* Route Section */}
-          <View style={{ marginTop: 14 }}>
+          <View style={{ marginTop: 12 }}>
             {renderRingRoute(o)}
           </View>
 
-          {/* View Details Button */}
           <TouchableOpacity
-            style={[styles.viewDetailsBtn, { marginTop: 16 }]}
+            style={[styles.viewDetailsBtn, { marginTop: 14 }]}
             onPress={() => setDetailRequestId(o.request_id)}
             activeOpacity={0.85}
           >
             <Ionicons name="document-text-outline" size={18} color={ORANGE} />
-            <Text style={styles.viewDetailsText}>View Full Details</Text>
+            <Text style={styles.viewDetailsText}>View Route Corridor Details</Text>
             <Ionicons name="chevron-forward" size={16} color={ORANGE} />
           </TouchableOpacity>
         </View>
 
-        {/* Fixed Footer */}
         <View
           style={[
             styles.offerBtnRow,
             {
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              paddingHorizontal: 18,
-              paddingTop: 12,
-              paddingBottom: 16,
+              position: 'absolute', left: 0, right: 0, bottom: 0,
+              paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16,
               backgroundColor: colors.card,
-              borderTopWidth: 1,
-              borderTopColor: colors.divider,
+              borderTopWidth: 1, borderTopColor: colors.divider,
             },
           ]}
         >
@@ -1976,21 +2693,11 @@ export default function JobsScreen() {
             activeOpacity={0.85}
           >
             <Ionicons name="close" size={18} color={colors.error} />
-            <Text style={styles.declineBtnText}>Decline</Text>
+            <Text style={styles.declineBtnText}>Dismiss</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.offerAcceptBtn, { flex: 1 }, accepting && { opacity: 0.7 }]}
-            onPress={() => {
-              if (o.items.some(i => i.photo)) { doAccept(o); return; }
-              Alert.alert(
-                'No package photo',
-                "You can't see what this package looks like. Accept anyway?",
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Accept anyway', onPress: () => doAccept(o) },
-                ],
-              );
-            }}
+            onPress={() => acceptRequest(o)}
             disabled={accepting}
             activeOpacity={0.9}
           >
@@ -1999,7 +2706,7 @@ export default function JobsScreen() {
             ) : (
               <>
                 <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
-                <Text style={styles.offerAcceptText}>Accept</Text>
+                <Text style={styles.offerAcceptText}>Accept Match</Text>
               </>
             )}
           </TouchableOpacity>
@@ -2009,7 +2716,6 @@ export default function JobsScreen() {
   };
 
   const renderBottomPanel = () => {
-    const dismissedCount = requests.length - offers.length;
     const startAddr = splitAddress(activeRoute?.start_location?.street_address);
     const endAddr = splitAddress(activeRoute?.end_location?.street_address);
 
@@ -2027,12 +2733,21 @@ export default function JobsScreen() {
       setRoutePickerVisible(true);
     };
 
+    const handleToggleDemo = async (val: boolean) => {
+      setDemoModeState(val);
+      await setDemoMode(val);
+      setTimeout(() => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      }, 150);
+    };
+
     return (
-      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 12 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 22, borderTopWidth: isOnline ? 2 : 1 }]}>
+      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 14 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 20, borderTopWidth: isOnline ? 2 : 1 }]}>
         <View style={[styles.dashBar, { backgroundColor: isOnline ? GREEN : 'rgba(100,116,139,0.35)' }]} />
 
         <Animated.View style={{ opacity: modeFade }}>
-          <View style={[styles.dashHead, isOnline && { marginBottom: 12 }]}>
+          {/* Header: Renamed to "My Route Requests" per PDF Section 5 */}
+          <View style={[styles.dashHead, { marginBottom: 10 }]}>
             <View style={styles.dashHeadLeft}>
               <View style={styles.liveBadge}>
                 {isOnline && (
@@ -2041,19 +2756,46 @@ export default function JobsScreen() {
                 <View style={[styles.liveCore, { backgroundColor: isOnline ? GREEN : '#475569' }]} />
               </View>
               <View>
-                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>{isOnline ? 'You’re online' : 'You’re offline'}</Text>
+                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>My Route Requests</Text>
                 <Text style={[styles.dashSub, !isOnline && { color: OFF.sub }]}>
-                  {isOnline ? (checkingMatches ? 'Looking for matches...' : 'Looking for offers') : 'Ready when you are'}
+                  {!activeRoute
+                    ? 'Post a route to see matched deliveries.'
+                    : checkingMatches
+                      ? 'Scanning route corridor...'
+                      : requests.length === 0
+                        ? 'No matches on your route yet.'
+                        : `${requests.length} matched request${requests.length === 1 ? '' : 's'} on your route`}
                 </Text>
               </View>
             </View>
             <View style={[styles.statusPill, isOnline ? styles.statusPillOn : styles.statusPillOff]}>
               <Animated.View style={[styles.statusPillDot, { backgroundColor: isOnline ? GREEN : '#64748B' }, isOnline && { opacity: dotOpacity }]} />
-              <Text style={[styles.statusPillText, { color: isOnline ? GREEN : OFF.sub }]}>{isOnline ? 'ACTIVE' : 'PAUSED'}</Text>
+              <Text style={[styles.statusPillText, { color: isOnline ? GREEN : OFF.sub }]}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
             </View>
           </View>
 
-          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 0 } : styles.routeBlockOff]}>
+          {/* Defense DEMO_MODE Toggle Bar (PDF Section 4) */}
+          <View style={{
+            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+            paddingHorizontal: 12, paddingVertical: 6, marginBottom: 10, borderRadius: 12,
+            backgroundColor: isOnline ? colors.accentSoft : 'rgba(255,117,31,0.14)',
+            borderWidth: 1, borderColor: 'rgba(255,117,31,0.35)',
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+              <Ionicons name="flask-outline" size={14} color={ORANGE} />
+              <Text style={{ fontSize: 11.5, fontWeight: '700', color: isOnline ? colors.textPrimary : '#E2E8F0' }}>
+                Defense DEMO_MODE (1-min fallback & lock)
+              </Text>
+            </View>
+            <Switch
+              value={demoMode}
+              onValueChange={handleToggleDemo}
+              trackColor={{ false: colors.border, true: ORANGE }}
+            />
+          </View>
+
+          {/* Active Route Block */}
+          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 10 } : styles.routeBlockOff]}>
             <View style={[styles.vehicleChip, isOnline ? { backgroundColor: 'rgba(255,117,31,0.10)' } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
               <Text style={{ fontSize: 22 }}>🚐</Text>
               <Animated.View
@@ -2065,16 +2807,23 @@ export default function JobsScreen() {
               />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>{isOnline ? 'ACTIVE ROUTE' : 'SAVED ROUTE'}</Text>
+              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>
+                ACTIVE CORRIDOR ({usedTodayCount}/3 ROUTES TODAY)
+              </Text>
               {activeRoute ? (
                 <>
                   <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
                     {startAddr.main} <Text style={{ color: isOnline ? ORANGE : OFF.label, fontWeight: '900' }}>→</Text> {endAddr.main}
                   </Text>
-                  {!!startAddr.sub && <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>{startAddr.sub}</Text>}
+                  <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>
+                    Trunk: {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg · {Number(activeRoute.remaining_volume_liters ?? 200).toFixed(0)} L left
+                    {activeRoute.fallback_unlocked ? ` · Fallback: ${activeRoute.fallback_used ? 'Used' : 'Unlocked'}` : ''}
+                  </Text>
                 </>
               ) : (
-                <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>No active route — tap ⇄ to select or create one</Text>
+                <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
+                  Post a route to see matched deliveries.
+                </Text>
               )}
             </View>
             <TouchableOpacity
@@ -2088,19 +2837,61 @@ export default function JobsScreen() {
             </TouchableOpacity>
           </View>
 
-          {isOnline ? null : (
-            <View>
-              <Text style={styles.ctaHelper}>
-                Come back online to keep earning. Your route and vehicle are <Text style={{ color: ORANGE, fontWeight: '800' }}>ready to go</Text>.
+          {/* Two Required Empty States (PDF Section 2 Rule 1 & Section 5) */}
+          {!activeRoute ? (
+            <View style={{
+              marginBottom: 12, backgroundColor: 'rgba(255,117,31,0.12)',
+              padding: 14, borderRadius: 14, borderWidth: 1, borderColor: ORANGE,
+              alignItems: 'center',
+            }}>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: ORANGE, textAlign: 'center' }}>
+                Post a route to see matched deliveries.
+              </Text>
+              <Text style={{ fontSize: 11.5, color: isOnline ? colors.textSecondary : '#94A3B8', fontWeight: '600', textAlign: 'center', marginTop: 4, lineHeight: 16 }}>
+                Rule 1: Providers see zero requests until they post a forward route.
               </Text>
               <TouchableOpacity
+                style={{
+                  marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
+                  backgroundColor: ORANGE, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12,
+                }}
+                onPress={openAddRouteModal}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="add-circle" size={16} color="#FFFFFF" />
+                <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
+                  Post Route ({Math.max(0, 3 - usedTodayCount)} left today)
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : isOnline && requests.length === 0 ? (
+            <View style={{
+              marginBottom: 4, backgroundColor: colors.background,
+              padding: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.divider,
+              flexDirection: 'row', alignItems: 'center', gap: 10,
+            }}>
+              <Ionicons name="compass-outline" size={20} color={ORANGE} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                  No matches on your route yet.
+                </Text>
+                <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600', marginTop: 1 }}>
+                  Filtering for ≤500 m (Curb-side) or ≤1.5 km (Door-to-Door), forward direction, ≥60% score.
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {isOnline ? null : (
+            <View style={{ marginTop: 4 }}>
+              <TouchableOpacity
                 style={styles.ctaBtn}
-                onPress={() => toggleOnlineStatus(true)}
+                onPress={() => (activeRoute ? toggleOnlineStatus(true) : openAddRouteModal())}
                 activeOpacity={0.9}
                 onLayout={e => setCtaW(e.nativeEvent.layout.width)}
               >
                 <Animated.View pointerEvents="none" style={[styles.ctaShineWrap, { transform: [{ translateX: shineX }] }]}><View style={styles.ctaShine} /></Animated.View>
-                <Text style={styles.ctaText}>Go Online Now</Text>
+                <Text style={styles.ctaText}>{activeRoute ? 'Go Online & Scan Corridor' : 'Post Route to Start'}</Text>
                 <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
               </TouchableOpacity>
 
@@ -2121,13 +2912,6 @@ export default function JobsScreen() {
             </View>
           )}
 
-          {dismissedCount > 0 && (
-            <TouchableOpacity style={styles.reopenRow} onPress={() => setDismissedIds([])} activeOpacity={0.85}>
-              <Ionicons name="flash" size={14} color={ORANGE} />
-              <Text style={styles.reopenText}>{dismissedCount} matched {dismissedCount === 1 ? 'order' : 'orders'} dismissed</Text>
-              <Text style={styles.reopenLink}>Show again</Text>
-            </TouchableOpacity>
-          )}
           {locDenied && (
             <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
               <Ionicons name="location-outline" size={16} color={colors.warning} />
@@ -2166,10 +2950,9 @@ export default function JobsScreen() {
           provider={loc}
           route={mapRoute}
           order={mapOrder}
-          demand={showDemand}
           online={isOnline}
           recenterTick={recenterTick}
-          padBottom={currentOffer ? Math.round(SCREEN_H * 0.48) + 30 : (isOnline ? 150 : 200)}
+          padBottom={currentOffer ? Math.round(SCREEN_H * 0.50) + 30 : (isOnline ? 150 : 200)}
         />
 
         <Animated.View
@@ -2204,22 +2987,6 @@ export default function JobsScreen() {
           <View style={{ height: 4 }} />
           <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
             <Ionicons name="locate" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.mapToolBtn, showDemand && isOnline && styles.mapToolBtnActive, !isOnline && styles.mapToolBtnOff]}
-            onPress={() => {
-              setShowDemand(d => !d);
-              setRefreshing(true);
-              refreshMatches();
-            }}
-            activeOpacity={0.85}
-          >
-            {refreshing || checkingMatches ? (
-              <ActivityIndicator size="small" color={showDemand ? '#FFFFFF' : ORANGE} />
-            ) : (
-              <Ionicons name="flame" size={20} color={showDemand ? '#FFFFFF' : ORANGE} />
-            )}
           </TouchableOpacity>
 
           <View style={!isOnline && styles.toolDim} pointerEvents={isOnline ? 'auto' : 'none'}>
@@ -2316,12 +3083,275 @@ export default function JobsScreen() {
     </Modal>
   );
 
+  const renderAddRouteModal = () => (
+    <Modal
+      visible={addRouteModalVisible}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setAddRouteModalVisible(false)}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={[styles.addRouteSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 20 }]}>
+          <View style={styles.addRouteHandle} />
+          <View style={styles.addRouteHeader}>
+            <TouchableOpacity onPress={() => setAddRouteModalVisible(false)} style={styles.addRouteCloseBtn}>
+              <Ionicons name="close" size={20} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <Text style={styles.addRouteTitle}>Post a Route ({usedTodayCount}/3 today)</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          <ScrollView contentContainerStyle={styles.addRouteScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.guardrailNotice}>
+              <Ionicons name="shield-checkmark-outline" size={16} color={ORANGE} />
+              <Text style={styles.guardrailNoticeText}>
+                Guardrail: Post ≥2 hrs early for Condition B fallback · Destinations must be ≥3 km apart · Max 4-hr window.
+              </Text>
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={styles.inputLabel}>Route Locations</Text>
+              <TouchableOpacity
+                style={styles.locationSelectorBtn}
+                onPress={() => { setRouteLocationPickerType('start'); setRouteLocationPickerVisible(true); }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.locSelectorIcon, newRouteStart && { backgroundColor: ORANGE }]}>
+                  <Ionicons name="radio-button-on" size={14} color="#FFF" />
+                </View>
+                <Text style={styles.locationSelectorText} numberOfLines={1}>
+                  {newRouteStart ? newRouteStart.street_address : 'Set Starting Point'}
+                </Text>
+              </TouchableOpacity>
+              <View style={{ height: 10 }} />
+              <TouchableOpacity
+                style={styles.locationSelectorBtn}
+                onPress={() => { setRouteLocationPickerType('end'); setRouteLocationPickerVisible(true); }}
+                activeOpacity={0.85}
+              >
+                <View style={[styles.locSelectorIcon, newRouteEnd && { backgroundColor: BLACK }]}>
+                  <Ionicons name="location" size={14} color="#FFF" />
+                </View>
+                <Text style={styles.locationSelectorText} numberOfLines={1}>
+                  {newRouteEnd ? newRouteEnd.street_address : 'Set Destination (≥3 km apart)'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {newRouteStart && newRouteEnd && (
+              <View style={styles.modalMapContainer}>
+                <MapView
+                  ref={addRoutePreviewMapRef}
+                  style={StyleSheet.absoluteFill}
+                  provider={PROVIDER_GOOGLE}
+                  userInterfaceStyle="light"
+                  initialRegion={{
+                    latitude: newRouteStart.latitude,
+                    longitude: newRouteStart.longitude,
+                    latitudeDelta: 0.05,
+                    longitudeDelta: 0.05,
+                  }}
+                  showsCompass={false}
+                  toolbarEnabled={false}
+                >
+                  <Marker coordinate={{ latitude: newRouteStart.latitude, longitude: newRouteStart.longitude }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+                    <View style={[styles.mkDot, { backgroundColor: BLUE }]}><Text style={styles.mkDotText}>S</Text></View>
+                  </Marker>
+                  <Marker coordinate={{ latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+                    <View style={[styles.mkDot, { backgroundColor: RED }]}><Text style={styles.mkDotText}>E</Text></View>
+                  </Marker>
+                  {newRoutePreviewCoords.length > 0 && (
+                    <Polyline coordinates={newRoutePreviewCoords} strokeColor={BLUE} strokeWidth={4} />
+                  )}
+                </MapView>
+              </View>
+            )}
+
+            <View style={styles.formGroup}>
+              <Text style={styles.inputLabel}>Route Frequency</Text>
+              <View style={styles.frequencyOptions}>
+                {FREQUENCIES.map(freq => (
+                  <TouchableOpacity
+                    key={freq}
+                    style={[styles.frequencyOption, newRouteFrequency === freq && styles.frequencyOptionSelected]}
+                    onPress={() => setNewRouteFrequency(freq)}
+                  >
+                    <Text style={[styles.frequencyOptionText, newRouteFrequency === freq && styles.frequencyOptionTextSelected]}>
+                      {freq}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={styles.inputLabel}>Active Time Window (Max 4 Hours)</Text>
+              <View style={styles.frequencyOptions}>
+                {[1, 2, 3, 4].map(hr => (
+                  <TouchableOpacity
+                    key={hr}
+                    style={[styles.frequencyOption, newRouteDurationHours === hr && styles.frequencyOptionSelected]}
+                    onPress={() => setNewRouteDurationHours(hr)}
+                  >
+                    <Text style={[styles.frequencyOptionText, newRouteDurationHours === hr && styles.frequencyOptionTextSelected]}>
+                      {hr} {hr === 1 ? 'hr' : 'hrs'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {newRouteFrequency === 'Daily' ? (
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Departure Time (Today)</Text>
+                <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
+                  <Ionicons name="time-outline" size={16} color={ORANGE} />
+                  <Text style={styles.dateTimeValue}>
+                    {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </TouchableOpacity>
+                {newRouteShowTimePicker && (
+                  <DateTimePicker
+                    value={newRouteDepartureTime}
+                    mode="time"
+                    onChange={(e, t) => {
+                      setNewRouteShowTimePicker(Platform.OS === 'ios');
+                      if (e.type === 'set' && t) setNewRouteDepartureTime(t);
+                    }}
+                  />
+                )}
+              </View>
+            ) : newRouteFrequency === 'Weekly' ? (
+              <View style={styles.formGroup}>
+                <Text style={styles.inputLabel}>Repeats on</Text>
+                <View style={styles.weekdayRow}>
+                  {WEEKDAY_LABELS.map((label, idx) => (
+                    <TouchableOpacity
+                      key={label}
+                      style={[styles.weekdayChip, newRouteSelectedWeekday === idx && styles.weekdayChipActive]}
+                      onPress={() => setNewRouteSelectedWeekday(idx)}
+                    >
+                      <Text style={[styles.weekdayChipText, newRouteSelectedWeekday === idx && styles.weekdayChipTextActive]}>
+                        {label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={{ height: 14 }} />
+                <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
+                  <Ionicons name="time-outline" size={16} color={ORANGE} />
+                  <Text style={styles.dateTimeValue}>
+                    {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </TouchableOpacity>
+                {newRouteShowTimePicker && (
+                  <DateTimePicker
+                    value={newRouteDepartureTime}
+                    mode="time"
+                    onChange={(e, t) => {
+                      setNewRouteShowTimePicker(Platform.OS === 'ios');
+                      if (e.type === 'set' && t) setNewRouteDepartureTime(t);
+                    }}
+                  />
+                )}
+              </View>
+            ) : (
+              <View style={styles.dateTimeRow}>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Date</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowDatePicker(true)}>
+                    <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>{newRouteDepartureDate.toLocaleDateString()}</Text>
+                  </TouchableOpacity>
+                  {newRouteShowDatePicker && (
+                    <DateTimePicker
+                      value={newRouteDepartureDate}
+                      mode="date"
+                      minimumDate={new Date()}
+                      onChange={(e, d) => {
+                        setNewRouteShowDatePicker(Platform.OS === 'ios');
+                        if (e.type === 'set' && d) setNewRouteDepartureDate(d);
+                      }}
+                    />
+                  )}
+                </View>
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Time</Text>
+                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
+                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <Text style={styles.dateTimeValue}>
+                      {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </Text>
+                  </TouchableOpacity>
+                  {newRouteShowTimePicker && (
+                    <DateTimePicker
+                      value={newRouteDepartureTime}
+                      mode="time"
+                      onChange={(e, t) => {
+                        setNewRouteShowTimePicker(Platform.OS === 'ios');
+                        if (e.type === 'set' && t) setNewRouteDepartureTime(t);
+                      }}
+                    />
+                  )}
+                </View>
+              </View>
+            )}
+
+            <View style={styles.formGroup}>
+              <Text style={styles.inputLabel}>Vehicle</Text>
+              {newRouteVehicles.length === 0 ? (
+                <View style={styles.noVehiclesBox}>
+                  <Ionicons name="car-outline" size={20} color={colors.warning} />
+                  <Text style={styles.noVehiclesText}>
+                    No verified vehicles found. Add and verify a vehicle first.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.vehicleOptions}>
+                  {newRouteVehicles.map(v => (
+                    <TouchableOpacity
+                      key={v.vehicle_id}
+                      style={[styles.vehicleOption, newRouteVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
+                      onPress={() => setNewRouteVehicleId(v.vehicle_id)}
+                    >
+                      <Ionicons
+                        name="car-sport"
+                        size={14}
+                        color={newRouteVehicleId === v.vehicle_id ? '#FFF' : colors.textSecondary}
+                      />
+                      <Text style={[styles.vehicleOptionText, newRouteVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
+                        {v.plate_number}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.submitBtn, newRouteSubmitting && { opacity: 0.7 }]}
+              onPress={handleAddRouteSubmit}
+              disabled={newRouteSubmitting}
+              activeOpacity={0.9}
+            >
+              {newRouteSubmitting ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.submitBtnText}>Post Route</Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
         <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
         <ActivityIndicator size="large" color={ORANGE} />
-        <Text style={styles.loadingText}>Loading...</Text>
+        <Text style={styles.loadingText}>Loading route matching...</Text>
       </View>
     );
   }
@@ -2330,34 +3360,25 @@ export default function JobsScreen() {
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
 
-      {/* full-screen details overlay OR main dashboard */}
       {detailRequestId != null ? renderFullDetails() : renderMain()}
 
       {renderNotifModal()}
       {renderFullListModal()}
 
+      {/* Route Picker Modal */}
       <Modal visible={routePickerVisible} transparent animationType="slide" onRequestClose={() => setRoutePickerVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.routePickerSheet}>
             <View style={styles.routePickerHandle} />
             <View style={styles.routePickerHeader}>
-              <Text style={styles.routePickerTitle}>Select an Active Route</Text>
+              <Text style={styles.routePickerTitle}>Select Active Route ({usedTodayCount}/3 today)</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                {providerId && (
-                  <TouchableOpacity
-                    style={styles.quickRouteHeaderBtn}
-                    onPress={async () => {
-                      const newR = await createQuickRoute(providerId);
-                      if (newR) setRoutePickerVisible(false);
-                    }}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="flash" size={16} color={ORANGE} />
-                    <Text style={styles.quickRouteHeaderBtnText}>Quick</Text>
-                  </TouchableOpacity>
-                )}
-
-                <TouchableOpacity style={styles.addRouteHeaderBtn} onPress={goToManageRoutes} activeOpacity={0.85} hitSlop={8}>
+                <TouchableOpacity
+                  style={[styles.addRouteHeaderBtn, usedTodayCount >= 3 && { opacity: 0.45 }]}
+                  onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
+                  activeOpacity={0.85}
+                  hitSlop={8}
+                >
                   <Ionicons name="add" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
 
@@ -2370,22 +3391,17 @@ export default function JobsScreen() {
             {routes.length === 0 ? (
               <View style={styles.routePickerEmpty}>
                 <Ionicons name="map-outline" size={40} color={ORANGE} />
-                <Text style={styles.routePickerEmptyTitle}>No active routes available</Text>
+                <Text style={styles.routePickerEmptyTitle}>Post a route to see matched deliveries.</Text>
                 <Text style={styles.routePickerEmptySub}>
-                  Create an on-demand route now, or set up / reschedule a route in Manage Routes.
+                  Rule 1: Providers see zero requests until they post a route.
                 </Text>
                 <TouchableOpacity
                   style={styles.createQuickRouteBtn}
-                  onPress={async () => {
-                    if (providerId) {
-                      const newR = await createQuickRoute(providerId);
-                      if (newR) setRoutePickerVisible(false);
-                    }
-                  }}
+                  onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="flash" size={16} color="#FFFFFF" />
-                  <Text style={styles.createQuickRouteBtnText}>Create Quick Route</Text>
+                  <Ionicons name="add-circle" size={16} color="#FFFFFF" />
+                  <Text style={styles.createQuickRouteBtnText}>Post a Route</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.emptyManageRouteBtn} onPress={goToManageRoutes} activeOpacity={0.85}>
@@ -2410,16 +3426,24 @@ export default function JobsScreen() {
                   const endAddr = splitAddress(r.end_location?.street_address);
 
                   return (
-                    <TouchableOpacity key={r.route_id} style={[styles.routeOption, isSelected && styles.routeOptionSelected]} onPress={() => openConfirmSheet(r)} activeOpacity={0.85}>
+                    <TouchableOpacity
+                      key={r.route_id}
+                      style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
+                      onPress={async () => {
+                        setActiveRoute(r);
+                        activeRouteRef.current = r;
+                        await setActiveRouteId(r.route_id);
+                        setRoutePickerVisible(false);
+                        await refreshMatches(providerIdRef.current, r, routesRef.current);
+                      }}
+                      activeOpacity={0.85}
+                    >
                       <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? ORANGE : colors.textMuted }]} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.routeOptionTitle} numberOfLines={1}>
                           {startAddr.main} → {endAddr.main}
                         </Text>
                         <Text style={styles.routeOptionSub} numberOfLines={1}>
-                          {startAddr.sub} {endAddr.sub ? `→ ${endAddr.sub}` : ''}
-                        </Text>
-                        <Text style={styles.routeOptionAddr} numberOfLines={1}>
                           {scheduleLabel} · {r.route_frequency}
                         </Text>
                       </View>
@@ -2434,174 +3458,22 @@ export default function JobsScreen() {
         </View>
       </Modal>
 
-      {/* Confirm Departure Sheet */}
-      <Modal visible={confirmSheetVisible} transparent animationType="slide" onRequestClose={() => setConfirmSheetVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.confirmSheet, { paddingBottom: insets.bottom + 20 }]}>
-            <View style={styles.routePickerHandle} />
-            <View style={styles.routePickerHeader}>
-              <View>
-                <Text style={styles.routePickerTitle}>Confirm Departure</Text>
-                {!!pendingRoute?.route_frequency && (
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 }}>
-                    {pendingRoute.route_frequency} Route
-                  </Text>
-                )}
-              </View>
-              <TouchableOpacity onPress={() => setConfirmSheetVisible(false)}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
+      {renderAddRouteModal()}
 
-            {pendingRoute && (
-              <>
-                <View style={styles.confirmRoutePreview}>
-                  <View style={styles.confirmRouteRow}>
-                    <View style={[styles.confirmDot, { backgroundColor: '#3B82F6' }]} />
-                    <Text style={styles.confirmRouteText} numberOfLines={1}>{pendingRoute.start_location?.street_address || 'Start'}</Text>
-                  </View>
-                  <View style={styles.confirmRouteLine} />
-                  <View style={styles.confirmRouteRow}>
-                    <View style={[styles.confirmDot, { backgroundColor: colors.error }]} />
-                    <Text style={styles.confirmRouteText} numberOfLines={1}>{pendingRoute.end_location?.street_address || 'End'}</Text>
-                  </View>
-                </View>
-
-                {pendingRoute.route_frequency === 'Daily' ? (
-                  <View style={{ marginBottom: 14 }}>
-                    <Text style={styles.inputLabel}>Departure Time (Today)</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
-                      <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>
-                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </Text>
-                    </TouchableOpacity>
-                    {showTimePicker && (
-                      <DateTimePicker
-                        value={departureTime}
-                        mode="time"
-                        display="default"
-                        onChange={(e, t) => {
-                          if (Platform.OS === 'android') setShowTimePicker(false);
-                          if (e.type === 'set' && t) {
-                            const now = new Date();
-                            const candidate = new Date(
-                              now.getFullYear(),
-                              now.getMonth(),
-                              now.getDate(),
-                              t.getHours(),
-                              t.getMinutes(),
-                              0,
-                              0,
-                            );
-                            if (candidate.getTime() < now.getTime()) {
-                              Alert.alert(
-                                'Invalid Time',
-                                `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You cannot pick a time that has already passed today.`,
-                              );
-                              return;
-                            }
-                            setDepartureTime(t);
-                          }
-                        }}
-                      />
-                    )}
-                  </View>
-                ) : pendingRoute.route_frequency === 'Weekly' ? (
-                  <View style={{ marginBottom: 14 }}>
-                    <Text style={styles.inputLabel}>Repeats on</Text>
-                    <View style={styles.weekdayRow}>
-                      {WEEKDAY_LABELS.map((label, idx) => (
-                        <TouchableOpacity
-                          key={label}
-                          style={[styles.weekdayChip, selectedWeekday === idx && styles.weekdayChipActive]}
-                          onPress={() => setSelectedWeekday(idx)}
-                        >
-                          <Text style={[styles.weekdayChipText, selectedWeekday === idx && styles.weekdayChipTextActive]}>
-                            {label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                    <View style={{ height: 12 }} />
-                    <Text style={styles.inputLabel}>Departure Time</Text>
-                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
-                      <Ionicons name="time-outline" size={16} color={ORANGE} />
-                      <Text style={styles.dateTimeValue}>
-                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </Text>
-                    </TouchableOpacity>
-                    {showTimePicker && (
-                      <DateTimePicker
-                        value={departureTime}
-                        mode="time"
-                        display="default"
-                        onChange={(e, t) => {
-                          if (Platform.OS === 'android') setShowTimePicker(false);
-                          if (e.type === 'set' && t) setDepartureTime(t);
-                        }}
-                      />
-                    )}
-                  </View>
-                ) : (
-                  <View style={styles.dateTimeRow}>
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>Departure Date</Text>
-                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showDatePicker && setShowDatePicker(true)}>
-                        <Ionicons name="calendar-outline" size={16} color={ORANGE} />
-                        <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
-                      </TouchableOpacity>
-                      {showDatePicker && (
-                        <DateTimePicker
-                          value={departureDate}
-                          mode="date"
-                          display="default"
-                          minimumDate={new Date()}
-                          onChange={(e, d) => {
-                            if (Platform.OS === 'android') setShowDatePicker(false);
-                            if (e.type === 'set' && d) setDepartureDate(d);
-                          }}
-                        />
-                      )}
-                    </View>
-
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>Departure Time</Text>
-                      <TouchableOpacity style={styles.dateTimeButton} onPress={() => !showTimePicker && setShowTimePicker(true)}>
-                        <Ionicons name="time-outline" size={16} color={ORANGE} />
-                        <Text style={styles.dateTimeValue}>
-                          {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </Text>
-                      </TouchableOpacity>
-                      {showTimePicker && (
-                        <DateTimePicker
-                          value={departureTime}
-                          mode="time"
-                          display="default"
-                          onChange={(e, t) => {
-                            if (Platform.OS === 'android') setShowTimePicker(false);
-                            if (e.type === 'set' && t) setDepartureTime(t);
-                          }}
-                        />
-                      )}
-                    </View>
-                  </View>
-                )}
-
-                <View style={styles.infoBox}>
-                  <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#1E40AF'} />
-                  <Text style={styles.infoBoxText}>The app will match requests along this route and departure window.</Text>
-                </View>
-
-                <TouchableOpacity style={styles.confirmBtn} onPress={confirmDeparture} activeOpacity={0.9}>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
-                  <Text style={styles.confirmBtnText}>Confirm & Go Online</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
+      <RouteLocationPickerModal
+        visible={routeLocationPickerVisible}
+        onClose={() => setRouteLocationPickerVisible(false)}
+        onSelect={(loc) => handleNewRouteLocationSelect(loc, routeLocationPickerType)}
+        initialCoords={
+          routeLocationPickerType === 'start'
+            ? (newRouteStart ? { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude } : undefined)
+            : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
+        }
+        title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
+        pinColor={routeLocationPickerType === 'start' ? ORANGE : BLACK}
+        colors={colors}
+        isDark={isDark}
+      />
 
       <Modal visible={!!previewPhoto} transparent animationType="fade" onRequestClose={() => setPreviewPhoto(null)}>
         <View style={styles.previewOverlay}>
@@ -2628,7 +3500,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowRadius: 8, elevation: 5,
     borderWidth: 1, borderColor: c.border,
   },
-  mapToolBtnActive: { backgroundColor: ORANGE, borderColor: ORANGE },
   sosBtn: { backgroundColor: c.error, borderColor: c.error },
   mapToolBadge: {
     position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18,
@@ -2666,7 +3537,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   swapBtn: { width: 44, height: 44, borderRadius: 14, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
   swapBtnOff: { backgroundColor: 'rgba(30,38,54,0.8)', borderColor: 'rgba(255,255,255,0.06)' },
   powerBtn: { borderColor: 'rgba(239,68,68,0.35)' },
-  ctaHelper: { fontSize: 12, fontWeight: '600', color: '#94A3B8', lineHeight: 18, paddingHorizontal: 2, marginBottom: 12 },
   ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 16, backgroundColor: ORANGE, overflow: 'hidden', shadowColor: ORANGE, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
   ctaShineWrap: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 90 },
   ctaShine: { flex: 1, backgroundColor: 'rgba(255,255,255,0.3)', transform: [{ skewX: '-20deg' }] },
@@ -2675,14 +3545,11 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   statCard: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(15,20,32,0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
   statVal: { fontSize: 16, fontWeight: '900', color: '#E2E8F0', letterSpacing: -0.3 },
   statLbl: { fontSize: 9, fontWeight: '800', color: '#64748B', letterSpacing: 0.6, marginTop: 4 },
-  reopenRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingVertical: 8 },
-  reopenText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textSecondary },
-  reopenLink: { fontSize: 12, fontWeight: '800', color: ORANGE },
   locWarnBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 6 },
   locWarnText: { fontSize: 12, fontWeight: '600', color: c.warning },
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
-  oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
   rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
@@ -2722,11 +3589,16 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  chipSolid: {
+  scoreBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999, backgroundColor: ORANGE,
+    backgroundColor: 'rgba(5,150,105,0.12)', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
   },
-  chipSolidText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF', letterSpacing: 0.5 },
+  scoreBadgeText: { fontSize: 11.5, fontWeight: '800', color: '#059669' },
+  fallbackBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: PURPLE, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
+  },
+  fallbackBadgeText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.4 },
   routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
   privacyNote: { marginTop: 14, fontSize: 11, color: c.textMuted, fontWeight: '600' },
@@ -2740,23 +3612,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, lineHeight: 16, fontWeight: '600' },
 
   acceptBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
+    position: 'absolute', left: 0, right: 0, bottom: 0,
     backgroundColor: c.card,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: c.border,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 16,
+    borderTopWidth: 1, borderTopColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.05, shadowRadius: 5, elevation: 10,
   },
   acceptPrice: { fontSize: 22, fontWeight: '900', color: ORANGE, marginTop: 2 },
   acceptBtn: {
@@ -2783,12 +3645,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderRadius: 12, padding: 12,
   },
   offerNoPhotoText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.warning, fontWeight: '600' },
-  offerBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    borderTopWidth: 1,
-    borderTopColor: c.divider,
-  },
+  offerBtnRow: { flexDirection: 'row', gap: 10, borderTopWidth: 1, borderTopColor: c.divider },
   declineBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 15, borderRadius: 16, backgroundColor: c.errorBg,
@@ -2803,16 +3660,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   offerAcceptText: { fontSize: 16, fontWeight: '900', color: '#FFFFFF' },
 
   viewDetailsBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 18,
-    paddingVertical: 14,
-    borderRadius: 14,
-    backgroundColor: c.accentSoft,
-    borderWidth: 1.5,
-    borderColor: ORANGE,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 18, paddingVertical: 14, borderRadius: 14,
+    backgroundColor: c.accentSoft, borderWidth: 1.5, borderColor: ORANGE,
   },
   viewDetailsText: { fontSize: 14, fontWeight: '800', color: ORANGE },
 
@@ -2842,8 +3692,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routePickerEmpty: { alignItems: 'center', paddingVertical: 40, gap: 10 },
   routePickerEmptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginTop: 8 },
   routePickerEmptySub: { fontSize: 12, color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
-  quickRouteHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: c.accentSoft },
-  quickRouteHeaderBtnText: { fontSize: 12, fontWeight: '800', color: ORANGE },
   addRouteHeaderBtn: {
     width: 34, height: 34, borderRadius: 17, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
@@ -2869,20 +3717,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
   routeOptionTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
   routeOptionSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
-  routeOptionAddr: { fontSize: 10, color: c.textMuted, marginTop: 2 },
-
-  confirmSheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    paddingHorizontal: 20, paddingTop: 10,
-  },
-  confirmRoutePreview: {
-    backgroundColor: c.background, borderRadius: 14, padding: 14,
-    borderWidth: 1, borderColor: c.border, marginBottom: 16,
-  },
-  confirmRouteRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  confirmDot: { width: 8, height: 8, borderRadius: 4 },
-  confirmRouteText: { flex: 1, fontSize: 13, fontWeight: '600', color: c.textPrimary },
-  confirmRouteLine: { width: 1, height: 14, backgroundColor: c.border, marginLeft: 3.5, marginVertical: 4 },
 
   weekdayRow: { flexDirection: 'row', gap: 6 },
   weekdayChip: {
@@ -2902,23 +3736,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
   },
   dateTimeValue: { fontSize: 13, color: c.textPrimary, fontWeight: '600' },
-
-  infoBox: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: c.statusBarStyle === 'dark-content' ? '#EFF6FF' : '#0F172A',
-    borderRadius: 12, padding: 12,
-    borderWidth: 1, borderColor: c.statusBarStyle === 'dark-content' ? '#DBEAFE' : '#1E3A5F',
-    marginBottom: 14,
-  },
-  infoBoxText: { flex: 1, fontSize: 11, color: c.statusBarStyle === 'dark-content' ? '#1E40AF' : '#93C5FD', fontWeight: '600', lineHeight: 16 },
-
-  confirmBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, paddingVertical: 16, borderRadius: 16, backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
-  },
-  confirmBtnText: { color: '#FFF', fontSize: 15, fontWeight: '800' },
 
   notifBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
   notifCard: {
@@ -2953,4 +3770,87 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider,
   },
   notifFooterText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
+
+  addRouteSheet: {
+    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    paddingTop: 8, maxHeight: '94%', flex: 1,
+  },
+  addRouteHandle: {
+    alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
+    backgroundColor: c.border, marginTop: 6, marginBottom: 6,
+  },
+  addRouteHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: c.divider,
+  },
+  addRouteCloseBtn: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  addRouteTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  addRouteScroll: { padding: 20, paddingBottom: 40 },
+
+  guardrailNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
+    borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)', marginBottom: 16,
+  },
+  guardrailNoticeText: { flex: 1, fontSize: 11.5, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
+
+  formGroup: { marginBottom: 20 },
+  locationSelectorBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
+    padding: 14, borderRadius: 14, borderWidth: 1, borderColor: c.border, gap: 12,
+  },
+  locSelectorIcon: {
+    width: 26, height: 26, borderRadius: 13, backgroundColor: c.divider,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  locationSelectorText: { flex: 1, fontWeight: '700', color: c.textPrimary, fontSize: 14 },
+  modalMapContainer: {
+    height: 160, borderRadius: 16, overflow: 'hidden', marginBottom: 20,
+    borderWidth: 1, borderColor: c.border,
+  },
+
+  frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  frequencyOption: {
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
+    borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card,
+  },
+  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
+  frequencyOptionTextSelected: { color: ORANGE, fontWeight: '800' },
+
+  vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  vehicleOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 20, borderWidth: 1.5, borderColor: c.border,
+  },
+  vehicleOptionActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
+  vehicleOptionTextActive: { color: '#FFF' },
+
+  noVehiclesBox: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+    borderRadius: 12, padding: 12,
+  },
+  noVehiclesText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.warning },
+
+  submitBtn: {
+    backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 14,
+    alignItems: 'center', marginTop: 6,
+  },
+  submitBtnText: { color: '#FFF', fontSize: 15, fontWeight: '900' },
+
+  mkDot: {
+    width: 26, height: 26, borderRadius: 13,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+  },
+  mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
 });

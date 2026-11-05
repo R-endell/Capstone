@@ -19,6 +19,7 @@ const ORANGE = '#FA7A25';
 const BUCKET_NAME = 'vehicle-documents';
 
 const ID_ANALYZER_KEY = 'idk_lpCmsQcDtGPddpKFSEAFoWySTEwD3C3usJcIBzkz';
+const MIN_CONFIDENCE_PERCENT = 55; // Minimum confidence required to accept an ID photo
 
 type Side = 'front' | 'back';
 
@@ -28,6 +29,9 @@ type ScanResult = {
   documentType: string | null;
   documentName: string | null;
   documentNumber: string | null;
+  documentSide: string | null;
+  isValidDriverLicense: boolean;
+  errorMessage?: string | null;
   data: any;
   raw: any;
 } | null;
@@ -46,10 +50,15 @@ export default function RegisterProviderScreen() {
 
   const [licenseFrontUri, setLicenseFrontUri] = useState<string | null>(null);
   const [licenseBackUri, setLicenseBackUri] = useState<string | null>(null);
+  const [licenseFrontBase64, setLicenseFrontBase64] = useState<string | null>(null);
+  const [licenseBackBase64, setLicenseBackBase64] = useState<string | null>(null);
   const [licenseFrontUrl, setLicenseFrontUrl] = useState<string | null>(null);
   const [licenseBackUrl, setLicenseBackUrl] = useState<string | null>(null);
 
-  const [uploadingLicense, setUploadingLicense] = useState(false);
+  const [frontVerified, setFrontVerified] = useState(false);
+  const [backVerified, setBackVerified] = useState(false);
+
+  const [uploadingSide, setUploadingSide] = useState<Side | null>(null);
 
   // Live selfie (camera only, front camera). Stored separately from the license photos.
   const [selfieUri, setSelfieUri] = useState<string | null>(null);
@@ -60,7 +69,7 @@ export default function RegisterProviderScreen() {
   const [lastScanResult, setLastScanResult] = useState<ScanResult>(null);
 
   // Controls whether the License NUMBER field can be edited manually.
-  // Starts false — must wait for scanner to fail.
+  // Only unlocked if the photo IS verified as a Driver's License, but OCR missed the number string.
   const [manualNumberEntryAllowed, setManualNumberEntryAllowed] = useState(false);
 
   // Tracks whether scanner has completed (success or fail) since last photo change
@@ -147,21 +156,14 @@ export default function RegisterProviderScreen() {
     return null;
   };
 
-  /**
-   * Extracts a numeric confidence score from ID Analyzer's raw payload.
-   * Since ID Analyzer quickscan often returns root confidence = 0, 
-   * we calculate the average of all individual field confidences.
-   */
   const extractConfidenceFromRaw = (rawResult: any): number | null => {
     if (!rawResult || typeof rawResult !== 'object') return null;
 
-    // 1. If root confidence exists AND is greater than 0, use it.
     if (typeof rawResult.confidence === 'number' && rawResult.confidence > 0) {
       const percentage = rawResult.confidence <= 1 ? rawResult.confidence * 100 : rawResult.confidence;
       return Number(percentage.toFixed(1));
     }
 
-    // 2. Otherwise, calculate the average of all field confidences in `data`
     const dataObj = rawResult.data;
     if (dataObj && typeof dataObj === 'object') {
       const allScores: number[] = [];
@@ -177,16 +179,91 @@ export default function RegisterProviderScreen() {
       }
 
       if (allScores.length > 0) {
-        // Calculate average
         const avg = allScores.reduce((acc, v) => acc + v, 0) / allScores.length;
-        // Convert to percentage (e.g. 0.992 -> 99.2)
         const percentage = avg <= 1 ? avg * 100 : avg;
         return Number(percentage.toFixed(1));
       }
     }
 
-    // 3. Fallback if no data found
     return null;
+  };
+
+  /**
+   * Checks if the scanned document is genuinely a Driver's License
+   * and contains actual ID fields (not a random photo of a pet, vehicle, or scenery).
+   */
+  const checkIsDriverLicense = (
+    docType: string | null,
+    docName: string | null,
+    dataObj: any,
+    confidence: number | null
+  ): boolean => {
+    const dt = (docType || '').toUpperCase();
+    const dn = (docName || '').toLowerCase();
+
+    const matchesDriverLicenseType =
+      dt === 'D' ||
+      dt === 'DL' ||
+      dt === 'DRIVER_LICENSE' ||
+      dt === 'DRIVERS_LICENSE' ||
+      dn.includes("driver's license") ||
+      dn.includes('drivers license') ||
+      dn.includes('driver license') ||
+      dn.includes('driver’s license') ||
+      dn.includes('driving licence') ||
+      dn.includes('driving license');
+
+    if (!matchesDriverLicenseType) return false;
+
+    // Must have extracted at least some recognizable personal/ID fields
+    const hasMeaningfulFields = Boolean(
+      unwrapField(dataObj?.documentNumber) ||
+      unwrapField(dataObj?.licenseNumber) ||
+      unwrapField(dataObj?.firstName) ||
+      unwrapField(dataObj?.lastName) ||
+      unwrapField(dataObj?.fullName) ||
+      unwrapField(dataObj?.dateOfBirth)
+    );
+
+    if (!hasMeaningfulFields) return false;
+
+    // Reject ultra-low confidence hallucinations
+    if (confidence !== null && confidence < MIN_CONFIDENCE_PERCENT) {
+      return false;
+    }
+
+    return true;
+  };
+
+  /**
+   * Validates that a single image (used when Back is uploaded before Front, or verifying Back)
+   * actually looks like an ID document and not a random object/animal/truck.
+   */
+  const checkIsAtLeastIdDocument = (result: any, confidence: number | null): boolean => {
+    if (!result || result.error) return false;
+    const dataObj = result.data || {};
+    const fieldKeys = Object.keys(dataObj);
+
+    // If ID Analyzer couldn't extract any ID fields at all, it's a random image
+    if (fieldKeys.length === 0) return false;
+
+    const dt = (unwrapField(dataObj.documentType || result.documentType) || '').toUpperCase();
+    const dn = (unwrapField(dataObj.documentName || result.documentName) || '').toLowerCase();
+
+    const hasDocIdentity =
+      dt.length > 0 ||
+      dn.length > 0 ||
+      Boolean(unwrapField(dataObj.documentSide)) ||
+      Boolean(unwrapField(dataObj.documentNumber)) ||
+      Boolean(unwrapField(dataObj.firstName)) ||
+      Boolean(unwrapField(dataObj.lastName)) ||
+      Boolean(unwrapField(dataObj.barcode)) ||
+      Boolean(unwrapField(dataObj.mrz));
+
+    if (!hasDocIdentity) return false;
+    if (confidence !== null && confidence < MIN_CONFIDENCE_PERCENT) return false;
+
+    return true;
   };
 
   const resolveValidIdTypeFromScan = (scan: ScanResult): string => {
@@ -251,6 +328,9 @@ export default function RegisterProviderScreen() {
           documentType: null,
           documentName: null,
           documentNumber: null,
+          documentSide: null,
+          isValidDriverLicense: false,
+          errorMessage: msg,
           data: {},
           raw: { error: msg, confidence: null },
         };
@@ -259,12 +339,21 @@ export default function RegisterProviderScreen() {
       const rawDocType = result.data?.documentType || result.documentType || result.data?.document_type || null;
       const rawDocName = result.data?.documentName || result.documentName || null;
       const rawDocNumber = result.data?.documentNumber || result.data?.licenseNumber || null;
+      const rawDocSide = result.data?.documentSide || result.documentSide || null;
 
       const docType = unwrapField(rawDocType);
       const docName = unwrapField(rawDocName);
       const docNumber = unwrapField(rawDocNumber);
+      const docSide = unwrapField(rawDocSide);
 
       const computedConfidence = extractConfidenceFromRaw(result);
+      const isDL = checkIsDriverLicense(
+        docType ? docType.toUpperCase() : null,
+        docName,
+        result.data || {},
+        computedConfidence
+      );
+
       const enrichedRaw = {
         ...result,
         confidence: computedConfidence,
@@ -276,6 +365,9 @@ export default function RegisterProviderScreen() {
         documentType: docType ? docType.toUpperCase() : null,
         documentName: docName,
         documentNumber: docNumber,
+        documentSide: docSide ? docSide.toUpperCase() : null,
+        isValidDriverLicense: isDL,
+        errorMessage: null,
         data: result.data || {},
         raw: enrichedRaw,
       };
@@ -287,6 +379,9 @@ export default function RegisterProviderScreen() {
         documentType: null,
         documentName: null,
         documentNumber: null,
+        documentSide: null,
+        isValidDriverLicense: false,
+        errorMessage: err.message || 'Network error while scanning ID',
         data: {},
         raw: { error: err.message, confidence: null },
       };
@@ -300,46 +395,33 @@ export default function RegisterProviderScreen() {
     setLicenseExpiry('');
   };
 
-  const applyScanResultToForm = (scan: ScanResult) => {
-    if (!scan) return;
-
-    if (scan.decision === 'error') {
-      setManualNumberEntryAllowed(true);
-      Alert.alert(
-        'Scan Unavailable',
-        "We could not scan your license automatically. Please enter your Driver's License number manually.",
-      );
-      return;
+  const resetSideState = (side: Side) => {
+    if (side === 'front') {
+      setLicenseFrontUri(null);
+      setLicenseFrontBase64(null);
+      setLicenseFrontUrl(null);
+      setFrontVerified(false);
+    } else {
+      setLicenseBackUri(null);
+      setLicenseBackBase64(null);
+      setLicenseBackUrl(null);
+      setBackVerified(false);
     }
+  };
 
-    const dt = (scan.documentType || '').toUpperCase();
-    const dn = (scan.documentName || '').toLowerCase();
-
-    const isDriverLicense =
-      dt === 'D' || dt === 'DL' || dt === 'DRIVER_LICENSE' || dt === 'DRIVERS_LICENSE' ||
-      dn.includes("driver's license") || dn.includes('drivers license') ||
-      dn.includes('driver license') || dn.includes('driver’s license');
-
-    if (!isDriverLicense) {
-      clearLicenseFields();
-      setManualNumberEntryAllowed(true);
-      const detected = scan.documentName || scan.documentType || 'an unknown document';
-      Alert.alert(
-        "Not a Driver's License",
-        `We detected "${detected}". Only Philippine Driver's Licenses are accepted for provider registration. Please upload your Driver's License front and back.`,
-      );
-      return;
-    }
+  const populateFieldsFromScan = (scan: ScanResult) => {
+    if (!scan || !scan.isValidDriverLicense) return;
 
     const d = scan.data || {};
     const docNum = unwrapField(d.documentNumber || d.licenseNumber);
     const expiry = unwrapField(d.dateOfExpiry || d.expiryDate);
 
-    let extractedNum = '';
-
     if (docNum) {
-      extractedNum = docNum;
       setLicenseNumber(docNum);
+      setManualNumberEntryAllowed(false);
+    } else {
+      // Valid Driver's License detected, but OCR missed the number string
+      setManualNumberEntryAllowed(true);
     }
 
     if (expiry) {
@@ -352,35 +434,6 @@ export default function RegisterProviderScreen() {
         }
       }
       setLicenseExpiry(formatted);
-    }
-
-    if (!extractedNum) {
-      setManualNumberEntryAllowed(true);
-      Alert.alert(
-        'Partial Scan',
-        "We couldn't read the Driver's License number from your license. Please fill it in manually.",
-      );
-      return;
-    }
-
-    setManualNumberEntryAllowed(false);
-
-    if (scan.decision === 'accept') {
-      Alert.alert(
-        'License Verified ✓',
-        "Your driver's license was successfully scanned. The license number is auto-filled. Please double-check the expiry date and adjust if needed.",
-      );
-    } else if (scan.decision === 'review') {
-      Alert.alert(
-        'License Scanned',
-        'Your license was scanned. The license number is auto-filled. Please confirm the expiry date and submit for admin review.',
-      );
-    } else if (scan.decision === 'reject') {
-      setManualNumberEntryAllowed(true);
-      Alert.alert(
-        'License Not Verified',
-        'The scan flagged your license. Please retake clearer photos or enter the license number manually.',
-      );
     }
   };
 
@@ -426,55 +479,155 @@ export default function RegisterProviderScreen() {
     }
   };
 
+  /**
+   * Validates the chosen image with ID Analyzer BEFORE accepting it or uploading to Supabase.
+   * Rejects non-ID photos (cats, vehicles, random objects) and non-Driver's License IDs immediately.
+   */
   const handlePickedImage = async (side: Side, uri: string) => {
+    setUploadingSide(side);
     setScanAttempted(false);
-    setManualNumberEntryAllowed(false);
-    setLastScanResult(null);
 
+    // Temporarily show preview while scanning
     if (side === 'front') {
       setLicenseFrontUri(uri);
       setLicenseFrontUrl(null);
+      setFrontVerified(false);
     } else {
       setLicenseBackUri(uri);
       setLicenseBackUrl(null);
+      setBackVerified(false);
     }
 
     try {
-      setUploadingLicense(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('No user found');
 
-      const prefix = side === 'front' ? 'license_front' : 'license_back';
-      const url = await uploadFile(uri, user.id, prefix);
+      // Read image as Base64 so we can scan it BEFORE uploading to Supabase storage
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
-      let frontUrl = licenseFrontUrl;
-      let backUrl = licenseBackUrl;
       if (side === 'front') {
-        setLicenseFrontUrl(url);
-        frontUrl = url;
-      } else {
-        setLicenseBackUrl(url);
-        backUrl = url;
-      }
+        // 1. Scan the FRONT image directly (or together with back if back is already verified)
+        const scan = await runIdAnalyzerScan(
+          base64,
+          backVerified && licenseBackBase64 ? licenseBackBase64 : null
+        );
 
-      if (frontUrl && backUrl) {
-        const scan = await runIdAnalyzerScan(frontUrl, backUrl);
+        // Block random photos, animals, trucks, blurry images, or rejected scans
+        if (!scan || scan.decision === 'error' || scan.decision === 'reject' || !scan.isValidDriverLicense) {
+          resetSideState('front');
+          clearLicenseFields();
+          setManualNumberEntryAllowed(false);
+          setLastScanResult(null);
+
+          const detected = scan?.documentName || scan?.documentType;
+          const rejectionMessage =
+            detected && !scan?.isValidDriverLicense
+              ? `We detected "${detected}". Only a valid Philippine Driver's License is accepted.`
+              : "This photo is not recognized as a valid Philippine Driver's License. Random photos, objects, or blurry images are not accepted. Please upload a clear photo of the FRONT of your Driver's License.";
+
+          Alert.alert('Invalid Front License Photo', rejectionMessage);
+          return;
+        }
+
+        // Front is a valid Driver's License! Upload to Supabase
+        const url = await uploadFileFromBase64(uri, base64, user.id, 'license_front');
+        setLicenseFrontBase64(base64);
+        setLicenseFrontUrl(url);
+        setFrontVerified(true);
         setLastScanResult(scan);
         setScanAttempted(true);
-        applyScanResultToForm(scan);
+        populateFieldsFromScan(scan);
+
+        if (backVerified) {
+          Alert.alert(
+            'License Verified ✓',
+            "Both front and back of your Driver's License have been verified. Please confirm the expiry date below."
+          );
+        }
+      } else {
+        // Scanning the BACK image:
+        // Step A: First scan the back image on its own to make sure it isn't a random photo (e.g., truck/cat)
+        const singleBackScan = await runIdAnalyzerScan(base64, null);
+        const isBackAtLeastId = checkIsAtLeastIdDocument(singleBackScan?.raw, singleBackScan?.confidence ?? null);
+
+        if (!singleBackScan || singleBackScan.decision === 'error' || singleBackScan.decision === 'reject' || !isBackAtLeastId) {
+          resetSideState('back');
+          Alert.alert(
+            'Invalid Back License Photo',
+            "This photo does not appear to be the back of a valid Driver's License. Random photos (such as vehicles, pets, or objects) and blurry images are strictly not accepted."
+          );
+          return;
+        }
+
+        // Make sure the user didn't upload a completely different type of ID for the back
+        if (singleBackScan.documentType && singleBackScan.documentName) {
+          const dt = singleBackScan.documentType.toUpperCase();
+          const dn = singleBackScan.documentName.toLowerCase();
+          const isOtherIdType =
+            dt !== 'D' && dt !== 'DL' && dt !== 'DRIVER_LICENSE' && dt !== 'DRIVERS_LICENSE' &&
+            !dn.includes('driver') && !dn.includes('driving');
+
+          if (isOtherIdType) {
+            resetSideState('back');
+            Alert.alert(
+              "Not a Driver's License",
+              `We detected "${singleBackScan.documentName || singleBackScan.documentType}". Please upload the BACK of your Philippine Driver's License.`
+            );
+            return;
+          }
+        }
+
+        // Prevent uploading the exact same front image as the back image
+        const singleBackDocNum = unwrapField(singleBackScan.data?.documentNumber || singleBackScan.data?.licenseNumber);
+        const singleBackHasPortrait = Boolean(unwrapField(singleBackScan.data?.face) || singleBackScan.raw?.face);
+        if (licenseFrontBase64 && base64 === licenseFrontBase64) {
+          resetSideState('back');
+          Alert.alert(
+            'Duplicate Photo',
+            "You uploaded the exact same photo for both Front and Back. Please upload the actual BACK side of your Driver's License."
+          );
+          return;
+        }
+
+        // Step B: If front is already uploaded, run a combined Dual Scan to verify front + back match
+        let finalScan = singleBackScan;
+        if (frontVerified && licenseFrontBase64) {
+          const dualScan = await runIdAnalyzerScan(licenseFrontBase64, base64);
+          if (!dualScan || dualScan.decision === 'error' || dualScan.decision === 'reject' || !dualScan.isValidDriverLicense) {
+            resetSideState('back');
+            Alert.alert(
+              'Back Photo Verification Failed',
+              "The back photo could not be verified with the front of your Driver's License. Please upload a clear photo of the back of the same license."
+            );
+            return;
+          }
+          finalScan = dualScan;
+        }
+
+        // Back is verified! Upload to Supabase
+        const url = await uploadFileFromBase64(uri, base64, user.id, 'license_back');
+        setLicenseBackBase64(base64);
+        setLicenseBackUrl(url);
+        setBackVerified(true);
+
+        if (frontVerified && finalScan.isValidDriverLicense) {
+          setLastScanResult(finalScan);
+          setScanAttempted(true);
+          populateFieldsFromScan(finalScan);
+          Alert.alert(
+            'License Verified ✓',
+            "Both front and back of your Driver's License have been verified. Please confirm the expiry date below."
+          );
+        }
       }
     } catch (error: any) {
-      console.error('Upload error:', error);
-      Alert.alert('Upload Error', error.message || 'Failed to upload image');
-      if (side === 'front') {
-        setLicenseFrontUri(null);
-        setLicenseFrontUrl(null);
-      } else {
-        setLicenseBackUri(null);
-        setLicenseBackUrl(null);
-      }
+      console.error('Upload/Scan error:', error);
+      Alert.alert('Upload Error', error.message || 'Failed to verify and upload image');
+      resetSideState(side);
     } finally {
-      setUploadingLicense(false);
+      setUploadingSide(null);
     }
   };
 
@@ -500,7 +653,12 @@ export default function RegisterProviderScreen() {
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('No user found');
-      const url = await uploadFile(uri, user.id, 'live_selfie');
+
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const url = await uploadFileFromBase64(uri, base64, user.id, 'live_selfie');
       setSelfieUrl(url);
     } catch (error: any) {
       console.error('Selfie error:', error);
@@ -512,15 +670,16 @@ export default function RegisterProviderScreen() {
     }
   };
 
-  const uploadFile = async (uri: string, userId: string, prefix: string): Promise<string> => {
+  const uploadFileFromBase64 = async (
+    uri: string,
+    base64: string,
+    userId: string,
+    prefix: string
+  ): Promise<string> => {
     const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
     const fileExt = ['jpg', 'jpeg', 'png'].includes(rawExt) ? rawExt : 'jpg';
     const contentType = `image/${fileExt}`;
     const fileName = `${userId}/${prefix}_${Date.now()}.${fileExt}`;
-
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
 
     const binaryString = atob(base64);
     const bytes = new Uint8Array(binaryString.length);
@@ -540,6 +699,24 @@ export default function RegisterProviderScreen() {
   };
 
   const handleRegisterProvider = async () => {
+    if (!licenseFrontUri || !licenseBackUri || !frontVerified || !backVerified) {
+      Alert.alert(
+        'Valid License Required',
+        "Please upload clear, valid photos of both the FRONT and BACK of your Philippine Driver's License."
+      );
+      return;
+    }
+    if (!licenseFrontUrl || !licenseBackUrl) {
+      Alert.alert('Please Wait', 'Your license images are still uploading. Please try again in a moment.');
+      return;
+    }
+    if (!lastScanResult || !lastScanResult.isValidDriverLicense) {
+      Alert.alert(
+        "Invalid Driver's License",
+        "Your uploaded photos could not be verified as a valid Philippine Driver's License. Please upload clear photos of your actual license."
+      );
+      return;
+    }
     if (!licenseNumber.trim()) {
       Alert.alert('Required', "Please enter your Driver's License number.");
       return;
@@ -548,15 +725,6 @@ export default function RegisterProviderScreen() {
       Alert.alert('Required', 'Please select a valid license expiry date.');
       return;
     }
-    if (!licenseFrontUri || !licenseBackUri) {
-      Alert.alert('Required', "Please upload both the FRONT and BACK of your Driver's License.");
-      return;
-    }
-    if (!licenseFrontUrl || !licenseBackUrl) {
-      Alert.alert('Please Wait', 'Your license images are still uploading. Please try again in a moment.');
-      return;
-    }
-
     if (!selfieUri) {
       Alert.alert('Required', 'Please take a live selfie. It is used to confirm you match your license.');
       return;
@@ -564,24 +732,6 @@ export default function RegisterProviderScreen() {
     if (!selfieUrl) {
       Alert.alert('Please Wait', 'Your selfie is still uploading. Please try again in a moment.');
       return;
-    }
-
-    if (lastScanResult?.documentType || lastScanResult?.documentName) {
-      const dt = (lastScanResult.documentType || '').toUpperCase();
-      const dn = (lastScanResult.documentName || '').toLowerCase();
-
-      const isDriverLicense =
-        dt === 'D' || dt === 'DL' || dt === 'DRIVER_LICENSE' || dt === 'DRIVERS_LICENSE' ||
-        dn.includes("driver's license") || dn.includes('drivers license') ||
-        dn.includes('driver license') || dn.includes('driver’s license');
-
-      if (!isDriverLicense) {
-        Alert.alert(
-          "Not a Driver's License",
-          `We detected "${lastScanResult.documentName || lastScanResult.documentType}". Please upload your Philippine Driver's License front and back.`,
-        );
-        return;
-      }
     }
 
     setLoading(true);
@@ -592,10 +742,10 @@ export default function RegisterProviderScreen() {
 
       const resolvedIdType = resolveValidIdTypeFromScan(lastScanResult);
       const resolvedIdNumber = resolveValidIdNumberFromScan(lastScanResult, licenseNumber.trim());
-      
+
       const resolvedConfidence =
         lastScanResult?.confidence ?? extractConfidenceFromRaw(lastScanResult?.raw);
-        
+
       const resolvedRaw = lastScanResult?.raw
         ? {
             ...lastScanResult.raw,
@@ -778,17 +928,25 @@ export default function RegisterProviderScreen() {
     }
   };
 
+  const uploadingLicense = uploadingSide !== null;
+  const licenseComplete =
+    frontVerified &&
+    backVerified &&
+    !!licenseFrontUri &&
+    !!licenseBackUri &&
+    !!licenseFrontUrl &&
+    !!licenseBackUrl &&
+    !!lastScanResult?.isValidDriverLicense;
+
   const detailsFilled =
     licenseNumber.trim().length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(licenseExpiry.trim());
-  const licenseComplete =
-    !!licenseFrontUri && !!licenseBackUri && !!licenseFrontUrl && !!licenseBackUrl;
   const selfieComplete = !!selfieUri && !!selfieUrl;
   const canSubmit = licenseComplete && detailsFilled && selfieComplete;
 
   const numberLocked = !manualNumberEntryAllowed;
 
   const showWaitingHint =
-    licenseComplete && !scanAttempted && !scanningLicense && numberLocked;
+    !licenseComplete && !scanningLicense && numberLocked;
 
   return (
     <View style={styles.container}>
@@ -812,9 +970,8 @@ export default function RegisterProviderScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Upload the front and back photos of your Philippine Driver's License. We'll
-              auto-scan the license number for you — you'll only enter it manually if the scan
-              fails. You'll always pick the expiry date yourself.
+              Upload clear front and back photos of your Philippine Driver's License. Each photo
+              is automatically verified — non-ID photos or other ID types will be rejected.
             </Text>
           </View>
         </Animated.View>
@@ -857,31 +1014,33 @@ export default function RegisterProviderScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.uploadTitle}>Driver's License Photos</Text>
-                <Text style={styles.uploadSubtitle}>Upload front & back — camera or gallery</Text>
+                <Text style={styles.uploadSubtitle}>Upload front & back — verified automatically</Text>
               </View>
             </View>
             {licenseComplete && (
               <View style={styles.completedBadge}>
                 <Ionicons name="checkmark-circle" size={12} color={colors.success} />
-                <Text style={styles.completedBadgeText}>Uploaded</Text>
+                <Text style={styles.completedBadgeText}>Verified</Text>
               </View>
             )}
           </View>
 
           <View style={styles.tilesRow}>
             <TouchableOpacity
-              style={[styles.tile, licenseFrontUri && styles.tileFilled]}
+              style={[styles.tile, frontVerified && styles.tileFilled]}
               onPress={() => handlePickLicense('front')}
-              disabled={uploadingLicense}
+              disabled={uploadingLicense || scanningLicense}
               activeOpacity={0.85}
             >
               {licenseFrontUri ? (
                 <>
                   <Image source={{ uri: licenseFrontUri }} style={styles.tileImage} />
                   <View style={styles.tileLabelBadge}>
-                    <Text style={styles.tileLabelText}>FRONT</Text>
+                    <Text style={styles.tileLabelText}>
+                      {frontVerified ? 'FRONT ✓' : 'VERIFYING...'}
+                    </Text>
                   </View>
-                  {!licenseFrontUrl && uploadingLicense && (
+                  {uploadingSide === 'front' && (
                     <View style={styles.tileOverlay}>
                       <ActivityIndicator size="small" color="#FFFFFF" />
                     </View>
@@ -896,18 +1055,20 @@ export default function RegisterProviderScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.tile, licenseBackUri && styles.tileFilled]}
+              style={[styles.tile, backVerified && styles.tileFilled]}
               onPress={() => handlePickLicense('back')}
-              disabled={uploadingLicense}
+              disabled={uploadingLicense || scanningLicense}
               activeOpacity={0.85}
             >
               {licenseBackUri ? (
                 <>
                   <Image source={{ uri: licenseBackUri }} style={styles.tileImage} />
                   <View style={styles.tileLabelBadge}>
-                    <Text style={styles.tileLabelText}>BACK</Text>
+                    <Text style={styles.tileLabelText}>
+                      {backVerified ? 'BACK ✓' : 'VERIFYING...'}
+                    </Text>
                   </View>
-                  {!licenseBackUrl && uploadingLicense && (
+                  {uploadingSide === 'back' && (
                     <View style={styles.tileOverlay}>
                       <ActivityIndicator size="small" color="#FFFFFF" />
                     </View>
@@ -923,60 +1084,39 @@ export default function RegisterProviderScreen() {
           </View>
 
           <Text style={styles.uploadHint}>
-            Tip: use a flat surface and good lighting for clearer photos.
+            Tip: use a flat surface and good lighting. Non-license photos will be rejected.
           </Text>
 
           {scanningLicense && (
             <View style={styles.scanningBadge}>
               <ActivityIndicator size="small" color={ORANGE} />
-              <Text style={styles.scanningText}>Scanning license...</Text>
+              <Text style={styles.scanningText}>Verifying Driver's License photo...</Text>
             </View>
           )}
 
-          {!scanningLicense && lastScanResult && (
+          {!scanningLicense && lastScanResult && lastScanResult.isValidDriverLicense && (
             <View
               style={[
                 styles.scanResultBadge,
-                lastScanResult.decision === 'accept' && styles.scanResultAccept,
-                lastScanResult.decision === 'review' && styles.scanResultReview,
-                lastScanResult.decision === 'reject' && styles.scanResultReject,
-                lastScanResult.decision === 'error' && styles.scanResultError,
+                lastScanResult.decision === 'accept' ? styles.scanResultAccept : styles.scanResultReview,
               ]}
             >
               <Ionicons
-                name={
-                  lastScanResult.decision === 'accept' ? 'checkmark-circle'
-                  : lastScanResult.decision === 'review' ? 'alert-circle'
-                  : lastScanResult.decision === 'reject' ? 'close-circle'
-                  : 'information-circle'
-                }
+                name={lastScanResult.decision === 'accept' ? 'checkmark-circle' : 'alert-circle'}
                 size={16}
-                color={
-                  lastScanResult.decision === 'accept' ? colors.success
-                  : lastScanResult.decision === 'review' ? colors.warning
-                  : lastScanResult.decision === 'reject' ? colors.error
-                  : colors.textSecondary
-                }
+                color={lastScanResult.decision === 'accept' ? colors.success : colors.warning}
               />
               <Text
                 style={[
                   styles.scanResultText,
                   {
-                    color:
-                      lastScanResult.decision === 'accept' ? colors.success
-                      : lastScanResult.decision === 'review' ? colors.warning
-                      : lastScanResult.decision === 'reject' ? colors.error
-                      : colors.textSecondary,
+                    color: lastScanResult.decision === 'accept' ? colors.success : colors.warning,
                   },
                 ]}
               >
                 {lastScanResult.decision === 'accept'
-                  ? `License verified by ID Analyzer${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`
-                  : lastScanResult.decision === 'review'
-                  ? `Scanned — pending admin review${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`
-                  : lastScanResult.decision === 'reject'
-                  ? 'License rejected by ID Analyzer'
-                  : 'ID Analyzer unavailable — enter license number manually below'}
+                  ? `Driver's License verified${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`
+                  : `Driver's License scanned — subject to admin review${lastScanResult.confidence != null ? ` (${Math.round(lastScanResult.confidence)}%)` : ''}`}
               </Text>
             </View>
           )}
@@ -996,8 +1136,8 @@ export default function RegisterProviderScreen() {
                       ? 'Scanning your license...'
                       : scanAttempted
                       ? 'License number auto-filled · pick expiry date'
-                      : 'Waiting for license scan...'
-                    : 'Enter the information printed on your license'}
+                      : 'Upload valid license photos to auto-fill'
+                    : 'Enter the license number printed on your ID'}
                 </Text>
               </View>
               {numberLocked ? (
@@ -1014,12 +1154,12 @@ export default function RegisterProviderScreen() {
             </View>
           </View>
 
-          {numberLocked && licenseComplete && scanAttempted && !scanningLicense && (
+          {numberLocked && frontVerified && scanAttempted && !scanningLicense && (
             <View style={styles.lockedNote}>
               <Ionicons name="sparkles" size={14} color={colors.success} />
               <Text style={styles.lockedNoteText}>
-                License number was auto-filled by the scanner. Please pick the correct expiry
-                date below.
+                License number was auto-filled from your verified Driver's License. Please pick
+                the correct expiry date below.
               </Text>
             </View>
           )}
@@ -1028,8 +1168,8 @@ export default function RegisterProviderScreen() {
             <View style={styles.waitingNote}>
               <Ionicons name="cloud-upload-outline" size={14} color={colors.textSecondary} />
               <Text style={styles.waitingNoteText}>
-                Waiting for scan. The license number field will unlock automatically if the
-                scan cannot read it.
+                Upload clear photos of both the front and back of your Driver's License above to
+                auto-fill your license number.
               </Text>
             </View>
           )}
@@ -1038,8 +1178,8 @@ export default function RegisterProviderScreen() {
             <View style={styles.manualNote}>
               <Ionicons name="pencil-outline" size={14} color={colors.warning} />
               <Text style={styles.manualNoteText}>
-                The scan could not read your Driver's License number. Please type it manually
-                below.
+                Your Driver's License was verified, but the number was unclear. Please type it
+                manually below.
               </Text>
             </View>
           )}
@@ -1048,7 +1188,7 @@ export default function RegisterProviderScreen() {
             <Text style={styles.fieldLabel}>Driver's License Number</Text>
             <TextInput
               style={[styles.textInput, numberLocked && styles.textInputLocked]}
-              placeholder={numberLocked ? 'Waiting for scan...' : 'e.g. D06-11-009385'}
+              placeholder={numberLocked ? 'Auto-filled after valid scan...' : 'e.g. D06-11-009385'}
               placeholderTextColor={colors.textMuted}
               value={licenseNumber}
               onChangeText={setLicenseNumber}
@@ -1072,7 +1212,7 @@ export default function RegisterProviderScreen() {
               <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
             </TouchableOpacity>
             <Text style={styles.manualDateHint}>
-              Always set the expiry date manually — the scan may misread it.
+              Always verify the expiry date manually — the scan may misread it.
             </Text>
           </View>
 
