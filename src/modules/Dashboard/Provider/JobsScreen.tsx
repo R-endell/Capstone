@@ -7,7 +7,6 @@ import {
   TextInput, Keyboard, Switch,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
@@ -33,9 +32,10 @@ import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 import { MAP_PROPS } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
+import { PhIcon } from '../../../components/ui/PhIcon';
 
-const ORANGE = '#FF751F';
-const GREEN = '#10B981';
+const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
+
 const BLUE = '#3B82F6';
 const RED = '#EF4444';
 const PURPLE = '#8B5CF6';
@@ -243,17 +243,6 @@ const ago = (iso: string) => {
   const d = Math.floor(h / 24);
   if (d < 7) return `${d}d ago`;
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
-const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
-  const t = (type || '').toLowerCase();
-  if (t.startsWith('dispute')) return 'shield-checkmark-outline';
-  if (t.startsWith('delivery') || t.includes('route')) return 'cube-outline';
-  if (t === 'match') return 'flash-outline';
-  if (t.startsWith('message') || t.startsWith('chat')) return 'chatbubble-ellipses-outline';
-  if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
-  if (t === 'payment' || t === 'escrow') return 'card-outline';
-  return 'notifications-outline';
 };
 
 const titleForType = (type: string, fallback: string): string => {
@@ -566,17 +555,17 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
       {route && (
         <>
           <Marker coordinate={{ latitude: route.start.lat, longitude: route.start.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: '#3B82F6' }]}>
+            <View style={[mapStyles.mkDot, { backgroundColor: BLUE }]}>
               <Text style={mapStyles.mkDotText}>S</Text>
             </View>
           </Marker>
           <Marker coordinate={{ latitude: route.end.lat, longitude: route.end.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: '#EF4444' }]}>
+            <View style={[mapStyles.mkDot, { backgroundColor: RED }]}>
               <Text style={mapStyles.mkDotText}>E</Text>
             </View>
           </Marker>
           {routeCoords.length > 1 && (
-            <Polyline coordinates={routeCoords} strokeColor="#3B82F6" strokeWidth={4} />
+            <Polyline coordinates={routeCoords} strokeColor={BLUE} strokeWidth={4} />
           )}
         </>
       )}
@@ -584,17 +573,17 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
       {order && (
         <>
           <Marker coordinate={{ latitude: order.pickup.lat, longitude: order.pickup.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: ORANGE }]}>
+            <View style={[mapStyles.mkDot, { backgroundColor: '#F27024' }]}>
               <Text style={mapStyles.mkDotText}>P</Text>
             </View>
           </Marker>
           <Marker coordinate={{ latitude: order.dropoff.lat, longitude: order.dropoff.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: '#111827' }]}>
+            <View style={[mapStyles.mkDot, { backgroundColor: BLACK }]}>
               <Text style={mapStyles.mkDotText}>D</Text>
             </View>
           </Marker>
           {orderCoords.length > 1 && (
-            <Polyline coordinates={orderCoords} strokeColor={ORANGE} strokeWidth={5} />
+            <Polyline coordinates={orderCoords} strokeColor="#F27024" strokeWidth={5} />
           )}
           {provider && (
             <Polyline
@@ -602,7 +591,7 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
                 { latitude: provider.lat, longitude: provider.lng },
                 { latitude: order.pickup.lat, longitude: order.pickup.lng },
               ]}
-              strokeColor="#111827"
+              strokeColor={BLACK}
               strokeWidth={2}
               lineDashPattern={[6, 8]}
             />
@@ -1039,7 +1028,7 @@ const RouteLocationPickerModal = ({
 
           {!mapLoaded && (
             <View style={pickerStyles.loadingOverlay}>
-              <ActivityIndicator size="large" color={ORANGE} />
+              <ActivityIndicator size="large" color={colors.accent} />
             </View>
           )}
 
@@ -1049,7 +1038,7 @@ const RouteLocationPickerModal = ({
                 <Text style={pickerStyles.bubbleText} numberOfLines={1}>{addressName}</Text>
                 {busy
                   ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
-                  : <Ionicons name="chevron-forward" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
+                  : <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" style={{ marginLeft: 6 }} />}
               </TouchableOpacity>
             </Animated.View>
 
@@ -1072,11 +1061,11 @@ const RouteLocationPickerModal = ({
             onPress={onClose}
             activeOpacity={0.85}
           >
-            <Ionicons name="arrow-back" size={22} color="#111827" />
+            <PhIcon name="ArrowLeft" size={22} color="#111827" weight="bold" />
           </TouchableOpacity>
 
           <TouchableOpacity style={pickerStyles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
-            {locating ? <ActivityIndicator size="small" color="#111827" /> : <Ionicons name="locate" size={24} color="#111827" />}
+            {locating ? <ActivityIndicator size="small" color="#111827" /> : <PhIcon name="Compass" size={24} color="#111827" weight="bold" />}
           </TouchableOpacity>
         </View>
 
@@ -1092,7 +1081,7 @@ const RouteLocationPickerModal = ({
             <TouchableOpacity style={[pickerStyles.row, { backgroundColor: 'rgba(242,112,36,0.09)' }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
               <View style={pickerStyles.rowIconCol}>
                 <View style={[pickerStyles.rowIcon, { backgroundColor: pinColor }]}>
-                  <Ionicons name="location" size={18} color="#FFFFFF" />
+                  <PhIcon name="MapPin" size={18} color="#FFFFFF" weight="fill" />
                 </View>
               </View>
               <View style={pickerStyles.rowText}>
@@ -1101,14 +1090,14 @@ const RouteLocationPickerModal = ({
                   {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
                 </Text>
               </View>
-              <Ionicons name="pencil" size={18} color={colors.textSecondary} />
+              <PhIcon name="PencilSimple" size={18} color={colors.textSecondary} weight="bold" />
             </TouchableOpacity>
 
             {nearby.map(p => (
               <TouchableOpacity key={p.id} style={pickerStyles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
                 <View style={pickerStyles.rowIconCol}>
                   <View style={[pickerStyles.rowIconMuted, { backgroundColor: colors.background }]}>
-                    <Ionicons name="location-outline" size={18} color={colors.textSecondary} />
+                    <PhIcon name="MapPinLine" size={18} color={colors.textSecondary} weight="bold" />
                   </View>
                   <Text style={pickerStyles.rowDist}>{fmtDist(p.dist)}</Text>
                 </View>
@@ -1142,10 +1131,10 @@ const RouteLocationPickerModal = ({
           <View style={[pickerStyles.searchOverlay, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
             <View style={[pickerStyles.searchModalHeader, { borderBottomColor: colors.divider }]}>
               <TouchableOpacity style={[pickerStyles.searchBackBtn, { backgroundColor: colors.card, borderColor: colors.border }]} onPress={closeSearch}>
-                <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+                <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
               <View style={[pickerStyles.searchInputWrapper, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+                <PhIcon name="MagnifyingGlass" size={18} color={colors.textMuted} weight="bold" style={{ marginRight: 8 }} />
                 <TextInput
                   style={[pickerStyles.searchInput, { color: colors.textPrimary }]}
                   placeholder="Search mall, school, landmark..."
@@ -1157,20 +1146,20 @@ const RouteLocationPickerModal = ({
                 />
                 {searchQuery.length > 0 && (
                   <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
-                    <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+                    <PhIcon name="XCircle" size={18} color={colors.textMuted} weight="fill" />
                   </TouchableOpacity>
                 )}
               </View>
             </View>
 
-            {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginTop: 20 }} />}
+            {searchLoading && <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 20 }} />}
             {!!searchError && !searchLoading && <Text style={pickerStyles.searchErrorText}>{searchError}</Text>}
 
             {searchQuery.trim().length === 0 && recents.length > 0 && (
               <View style={pickerStyles.recentsHeader}>
                 <Text style={[pickerStyles.recentsLabel, { color: colors.textMuted }]}>RECENT</Text>
                 <TouchableOpacity onPress={async () => { try { await AsyncStorage.removeItem(RECENTS_KEY); setRecents([]); } catch { /* ignore */ } }}>
-                  <Text style={pickerStyles.clearText}>Clear</Text>
+                  <Text style={[pickerStyles.clearText, { color: colors.accent }]}>Clear</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1188,7 +1177,7 @@ const RouteLocationPickerModal = ({
                     onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
                   >
                     <View style={[pickerStyles.searchResultIconBox, { backgroundColor: colors.background }]}>
-                      <Ionicons name={isRecent ? 'time-outline' : 'location-outline'} size={18} color={pinColor} />
+                      <PhIcon name={isRecent ? 'Clock' : 'MapPinLine'} size={18} color={pinColor} weight="bold" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={[pickerStyles.searchResultTitle, { color: colors.textPrimary }]} numberOfLines={1}>{item.name}</Text>
@@ -1281,7 +1270,7 @@ const pickerStyles = StyleSheet.create({
   searchResultSub: { fontSize: 12, fontWeight: '400', lineHeight: 16 },
   recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
   recentsLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
-  clearText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  clearText: { fontSize: 12, fontWeight: '700' },
 });
 
 /* ==================================================================== */
@@ -1291,7 +1280,7 @@ export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const { colors, isDark } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [isOnline, setIsOnline] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2302,7 +2291,7 @@ export default function JobsScreen() {
 
   const renderServicePill = (r: JobRequest) => (
     <View style={styles.svcPill}>
-      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <PhIcon name="Package" size={13} color={BLUE} weight="fill" />
       <Text style={styles.svcPillText}>{serviceLabel(r.pickup_type)}</Text>
     </View>
   );
@@ -2328,7 +2317,7 @@ export default function JobsScreen() {
             {!!x.pt.sub && <Text style={styles.rtSub} numberOfLines={1}>{x.pt.sub}</Text>}
             {notes && !!x.note && (
               <View style={styles.routeNote}>
-                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <PhIcon name="ChatCircleDots" size={13} color={colors.accent} weight="fill" />
                 <Text style={styles.routeNoteText}>{x.note}</Text>
               </View>
             )}
@@ -2383,7 +2372,7 @@ export default function JobsScreen() {
             style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}
             activeOpacity={0.7}
           >
-            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+            <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
           <View style={{ flex: 1, alignItems: 'center' }}>
             <Text style={styles.dCode}>{requestCode(o.request_id)}</Text>
@@ -2402,13 +2391,13 @@ export default function JobsScreen() {
               {renderServicePill(o)}
               {o.matchScore != null && (
                 <View style={styles.scoreBadge}>
-                  <Ionicons name="analytics" size={13} color="#059669" />
-                  <Text style={styles.scoreBadgeText}>{Math.round(o.matchScore)}% Match</Text>
+                  <PhIcon name="ChartBar" size={13} color={colors.success} weight="fill" />
+                  <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
                 </View>
               )}
               {o.isFallback && (
                 <View style={styles.fallbackBadge}>
-                  <Ionicons name="Locate" size={12} color="#FFFFFF" />
+                  <PhIcon name="NavigationArrow" size={12} color="#FFFFFF" weight="fill" />
                   <Text style={styles.fallbackBadgeText}>FALLBACK ({o.fallbackType === 'CONDITION_A' ? 'ADD-ON' : '1H BACKUP'})</Text>
                 </View>
               )}
@@ -2420,7 +2409,7 @@ export default function JobsScreen() {
             <Text style={styles.earnLabel}>YOU EARN</Text>
             <Text style={styles.earnValue}>{money(o.estimated_cost)}</Text>
             <View style={styles.earnNote}>
-              <Ionicons name="shield-checkmark-outline" size={15} color="#FFFFFF" />
+              <PhIcon name="ShieldCheck" size={15} color="#FFFFFF" weight="fill" />
               <Text style={styles.earnNoteText}>
                 Held in escrow once accepted, released to your wallet when delivery is verified.
               </Text>
@@ -2430,7 +2419,7 @@ export default function JobsScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
-                <Ionicons name="navigate-outline" size={15} color={ORANGE} />
+                <PhIcon name="NavigationArrow" size={15} color={colors.accent} weight="fill" />
               </View>
               <Text style={styles.cardTitle}>Corridor & Trip Summary</Text>
             </View>
@@ -2463,7 +2452,7 @@ export default function JobsScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
-                <Ionicons name="images-outline" size={15} color={ORANGE} />
+                <PhIcon name="Images" size={15} color={colors.accent} weight="fill" />
               </View>
               <Text style={styles.cardTitle}>Package Photos</Text>
             </View>
@@ -2477,7 +2466,7 @@ export default function JobsScreen() {
               </ScrollView>
             ) : (
               <View style={styles.offerNoPhoto}>
-                <Ionicons name="image-outline" size={18} color={colors.warning} />
+                <PhIcon name="Images" size={18} color={colors.warning} weight="bold" />
                 <Text style={styles.offerNoPhotoText}>
                   {localOnly ? "The sender's photo wasn't uploaded." : "The sender didn't add a photo."}
                 </Text>
@@ -2488,7 +2477,7 @@ export default function JobsScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
-                <Ionicons name="cube-outline" size={15} color={ORANGE} />
+                <PhIcon name="Package" size={15} color={colors.accent} weight="fill" />
               </View>
               <Text style={styles.cardTitle}>Package Details</Text>
             </View>
@@ -2519,7 +2508,7 @@ export default function JobsScreen() {
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
-                <Text style={[styles.tileValue, o.fragile && { color: ORANGE }]}>
+                <Text style={[styles.tileValue, o.fragile && { color: colors.accent }]}>
                   {o.fragile ? 'Fragile' : 'Standard'}
                 </Text>
               </View>
@@ -2538,19 +2527,19 @@ export default function JobsScreen() {
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderIcon}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={15} color={ORANGE} />
+                  <PhIcon name="ChatCircleDots" size={15} color={colors.accent} weight="fill" />
                 </View>
                 <Text style={styles.cardTitle}>Notes</Text>
               </View>
               {!!o.pickupNote && (
                 <View style={[styles.routeNote, { marginBottom: 6 }]}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                  <PhIcon name="ChatCircleDots" size={13} color={colors.accent} weight="fill" />
                   <Text style={styles.routeNoteText}>Pickup: {o.pickupNote}</Text>
                 </View>
               )}
               {!!o.dropoffNote && (
                 <View style={styles.routeNote}>
-                  <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                  <PhIcon name="ChatCircleDots" size={13} color={colors.accent} weight="fill" />
                   <Text style={styles.routeNoteText}>Drop-off: {o.dropoffNote}</Text>
                 </View>
               )}
@@ -2560,7 +2549,7 @@ export default function JobsScreen() {
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <View style={styles.cardHeaderIcon}>
-                <Ionicons name="people-outline" size={15} color={ORANGE} />
+                <PhIcon name="User" size={15} color={colors.accent} weight="fill" />
               </View>
               <Text style={styles.cardTitle}>People</Text>
             </View>
@@ -2584,7 +2573,7 @@ export default function JobsScreen() {
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
               <>
-                <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
                 <Text style={styles.acceptBtnText}>Accept Along Route</Text>
               </>
             )}
@@ -2619,7 +2608,7 @@ export default function JobsScreen() {
           <View
             style={[
               styles.offerTimerFill,
-              { width: `${pct}%` as any },
+              { width: `${pct}%` as any, backgroundColor: colors.accent },
               !o.isDirectRequest && offerSecondsLeft <= 10 && { backgroundColor: colors.error },
             ]}
           />
@@ -2630,13 +2619,13 @@ export default function JobsScreen() {
             {renderServicePill(o)}
             {o.matchScore != null && (
               <View style={styles.scoreBadge}>
-                <Ionicons name="analytics" size={13} color="#059669" />
-                <Text style={styles.scoreBadgeText}>{Math.round(o.matchScore)}% Match</Text>
+                <PhIcon name="ChartBar" size={13} color={colors.success} weight="fill" />
+                <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
               </View>
             )}
             {o.isFallback && (
               <View style={styles.fallbackBadge}>
-                <Ionicons name="Locate" size={12} color="#FFFFFF" />
+                <PhIcon name="NavigationArrow" size={12} color="#FFFFFF" weight="fill" />
                 <Text style={styles.fallbackBadgeText}>FALLBACK</Text>
               </View>
             )}
@@ -2644,7 +2633,7 @@ export default function JobsScreen() {
             <View style={{ flex: 1 }} />
             {!o.isDirectRequest && (
               <View style={styles.offerTimerPill}>
-                <Ionicons name="timer-outline" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} />
+                <PhIcon name="Clock" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} weight="bold" />
                 <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
                   {Math.max(0, offerSecondsLeft)}s
                 </Text>
@@ -2669,9 +2658,9 @@ export default function JobsScreen() {
             onPress={() => setDetailRequestId(o.request_id)}
             activeOpacity={0.85}
           >
-            <Ionicons name="document-text-outline" size={18} color={ORANGE} />
+            <PhIcon name="FileText" size={18} color={colors.accent} weight="fill" />
             <Text style={styles.viewDetailsText}>View Route Corridor Details</Text>
-            <Ionicons name="chevron-forward" size={16} color={ORANGE} />
+            <PhIcon name="CaretRight" size={16} color={colors.accent} weight="bold" />
           </TouchableOpacity>
         </View>
 
@@ -2692,7 +2681,7 @@ export default function JobsScreen() {
             disabled={accepting}
             activeOpacity={0.85}
           >
-            <Ionicons name="close" size={18} color={colors.error} />
+            <PhIcon name="X" size={18} color={colors.error} weight="bold" />
             <Text style={styles.declineBtnText}>Dismiss</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -2705,7 +2694,7 @@ export default function JobsScreen() {
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
               <>
-                <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
+                <PhIcon name="CheckCircle" size={20} color="#FFFFFF" weight="fill" />
                 <Text style={styles.offerAcceptText}>Accept Match</Text>
               </>
             )}
@@ -2742,8 +2731,8 @@ export default function JobsScreen() {
     };
 
     return (
-      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? GREEN : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 14 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 20, borderTopWidth: isOnline ? 2 : 1 }]}>
-        <View style={[styles.dashBar, { backgroundColor: isOnline ? GREEN : 'rgba(100,116,139,0.35)' }]} />
+      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? colors.success : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 14 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 20, borderTopWidth: isOnline ? 2 : 1 }]}>
+        <View style={[styles.dashBar, { backgroundColor: isOnline ? colors.success : 'rgba(100,116,139,0.35)' }]} />
 
         <Animated.View style={{ opacity: modeFade }}>
           {/* Header: Renamed to "My Route Requests" per PDF Section 5 */}
@@ -2753,7 +2742,7 @@ export default function JobsScreen() {
                 {isOnline && (
                   <Animated.View style={[styles.liveRing, { transform: [{ scale: ringScale }], opacity: ringOpacity }]} />
                 )}
-                <View style={[styles.liveCore, { backgroundColor: isOnline ? GREEN : '#475569' }]} />
+                <View style={[styles.liveCore, { backgroundColor: isOnline ? colors.success : '#475569' }]} />
               </View>
               <View>
                 <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>My Route Requests</Text>
@@ -2769,8 +2758,8 @@ export default function JobsScreen() {
               </View>
             </View>
             <View style={[styles.statusPill, isOnline ? styles.statusPillOn : styles.statusPillOff]}>
-              <Animated.View style={[styles.statusPillDot, { backgroundColor: isOnline ? GREEN : '#64748B' }, isOnline && { opacity: dotOpacity }]} />
-              <Text style={[styles.statusPillText, { color: isOnline ? GREEN : OFF.sub }]}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
+              <Animated.View style={[styles.statusPillDot, { backgroundColor: isOnline ? colors.success : '#64748B' }, isOnline && { opacity: dotOpacity }]} />
+              <Text style={[styles.statusPillText, { color: isOnline ? colors.success : OFF.sub }]}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
             </View>
           </View>
 
@@ -2782,7 +2771,7 @@ export default function JobsScreen() {
             borderWidth: 1, borderColor: 'rgba(255,117,31,0.35)',
           }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-              <Ionicons name="flask-outline" size={14} color={ORANGE} />
+              <PhIcon name="Info" size={14} color={colors.accent} weight="fill" />
               <Text style={{ fontSize: 11.5, fontWeight: '700', color: isOnline ? colors.textPrimary : '#E2E8F0' }}>
                 Defense DEMO_MODE (1-min fallback & lock)
               </Text>
@@ -2790,18 +2779,18 @@ export default function JobsScreen() {
             <Switch
               value={demoMode}
               onValueChange={handleToggleDemo}
-              trackColor={{ false: colors.border, true: ORANGE }}
+              trackColor={{ false: colors.border, true: colors.accent }}
             />
           </View>
 
           {/* Active Route Block */}
-          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.divider, padding: 10, marginBottom: 10 } : styles.routeBlockOff]}>
-            <View style={[styles.vehicleChip, isOnline ? { backgroundColor: 'rgba(255,117,31,0.10)' } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
-              <Text style={{ fontSize: 22 }}>🚐</Text>
+          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: colors.border, padding: 10, marginBottom: 10 } : styles.routeBlockOff]}>
+            <View style={[styles.vehicleChip, isOnline ? { backgroundColor: colors.accentSoft } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
+              <PhIcon name="Package" size={22} color={isOnline ? colors.accent : '#475569'} weight="fill" />
               <Animated.View
                 style={[
                   styles.vehicleDot,
-                  { backgroundColor: isOnline ? GREEN : '#475569', borderColor: isOnline ? colors.card : '#232A3B' },
+                  { backgroundColor: isOnline ? colors.success : '#475569', borderColor: isOnline ? colors.card : '#232A3B' },
                   isOnline && { transform: [{ scale: pulseScale }] },
                 ]}
               />
@@ -2813,7 +2802,7 @@ export default function JobsScreen() {
               {activeRoute ? (
                 <>
                   <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
-                    {startAddr.main} <Text style={{ color: isOnline ? ORANGE : OFF.label, fontWeight: '900' }}>→</Text> {endAddr.main}
+                    {startAddr.main} <Text style={{ color: isOnline ? colors.accent : OFF.label, fontWeight: '900' }}>→</Text> {endAddr.main}
                   </Text>
                   <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>
                     Trunk: {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg · {Number(activeRoute.remaining_volume_liters ?? 200).toFixed(0)} L left
@@ -2832,7 +2821,7 @@ export default function JobsScreen() {
               activeOpacity={0.85}
             >
               <Animated.View style={{ transform: [{ rotate: swapRotate }] }}>
-                <Ionicons name="swap-horizontal" size={18} color={isOnline ? colors.textPrimary : OFF.sub} />
+                <PhIcon name="ArrowsLeftRight" size={18} color={isOnline ? colors.textPrimary : OFF.sub} weight="bold" />
               </Animated.View>
             </TouchableOpacity>
           </View>
@@ -2841,10 +2830,10 @@ export default function JobsScreen() {
           {!activeRoute ? (
             <View style={{
               marginBottom: 12, backgroundColor: 'rgba(255,117,31,0.12)',
-              padding: 14, borderRadius: 14, borderWidth: 1, borderColor: ORANGE,
+              padding: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.accent,
               alignItems: 'center',
             }}>
-              <Text style={{ fontSize: 14, fontWeight: '900', color: ORANGE, textAlign: 'center' }}>
+              <Text style={{ fontSize: 14, fontWeight: '900', color: colors.accent, textAlign: 'center' }}>
                 Post a route to see matched deliveries.
               </Text>
               <Text style={{ fontSize: 11.5, color: isOnline ? colors.textSecondary : '#94A3B8', fontWeight: '600', textAlign: 'center', marginTop: 4, lineHeight: 16 }}>
@@ -2853,12 +2842,12 @@ export default function JobsScreen() {
               <TouchableOpacity
                 style={{
                   marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
-                  backgroundColor: ORANGE, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12,
+                  backgroundColor: colors.accent, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12,
                 }}
                 onPress={openAddRouteModal}
                 activeOpacity={0.9}
               >
-                <Ionicons name="add-circle" size={16} color="#FFFFFF" />
+                <PhIcon name="PlusCircle" size={16} color="#FFFFFF" weight="fill" />
                 <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
                   Post Route ({Math.max(0, 3 - usedTodayCount)} left today)
                 </Text>
@@ -2867,10 +2856,10 @@ export default function JobsScreen() {
           ) : isOnline && requests.length === 0 ? (
             <View style={{
               marginBottom: 4, backgroundColor: colors.background,
-              padding: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.divider,
+              padding: 12, borderRadius: 12, borderWidth: 1, borderColor: colors.border,
               flexDirection: 'row', alignItems: 'center', gap: 10,
             }}>
-              <Ionicons name="compass-outline" size={20} color={ORANGE} />
+              <Image source={EMPTY_COMPASS_ICON} style={{ width: 44, height: 44 }} resizeMode="contain" />
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
                   No matches on your route yet.
@@ -2892,7 +2881,7 @@ export default function JobsScreen() {
               >
                 <Animated.View pointerEvents="none" style={[styles.ctaShineWrap, { transform: [{ translateX: shineX }] }]}><View style={styles.ctaShine} /></Animated.View>
                 <Text style={styles.ctaText}>{activeRoute ? 'Go Online & Scan Corridor' : 'Post Route to Start'}</Text>
-                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+                <PhIcon name="ArrowRight" size={20} color="#FFFFFF" weight="bold" />
               </TouchableOpacity>
 
               <View style={styles.statsGrid}>
@@ -2901,7 +2890,7 @@ export default function JobsScreen() {
                   <Text style={styles.statLbl}>TODAY</Text>
                 </View>
                 <View style={styles.statCard}>
-                  <Text style={[styles.statVal, { color: ORANGE }]}>{money(todayStats.earned).replace('.00', '')}</Text>
+                  <Text style={[styles.statVal, { color: colors.accent }]}>{money(todayStats.earned).replace('.00', '')}</Text>
                   <Text style={styles.statLbl}>EARNED</Text>
                 </View>
                 <View style={styles.statCard}>
@@ -2914,7 +2903,7 @@ export default function JobsScreen() {
 
           {locDenied && (
             <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
-              <Ionicons name="location-outline" size={16} color={colors.warning} />
+              <PhIcon name="MapPinLine" size={16} color={colors.warning} weight="bold" />
               <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
             </TouchableOpacity>
           )}
@@ -2966,14 +2955,14 @@ export default function JobsScreen() {
             onPress={goToTasks}
             activeOpacity={0.85}
           >
-            <Ionicons name="chevron-back" size={22} color="#E2E8F0" />
+            <PhIcon name="ArrowLeft" size={22} color="#E2E8F0" weight="bold" />
           </TouchableOpacity>
         )}
 
         <View style={[styles.mapTools, { top: insets.top + 16 }]} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
             <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={handleOpenNotifs} activeOpacity={0.85}>
-              <Ionicons name="notifications" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+              <PhIcon name="Bell" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} weight="fill" />
               {unreadCount > 0 && (
                 <View style={[styles.mapToolBadge, !isOnline && { backgroundColor: '#64748B', borderColor: '#1A1F2B' }]}>
                   {unreadCount <= 9 && (<Text style={styles.mapToolBadgeText}>{unreadCount}</Text>)}
@@ -2982,22 +2971,22 @@ export default function JobsScreen() {
             </TouchableOpacity>
           </Animated.View>
           <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={goToManageRoutes} activeOpacity={0.85}>
-            <Ionicons name="settings-sharp" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+            <PhIcon name="Gear" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} weight="bold" />
           </TouchableOpacity>
           <View style={{ height: 4 }} />
           <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
-            <Ionicons name="locate" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+            <PhIcon name="Compass" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} weight="bold" />
           </TouchableOpacity>
 
           <View style={!isOnline && styles.toolDim} pointerEvents={isOnline ? 'auto' : 'none'}>
             <TouchableOpacity style={[styles.mapToolBtn, styles.sosBtn, !isOnline && { backgroundColor: '#475569', borderColor: '#475569' }]} onPress={triggerSOS} activeOpacity={0.85}>
-              <Ionicons name="shield" size={20} color={isOnline ? '#FFFFFF' : '#94A3B8'} />
+              <PhIcon name="ShieldWarning" size={20} color={isOnline ? '#FFFFFF' : '#94A3B8'} weight="fill" />
             </TouchableOpacity>
           </View>
 
           {isOnline && (
             <TouchableOpacity style={[styles.mapToolBtn, styles.powerBtn, { width: 50, height: 50, borderRadius: 25 }]} onPress={() => toggleOnlineStatus(false)} activeOpacity={0.85}>
-              <Ionicons name="power" size={24} color="#EF4444" />
+              <PhIcon name="SignOut" size={24} color={colors.error} weight="bold" />
             </TouchableOpacity>
           )}
         </View>
@@ -3016,15 +3005,15 @@ export default function JobsScreen() {
           <View style={styles.notifHeader}>
             <Text style={styles.notifHeaderTitle}>Notifications</Text>
             <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
-              <Ionicons name="close" size={22} color={colors.textPrimary} />
+              <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
             </TouchableOpacity>
           </View>
 
           {notifLoading ? (
-            <View style={styles.notifCenter}><ActivityIndicator size="small" color={ORANGE} /></View>
+            <View style={styles.notifCenter}><ActivityIndicator size="small" color={colors.accent} /></View>
           ) : notifs.length === 0 ? (
             <View style={styles.notifCenter}>
-              <Ionicons name="notifications-off-outline" size={40} color={colors.textMuted} />
+              <PhIcon name="Bell" size={40} color={colors.textMuted} weight="regular" />
               <Text style={styles.notifEmptyText}>No notifications yet</Text>
             </View>
           ) : (
@@ -3035,7 +3024,7 @@ export default function JobsScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
                   <View style={styles.notifIconBox}>
-                    <Ionicons name={iconForType(item.type)} size={18} color={ORANGE} />
+                    <PhIcon name="Bell" size={18} color={colors.accent} weight="fill" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <View style={styles.notifTitleRow}>
@@ -3045,7 +3034,7 @@ export default function JobsScreen() {
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
                     <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                  <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
                 </TouchableOpacity>
               )}
             />
@@ -3053,7 +3042,7 @@ export default function JobsScreen() {
 
           <TouchableOpacity style={styles.notifFooter} onPress={() => { setNotifModalOpen(false); setFullListOpen(true); }} activeOpacity={0.85}>
             <Text style={styles.notifFooterText}>See all in Notifications</Text>
-            <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+            <PhIcon name="ArrowRight" size={16} color={colors.accent} weight="bold" />
           </TouchableOpacity>
         </Pressable>
       </Pressable>
@@ -3069,7 +3058,7 @@ export default function JobsScreen() {
           backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.divider,
         }}>
           <TouchableOpacity onPress={() => setFullListOpen(false)} style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }} activeOpacity={0.7} hitSlop={10}>
-            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+            <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
           <Text style={{ flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.3 }}>
             Notifications
@@ -3095,7 +3084,7 @@ export default function JobsScreen() {
           <View style={styles.addRouteHandle} />
           <View style={styles.addRouteHeader}>
             <TouchableOpacity onPress={() => setAddRouteModalVisible(false)} style={styles.addRouteCloseBtn}>
-              <Ionicons name="close" size={20} color={colors.textPrimary} />
+              <PhIcon name="X" size={20} color={colors.textPrimary} weight="bold" />
             </TouchableOpacity>
             <Text style={styles.addRouteTitle}>Post a Route ({usedTodayCount}/3 today)</Text>
             <View style={{ width: 40 }} />
@@ -3103,7 +3092,7 @@ export default function JobsScreen() {
 
           <ScrollView contentContainerStyle={styles.addRouteScroll} showsVerticalScrollIndicator={false}>
             <View style={styles.guardrailNotice}>
-              <Ionicons name="shield-checkmark-outline" size={16} color={ORANGE} />
+              <PhIcon name="ShieldCheck" size={16} color={colors.accent} weight="fill" />
               <Text style={styles.guardrailNoticeText}>
                 Guardrail: Post ≥2 hrs early for Condition B fallback · Destinations must be ≥3 km apart · Max 4-hr window.
               </Text>
@@ -3116,8 +3105,8 @@ export default function JobsScreen() {
                 onPress={() => { setRouteLocationPickerType('start'); setRouteLocationPickerVisible(true); }}
                 activeOpacity={0.85}
               >
-                <View style={[styles.locSelectorIcon, newRouteStart && { backgroundColor: ORANGE }]}>
-                  <Ionicons name="radio-button-on" size={14} color="#FFF" />
+                <View style={[styles.locSelectorIcon, newRouteStart && { backgroundColor: colors.accent }]}>
+                  <PhIcon name="MapPin" size={14} color="#FFF" weight="fill" />
                 </View>
                 <Text style={styles.locationSelectorText} numberOfLines={1}>
                   {newRouteStart ? newRouteStart.street_address : 'Set Starting Point'}
@@ -3130,7 +3119,7 @@ export default function JobsScreen() {
                 activeOpacity={0.85}
               >
                 <View style={[styles.locSelectorIcon, newRouteEnd && { backgroundColor: BLACK }]}>
-                  <Ionicons name="location" size={14} color="#FFF" />
+                  <PhIcon name="MapPin" size={14} color="#FFF" weight="fill" />
                 </View>
                 <Text style={styles.locationSelectorText} numberOfLines={1}>
                   {newRouteEnd ? newRouteEnd.street_address : 'Set Destination (≥3 km apart)'}
@@ -3205,7 +3194,7 @@ export default function JobsScreen() {
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Departure Time (Today)</Text>
                 <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
-                  <Ionicons name="time-outline" size={16} color={ORANGE} />
+                  <PhIcon name="Clock" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.dateTimeValue}>
                     {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </Text>
@@ -3239,7 +3228,7 @@ export default function JobsScreen() {
                 </View>
                 <View style={{ height: 14 }} />
                 <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
-                  <Ionicons name="time-outline" size={16} color={ORANGE} />
+                  <PhIcon name="Clock" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.dateTimeValue}>
                     {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </Text>
@@ -3260,7 +3249,7 @@ export default function JobsScreen() {
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Date</Text>
                   <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowDatePicker(true)}>
-                    <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                    <PhIcon name="Calendar" size={16} color={colors.accent} weight="bold" />
                     <Text style={styles.dateTimeValue}>{newRouteDepartureDate.toLocaleDateString()}</Text>
                   </TouchableOpacity>
                   {newRouteShowDatePicker && (
@@ -3278,7 +3267,7 @@ export default function JobsScreen() {
                 <View style={styles.inputGroup}>
                   <Text style={styles.inputLabel}>Time</Text>
                   <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
-                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <PhIcon name="Clock" size={16} color={colors.accent} weight="bold" />
                     <Text style={styles.dateTimeValue}>
                       {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </Text>
@@ -3301,7 +3290,7 @@ export default function JobsScreen() {
               <Text style={styles.inputLabel}>Vehicle</Text>
               {newRouteVehicles.length === 0 ? (
                 <View style={styles.noVehiclesBox}>
-                  <Ionicons name="car-outline" size={20} color={colors.warning} />
+                  <PhIcon name="Info" size={20} color={colors.warning} weight="fill" />
                   <Text style={styles.noVehiclesText}>
                     No verified vehicles found. Add and verify a vehicle first.
                   </Text>
@@ -3314,10 +3303,11 @@ export default function JobsScreen() {
                       style={[styles.vehicleOption, newRouteVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
                       onPress={() => setNewRouteVehicleId(v.vehicle_id)}
                     >
-                      <Ionicons
-                        name="car-sport"
+                      <PhIcon
+                        name="Package"
                         size={14}
                         color={newRouteVehicleId === v.vehicle_id ? '#FFF' : colors.textSecondary}
+                        weight="fill"
                       />
                       <Text style={[styles.vehicleOptionText, newRouteVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
                         {v.plate_number}
@@ -3350,7 +3340,7 @@ export default function JobsScreen() {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.background }]}>
         <StatusBar translucent backgroundColor="transparent" barStyle={colors.statusBarStyle} />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading route matching...</Text>
       </View>
     );
@@ -3379,18 +3369,18 @@ export default function JobsScreen() {
                   activeOpacity={0.85}
                   hitSlop={8}
                 >
-                  <Ionicons name="add" size={20} color="#FFFFFF" />
+                  <PhIcon name="Plus" size={20} color="#FFFFFF" weight="bold" />
                 </TouchableOpacity>
 
                 <TouchableOpacity onPress={() => setRoutePickerVisible(false)} hitSlop={8}>
-                  <Ionicons name="close" size={22} color={colors.textPrimary} />
+                  <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
                 </TouchableOpacity>
               </View>
             </View>
 
             {routes.length === 0 ? (
               <View style={styles.routePickerEmpty}>
-                <Ionicons name="map-outline" size={40} color={ORANGE} />
+                <PhIcon name="MapTrifold" size={40} color={colors.accent} weight="fill" />
                 <Text style={styles.routePickerEmptyTitle}>Post a route to see matched deliveries.</Text>
                 <Text style={styles.routePickerEmptySub}>
                   Rule 1: Providers see zero requests until they post a route.
@@ -3400,12 +3390,12 @@ export default function JobsScreen() {
                   onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="add-circle" size={16} color="#FFFFFF" />
+                  <PhIcon name="PlusCircle" size={16} color="#FFFFFF" weight="fill" />
                   <Text style={styles.createQuickRouteBtnText}>Post a Route</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.emptyManageRouteBtn} onPress={goToManageRoutes} activeOpacity={0.85}>
-                  <Ionicons name="map-outline" size={16} color={ORANGE} />
+                  <PhIcon name="MapTrifold" size={16} color={colors.accent} weight="fill" />
                   <Text style={styles.emptyManageRouteText}>Manage Routes</Text>
                 </TouchableOpacity>
               </View>
@@ -3438,7 +3428,7 @@ export default function JobsScreen() {
                       }}
                       activeOpacity={0.85}
                     >
-                      <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? ORANGE : colors.textMuted }]} />
+                      <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? colors.accent : colors.textMuted }]} />
                       <View style={{ flex: 1 }}>
                         <Text style={styles.routeOptionTitle} numberOfLines={1}>
                           {startAddr.main} → {endAddr.main}
@@ -3447,7 +3437,7 @@ export default function JobsScreen() {
                           {scheduleLabel} · {r.route_frequency}
                         </Text>
                       </View>
-                      {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
+                      {isSelected && <PhIcon name="CheckCircle" size={22} color={colors.accent} weight="fill" />}
                     </TouchableOpacity>
                   );
                 })}
@@ -3470,7 +3460,7 @@ export default function JobsScreen() {
             : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
         }
         title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
-        pinColor={routeLocationPickerType === 'start' ? ORANGE : BLACK}
+        pinColor={routeLocationPickerType === 'start' ? colors.accent : BLACK}
         colors={colors}
         isDark={isDark}
       />
@@ -3479,7 +3469,7 @@ export default function JobsScreen() {
         <View style={styles.previewOverlay}>
           {!!previewPhoto && <Image source={{ uri: previewPhoto }} style={styles.previewImg} resizeMode="contain" />}
           <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPreviewPhoto(null)} activeOpacity={0.85}>
-            <Ionicons name="close" size={22} color="#FFFFFF" />
+            <PhIcon name="X" size={22} color="#FFFFFF" weight="bold" />
           </TouchableOpacity>
         </View>
       </Modal>
@@ -3490,13 +3480,13 @@ export default function JobsScreen() {
 /* ==================================================================== */
 /* Styles                                                               */
 /* ==================================================================== */
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mapTools: { position: 'absolute', right: 12, gap: 10 },
   mapToolBtn: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.15 : 0.4,
+    shadowOpacity: isDark ? 0.4 : 0.15,
     shadowRadius: 8, elevation: 5,
     borderWidth: 1, borderColor: c.border,
   },
@@ -3513,17 +3503,17 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mapToolBtnOff: { backgroundColor: 'rgba(30,38,54,0.88)', borderColor: 'rgba(255,255,255,0.05)' },
   toolDim: { opacity: 0.35 },
 
-  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 18 },
+  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', borderTopLeftRadius: 28, borderTopRightRadius: 28, shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 18 },
   dashBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
   dashHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   dashHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   liveBadge: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  liveRing: { position: 'absolute', width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: GREEN },
+  liveRing: { position: 'absolute', width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.success },
   liveCore: { width: 24, height: 24, borderRadius: 12 },
   dashTitle: { fontSize: 17, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.4 },
   dashSub: { fontSize: 12, fontWeight: '600', color: c.textSecondary, marginTop: 2 },
   statusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  statusPillOn: { backgroundColor: 'rgba(16,185,129,0.12)' },
+  statusPillOn: { backgroundColor: c.successBg },
   statusPillOff: { backgroundColor: 'rgba(100,116,139,0.15)' },
   statusPillDot: { width: 6, height: 6, borderRadius: 3 },
   statusPillText: { fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
@@ -3537,7 +3527,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   swapBtn: { width: 44, height: 44, borderRadius: 14, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
   swapBtnOff: { backgroundColor: 'rgba(30,38,54,0.8)', borderColor: 'rgba(255,255,255,0.06)' },
   powerBtn: { borderColor: 'rgba(239,68,68,0.35)' },
-  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 16, backgroundColor: ORANGE, overflow: 'hidden', shadowColor: ORANGE, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
+  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 16, backgroundColor: c.accent, overflow: 'hidden', shadowColor: c.accent, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
   ctaShineWrap: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 90 },
   ctaShine: { flex: 1, backgroundColor: 'rgba(255,255,255,0.3)', transform: [{ skewX: '-20deg' }] },
   ctaText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900', letterSpacing: -0.2 },
@@ -3567,7 +3557,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
   dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
+  dWhen: { fontSize: 12, fontWeight: '700', color: c.accent, marginTop: 2 },
   dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
   dItemText: { fontSize: 14, color: c.textSecondary, lineHeight: 20 },
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
@@ -3579,7 +3569,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: c.card, borderRadius: 20, padding: 16, marginBottom: 14,
     borderWidth: 1, borderColor: c.border,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3,
+    shadowOpacity: isDark ? 0.3 : 0.04,
     shadowRadius: 8, elevation: 1,
   },
   eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
@@ -3591,18 +3581,18 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   cardTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
   scoreBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(5,150,105,0.12)', paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
+    backgroundColor: c.successBg, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
   },
-  scoreBadgeText: { fontSize: 11.5, fontWeight: '800', color: '#059669' },
+  scoreBadgeText: { fontSize: 11.5, fontWeight: '800' },
   fallbackBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: PURPLE, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
   },
   fallbackBadgeText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.4 },
-  routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
   privacyNote: { marginTop: 14, fontSize: 11, color: c.textMuted, fontWeight: '600' },
-  earnCard: { backgroundColor: ORANGE, borderRadius: 20, padding: 18, marginBottom: 14 },
+  earnCard: { backgroundColor: c.accent, borderRadius: 20, padding: 18, marginBottom: 14 },
   earnLabel: { color: '#FFE4D2', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   earnValue: { color: '#FFFFFF', fontSize: 34, fontWeight: '900', marginTop: 4 },
   earnNote: {
@@ -3620,16 +3610,16 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -3 },
     shadowOpacity: 0.05, shadowRadius: 5, elevation: 10,
   },
-  acceptPrice: { fontSize: 22, fontWeight: '900', color: ORANGE, marginTop: 2 },
+  acceptPrice: { fontSize: 22, fontWeight: '900', color: c.accent, marginTop: 2 },
   acceptBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: ORANGE, paddingHorizontal: 22, paddingVertical: 14, borderRadius: 16, minWidth: 180,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    backgroundColor: c.accent, paddingHorizontal: 22, paddingVertical: 14, borderRadius: 16, minWidth: 180,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 
   offerTimerTrack: { height: 5, backgroundColor: c.border },
-  offerTimerFill: { height: '100%', backgroundColor: ORANGE },
+  offerTimerFill: { height: '100%' },
   offerCount: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
   offerTimerPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -3654,17 +3644,17 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   declineBtnText: { fontSize: 15, fontWeight: '800', color: c.error },
   offerAcceptBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 15, borderRadius: 16, backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    paddingVertical: 15, borderRadius: 16, backgroundColor: c.accent,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
   offerAcceptText: { fontSize: 16, fontWeight: '900', color: '#FFFFFF' },
 
   viewDetailsBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     marginTop: 18, paddingVertical: 14, borderRadius: 14,
-    backgroundColor: c.accentSoft, borderWidth: 1.5, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderWidth: 1.5, borderColor: c.accent,
   },
-  viewDetailsText: { fontSize: 14, fontWeight: '800', color: ORANGE },
+  viewDetailsText: { fontSize: 14, fontWeight: '800', color: c.accent },
 
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
   loadingText: { color: c.textSecondary, fontWeight: '600' },
@@ -3693,9 +3683,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   routePickerEmptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginTop: 8 },
   routePickerEmptySub: { fontSize: 12, color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
   addRouteHeaderBtn: {
-    width: 34, height: 34, borderRadius: 17, backgroundColor: ORANGE,
+    width: 34, height: 34, borderRadius: 17, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
   },
   emptyManageRouteBtn: {
@@ -3703,8 +3693,8 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
     backgroundColor: c.accentSoft, marginTop: 6,
   },
-  emptyManageRouteText: { fontSize: 13, fontWeight: '800', color: ORANGE },
-  createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
+  emptyManageRouteText: { fontSize: 13, fontWeight: '800', color: c.accent },
+  createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
   createQuickRouteBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
 
   routeOption: {
@@ -3713,7 +3703,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: c.background, borderRadius: 14, marginBottom: 8,
     borderWidth: 1.5, borderColor: 'transparent',
   },
-  routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
   routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
   routeOptionTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
   routeOptionSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
@@ -3723,7 +3713,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5,
     borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
   },
-  weekdayChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  weekdayChipActive: { backgroundColor: c.accent, borderColor: c.accent },
   weekdayChipText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
   weekdayChipTextActive: { color: '#FFF' },
 
@@ -3742,7 +3732,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: c.card, borderRadius: 20,
     paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
     shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowOpacity: isDark ? 0.5 : 0.18,
     shadowRadius: 20, elevation: 12,
     borderWidth: 1, borderColor: c.border,
   },
@@ -3762,14 +3752,14 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   notifTitle: { flex: 1, fontSize: 13.5, fontWeight: '800', color: c.textPrimary },
-  notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: ORANGE },
+  notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: c.accent },
   notifBody: { fontSize: 12.5, color: c.textSecondary, marginTop: 3, lineHeight: 17 },
   notifTime: { fontSize: 10.5, color: c.textMuted, marginTop: 5, fontWeight: '600' },
   notifFooter: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider,
   },
-  notifFooterText: { color: ORANGE, fontWeight: '800', fontSize: 13 },
+  notifFooterText: { color: c.accent, fontWeight: '800', fontSize: 13 },
 
   addRouteSheet: {
     borderTopLeftRadius: 28, borderTopRightRadius: 28,
@@ -3794,7 +3784,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   guardrailNotice: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
-    borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)', marginBottom: 16,
+    borderWidth: 1, borderColor: c.accent, marginBottom: 16,
   },
   guardrailNoticeText: { flex: 1, fontSize: 11.5, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
 
@@ -3818,9 +3808,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
     borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card,
   },
-  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
   frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
-  frequencyOptionTextSelected: { color: ORANGE, fontWeight: '800' },
+  frequencyOptionTextSelected: { color: c.accent, fontWeight: '800' },
 
   vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   vehicleOption: {
@@ -3828,7 +3818,7 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
     borderRadius: 20, borderWidth: 1.5, borderColor: c.border,
   },
-  vehicleOptionActive: { backgroundColor: ORANGE, borderColor: ORANGE },
+  vehicleOptionActive: { backgroundColor: c.accent, borderColor: c.accent },
   vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
   vehicleOptionTextActive: { color: '#FFF' },
 
@@ -3840,8 +3830,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   noVehiclesText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.warning },
 
   submitBtn: {
-    backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 14,
+    backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', marginTop: 6,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   submitBtnText: { color: '#FFF', fontSize: 15, fontWeight: '900' },
 

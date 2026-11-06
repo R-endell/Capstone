@@ -13,7 +13,7 @@ import type { PaymentMethod, PaymentProvider } from '../../../../types/payment';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 
 const GCASH_LOGO = require('../../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
+const MAYA_LOGO = require('../../../../../assets/maya.png');
 const ORANGE = '#F27024';
 
 export default function DeliveryPaymentScreen({ route, navigation }: any) {

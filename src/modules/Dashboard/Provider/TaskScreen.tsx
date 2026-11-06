@@ -24,7 +24,9 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { PhIcon } from '../../../components/ui/PhIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+const MAYA_LOGO = require('../../../../assets/maya.png');
+const EMPTY_BOX_ICON = require('../../../../assets/empty-box-icon.png');
+
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
@@ -1030,7 +1032,7 @@ export default function TaskScreen() {
             <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
               {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <PhIcon name="ChatCircle" size={16} color={colors.accent} weight="bold" />
+                  <PhIcon name="ChatCircleDots" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
@@ -1080,18 +1082,11 @@ export default function TaskScreen() {
         <Animated.View style={{ opacity: contentAnim }}>
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <PhIcon
-                  name={
-                    activeTab === 'cancelled' ? 'XCircle'
-                      : allTasks.length === 0 ? 'Briefcase'
-                      : 'MagnifyingGlass'
-                  }
-                  size={30}
-                  color={colors.accent}
-                  weight="fill"
-                />
-              </View>
+              <Image 
+                source={EMPTY_BOX_ICON} 
+                style={{ width: 140, height: 140, marginBottom: 20 }} 
+                resizeMode="contain" 
+              />
               <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
@@ -1157,7 +1152,7 @@ export default function TaskScreen() {
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={insets.top + 70} padBottom={60}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1359,7 +1354,7 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircle" size={20} color={colors.accent} weight="bold" />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircleDots" size={20} color={colors.accent} weight="bold" />}
             </TouchableOpacity>
             <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
               <PhIcon name="ArrowRight" size={16} color={colors.accent} weight="bold" />
@@ -1468,14 +1463,14 @@ export default function TaskScreen() {
                 onInfo={setNavInfo}
                 style={{ bottom: 150 + insets.bottom }}
                 padTop={20} padBottom={30}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             ) : (
               <RoutePreviewMap
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={100} padBottom={260}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             );
           })()}
@@ -1784,7 +1779,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
   emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
 
@@ -1821,7 +1815,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepLabelOn: { color: c.textPrimary },
 
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14 },
+  mPrimaryBtn: { 
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, 
+    backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4
+  },
   mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
   mSoftText: { color: c.accent, fontSize: 13, fontWeight: '800' },
@@ -2051,9 +2049,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   otpPayoutLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.success, borderRadius: 16,
+    backgroundColor: c.accent, borderRadius: 16,
     paddingVertical: 16, gap: 8, marginBottom: 12,
-    shadowColor: c.success, shadowOffset: { width: 0, height: 4 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   otpVerifyButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },

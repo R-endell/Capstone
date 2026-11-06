@@ -1,15 +1,15 @@
 // src/modules/Dashboard/Provider/EarningsScreen.tsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   StatusBar, Alert, ActivityIndicator, RefreshControl,
-  Animated, Easing, Modal, ScrollView,
+  Animated, Easing, Modal, ScrollView, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { PhIcon } from '../../../components/ui/PhIcon';
 import { ProviderWallet, WithdrawalRequest } from '../../../types/payment';
 import {
   fetchWithdrawalHistory,
@@ -17,7 +17,9 @@ import {
   isSavedWalletNumberValid,
 } from '../../../services/withdrawalService';
 
-const ORANGE = '#FA7A25';
+const EMPTY_BOX_ICON = require('../../../../assets/empty-box-icon.png');
+const GCASH_LOGO = require('../../../../assets/gcash.png');
+const MAYA_LOGO = require('../../../../assets/maya.png');
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -51,8 +53,8 @@ interface EarningRow {
 export default function EarningsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { colors } = useTheme();
-  const styles = makeStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -289,7 +291,7 @@ export default function EarningsScreen() {
       <View style={styles.walletCard}>
         <View style={styles.walletHeader}>
           <View style={styles.walletIconBox}>
-            <Ionicons name="wallet" size={20} color={ORANGE} />
+            <PhIcon name="Wallet" size={22} color={colors.accent} weight="fill" />
           </View>
           <TouchableOpacity
             style={[styles.withdrawBtn, styles.withdrawBtnActive]}
@@ -302,7 +304,7 @@ export default function EarningsScreen() {
               navigation.navigate('Cashout', { providerId });
             }}
           >
-            <Ionicons name="arrow-up-circle" size={16} color="#FFFFFF" />
+            <PhIcon name="ArrowUpCircle" size={16} color="#FFFFFF" weight="fill" />
             <Text style={styles.withdrawBtnTextActive}>Cash Out</Text>
           </TouchableOpacity>
         </View>
@@ -315,14 +317,14 @@ export default function EarningsScreen() {
           </Text>
           {totalPending > 0 && (
             <View style={styles.pendingRow}>
-              <Ionicons name="time-outline" size={12} color={colors.warning} />
+              <PhIcon name="Clock" size={12} color={colors.warning} weight="bold" />
               <Text style={styles.pendingText}>₱{totalPending.toFixed(2)} pending escrow release</Text>
             </View>
           )}
           {activeWithdrawalsTotal > 0 && (
             <View style={[styles.pendingRow, { marginTop: 4 }]}>
-              <Ionicons name="sync-outline" size={12} color={ORANGE} />
-              <Text style={[styles.pendingText, { color: ORANGE }]}>
+              <PhIcon name="ArrowsClockwise" size={12} color={colors.accent} weight="bold" />
+              <Text style={[styles.pendingText, { color: colors.accent }]}>
                 ₱{activeWithdrawalsTotal.toFixed(2)} payout in progress
               </Text>
             </View>
@@ -331,7 +333,7 @@ export default function EarningsScreen() {
 
         {walletMissing && (
           <View style={styles.walletMissingBox}>
-            <Ionicons name="alert-circle-outline" size={16} color={colors.warning} />
+            <PhIcon name="WarningCircle" size={16} color={colors.warning} weight="fill" />
             <Text style={styles.walletMissingText}>
               Wallet not initialized yet. Complete a delivery or contact support to activate.
             </Text>
@@ -345,8 +347,8 @@ export default function EarningsScreen() {
               <Text style={styles.payoutHeading}>PAYOUT DESTINATIONS</Text>
 
               <View style={styles.payoutRow}>
-                <View style={styles.payoutIconWrap}>
-                  <Ionicons name="phone-portrait-outline" size={14} color="#0070F0" />
+                <View style={[styles.payoutIconWrap, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border }]}>
+                  <Image source={GCASH_LOGO} style={{ width: 22, height: 22 }} resizeMode="contain" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.payoutLabel}>GCash</Text>
@@ -362,8 +364,8 @@ export default function EarningsScreen() {
               </View>
 
               <View style={styles.payoutRow}>
-                <View style={styles.payoutIconWrap}>
-                  <Ionicons name="wallet-outline" size={14} color="#059669" />
+                <View style={[styles.payoutIconWrap, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: colors.border }]}>
+                  <Image source={MAYA_LOGO} style={{ width: 22, height: 22 }} resizeMode="contain" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.payoutLabel}>Maya</Text>
@@ -397,7 +399,7 @@ export default function EarningsScreen() {
           <View style={styles.verticalDivider} />
           <View style={styles.statBox}>
             <View style={styles.ratingRow}>
-              <Ionicons name="star" size={14} color={colors.warning} />
+              <PhIcon name="Star" size={14} color={colors.warning} weight="fill" />
               <Text style={styles.statValue}>{averageRating > 0 ? averageRating.toFixed(1) : 'N/A'}</Text>
             </View>
             <Text style={styles.statLabel}>{ratingCount > 0 ? `${ratingCount} ratings` : 'No ratings yet'}</Text>
@@ -419,12 +421,12 @@ export default function EarningsScreen() {
 
     let statusColor = colors.warning;
     let statusBg = colors.warningBg;
-    let statusIcon: any = 'time';
+    let statusIcon: any = 'Clock';
     let statusLabel = 'Pending payout';
 
-    if (isEarned) { statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'checkmark-circle'; statusLabel = 'Earned'; }
-    else if (isFrozen) { statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'snow'; statusLabel = 'Frozen'; }
-    else if (isRefunded) { statusColor = colors.textSecondary; statusBg = colors.divider; statusIcon = 'arrow-undo'; statusLabel = 'Refunded'; }
+    if (isEarned) { statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'CheckCircle'; statusLabel = 'Earned'; }
+    else if (isFrozen) { statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'Snowflake'; statusLabel = 'Frozen'; }
+    else if (isRefunded) { statusColor = colors.textSecondary; statusBg = colors.divider; statusIcon = 'ArrowUDownLeft'; statusLabel = 'Refunded'; }
     else if (isPending) { statusLabel = item.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
 
     const stamp = item.processed_at || item.delivery_completed_at || item.created_at;
@@ -433,7 +435,7 @@ export default function EarningsScreen() {
       <TouchableOpacity style={styles.transactionCard} activeOpacity={0.85} onPress={() => setDetailRow(item)}>
         <View style={styles.transactionLeft}>
           <View style={[styles.iconContainer, { backgroundColor: statusBg }]}>
-            <Ionicons name={statusIcon} size={20} color={statusColor} />
+            <PhIcon name={statusIcon} size={20} color={statusColor} weight="fill" />
           </View>
           <View style={styles.transactionDetails}>
             <Text style={styles.transactionTitle}>Delivery #{item.delivery_id}</Text>
@@ -443,7 +445,7 @@ export default function EarningsScreen() {
               {formatDate(stamp)}
             </Text>
             <View style={styles.paymentMethodRow}>
-              <Ionicons name="card-outline" size={11} color={colors.textMuted} />
+              <PhIcon name="CreditCard" size={11} color={colors.textMuted} weight="regular" />
               <Text style={styles.transactionPayment}>
                 {item.payment_method ? titleCase(item.payment_method) : 'Payment method pending'}
                 {item.service_fee != null ? ` • Fee ₱${item.service_fee.toFixed(2)}` : ''}
@@ -463,7 +465,7 @@ export default function EarningsScreen() {
           {!!item.penalty_fee && item.penalty_fee > 0 && (
             <Text style={styles.penaltyText}>-₱{item.penalty_fee.toFixed(2)} Penalty</Text>
           )}
-          <Ionicons name="chevron-forward" size={14} color={colors.textMuted} style={{ marginTop: 6 }} />
+          <PhIcon name="CaretRight" size={14} color={colors.textMuted} weight="bold" style={{ marginTop: 6 }} />
         </View>
       </TouchableOpacity>
     );
@@ -479,17 +481,17 @@ export default function EarningsScreen() {
       ? colors.success
       : isRefunded
       ? colors.error
-      : ORANGE;
+      : colors.accent;
     const statusBg = isCompleted
       ? colors.successBg
       : isRefunded
       ? colors.errorBg
       : colors.accentSoft;
     const statusIcon = isCompleted
-      ? 'arrow-up-circle'
+      ? 'CheckCircle'
       : isRefunded
-      ? 'refresh-circle'
-      : 'time';
+      ? 'ArrowUDownLeft'
+      : 'Clock';
     const statusLabel =
       st === 'Pending_Compliance'
         ? 'Under Review'
@@ -507,7 +509,7 @@ export default function EarningsScreen() {
       >
         <View style={styles.transactionLeft}>
           <View style={[styles.iconContainer, { backgroundColor: statusBg }]}>
-            <Ionicons name={statusIcon as any} size={20} color={statusColor} />
+            <PhIcon name={statusIcon as any} size={20} color={statusColor} weight="fill" />
           </View>
           <View style={styles.transactionDetails}>
             <Text style={styles.transactionTitle}>
@@ -521,10 +523,10 @@ export default function EarningsScreen() {
               {formatDate(stamp)}
             </Text>
             <View style={styles.paymentMethodRow}>
-              <Ionicons
-                name="phone-portrait-outline"
-                size={11}
-                color={colors.textMuted}
+              <Image 
+                source={isMaya ? MAYA_LOGO : GCASH_LOGO} 
+                style={{ width: 14, height: 14, borderRadius: 3 }} 
+                resizeMode="contain" 
               />
               <Text style={styles.transactionPayment}>
                 {maskAccount(item.account_number) || 'Account'}
@@ -543,7 +545,7 @@ export default function EarningsScreen() {
                   ? colors.textSecondary
                   : isCompleted
                   ? colors.textPrimary
-                  : ORANGE,
+                  : colors.accent,
               },
               isRefunded && { textDecorationLine: 'line-through' },
             ]}
@@ -555,10 +557,11 @@ export default function EarningsScreen() {
               Restored to wallet
             </Text>
           )}
-          <Ionicons
-            name="chevron-forward"
+          <PhIcon
+            name="CaretRight"
             size={14}
             color={colors.textMuted}
+            weight="bold"
             style={{ marginTop: 6 }}
           />
         </View>
@@ -579,17 +582,17 @@ export default function EarningsScreen() {
       ? colors.success
       : isRefunded
       ? colors.error
-      : ORANGE;
+      : colors.accent;
     const headBg = isCompleted
       ? colors.successBg
       : isRefunded
       ? colors.errorBg
       : colors.accentSoft;
     const headIcon = isCompleted
-      ? 'checkmark-circle'
+      ? 'CheckCircle'
       : isRefunded
-      ? 'alert-circle'
-      : 'time';
+      ? 'WarningCircle'
+      : 'Clock';
 
     return (
       <Modal
@@ -600,17 +603,18 @@ export default function EarningsScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+            <View style={styles.dHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Cashout Details</Text>
-              <TouchableOpacity onPress={() => setSelectedWithdrawal(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              <TouchableOpacity onPress={() => setSelectedWithdrawal(null)} hitSlop={10} style={{ padding: 4 }}>
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  <Ionicons name={headIcon as any} size={26} color={headColor} />
+                  <PhIcon name={headIcon as any} size={26} color={headColor} weight="fill" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.heroStatus, { color: headColor }]}>
@@ -686,7 +690,7 @@ export default function EarningsScreen() {
 
               {isRefunded && (
                 <View style={[styles.noteBox, { backgroundColor: colors.successBg, borderColor: colors.success }]}>
-                  <Ionicons name="checkmark-circle" size={15} color={colors.success} />
+                  <PhIcon name="CheckCircle" size={15} color={colors.success} weight="fill" />
                   <Text style={[styles.noteText, { color: colors.success }]}>
                     ₱{Number(w.amount || 0).toFixed(2)} was automatically restored to your Pack-N-Ship wallet.
                   </Text>
@@ -701,10 +705,10 @@ export default function EarningsScreen() {
                   activeOpacity={0.85}
                 >
                   {reconcilingId === w.withdrawal_id ? (
-                    <ActivityIndicator size="small" color={ORANGE} />
+                    <ActivityIndicator size="small" color={colors.accent} />
                   ) : (
                     <>
-                      <Ionicons name="refresh" size={16} color={ORANGE} />
+                      <PhIcon name="ArrowsClockwise" size={16} color={colors.accent} weight="bold" />
                       <Text style={styles.reconcileBtnText}>Refresh Gateway Status</Text>
                     </>
                   )}
@@ -736,12 +740,12 @@ export default function EarningsScreen() {
 
     let headColor = colors.warning;
     let headBg = colors.warningBg;
-    let headIcon: any = 'time';
+    let headIcon: any = 'Clock';
     let headLabel = 'Pending payout';
 
-    if (isEarned) { headColor = colors.success; headBg = colors.successBg; headIcon = 'checkmark-circle'; headLabel = 'Earned'; }
-    else if (isFrozen) { headColor = colors.error; headBg = colors.errorBg; headIcon = 'snow'; headLabel = 'Frozen (emergency)'; }
-    else if (isRefunded) { headColor = colors.textSecondary; headBg = colors.divider; headIcon = 'arrow-undo'; headLabel = 'Refunded to sender'; }
+    if (isEarned) { headColor = colors.success; headBg = colors.successBg; headIcon = 'CheckCircle'; headLabel = 'Earned'; }
+    else if (isFrozen) { headColor = colors.error; headBg = colors.errorBg; headIcon = 'Snowflake'; headLabel = 'Frozen (emergency)'; }
+    else if (isRefunded) { headColor = colors.textSecondary; headBg = colors.divider; headIcon = 'ArrowUDownLeft'; headLabel = 'Refunded to sender'; }
     else if (isPending) { headLabel = r.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
 
     const fare = Number(r.total_amount ?? r.amount ?? 0);
@@ -753,21 +757,21 @@ export default function EarningsScreen() {
       <Modal visible={!!detailRow} transparent animationType="slide" onRequestClose={() => setDetailRow(null)}>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+            <View style={styles.dHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Transaction Details</Text>
-              <TouchableOpacity onPress={() => setDetailRow(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+              <TouchableOpacity onPress={() => setDetailRow(null)} hitSlop={10} style={{ padding: 4 }}>
+                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
             </View>
 
-            {/* Same concept as detail sheet: flexGrow so no dead space above the Done button */}
             <ScrollView
               showsVerticalScrollIndicator={false}
               contentContainerStyle={{ flexGrow: 1, paddingBottom: 8 }}
             >
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  <Ionicons name={headIcon} size={26} color={headColor} />
+                  <PhIcon name={headIcon} size={26} color={headColor} weight="fill" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.heroStatus, { color: headColor }]}>{headLabel}</Text>
@@ -816,7 +820,7 @@ export default function EarningsScreen() {
                 <>
                   <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN</Text>
                   <View style={styles.hashBox}>
-                    <Ionicons name="cube-outline" size={14} color={colors.textSecondary} />
+                    <PhIcon name="Blockchain" size={14} color={colors.textSecondary} weight="fill" />
                     <Text style={styles.hashText} numberOfLines={2}>{r.bc_escrow_tx_hash}</Text>
                   </View>
                 </>
@@ -824,19 +828,19 @@ export default function EarningsScreen() {
 
               {isPending && (
                 <View style={styles.noteBox}>
-                  <Ionicons name="information-circle-outline" size={14} color={colors.warning} />
+                  <PhIcon name="Info" size={14} color={colors.warning} weight="bold" />
                   <Text style={styles.noteText}>Still held in escrow. This will release automatically once the delivery is confirmed.</Text>
                 </View>
               )}
               {isFrozen && (
                 <View style={[styles.noteBox, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
-                  <Ionicons name="snow" size={14} color={colors.error} />
+                  <PhIcon name="Snowflake" size={14} color={colors.error} weight="bold" />
                   <Text style={[styles.noteText, { color: colors.error }]}>This transaction is frozen due to an open issue.</Text>
                 </View>
               )}
               {isRefunded && (
                 <View style={[styles.noteBox, { backgroundColor: colors.divider, borderColor: colors.border }]}>
-                  <Ionicons name="arrow-undo" size={14} color={colors.textSecondary} />
+                  <PhIcon name="ArrowUDownLeft" size={14} color={colors.textSecondary} weight="bold" />
                   <Text style={[styles.noteText, { color: colors.textSecondary }]}>This delivery was refunded to the sender. No earnings were credited.</Text>
                 </View>
               )}
@@ -855,7 +859,7 @@ export default function EarningsScreen() {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading earnings...</Text>
       </View>
     );
@@ -883,9 +887,8 @@ export default function EarningsScreen() {
               : (renderWithdrawalItem as any)
           }
           showsVerticalScrollIndicator={false}
-          // flexGrow:1 keeps the list stretched when content is short — no stub empty space above the last item
           contentContainerStyle={[styles.listContent, { flexGrow: 1 }]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
           ListHeaderComponent={
             <>
               {renderWalletCard()}
@@ -929,13 +932,11 @@ export default function EarningsScreen() {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons
-                  name={historyTab === 'earnings' ? 'receipt-outline' : 'wallet-outline'}
-                  size={36}
-                  color={ORANGE}
-                />
-              </View>
+              <Image 
+                source={EMPTY_BOX_ICON} 
+                style={{ width: 140, height: 140, marginBottom: 20 }} 
+                resizeMode="contain" 
+              />
               <Text style={styles.emptyText}>
                 {historyTab === 'earnings' ? 'No earnings yet' : 'No withdrawals yet'}
               </Text>
@@ -988,7 +989,7 @@ const BreakdownRow: React.FC<{
 /* ------------------------------------------------------------------ */
 /* Styles                                                              */
 /* ------------------------------------------------------------------ */
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: c.background },
   loadingText: { marginTop: 12, color: c.textSecondary, fontSize: 14, fontWeight: '500' },
@@ -1004,9 +1005,9 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 40 },
 
   walletCard: {
-    backgroundColor: c.card, borderRadius: 20, padding: 20, marginBottom: 20,
+    backgroundColor: c.card, borderRadius: 22, padding: 20, marginBottom: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3, shadowRadius: 14, elevation: 3,
+    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 12, elevation: 3,
     borderWidth: 1, borderColor: c.border,
   },
   walletHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -1020,13 +1021,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderWidth: 1, borderColor: c.border, gap: 6,
   },
   withdrawBtnActive: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
-    shadowColor: ORANGE,
+    backgroundColor: c.accent,
+    borderColor: c.accent,
+    shadowColor: c.accent,
     shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 3,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   withdrawBtnTextActive: { fontSize: 13, fontWeight: '800', color: '#FFFFFF' },
 
@@ -1070,41 +1071,42 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
 
   historyTabsRow: {
     flexDirection: 'row',
-    backgroundColor: c.card,
-    borderRadius: 14,
+    backgroundColor: c.divider,
+    borderRadius: 16,
     padding: 4,
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: c.border,
   },
   historyTabBtn: {
     flex: 1,
     paddingVertical: 10,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
   },
   historyTabBtnActive: {
-    backgroundColor: c.accentSoft,
+    backgroundColor: c.card,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.4 : 0.08,
+    shadowRadius: 4, elevation: 2,
   },
   historyTabText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
     color: c.textSecondary,
   },
   historyTabTextActive: {
-    color: ORANGE,
+    color: c.accent,
     fontWeight: '800',
   },
 
   transactionCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.3, shadowRadius: 8, elevation: 2,
+    backgroundColor: c.card, borderRadius: 22, padding: 16, marginBottom: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
     borderWidth: 1, borderColor: c.border,
   },
   transactionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 12 },
-  iconContainer: { width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  iconContainer: { width: 42, height: 42, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   transactionDetails: { flex: 1, justifyContent: 'center' },
   transactionTitle: { fontSize: 14, fontWeight: '700', color: c.textPrimary, marginBottom: 2, letterSpacing: -0.2 },
   transactionSubtitle: { fontSize: 12, color: c.textSecondary },
@@ -1114,20 +1116,16 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   transactionAmount: { fontSize: 16, fontWeight: '800', letterSpacing: -0.5 },
   penaltyText: { fontSize: 11, color: c.error, fontWeight: '600', marginTop: 4 },
 
-  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 40 },
-  emptyIconCircle: {
-    width: 72, height: 72, borderRadius: 36, backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center', marginBottom: 16,
-    borderWidth: 1, borderColor: c.border,
-  },
-  emptyText: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 6 },
-  emptySubText: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 18, paddingHorizontal: 20 },
+  emptyContainer: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
+  emptyText: { fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 6 },
+  emptySubText: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 18, maxHeight: '92%', flexGrow: 1,
+    paddingHorizontal: 20, paddingTop: 12, maxHeight: '92%', flexGrow: 1,
   },
+  dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
 
@@ -1171,10 +1169,13 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   reconcileBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12,
-    borderWidth: 1.5, borderColor: ORANGE, backgroundColor: c.accentSoft,
+    borderWidth: 1.5, borderColor: c.accent, backgroundColor: c.accentSoft,
   },
-  reconcileBtnText: { fontSize: 13, fontWeight: '800', color: ORANGE },
+  reconcileBtnText: { fontSize: 13, fontWeight: '800', color: c.accent },
 
-  modalDoneBtn: { marginTop: 16, backgroundColor: c.textPrimary, borderRadius: 14, paddingVertical: 15, alignItems: 'center' },
-  modalDoneBtnText: { color: c.card, fontSize: 15, fontWeight: '800' },
+  modalDoneBtn: { 
+    marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 15, alignItems: 'center',
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4
+  },
+  modalDoneBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 });

@@ -17,16 +17,15 @@ import {
   Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { PhIcon } from '../../../../components/ui/PhIcon';
 
-const ORANGE = '#FF751F';
-const BLUE = '#3B82F6';
+const EMPTY_BOX_ICON = require('../../../../../assets/empty-box-icon.png');
 
 interface Vehicle {
   vehicle_id: number;
@@ -351,7 +350,7 @@ export default function ManageVehicleScreen() {
           {/* Top Row: Vehicle Type Pill + Verification Status Pill */}
           <View style={styles.oTopRow}>
             <View style={styles.svcPill}>
-              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <PhIcon name="Car" size={14} color={colors.textPrimary} weight="fill" />
               <Text style={styles.svcPillText}>{item.vehicle_type}</Text>
             </View>
             <View style={[styles.stPill, { backgroundColor: statusBg }]}>
@@ -365,7 +364,7 @@ export default function ManageVehicleScreen() {
           {/* Plate Number Hero */}
           <View style={styles.plateHeroRow}>
             <View style={styles.plateIconCircle}>
-              <Ionicons name="car-sport" size={20} color={ORANGE} />
+              <PhIcon name="Car" size={20} color={colors.accent} weight="fill" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rtLabel}>PLATE NUMBER</Text>
@@ -395,10 +394,11 @@ export default function ManageVehicleScreen() {
         {/* Footer Row: OR/CR Document Status */}
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
-            <Ionicons
-              name={item.vehicle_doc ? 'document-attach-outline' : 'alert-circle-outline'}
+            <PhIcon
+              name={item.vehicle_doc ? 'FileText' : 'WarningCircle'}
               size={14}
-              color={item.vehicle_doc ? ORANGE : colors.textMuted}
+              color={item.vehicle_doc ? colors.accent : colors.textMuted}
+              weight={item.vehicle_doc ? 'fill' : 'regular'}
             />
             <Text style={styles.oChipText}>
               {item.vehicle_doc ? 'OR/CR Document Attached' : 'No OR/CR Document'}
@@ -414,7 +414,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleDelete(item)}
             activeOpacity={0.85}
           >
-            <Ionicons name="trash-outline" size={16} color={colors.error} />
+            <PhIcon name="Trash" size={16} color={colors.error} weight="bold" />
             <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -422,7 +422,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleEdit(item)}
             activeOpacity={0.9}
           >
-            <Ionicons name="create-outline" size={16} color="#FFFFFF" />
+            <PhIcon name="PencilSimple" size={16} color="#FFFFFF" weight="bold" />
             <Text style={styles.oRouteText}>Edit Vehicle</Text>
           </TouchableOpacity>
         </View>
@@ -436,7 +436,7 @@ export default function ManageVehicleScreen() {
 
       <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
         <View style={{ flex: 1, paddingLeft: 14 }}>
           <Text style={styles.headerTitle}>Manage Vehicles</Text>
@@ -445,26 +445,28 @@ export default function ManageVehicleScreen() {
           </Text>
         </View>
         <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-          <Ionicons name="add" size={22} color="#FFFFFF" />
+          <PhIcon name="Plus" size={22} color="#FFFFFF" weight="bold" />
         </TouchableOpacity>
       </Animated.View>
 
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Loading vehicles...</Text>
         </View>
       ) : vehicles.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons name="car-outline" size={34} color={ORANGE} />
-          </View>
+          <Image 
+            source={EMPTY_BOX_ICON} 
+            style={{ width: 140, height: 140, marginBottom: 20 }} 
+            resizeMode="contain" 
+          />
           <Text style={styles.emptyTitle}>No vehicles yet</Text>
           <Text style={styles.emptySubtitle}>
             Add your first vehicle to start accepting deliveries
           </Text>
           <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-            <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+            <PhIcon name="PlusCircle" size={18} color="#FFFFFF" weight="fill" />
             <Text style={styles.emptyAddBtnText}>Add Vehicle</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -494,7 +496,7 @@ export default function ManageVehicleScreen() {
             <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn} activeOpacity={0.85}>
-                <Ionicons name="close" size={20} color={colors.textPrimary} />
+                <PhIcon name="X" size={20} color={colors.textPrimary} weight="bold" />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
                 {editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}
@@ -524,7 +526,7 @@ export default function ManageVehicleScreen() {
               <View style={styles.formField}>
                 <Text style={styles.inputLabel}>Plate Number</Text>
                 <View style={styles.inputWrapper}>
-                  <Ionicons name="pricetag-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                  <PhIcon name="FileText" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
                   <TextInput
                     style={styles.textInput}
                     value={plateNumber}
@@ -540,7 +542,7 @@ export default function ManageVehicleScreen() {
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Volume (L)</Text>
                   <View style={styles.inputWrapper}>
-                    <Ionicons name="water-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                    <PhIcon name="Cube" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxVolume}
@@ -554,7 +556,7 @@ export default function ManageVehicleScreen() {
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Weight (kg)</Text>
                   <View style={styles.inputWrapper}>
-                    <Ionicons name="barbell-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                    <PhIcon name="Scales" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxWeight}
@@ -614,14 +616,14 @@ export default function ManageVehicleScreen() {
                 >
                   {uploading ? (
                     <View style={styles.uploadingContainer}>
-                      <ActivityIndicator size="large" color={ORANGE} />
+                      <ActivityIndicator size="large" color={colors.accent} />
                       <Text style={styles.uploadingText}>Uploading...</Text>
                     </View>
                   ) : vehicleDoc ? (
                     <View style={styles.uploadedContainer}>
                       {vehicleDoc.endsWith('.pdf') ? (
                         <View style={styles.docIconBox}>
-                          <Ionicons name="document-text" size={32} color={ORANGE} />
+                          <PhIcon name="FileText" size={32} color={colors.accent} weight="fill" />
                         </View>
                       ) : (
                         <Image source={{ uri: vehicleDoc }} style={styles.uploadedImage} />
@@ -630,14 +632,14 @@ export default function ManageVehicleScreen() {
                         {docFileName || 'Document uploaded'}
                       </Text>
                       <TouchableOpacity style={styles.removeDocBtn} onPress={() => { setVehicleDoc(null); setDocFileName(null); }}>
-                        <Ionicons name="trash-outline" size={14} color={colors.error} />
+                        <PhIcon name="Trash" size={14} color={colors.error} weight="bold" />
                         <Text style={styles.removeDocText}>Remove</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
                     <>
                       <View style={styles.uploadIconBox}>
-                        <Ionicons name="cloud-upload-outline" size={28} color={ORANGE} />
+                        <PhIcon name="ArrowUp" size={28} color={colors.accent} weight="bold" />
                       </View>
                       <Text style={styles.uploadText}>Tap to upload OR/CR</Text>
                       <Text style={styles.uploadSubtext}>Image or PDF</Text>
@@ -651,7 +653,7 @@ export default function ManageVehicleScreen() {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <>
-                    <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                    <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
                     <Text style={styles.submitBtnText}>
                       {editingVehicle ? 'Update Vehicle' : 'Add Vehicle'}
                     </Text>
@@ -683,7 +685,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: c.divider,
+    backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
@@ -705,9 +707,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
   },
 
   listContent: {
@@ -734,17 +737,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 40,
   },
-  emptyIconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: c.accentSoft,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: c.border,
-  },
   emptyTitle: {
     fontSize: 18,
     fontWeight: '800',
@@ -762,11 +754,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     paddingHorizontal: 22,
     paddingVertical: 13,
     borderRadius: 14,
     gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   emptyAddBtnText: {
     color: '#FFFFFF',
@@ -782,6 +775,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: c.border,
     overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
   },
   oPad: { padding: 16 },
   oTopRow: {
@@ -794,14 +789,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(59,130,246,0.12)',
+    backgroundColor: c.divider,
     borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.35)',
+    borderColor: c.border,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPillText: { fontSize: 12, fontWeight: '800', color: c.textPrimary },
   stPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -923,7 +918,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     borderRadius: 14,
     paddingVertical: 14,
   },
@@ -945,6 +940,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderTopRightRadius: 28,
     paddingTop: 8,
     maxHeight: '94%',
+    flex: 1,
   },
   modalHandle: {
     alignSelf: 'center',
@@ -1006,7 +1002,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   typeBtnActive: {
     backgroundColor: c.accentSoft,
-    borderColor: ORANGE,
+    borderColor: c.accent,
   },
   typeBtnText: {
     fontSize: 13,
@@ -1014,7 +1010,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontWeight: '700',
   },
   typeBtnTextActive: {
-    color: ORANGE,
+    color: c.accent,
     fontWeight: '800',
   },
 
@@ -1087,7 +1083,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   uploadBoxFilled: {
     borderStyle: 'solid',
-    borderColor: ORANGE,
+    borderColor: c.accent,
     backgroundColor: c.accentSoft,
   },
   uploadIconBox: {
@@ -1160,14 +1156,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     paddingVertical: 16,
     borderRadius: 14,
     marginTop: 12,
     gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   submitBtnDisabled: {
     backgroundColor: c.textMuted,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   submitBtnText: {
     color: '#FFFFFF',

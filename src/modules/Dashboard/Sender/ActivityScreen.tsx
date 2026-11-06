@@ -20,7 +20,7 @@ import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { PhIcon } from '../../../components/ui/PhIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+const MAYA_LOGO = require('../../../../assets/maya.png');
 const SEARCH_ICON = require('../../../../assets/empty-state-magnifying-glass-icon.png');
 
 const BLUE = '#3B82F6';

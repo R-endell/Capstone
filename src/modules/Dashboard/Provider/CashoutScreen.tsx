@@ -1,5 +1,5 @@
 // src/modules/Dashboard/Provider/CashoutScreen.tsx
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -16,10 +16,10 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { PhIcon } from '../../../components/ui/PhIcon';
 import {
   PaymentProvider,
   ProviderWallet,
@@ -39,9 +39,7 @@ import {
 } from '../../../services/withdrawalService';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../assets/maya.jpeg');
-
-const ORANGE = '#FA7A25';
+const MAYA_LOGO = require('../../../../assets/maya.png');
 
 type StepState = 'form' | 'confirm' | 'result';
 
@@ -49,8 +47,8 @@ export default function CashoutScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { colors } = useTheme();
-  const styles = makeStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const scrollRef = useRef<ScrollView | null>(null);
   const accountNumberInputRef = useRef<TextInput | null>(null);
@@ -378,7 +376,7 @@ export default function CashoutScreen() {
           translucent
           backgroundColor="transparent"
         />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading wallet...</Text>
       </View>
     );
@@ -399,17 +397,17 @@ export default function CashoutScreen() {
       ? colors.success
       : isFailed
       ? colors.error
-      : ORANGE;
+      : colors.accent;
     const statusBg = isCompleted
       ? colors.successBg
       : isFailed
       ? colors.errorBg
       : colors.accentSoft;
     const statusIcon = isCompleted
-      ? 'checkmark-circle'
+      ? 'CheckCircle'
       : isFailed
-      ? 'alert-circle'
-      : 'time';
+      ? 'WarningCircle'
+      : 'Clock';
 
     return (
       <View style={styles.container}>
@@ -430,7 +428,7 @@ export default function CashoutScreen() {
             style={styles.closeCircleBtn}
             onPress={() => navigation.goBack()}
           >
-            <Ionicons name="close" size={20} color={colors.textPrimary} />
+            <PhIcon name="X" size={20} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
         </View>
 
@@ -445,7 +443,7 @@ export default function CashoutScreen() {
             <View
               style={[styles.resultIconWrap, { backgroundColor: statusBg }]}
             >
-              <Ionicons name={statusIcon as any} size={38} color={statusColor} />
+              <PhIcon name={statusIcon as any} size={38} color={statusColor} weight="fill" />
             </View>
             <Text style={[styles.resultStatusTitle, { color: statusColor }]}>
               {isCompleted
@@ -513,7 +511,7 @@ export default function CashoutScreen() {
             )}
             <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}>
               <Text style={styles.receiptLabel}>Remaining Wallet Balance</Text>
-              <Text style={[styles.receiptValue, { color: ORANGE }]}>
+              <Text style={[styles.receiptValue, { color: colors.accent }]}>
                 ₱{availableBalance.toFixed(2)}
               </Text>
             </View>
@@ -527,10 +525,10 @@ export default function CashoutScreen() {
               activeOpacity={0.85}
             >
               {reconciling ? (
-                <ActivityIndicator size="small" color={ORANGE} />
+                <ActivityIndicator size="small" color={colors.accent} />
               ) : (
                 <>
-                  <Ionicons name="refresh" size={16} color={ORANGE} />
+                  <PhIcon name="ArrowsClockwise" size={16} color={colors.accent} weight="bold" />
                   <Text style={styles.secondaryBtnText}>
                     Refresh Gateway Status
                   </Text>
@@ -573,7 +571,7 @@ export default function CashoutScreen() {
             onPress={() => !submitting && setStep('form')}
             disabled={submitting}
           >
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+            <PhIcon name="ArrowLeft" size={20} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Confirm Cashout</Text>
           <View style={{ width: 40 }} />
@@ -590,10 +588,11 @@ export default function CashoutScreen() {
             <Text style={styles.confirmEyebrow}>YOU ARE CASHING OUT</Text>
             <Text style={styles.confirmAmount}>₱{parsedAmount.toFixed(2)}</Text>
             <View style={styles.confirmFeePill}>
-              <Ionicons
-                name="checkmark-circle"
+              <PhIcon
+                name="CheckCircle"
                 size={13}
                 color={colors.success}
+                weight="fill"
               />
               <Text style={styles.confirmFeeText}>
                 ₱0.00 Transfer Fee · Instant via Xendit Payouts v3
@@ -634,7 +633,7 @@ export default function CashoutScreen() {
             </View>
             <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}>
               <Text style={styles.receiptLabel}>Balance After Cashout</Text>
-              <Text style={[styles.receiptValue, { color: ORANGE }]}>
+              <Text style={[styles.receiptValue, { color: colors.accent }]}>
                 ₱{Math.max(0, availableBalance - parsedAmount).toFixed(2)}
               </Text>
             </View>
@@ -642,7 +641,7 @@ export default function CashoutScreen() {
 
           {isTestScenarioAccount && (
             <View style={styles.testScenarioBanner}>
-              <Ionicons name="flask-outline" size={16} color={colors.warning} />
+              <PhIcon name="Info" size={16} color={colors.warning} weight="bold" />
               <Text style={styles.testScenarioText}>
                 Xendit Test Scenario number detected ({cleanAccount}). Xendit will
                 accept the payout and asynchronously emit a simulated failure
@@ -652,10 +651,11 @@ export default function CashoutScreen() {
           )}
 
           <View style={styles.warningNote}>
-            <Ionicons
-              name="shield-checkmark-outline"
+            <PhIcon
+              name="ShieldCheck"
               size={16}
               color={colors.textSecondary}
+              weight="fill"
             />
             <Text style={styles.warningNoteText}>
               Please verify that the recipient mobile number and registered name
@@ -677,7 +677,7 @@ export default function CashoutScreen() {
               </View>
             ) : (
               <>
-                <Ionicons name="paper-plane" size={17} color="#FFFFFF" />
+                <PhIcon name="PaperPlaneTilt" size={17} color="#FFFFFF" weight="fill" />
                 <Text style={styles.primaryBtnText}>
                   Confirm & Send ₱{parsedAmount.toFixed(2)}
                 </Text>
@@ -721,7 +721,7 @@ export default function CashoutScreen() {
           style={styles.closeCircleBtn}
           onPress={() => navigation.goBack()}
         >
-          <Ionicons name="close" size={20} color={colors.textPrimary} />
+          <PhIcon name="X" size={20} color={colors.textPrimary} weight="bold" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Cash Out Earnings</Text>
         <View style={{ width: 40 }} />
@@ -767,7 +767,7 @@ export default function CashoutScreen() {
         {activeWithdrawal && (
           <View style={styles.activeLockCard}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <Ionicons name="time" size={22} color={ORANGE} />
+              <PhIcon name="Clock" size={22} color={colors.accent} weight="fill" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.activeLockTitle}>
                   Withdrawal in Progress (₱{activeWithdrawal.amount.toFixed(2)})
@@ -785,10 +785,10 @@ export default function CashoutScreen() {
               disabled={reconciling}
             >
               {reconciling ? (
-                <ActivityIndicator size="small" color={ORANGE} />
+                <ActivityIndicator size="small" color={colors.accent} />
               ) : (
                 <>
-                  <Ionicons name="refresh" size={14} color={ORANGE} />
+                  <PhIcon name="ArrowsClockwise" size={14} color={colors.accent} weight="bold" />
                   <Text style={styles.activeLockBtnText}>Check Status</Text>
                 </>
               )}
@@ -889,10 +889,11 @@ export default function CashoutScreen() {
                     </Text>
                     <Text style={styles.methodSub}>InstaPay · Instant</Text>
                   </View>
-                  <Ionicons
-                    name={selected ? 'radio-button-on' : 'radio-button-off'}
+                  <PhIcon
+                    name="CheckCircle"
                     size={20}
                     color={selected ? brandColor : colors.textMuted}
+                    weight={selected ? 'fill' : 'regular'}
                   />
                 </TouchableOpacity>
               );
@@ -945,10 +946,11 @@ export default function CashoutScreen() {
               onPress={() => setSaveDestination((prev) => !prev)}
               activeOpacity={0.8}
             >
-              <Ionicons
-                name={saveDestination ? 'checkbox' : 'square-outline'}
+              <PhIcon
+                name="CheckCircle"
                 size={20}
-                color={saveDestination ? ORANGE : colors.textMuted}
+                color={saveDestination ? colors.accent : colors.textMuted}
+                weight={saveDestination ? 'fill' : 'regular'}
               />
               <Text style={styles.saveToggleText}>
                 Save as my default {method === 'gcash' ? 'GCash' : 'Maya'}{' '}
@@ -968,14 +970,14 @@ export default function CashoutScreen() {
           activeOpacity={0.9}
         >
           <Text style={styles.primaryBtnText}>Review Cashout</Text>
-          <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
+          <PhIcon name="ArrowRight" size={18} color="#FFFFFF" weight="bold" />
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-const makeStyles = (c: ThemeColors) =>
+const makeStyles = (c: ThemeColors, isDark: boolean) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: c.background },
     loadingRoot: {
@@ -1024,11 +1026,11 @@ const makeStyles = (c: ThemeColors) =>
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      backgroundColor: ORANGE,
+      backgroundColor: c.accent,
       borderRadius: 20,
       padding: 20,
       marginBottom: 16,
-      shadowColor: ORANGE,
+      shadowColor: c.accent,
       shadowOffset: { width: 0, height: 4 },
       shadowOpacity: 0.25,
       shadowRadius: 10,
@@ -1056,13 +1058,13 @@ const makeStyles = (c: ThemeColors) =>
     maxChipText: {
       fontSize: 12,
       fontWeight: '900',
-      color: ORANGE,
+      color: c.accent,
       letterSpacing: 0.5,
     },
     activeLockCard: {
       backgroundColor: c.accentSoft,
       borderWidth: 1,
-      borderColor: ORANGE,
+      borderColor: c.accent,
       borderRadius: 16,
       padding: 14,
       marginBottom: 16,
@@ -1089,12 +1091,12 @@ const makeStyles = (c: ThemeColors) =>
       paddingVertical: 7,
       borderRadius: 10,
       borderWidth: 1,
-      borderColor: ORANGE,
+      borderColor: c.accent,
     },
     activeLockBtnText: {
       fontSize: 12,
       fontWeight: '800',
-      color: ORANGE,
+      color: c.accent,
     },
     card: {
       backgroundColor: c.card,
@@ -1153,7 +1155,7 @@ const makeStyles = (c: ThemeColors) =>
     },
     quickChipActive: {
       backgroundColor: c.accentSoft,
-      borderColor: ORANGE,
+      borderColor: c.accent,
     },
     quickChipText: {
       fontSize: 13,
@@ -1161,7 +1163,7 @@ const makeStyles = (c: ThemeColors) =>
       color: c.textSecondary,
     },
     quickChipTextActive: {
-      color: ORANGE,
+      color: c.accent,
       fontWeight: '800',
     },
     methodGrid: {
@@ -1232,11 +1234,11 @@ const makeStyles = (c: ThemeColors) =>
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
-      backgroundColor: ORANGE,
+      backgroundColor: c.accent,
       borderRadius: 16,
       paddingVertical: 16,
       marginTop: 6,
-      shadowColor: ORANGE,
+      shadowColor: c.accent,
       shadowOffset: { width: 0, height: 4 },
       shadowOpacity: 0.28,
       shadowRadius: 8,
@@ -1254,13 +1256,13 @@ const makeStyles = (c: ThemeColors) =>
       gap: 8,
       backgroundColor: c.card,
       borderWidth: 1.5,
-      borderColor: ORANGE,
+      borderColor: c.accent,
       borderRadius: 16,
       paddingVertical: 14,
       marginBottom: 12,
     },
     secondaryBtnText: {
-      color: ORANGE,
+      color: c.accent,
       fontSize: 14,
       fontWeight: '800',
     },
