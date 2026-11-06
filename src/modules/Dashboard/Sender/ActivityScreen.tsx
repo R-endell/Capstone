@@ -15,7 +15,6 @@ import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 
@@ -1291,37 +1290,19 @@ export default function ActivityScreen() {
     </View>
   );
 
+  // ──────────────── Contact tile (no in-app call) ────────────────
   const renderMiniContact = (o: {
     role: string;
     name: string | null;
     phone: string | null;
-    userId?: number | null;
-    deliveryId?: number | null;
     color: string;
     subBadge?: string | null;
   }) => {
-    const canCall = !!o.phone || !!o.userId;
-
-    const triggerCall = () => {
-      promptCallChoice({
-        name: o.name,
-        role: o.role,
-        calleeId: o.userId ?? null,
-        phone: o.phone,
-        deliveryId: o.deliveryId ?? null,
-      });
-    };
-
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || (o.userId ? 'In-App Call Available' : 'N/A')}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
-        canCall
-          ? [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Call', onPress: triggerCall },
-            ]
-          : [{ text: 'OK' }]
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
+        [{ text: 'OK' }]
       );
     };
 
@@ -1337,19 +1318,6 @@ export default function ActivityScreen() {
             <Text style={styles.mcSubBadge} numberOfLines={1}>{o.subBadge}</Text>
           )}
         </View>
-        {canCall && (
-          <TouchableOpacity
-            style={styles.mcCall}
-            onPress={(e) => {
-              e.stopPropagation();
-              triggerCall();
-            }}
-            activeOpacity={0.8}
-            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          >
-            <Ionicons name="call" size={14} color={ORANGE} />
-          </TouchableOpacity>
-        )}
       </TouchableOpacity>
     );
   };
@@ -1421,8 +1389,6 @@ export default function ActivityScreen() {
               role: 'COURIER',
               name: courierName,
               phone: (item.isMatched || item.hasPreferredProvider) ? (item.provider_phone || null) : null,
-              userId: (item.isMatched || item.hasPreferredProvider) ? (item.provider_id ?? null) : null,
-              deliveryId: item.deliveryData?.delivery_id ?? null,
               color: BLUE,
               subBadge: courierSubBadge,
             })}
@@ -1430,7 +1396,6 @@ export default function ActivityScreen() {
               role: 'RECEIVER',
               name: receiverName,
               phone: receiverPhone,
-              deliveryId: item.deliveryData?.delivery_id ?? null,
               color: PURPLE,
             })}
           </View>
@@ -1686,7 +1651,7 @@ export default function ActivityScreen() {
                 dropoffLng={d.coords.dropoff.longitude}
                 padTop={insets.top + 70}
                 padBottom={60}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1775,8 +1740,6 @@ export default function ActivityScreen() {
                 role: 'COURIER',
                 name: (d.isMatched || d.hasPreferredProvider) ? d.provider_name : 'Searching...',
                 phone: (d.isMatched || d.hasPreferredProvider) ? (d.provider_phone || null) : null,
-                userId: (d.isMatched || d.hasPreferredProvider) ? (d.provider_id ?? null) : null,
-                deliveryId: d.deliveryData?.delivery_id ?? null,
                 color: BLUE,
                 subBadge: !d.isMatched && d.hasPreferredProvider ? 'Waiting for acceptance' : null,
               })}
@@ -1784,7 +1747,6 @@ export default function ActivityScreen() {
                 role: 'RECEIVER',
                 name: receiverName,
                 phone: receiverPhone,
-                deliveryId: d.deliveryData?.delivery_id ?? null,
                 color: PURPLE,
               })}
             </View>
@@ -2233,7 +2195,7 @@ export default function ActivityScreen() {
             dropoffLng={selectedDelivery.coords.dropoff.longitude}
             padTop={100}
             padBottom={260}
-            userInterfaceStyle="light" // ✅ FIX: Force light theme
+            userInterfaceStyle="light"
           />
           <TouchableOpacity
             style={[styles.mapCloseBtn, { top: insets.top + 12 }]}
@@ -2557,7 +2519,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
   mcSubBadge: { fontSize: 10, fontWeight: '700', color: BLUE, marginTop: 1 },
-  mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
 
   oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },

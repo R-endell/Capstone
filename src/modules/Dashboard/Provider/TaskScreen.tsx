@@ -20,7 +20,6 @@ import { useProviderLocationBroadcast } from '../../../services/useProviderLocat
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -893,37 +892,19 @@ export default function TaskScreen() {
     </View>
   );
 
+  // ──────────────── Contact tile (no in-app call) ────────────────
   const renderMiniContact = (o: {
     role: string;
     name: string | null;
     phone: string | null;
-    userId?: number | null;
-    deliveryId?: number | null;
     color: string;
     hideCall?: boolean;
   }) => {
-    const canCall = !o.hideCall && (!!o.phone || !!o.userId);
-
-    const triggerCall = () => {
-      promptCallChoice({
-        name: o.name,
-        role: o.role,
-        calleeId: o.userId ?? null,
-        phone: o.phone,
-        deliveryId: o.deliveryId ?? null,
-      });
-    };
-
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'In-App Call Available')}`,
-        canCall
-          ? [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Call', onPress: triggerCall },
-            ]
-          : [{ text: 'OK' }],
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'N/A')}`,
+        [{ text: 'OK' }],
       );
     };
 
@@ -936,19 +917,6 @@ export default function TaskScreen() {
           <Text style={styles.mcRole}>{o.role}</Text>
           <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
         </View>
-        {canCall && (
-          <TouchableOpacity
-            style={styles.mcCall}
-            onPress={(e) => {
-              e.stopPropagation();
-              triggerCall();
-            }}
-            activeOpacity={0.8}
-            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          >
-            <Ionicons name="call" size={14} color={ORANGE} />
-          </TouchableOpacity>
-        )}
       </TouchableOpacity>
     );
   };
@@ -999,8 +967,6 @@ export default function TaskScreen() {
               role: 'SENDER',
               name: info.senderName,
               phone: info.senderPhone,
-              userId: info.senderId,
-              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
               color: BLUE,
               hideCall: false,
             })}
@@ -1008,7 +974,6 @@ export default function TaskScreen() {
               role: 'RECEIVER',
               name: info.receiverName,
               phone: info.receiverPhone,
-              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
               color: PURPLE,
               hideCall: false,
             })}
@@ -1165,7 +1130,7 @@ export default function TaskScreen() {
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={insets.top + 70} padBottom={60}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1249,8 +1214,6 @@ export default function TaskScreen() {
                 role: 'SENDER',
                 name: info.senderName,
                 phone: info.senderPhone,
-                userId: info.senderId,
-                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
                 color: BLUE,
                 hideCall: false,
               })}
@@ -1258,7 +1221,6 @@ export default function TaskScreen() {
                 role: 'RECEIVER',
                 name: info.receiverName,
                 phone: info.receiverPhone,
-                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
                 color: PURPLE,
                 hideCall: false,
               })}
@@ -1476,14 +1438,14 @@ export default function TaskScreen() {
                 onInfo={setNavInfo}
                 style={{ bottom: 150 + insets.bottom }}
                 padTop={20} padBottom={30}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             ) : (
               <RoutePreviewMap
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={100} padBottom={260}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             );
           })()}
@@ -1858,7 +1820,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
   mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
   mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  mcCall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
   oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
   oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
   oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },

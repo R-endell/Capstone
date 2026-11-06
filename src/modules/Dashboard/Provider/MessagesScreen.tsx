@@ -17,7 +17,6 @@ import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 
 const ORANGE = '#FF751F';
@@ -785,26 +784,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const handleCallPress = () => {
-    if (!selectedRoom) return;
-    if (selectedRoom.is_support) {
-      Alert.alert(
-        'Call unavailable',
-        'Pack-N-Ship System does not accept voice calls. Please send a message in chat instead.'
-      );
-      return;
-    }
-
-    const fullName = `${selectedRoom.other.first_name || ''} ${selectedRoom.other.last_name || ''}`.trim() || 'User';
-    promptCallChoice({
-      name: fullName,
-      role: selectedRoom.role === 'sender' ? 'COURIER' : 'SENDER',
-      calleeId: selectedRoom.other.user_id,
-      phone: selectedRoom.other?.phone_number?.trim() || null,
-      deliveryId: selectedRoom.delivery_id || null,
-    });
-  };
-
   const openChatOptions = (room: ChatRoom) => {
     if (room.is_support) {
       Alert.alert('System conversation', 'This is an official conversation with Pack-N-Ship. You can\'t archive or delete it.');
@@ -1207,14 +1186,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                   : 'Sender'}
               </Text>
             </View>
-
-            <TouchableOpacity
-              style={styles.callBtnFlat}
-              activeOpacity={0.7}
-              onPress={handleCallPress}
-            >
-              <Ionicons name="call" size={22} color={ORANGE} />
-            </TouchableOpacity>
           </Animated.View>
         </SafeAreaView>
 
@@ -1419,7 +1390,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   chatHeaderInfo: { flex: 1 },
   chatHeaderName: { fontSize: 17, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.2 },
   chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
-  callBtnFlat: { padding: 8, backgroundColor: '#FFFFFF', borderRadius: 20 },
 
   chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },

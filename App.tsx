@@ -91,7 +91,7 @@ import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsLis
 // Support FAB, Proof of Delivery Modal & In-App Call Modal
 import SupportFab from './src/components/SupportFab';
 import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
-import InAppCallModal from './src/components/InAppCallModal';
+
 
 // Canonical background matcher
 import {
@@ -983,7 +983,6 @@ function AppInner() {
       </Stack.Navigator>
 
       {/* Global In-App Voice Call Modal for both Sender and Provider */}
-      <InAppCallModal />
     </NavigationContainer>
   );
 }
