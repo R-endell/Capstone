@@ -71,7 +71,7 @@ import ProviderMessagesScreen from './src/modules/Dashboard/Provider/MessagesScr
 import ManageVehicleScreen from './src/modules/Dashboard/Provider/Manage/ManageVehicleScreen';
 import ManageRoutesScreen from './src/modules/Dashboard/Provider/Manage/ManageRoutesScreen';
 
-// NEW: Provider Navigation Screen
+// Provider Navigation Screen
 import ProviderNavigationScreen from './src/modules/Dashboard/Provider/ProviderNavigationScreen';
 
 // Delivery Features
@@ -88,8 +88,10 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
-// Support FAB
+// Support FAB, Proof of Delivery Modal & In-App Call Modal
 import SupportFab from './src/components/SupportFab';
+import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
+
 
 // Canonical background matcher
 import {
@@ -120,7 +122,8 @@ export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
   ForgotPassword: undefined;
-  ResetPassword: { token_hash: string; type: string; skipVerify?: boolean };  PermissionsPrompt: undefined;
+  ResetPassword: { token_hash: string; type: string; skipVerify?: boolean };
+  PermissionsPrompt: undefined;
   IdentityVerification: undefined;
   TwoFactorAuth: undefined;
   MainTabs: { screen?: keyof MainTabParamList; params?: any };
@@ -158,7 +161,7 @@ export type RootStackParamList = {
 
 export type MainTabParamList = {
   Home: undefined;
-  Activity: undefined;
+  Activity: { openRequestId?: number; tab?: 'completed' | 'active' | 'pending' | 'cancelled' | 'all' } | undefined;
   Explore: undefined;
   Messages: undefined;
   Account: undefined;
@@ -317,6 +320,7 @@ function useTabBarStyle() {
 
 // ---------- Sender Tab Navigator ----------
 function MainTabs() {
+  const navigation = useNavigation<any>();
   const unreadCount = useUnreadMessages();
   const tabBarStyle = useTabBarStyle();
   const { colors } = useTheme();
@@ -354,6 +358,17 @@ function MainTabs() {
 
       {/* Floating customer support bubble (sender) */}
       <SupportFab role="sender" />
+
+      {/* One-time Proof of Delivery popup strictly for Sender screens */}
+      <ProofOfDeliveryModal
+        isSenderMode={true}
+        onViewDetails={(reqId) => {
+          navigation.navigate('Activity', {
+            tab: 'completed',
+            openRequestId: reqId,
+          });
+        }}
+      />
     </View>
   );
 }
@@ -428,7 +443,14 @@ function ProviderTabsInner() {
       >
         <ProviderTab.Screen name="Task" component={TaskScreen} />
         <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-        <ProviderTab.Screen name="Jobs" component={JobsScreen} />
+        <ProviderTab.Screen 
+            name="Jobs" 
+            component={JobsScreen} 
+            options={{ 
+              title: 'My Route Requests', // Changes the screen title
+              tabBarLabel: 'My Requests'  // Changes the text under the icon in the bottom tab (shorter to fit)
+            }} 
+          />
         <ProviderTab.Screen
           name="Messages"
           component={ProviderMessagesScreen}
@@ -948,7 +970,7 @@ function AppInner() {
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
 
-        {/* NEW: Provider Navigation Screen */}
+        {/* Provider Navigation Screen */}
         <Stack.Screen
           name="ProviderNavigation"
           component={ProviderNavigationScreen}
@@ -959,6 +981,8 @@ function AppInner() {
           }}
         />
       </Stack.Navigator>
+
+      {/* Global In-App Voice Call Modal for both Sender and Provider */}
     </NavigationContainer>
   );
 }

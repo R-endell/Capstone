@@ -4,10 +4,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, StyleProp, ViewStyle, Easing } from 'react-native';
 import MapView, { Marker, Polyline } from 'react-native-maps';
+import { Ionicons } from '@expo/vector-icons';
 import { MAP_PROPS } from '../../utils/mapConfig';
 
 export const BRAND_ORANGE = '#FF751F';   // same orange as the app logo / notification colour
-const DROPOFF_BLACK = '#111827';
 
 type LatLng = { latitude: number; longitude: number };
 
@@ -181,6 +181,7 @@ export default function RoutePreviewMap({
       toolbarEnabled={false}
       showsCompass={false}
       showsMyLocationButton={false}
+      userInterfaceStyle="light"
       showsUserLocation={false}
     >
       {/* faint full track so the fill reads as "filling up" */}
@@ -207,15 +208,15 @@ export default function RoutePreviewMap({
 
       {pickup && (
         <Marker coordinate={pickup} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-          <View style={[styles.dot, { backgroundColor: BRAND_ORANGE }]}>
+          <View style={styles.dot}>
             <Text style={styles.dotText}>P</Text>
           </View>
         </Marker>
       )}
       {dropoff && (
         <Marker coordinate={dropoff} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-          <View style={[styles.dot, { backgroundColor: DROPOFF_BLACK }]}>
-            <Text style={styles.dotText}>D</Text>
+          <View style={styles.dot}>
+            <Ionicons name="person" size={14} color="#000000" />
           </View>
         </Marker>
       )}
@@ -225,9 +226,9 @@ export default function RoutePreviewMap({
 
 const styles = StyleSheet.create({
   dot: {
-    width: 26, height: 26, borderRadius: 13, borderWidth: 3, borderColor: '#FFFFFF',
+    width: 28, height: 28, borderRadius: 14, borderWidth: 1.5, borderColor: '#D1D5DB', backgroundColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4,
   },
-  dotText: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
+  dotText: { fontSize: 12, fontWeight: '900', color: '#000000' },
 });

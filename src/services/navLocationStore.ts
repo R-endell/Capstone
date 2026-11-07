@@ -64,8 +64,10 @@ async function start() {
 
     // distanceInterval 0: while navigating we want regular fixes even when stopped at a
     // light, otherwise "no new fix" can't be told apart from "GPS lost".
+    // 1 s fixes at navigation-grade accuracy: the map marker glides between them, so
+    // the provider's position moves smoothly instead of hopping every few seconds.
     const s = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 0 },
+      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 0 },
       p => setState({ status: 'active', fix: toFix(p) }),
     );
     if (token !== startToken || refs === 0) { s.remove(); return; }

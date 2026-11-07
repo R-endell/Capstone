@@ -784,31 +784,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const handleCallPress = () => {
-    if (!selectedRoom) return;
-    const number = selectedRoom.other?.phone_number?.trim();
-    if (!number) {
-      Alert.alert(
-        'Number unavailable',
-        selectedRoom.is_support
-          ? 'Pack-N-Ship System does not accept phone calls. Use the chat instead.'
-          : 'This user has not provided a contact number yet.',
-      );
-      return;
-    }
-    Alert.alert('Call', `Do you want to call ${number}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Call',
-        onPress: () => {
-          Linking.openURL(`tel:${number}`).catch(() => {
-            Alert.alert('Call failed', 'Unable to open the dialer on this device.');
-          });
-        },
-      },
-    ]);
-  };
-
   const openChatOptions = (room: ChatRoom) => {
     if (room.is_support) {
       Alert.alert('System conversation', 'This is an official conversation with Pack-N-Ship. You can\'t archive or delete it.');
@@ -894,13 +869,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         fetchConversations();
 
-        // Notify the current user when Pack-N-Ship System messages them
         const incoming = payload.new as ChatMessage;
         const myId = currentUserId.current;
         if (!incoming || !myId || incoming.sender_id === myId) return;
         if (notifiedMsgIds.current.has(incoming.message_id)) return;
 
-        // Skip push if user is already viewing this exact room
         const activeRoom = selectedRoomRef.current;
         if (activeRoom && activeRoom.all_room_ids.includes(incoming.room_id)) return;
 
@@ -1213,14 +1186,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                   : 'Sender'}
               </Text>
             </View>
-
-            <TouchableOpacity
-              style={styles.callBtnFlat}
-              activeOpacity={0.7}
-              onPress={handleCallPress}
-            >
-              <Ionicons name="call" size={22} color={ORANGE} />
-            </TouchableOpacity>
           </Animated.View>
         </SafeAreaView>
 
@@ -1425,7 +1390,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   chatHeaderInfo: { flex: 1 },
   chatHeaderName: { fontSize: 17, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.2 },
   chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
-  callBtnFlat: { padding: 8, backgroundColor: '#FFFFFF', borderRadius: 20 },
 
   chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
@@ -1475,7 +1439,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
 
-  // Attachment sheet
   attachBackdrop: {
     flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
     justifyContent: 'flex-end',
@@ -1508,7 +1471,6 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   },
   attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
 
-  // Image preview
   previewOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
     alignItems: 'center', justifyContent: 'center',
