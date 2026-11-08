@@ -1,15 +1,12 @@
 // src/modules/Settings/LegalPoliciesScreen.tsx
-import React, { useState, useMemo } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar,
-} from 'react-native';
+import React, { useMemo } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-import { POLICIES } from './policyContent';
-
-const ORANGE = '#FA7A25';
+import { ScreenHeader, ORANGE } from '../Help/helpUi';
+import { POLICIES, POLICY_VERSION } from './policyContent';
 
 export default function LegalPoliciesScreen() {
   const navigation = useNavigation<any>();
@@ -17,60 +14,43 @@ export default function LegalPoliciesScreen() {
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const [activeItem, setActiveItem] = useState('Terms of Service');
-
   // Policy list comes from policyContent.ts so Register and Settings stay in sync.
-  const policies = POLICIES;
-
-  const handlePress = (policy: { id: string; title: string }) => {
-    setActiveItem(policy.title);
-    navigation.navigate('PolicyDetail', { policyId: policy.id });
-  };
+  const open = (id: string) => navigation.navigate('PolicyDetail', { policyId: id });
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+      <ScreenHeader title="Terms and policies" onBack={() => navigation.goBack()} />
 
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Legal Policies</Text>
-        <View style={{ width: 42 }} />
-      </View>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+      >
+        <Text style={styles.intro}>
+          The rules that keep senders and providers safe, and what happens when something goes wrong.
+        </Text>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.scrollContent, { paddingBottom: 40 + insets.bottom }]}>
-        {policies.map((policy) => {
-          const isActive = activeItem === policy.title;
-          return (
-            <View key={policy.id} style={styles.itemWrapper}>
-              <View style={[styles.sideIndicator, isActive ? styles.activeIndicator : styles.inactiveIndicator]} />
-              <TouchableOpacity
-                style={[styles.card, isActive ? styles.activeCard : styles.inactiveCard]}
-                onPress={() => handlePress(policy)}
-                activeOpacity={0.8}
-              >
-                <View style={styles.cardLeft}>
-                  <Ionicons
-                    name={policy.icon}
-                    size={20}
-                    color={isActive ? '#FFFFFF' : colors.textPrimary}
-                    style={styles.icon}
-                  />
-                  <Text style={[styles.cardTitle, isActive ? styles.activeText : styles.inactiveText]}>
-                    {policy.title}
-                  </Text>
+        <View style={{ gap: 10 }}>
+          {POLICIES.map((p) => (
+            <TouchableOpacity key={p.id} style={styles.card} onPress={() => open(p.id)} activeOpacity={0.85}>
+              <View style={styles.iconWrap}>
+                <Ionicons name={p.icon} size={22} color={ORANGE} />
+              </View>
+              <View style={{ flex: 1, gap: 3 }}>
+                <View style={styles.titleRow}>
+                  <Text style={styles.title} numberOfLines={2}>{p.title}</Text>
+                  {p.audience === 'providers' && (
+                    <View style={styles.tag}><Text style={styles.tagText}>Providers</Text></View>
+                  )}
                 </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={20}
-                  color={isActive ? '#FFFFFF' : colors.textSecondary}
-                />
-              </TouchableOpacity>
-            </View>
-          );
-        })}
+                <Text style={styles.summary} numberOfLines={2}>{p.summary}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.version}>Version {POLICY_VERSION}</Text>
       </ScrollView>
     </View>
   );
@@ -78,40 +58,25 @@ export default function LegalPoliciesScreen() {
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
-
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
-  },
-  backBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: c.divider,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
-  },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-
-  scrollContent: { paddingTop: 20, paddingHorizontal: 20, paddingBottom: 40 },
-
-  itemWrapper: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  sideIndicator: { width: 4, height: 40, borderRadius: 2, marginRight: 12 },
-  activeIndicator: { backgroundColor: ORANGE },
-  inactiveIndicator: { backgroundColor: c.border },
+  content: { paddingHorizontal: 20, paddingTop: 6, gap: 16 },
+  intro: { fontSize: 13.5, lineHeight: 20, color: c.textSecondary, fontWeight: '500' },
 
   card: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 16, paddingHorizontal: 20, borderRadius: 12,
-    borderWidth: 1,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: isDark ? 0.3 : 0.1, shadowRadius: 3, elevation: 2,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: c.card, borderRadius: 18, padding: 14,
+    borderWidth: 1, borderColor: c.divider,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
   },
-  activeCard: { backgroundColor: ORANGE, borderColor: ORANGE },
-  inactiveCard: { backgroundColor: c.card, borderColor: c.border },
+  iconWrap: {
+    width: 46, height: 46, borderRadius: 14, backgroundColor: c.accentSoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  title: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  summary: { fontSize: 12.5, lineHeight: 17, color: c.textSecondary, fontWeight: '500' },
+  tag: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: c.accentSoft },
+  tagText: { fontSize: 10.5, fontWeight: '800', color: ORANGE, letterSpacing: 0.3 },
 
-  cardLeft: { flexDirection: 'row', alignItems: 'center' },
-  icon: { marginRight: 12 },
-  cardTitle: { fontSize: 15, fontWeight: '600' },
-  activeText: { color: '#FFFFFF' },
-  inactiveText: { color: c.textPrimary },
+  version: { textAlign: 'center', fontSize: 11.5, color: c.textMuted, fontWeight: '600', marginTop: 6 },
 });

@@ -144,6 +144,7 @@ export const CATEGORIES: Record<Role, Category[]> = { sender: SENDER, provider: 
 
 /** Icon for a stored category label (tickets store the label as text). */
 export const iconForCategory = (label: string): string => {
+  if (label === 'Appeal') return 'repeat-outline';
   for (const list of [SENDER, PROVIDER]) {
     const hit = list.find(c => c.label === label);
     if (hit) return hit.icon;

@@ -11,6 +11,8 @@ import { supabase } from '../../../../utils/supabase';
 import { fetchPaymentMethods, chargeDelivery, getDeliveryPaymentStatus } from '../../../../services/paymentService';
 import type { PaymentMethod, PaymentProvider } from '../../../../types/payment';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { SIZE_LIMITS } from '../../../Settings/policyContent';
+import { recordAcceptance } from '../../../../services/policyAgreementService';
 
 const GCASH_LOGO = require('../../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../../assets/maya.jpeg');
@@ -27,9 +29,12 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
+  // The sender must agree to the package damage limits before paying.
+  const [agreed, setAgreed] = useState(false);
 
   const payingRef = useRef(false);
   const navigatedRef = useRef(false);
+  const agreementSavedRef = useRef(false);
   const statusPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const bgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -201,10 +206,23 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
   };
 
   const handlePay = async () => {
-    if (!selected) return;
+    if (!selected || !agreed) return;
     if (payingRef.current) return;
     payingRef.current = true;
     setPaying(true);
+
+    // Save the sender's agreement first. If it cannot be saved, nothing is charged.
+    if (!agreementSavedRef.current) {
+      try {
+        await recordAcceptance({ policyIds: ['damage'], role: 'sender', context: 'booking_payment', requestId });
+        agreementSavedRef.current = true;
+      } catch (e: any) {
+        payingRef.current = false;
+        setPaying(false);
+        Alert.alert('Could not save your agreement', e?.message || 'Please try again.');
+        return;
+      }
+    }
 
     try {
       const res = await chargeDelivery(requestId, selected);
@@ -332,13 +350,59 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
             })}
           </View>
         )}
+
+        {/* ---- agreement: package damage limits ---- */}
+        <Text style={[styles.sectionLabel, { marginTop: 22 }]}>BEFORE YOU PAY</Text>
+        <View style={styles.agreeCard}>
+          <View style={styles.agreeHead}>
+            <Ionicons name="cube-outline" size={18} color={ORANGE} />
+            <Text style={styles.agreeTitle}>Package damage limits</Text>
+          </View>
+          <Text style={styles.agreeText}>
+            Pack-N-Ship connects you with an independent provider. If your package is damaged or lost, the most that can be claimed depends on its size:
+          </Text>
+          <View style={styles.limitRow}>
+            {SIZE_LIMITS.map(l => (
+              <View key={l.label} style={styles.limitChip}>
+                <Text style={styles.limitSize}>{l.label}</Text>
+                <Text style={styles.limitAmount}>₱{l.amount.toLocaleString('en-US')}</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.agreeText}>
+            Claims must be filed within 48 hours after delivery, and the item value must be shown with a receipt or screenshot.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.checkRow} onPress={() => setAgreed(a => !a)}
+            activeOpacity={0.8} disabled={paying}
+          >
+            <Ionicons
+              name={agreed ? 'checkbox' : 'square-outline'}
+              size={24} color={agreed ? ORANGE : colors.textMuted}
+            />
+            <Text style={styles.checkText}>
+              I have read and agree to the{' '}
+              <Text
+                style={styles.link}
+                onPress={() => navigation.navigate('PolicyDetail', { policyId: 'damage' })}
+              >
+                Package Damage and Responsibility Policy
+              </Text>
+              .
+            </Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        {!agreed && methods.length > 0 && (
+          <Text style={styles.footNote}>Please agree to the policy above to continue.</Text>
+        )}
         <TouchableOpacity
-          style={[styles.payBtn, (!selected || paying || methods.length === 0) && styles.payBtnDisabled]}
+          style={[styles.payBtn, (!selected || !agreed || paying || methods.length === 0) && styles.payBtnDisabled]}
           onPress={handlePay}
-          disabled={!selected || paying || methods.length === 0}
+          disabled={!selected || !agreed || paying || methods.length === 0}
           activeOpacity={0.9}
         >
           {paying ? (
@@ -418,8 +482,31 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   linkBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14, letterSpacing: 0.2 },
 
+  /* agreement */
+  agreeCard: {
+    backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border,
+    padding: 16, gap: 12,
+  },
+  agreeHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  agreeTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  agreeText: { fontSize: 13, lineHeight: 19, color: c.textSecondary, fontWeight: '500' },
+  limitRow: { flexDirection: 'row', gap: 8 },
+  limitChip: {
+    flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12,
+    backgroundColor: c.background, borderWidth: 1, borderColor: c.divider,
+  },
+  limitSize: { fontSize: 11, fontWeight: '700', color: c.textMuted, letterSpacing: 0.4 },
+  limitAmount: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginTop: 2 },
+  checkRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: c.divider,
+  },
+  checkText: { flex: 1, fontSize: 13.5, lineHeight: 20, color: c.textPrimary, fontWeight: '600' },
+  link: { color: ORANGE, fontWeight: '800', textDecorationLine: 'underline' },
+
   /* footer */
   footer: { paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
+  footNote: { fontSize: 12, color: c.textSecondary, textAlign: 'center', marginBottom: 8, fontWeight: '600' },
   payBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,

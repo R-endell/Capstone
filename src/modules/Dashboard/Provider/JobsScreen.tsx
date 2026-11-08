@@ -33,6 +33,7 @@ import { routeNotification, NotifRow } from '../../../utils/notifRouter';
 import { MAP_PROPS } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
+import { useProviderTermsGate } from '../../../components/ProviderTermsModal';
 
 const ORANGE = '#FF751F';
 const GREEN = '#10B981';
@@ -1292,6 +1293,8 @@ export default function JobsScreen() {
   const navigation = useNavigation<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  // Providers must accept the provider terms before posting or starting a route.
+  const { ensureAccepted, termsModal } = useProviderTermsGate();
 
   const [isOnline, setIsOnline] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1827,6 +1830,7 @@ export default function JobsScreen() {
   };
 
   const openAddRouteModal = async () => {
+    if (!(await ensureAccepted())) return;
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
     if (usedTodayCount >= 3) {
@@ -2014,6 +2018,7 @@ export default function JobsScreen() {
     if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
     if (online) {
+      if (!(await ensureAccepted())) return;
       let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
@@ -3459,6 +3464,8 @@ export default function JobsScreen() {
       </Modal>
 
       {renderAddRouteModal()}
+
+      {termsModal}
 
       <RouteLocationPickerModal
         visible={routeLocationPickerVisible}
