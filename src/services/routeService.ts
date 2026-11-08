@@ -233,13 +233,15 @@ export async function fetchRouteCorridorAndDistance(
 }
 
 /**
- * Rule 4 & Guardrail: Count all routes created today (including soft-deleted ones!)
- * so deleting and recreating a route cannot bypass the 3-route daily limit.
+ * Rule 4 & Guardrail: Count all routes occurring today to enforce the 3-route limit.
+ * This includes:
+ * 1. Routes physically created today (including soft-deleted ones to prevent delete-and-repost gaming).
+ * 2. Recurring active routes (Daily, or Weekly if today is the scheduled weekday).
  */
 export async function getTodayRouteStats(providerId: number) {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
   const { data, error } = await supabase
     .from('provider_routes')
     .select(`
@@ -254,10 +256,38 @@ export async function getTodayRouteStats(providerId: number) {
   if (error) throw error;
 
   const allRoutes = data || [];
-  const postedToday = allRoutes.filter((r: any) => {
+  
+  // 1. Routes physically created today (including deleted ones to block delete-and-repost gaming)
+  const createdToday = allRoutes.filter((r: any) => {
     const createdMs = r.created_at ? new Date(r.created_at).getTime() : 0;
     return createdMs >= startOfDay.getTime();
   });
+
+  // 2. Active recurring routes that are scheduled to run today (Daily or matching Weekly)
+  const activeRecurringToday = allRoutes.filter((r: any) => {
+    if (r.is_deleted === true || r.is_active === false) return false;
+    
+    const createdMs = r.created_at ? new Date(r.created_at).getTime() : 0;
+    if (createdMs >= startOfDay.getTime()) return false; // Already counted in createdToday
+
+    const freq = (r.route_frequency || '').trim();
+    if (freq === 'Daily') return true;
+    
+    if (freq === 'Weekly' && r.departure_time) {
+      const depDate = parseNaiveRouteTime(r.departure_time);
+      return depDate.getDay() === now.getDay();
+    }
+    
+    return false;
+  });
+
+  // Combine both sets and ensure uniqueness by route_id
+  const postedTodayMap = new Map();
+  [...createdToday, ...activeRecurringToday].forEach(r => {
+    postedTodayMap.set(r.route_id, r);
+  });
+  
+  const postedToday = Array.from(postedTodayMap.values());
 
   const activeRoutes = allRoutes.filter(
     (r: any) => r.is_deleted !== true && r.is_active !== false,
@@ -301,7 +331,7 @@ export function canEditRoute(
 
 /**
  * Creates a provider route while enforcing all PDF guardrails:
- * 1. Max 3 routes per day (including deleted routes)
+ * 1. Max 3 routes per day (including deleted routes & active recurring)
  * 2. Max 4-hour time window per route
  * 3. Route diversity: destinations must be >= 3 km apart & no overlapping times
  * 4. Saves PostGIS corridor_path + vehicle remaining trunk capacity
@@ -322,10 +352,10 @@ export async function createProviderRouteWithGuardrails(
 
   const stats = await getTodayRouteStats(providerId);
 
-  // Guardrail 1: Daily cap (Max 3 routes/day including deleted routes)
+  // Guardrail 1: Daily cap (Max 3 routes/day)
   if (stats.usedTodayCount >= MAX_DAILY_ROUTES) {
     throw new Error(
-      `Daily limit reached (${stats.usedTodayCount}/${MAX_DAILY_ROUTES} routes today). Deleted routes still count toward your daily limit.`,
+      `Daily limit reached (${stats.usedTodayCount}/${MAX_DAILY_ROUTES} routes today). Deleted and recurring routes count toward your daily limit.`,
     );
   }
 
@@ -359,7 +389,7 @@ export async function createProviderRouteWithGuardrails(
 
     if (timeOverlaps) {
       throw new Error(
-        'Route Diversity Guardrail: This route overlaps in time with another route you posted today.',
+        'Route Diversity Guardrail: This route overlaps in time with another route running today.',
       );
     }
 
