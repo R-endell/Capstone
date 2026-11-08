@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
-  Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform,
+  Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform, BackHandler,
 } from 'react-native';
 import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,7 +21,8 @@ const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
-const SEARCH_DURATION_MS = 30000;
+// How long we search before offering "Try Again" / "Go Home". Change this one number to adjust.
+const SEARCH_DURATION_MS = 60000;
 
 const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
@@ -383,6 +384,16 @@ export default function BookingScreen({ route, navigation }: any) {
     });
     return unsub;
   }, [navigation]);
+
+  // During the first search window the user can't leave by swipe or the Android back button.
+  // ("Cancel Search" still works, and the lock lifts when the window ends.)
+  useEffect(() => {
+    const locked = bookingState === 'finding' && !longSearch;
+    navigation.setOptions({ gestureEnabled: !locked });
+    if (!locked) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [bookingState, longSearch, navigation]);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -1193,7 +1204,7 @@ export default function BookingScreen({ route, navigation }: any) {
         proceedingRef.current = false;
         proceedReturnToRef.current = null;
         setSavingBooking(false);
-        navigation.navigate('MainTabs');
+        navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
         return;
       }
 
@@ -1217,7 +1228,7 @@ export default function BookingScreen({ route, navigation }: any) {
     proceedReturnToRef.current = null;
     setSavingBooking(false);
     dispatch({ type: 'RESET' });
-    navigation.navigate('MainTabs');
+    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
   };
 
   const handleTryAgain = () => {
@@ -1231,7 +1242,7 @@ export default function BookingScreen({ route, navigation }: any) {
     proceedingRef.current = false;
     proceedReturnToRef.current = null;
     setSavingBooking(false);
-    navigation.navigate('MainTabs');
+    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
   };
 
   const handleSelectReceiver = () => {

@@ -10,7 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
-import { countAwaitingMyResponse } from '../../../services/disputeService';
+import { countNeedingMyAction } from '../../../services/ticketService';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
@@ -256,7 +256,7 @@ export default function ProviderAccountScreen() {
           if (userError || !userData) return;
 
           setUserId(userData.user_id);
-          countAwaitingMyResponse(userData.user_id).then(setDisputeCount).catch(() => {});
+          countNeedingMyAction().then(setDisputeCount).catch(() => {});
 
           if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
           if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
@@ -718,26 +718,6 @@ export default function ProviderAccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('DisputeCenter', { mode: 'provider' })} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.warningBg }]}>
-                  <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
-                </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dispute Center</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {disputeCount > 0 ? 'Reports waiting for your response' : 'Reports on your deliveries'}
-                  </Text>
-                </View>
-              </View>
-              {disputeCount > 0 && (
-                <View style={styles.disputeBadge}><Text style={styles.disputeBadgeText}>{disputeCount}</Text></View>
-              )}
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <View style={styles.menuDivider} />
-
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'provider' })} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
@@ -745,9 +725,14 @@ export default function ProviderAccountScreen() {
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    {disputeCount > 0 ? 'Reports waiting for your response' : 'Report a problem, track cases, contact support'}
+                  </Text>
                 </View>
               </View>
+              {disputeCount > 0 && (
+                <View style={styles.disputeBadge}><Text style={styles.disputeBadgeText}>{disputeCount}</Text></View>
+              )}
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           </View>

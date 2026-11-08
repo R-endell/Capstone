@@ -52,13 +52,13 @@ import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProvi
 
 // Settings Screens
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
-import DisputeCenterScreen from './src/modules/Settings/DisputeCenterScreen';
+import HelpCenterScreen from './src/modules/Help/HelpCenterScreen';
+import ReportFlowScreen from './src/modules/Help/ReportFlowScreen';
+import TicketDetailScreen from './src/modules/Help/TicketDetailScreen';
 import LegalPoliciesScreen from './src/modules/Settings/LegalPoliciesScreen';
 import PolicyDetailScreen from './src/modules/Settings/PolicyDetailScreen';
-import SupportScreen from './src/modules/Settings/SupportScreen';
 
 // Dispute Center
-import ReportIssueScreen from './src/modules/Dashboard/Disputes/ReportIssueScreen';
 import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailScreen';
 
 // Provider Screens
@@ -131,9 +131,10 @@ export type RootStackParamList = {
   Account: undefined;
   EditProfile: undefined;
   Settings: undefined;
-  DisputeCenter: { mode?: 'provider' } | undefined;
+  DisputeCenter: { mode?: 'provider'; role?: 'sender' | 'provider' } | undefined;
   Support: { role?: 'sender' | 'provider' } | undefined;
-  ReportIssue: { requestId?: number } | undefined;
+  ReportIssue: { role?: 'sender' | 'provider'; deliveryId?: number; requestId?: number } | undefined;
+  TicketDetail: { ticketId?: number; disputeId?: number };
   DisputeDetail: { disputeId: number };
   LegalPolicies: undefined;
   PolicyDetail: { policyId: string };
@@ -890,6 +891,11 @@ function AppInner() {
         return;
       }
 
+      if (payload?.type === 'ticket' && payload.ticketId && navigationRef.isReady?.()) {
+        navigationRef.navigate('TicketDetail', { ticketId: Number(payload.ticketId) });
+        return;
+      }
+
       if (payload?.deliveryId && navigationRef.isReady?.()) {
         navigationRef.navigate('LiveTracking', {
           deliveryId: Number(payload.deliveryId),
@@ -921,9 +927,11 @@ function AppInner() {
         <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
         <Stack.Screen name="EditProfile" component={EditProfileScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen name="DisputeCenter" component={DisputeCenterScreen} />
-        <Stack.Screen name="Support" component={SupportScreen} />
-        <Stack.Screen name="ReportIssue" component={ReportIssueScreen} />
+        {/* Old route names kept so every existing navigate() lands in the new Help flow */}
+        <Stack.Screen name="DisputeCenter" component={HelpCenterScreen} />
+        <Stack.Screen name="Support" component={HelpCenterScreen} />
+        <Stack.Screen name="ReportIssue" component={ReportFlowScreen} />
+        <Stack.Screen name="TicketDetail" component={TicketDetailScreen} />
         <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />

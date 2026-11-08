@@ -13,6 +13,7 @@ import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { countNeedingMyAction } from '../../../services/ticketService';
 
 const ORANGE = '#FF751F';
 
@@ -34,6 +35,7 @@ export default function AccountScreen() {
   const [rejectionModalVisible, setRejectionModalVisible] = useState<boolean>(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
+  const [actionCount, setActionCount] = useState(0);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -125,6 +127,7 @@ export default function AccountScreen() {
       if (userError || !userData) return;
 
       setUserId(userData.user_id);
+      countNeedingMyAction().then(setActionCount).catch(() => {});
 
       if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
       if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
@@ -198,7 +201,9 @@ export default function AccountScreen() {
     if (!userId) return;
 
     const channel = supabase
-      .channel(`account-provider-verif-${userId}`)
+      // Unique per mount: removeChannel() is async, so a fixed name can hand back the previous,
+      // already-subscribed channel when two instances overlap, and .on() then throws.
+      .channel(`account-provider-verif-${userId}-${Math.random().toString(36).slice(2, 8)}`)
       .on(
         'postgres_changes',
         {
@@ -464,21 +469,6 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DisputeCenter' as any)} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#2A1F0A' : '#FEF3C7' }]}>
-                  <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
-                </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dispute Center</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem with a delivery</Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
-
-            <View style={styles.menuDivider} />
-
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'sender' })} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
                 <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
@@ -486,9 +476,14 @@ export default function AccountScreen() {
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    {actionCount > 0 ? 'Reports waiting for your response' : 'Report a problem, track cases, contact support'}
+                  </Text>
                 </View>
               </View>
+              {actionCount > 0 && (
+                <View style={styles.actionBadge}><Text style={styles.actionBadgeText}>{actionCount}</Text></View>
+              )}
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
@@ -762,6 +757,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 10, gap: 4, borderWidth: 1, borderColor: c.error,
   },
   rejectedBadgeText: { color: c.error, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+
+  actionBadge: {
+    minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.error,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6, marginRight: 8,
+  },
+  actionBadgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
 
   logoutText: { fontSize: 15, fontWeight: '700', color: c.error },
   versionText: {
