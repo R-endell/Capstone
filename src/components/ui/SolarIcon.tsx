@@ -1,15 +1,16 @@
 // src/components/ui/SolarIcon.tsx
 import React from 'react';
+import { StyleProp, ViewStyle } from 'react-native';
 import { useTheme } from '../../utils/themeContext';
 
-// --- Import Duotone Icons ---
-import { 
-  BoxIcon as BoxIconDuo, 
-  ScaleIcon as ScaleIconDuo, 
-  DangerTriangleIcon as DangerTriangleIconDuo, 
-  InfoCircleIcon as InfoCircleIconDuo, 
-  QuestionCircleIcon as QuestionCircleIconDuo, 
-  ShieldCheckIcon as ShieldCheckIconDuo, 
+// --- Duotone ---
+import {
+  BoxIcon as BoxIconDuo,
+  ScaleIcon as ScaleIconDuo,
+  DangerTriangleIcon as DangerTriangleIconDuo,
+  InfoCircleIcon as InfoCircleIconDuo,
+  QuestionCircleIcon as QuestionCircleIconDuo,
+  ShieldCheckIcon as ShieldCheckIconDuo,
   ChatRoundDotsIcon as ChatRoundDotsIconDuo,
   TransferHorizontalIcon as TransferHorizontalIconDuo,
   CardIcon as CardIconDuo,
@@ -46,11 +47,31 @@ import {
   CalendarIcon as CalendarIconDuo,
   ClockCircleIcon as ClockCircleIconDuo,
   RefreshIcon as RefreshIconDuo,
-} from '@solar-icons/react-native/line-duotone'; 
+  UserIcon as UserIconDuo,
+  HomeSmileIcon as HomeIconDuo,
+  TrashBinTrashIcon as TrashIconDuo,
+  AddIcon as AddIconDuo,
+  MinusIcon as MinusIconDuo,
+  QrCodeIcon as QrCodeIconDuo,
+  CarIcon as CarIconDuo,
+  TagPriceIcon as TagPriceIconDuo,
+  CloudCrossIcon as CloudCrossIconDuo,
+  MagnetIcon as MagnetIconDuo,
+  HistoryIcon as HistoryIconDuo,
+  MapIcon as MapIconDuo,
+  RecordCircleIcon as RecordCircleIconDuo, 
+  UsersGroupRoundedIcon as UsersGroupIconDuo, 
+  LetterIcon as LetterIconDuo,                
+  DocumentTextIcon as DocumentTextIconDuo,    
+  MicrophoneIcon as MicrophoneIconDuo,
+  MicrophoneOffIcon as MicrophoneSlashIconDuo, // <-- FIXED
+  CloudUploadIcon as CloudUploadIconDuo, 
+  CompassIcon as CompassIconDuo, // <-- ADDED
+} from '@solar-icons/react-native/line-duotone';
 
-// --- Import Linear Icons ---
-import { 
-  BoxIcon as BoxIconLin, 
+// --- Linear ---
+import {
+  BoxIcon as BoxIconLin,
   PhoneIcon as PhoneIconLin,
   MenuDotsIcon as MenuDotsIconLin,
   PlaneIcon as PlaneIconLin,
@@ -58,6 +79,9 @@ import {
   GalleryIcon as GalleryIconLin,
   AddCircleIcon as AddCircleIconLin,
   ArrowLeftIcon as ArrowLeftIconLin,
+  AltArrowRightIcon as AltArrowRightIconLin,
+  AltArrowDownIcon as AltArrowDownIconLin,
+  AltArrowUpIcon as AltArrowUpIconLin,
   MaximizeIcon as MaximizeIconLin,
   CheckCircleIcon as CheckCircleIconLin,
   CopyIcon as CopyIconLin,
@@ -71,9 +95,6 @@ import {
   CheckIcon as CheckIconLin,
   LockIcon as LockIconLin,
   KeyIcon as KeyIconLin,
-  AltArrowRightIcon as AltArrowRightIconLin,
-  AltArrowDownIcon as AltArrowDownIconLin,
-  AltArrowUpIcon as AltArrowUpIconLin,
   InfoCircleIcon as InfoCircleIconLin,
   ShieldCheckIcon as ShieldCheckIconLin,
   BellIcon as BellIconLin,
@@ -82,11 +103,31 @@ import {
   CalendarIcon as CalendarIconLin,
   ClockCircleIcon as ClockCircleIconLin,
   RefreshIcon as RefreshIconLin,
-} from '@solar-icons/react-native/linear'; 
+  UserIcon as UserIconLin,
+  HomeSmileIcon as HomeIconLin,
+  TrashBinTrashIcon as TrashIconLin,
+  AddIcon as AddIconLin,
+  MinusIcon as MinusIconLin,
+  QrCodeIcon as QrCodeIconLin,
+  CarIcon as CarIconLin,
+  TagPriceIcon as TagPriceIconLin,
+  CloudCrossIcon as CloudCrossIconLin,
+  MagnetIcon as MagnetIconLin,
+  HistoryIcon as HistoryIconLin,
+  MapIcon as MapIconLin,
+  RecordCircleIcon as RecordCircleIconLin, 
+  UsersGroupRoundedIcon as UsersGroupIconLin, 
+  LetterIcon as LetterIconLin,                
+  DocumentTextIcon as DocumentTextIconLin,    
+  MicrophoneIcon as MicrophoneIconLin,
+  MicrophoneOffIcon as MicrophoneSlashIconLin, // <-- FIXED
+  CloudUploadIcon as CloudUploadIconLin, 
+  CompassIcon as CompassIconLin, // <-- ADDED
+} from '@solar-icons/react-native/linear';
 
-// --- Import Bold Icons ---
-import { 
-  BoxIcon as BoxIconBold, 
+// --- Bold ---
+import {
+  BoxIcon as BoxIconBold,
   PhoneIcon as PhoneIconBold,
   MenuDotsIcon as MenuDotsIconBold,
   PlaneIcon as PlaneIconBold,
@@ -94,6 +135,9 @@ import {
   GalleryIcon as GalleryIconBold,
   AddCircleIcon as AddCircleIconBold,
   ArrowLeftIcon as ArrowLeftIconBold,
+  AltArrowRightIcon as AltArrowRightIconBold,
+  AltArrowDownIcon as AltArrowDownIconBold,
+  AltArrowUpIcon as AltArrowUpIconBold,
   MaximizeIcon as MaximizeIconBold,
   CheckCircleIcon as CheckCircleIconBold,
   CopyIcon as CopyIconBold,
@@ -107,9 +151,6 @@ import {
   CheckIcon as CheckIconBold,
   LockIcon as LockIconBold,
   KeyIcon as KeyIconBold,
-  AltArrowRightIcon as AltArrowRightIconBold,
-  AltArrowDownIcon as AltArrowDownIconBold,
-  AltArrowUpIcon as AltArrowUpIconBold,
   SettingsIcon as SettingsIconBold,
   BellIcon as BellIconBold,
   BoltIcon as BoltIconBold,
@@ -128,11 +169,31 @@ import {
   HeadphonesRoundIcon as HeadphonesRoundIconBold,
   MoonIcon as MoonIconBold,
   LogoutIcon as LogoutIconBold,
-} from '@solar-icons/react-native/bold'; 
+  UserIcon as UserIconBold,
+  HomeSmileIcon as HomeIconBold,
+  TrashBinTrashIcon as TrashIconBold,
+  AddIcon as AddIconBold,
+  MinusIcon as MinusIconBold,
+  QrCodeIcon as QrCodeIconBold,
+  CarIcon as CarIconBold,
+  TagPriceIcon as TagPriceIconBold,
+  CloudCrossIcon as CloudCrossIconBold,
+  MagnetIcon as MagnetIconBold,
+  HistoryIcon as HistoryIconBold,
+  MapIcon as MapIconBold,
+  RecordCircleIcon as RecordCircleIconBold, 
+  UsersGroupRoundedIcon as UsersGroupIconBold, 
+  LetterIcon as LetterIconBold,                
+  DocumentTextIcon as DocumentTextIconBold,    
+  MicrophoneIcon as MicrophoneIconBold,
+  MicrophoneOffIcon as MicrophoneSlashIconBold, // <-- FIXED
+  CloudUploadIcon as CloudUploadIconBold, 
+  CompassIcon as CompassIconBold, // <-- ADDED
+} from '@solar-icons/react-native/bold';
 
-// --- Import Bold Duotone Icons ---
-import { 
-  BoxIcon as BoxIconBoldDuo, 
+// --- Bold Duotone ---
+import {
+  BoxIcon as BoxIconBoldDuo,
   PhoneIcon as PhoneIconBoldDuo,
   MenuDotsIcon as MenuDotsIconBoldDuo,
   PlaneIcon as PlaneIconBoldDuo,
@@ -140,6 +201,9 @@ import {
   GalleryIcon as GalleryIconBoldDuo,
   AddCircleIcon as AddCircleIconBoldDuo,
   ArrowLeftIcon as ArrowLeftIconBoldDuo,
+  AltArrowRightIcon as AltArrowRightIconBoldDuo,
+  AltArrowDownIcon as AltArrowDownIconBoldDuo,
+  AltArrowUpIcon as AltArrowUpIconBoldDuo,
   MaximizeIcon as MaximizeIconBoldDuo,
   CheckCircleIcon as CheckCircleIconBoldDuo,
   CopyIcon as CopyIconBoldDuo,
@@ -153,9 +217,6 @@ import {
   CheckIcon as CheckIconBoldDuo,
   LockIcon as LockIconBoldDuo,
   KeyIcon as KeyIconBoldDuo,
-  AltArrowRightIcon as AltArrowRightIconBoldDuo,
-  AltArrowDownIcon as AltArrowDownIconBoldDuo,
-  AltArrowUpIcon as AltArrowUpIconBoldDuo,
   SettingsIcon as SettingsIconBoldDuo,
   BellIcon as BellIconBoldDuo,
   BoltIcon as BoltIconBoldDuo,
@@ -174,7 +235,27 @@ import {
   HeadphonesRoundIcon as HeadphonesRoundIconBoldDuo,
   MoonIcon as MoonIconBoldDuo,
   LogoutIcon as LogoutIconBoldDuo,
-} from '@solar-icons/react-native/bold-duotone'; 
+  UserIcon as UserIconBoldDuo,
+  HomeSmileIcon as HomeIconBoldDuo,
+  TrashBinTrashIcon as TrashIconBoldDuo,
+  AddIcon as AddIconBoldDuo,
+  MinusIcon as MinusIconBoldDuo,
+  QrCodeIcon as QrCodeIconBoldDuo,
+  CarIcon as CarIconBoldDuo,
+  TagPriceIcon as TagPriceIconBoldDuo,
+  CloudCrossIcon as CloudCrossIconBoldDuo,
+  MagnetIcon as MagnetIconBoldDuo,
+  HistoryIcon as HistoryIconBoldDuo,
+  MapIcon as MapIconBoldDuo,
+  RecordCircleIcon as RecordCircleIconBoldDuo,
+  UsersGroupRoundedIcon as UsersGroupIconBoldDuo, 
+  LetterIcon as LetterIconBoldDuo,                
+  DocumentTextIcon as DocumentTextIconBoldDuo,    
+  MicrophoneIcon as MicrophoneIconBoldDuo,
+  MicrophoneOffIcon as MicrophoneSlashIconBoldDuo, // <-- FIXED
+  CloudUploadIcon as CloudUploadIconBoldDuo, 
+  CompassIcon as CompassIconBoldDuo, // <-- ADDED
+} from '@solar-icons/react-native/bold-duotone';
 
 const LINEAR_MAP = {
   Package: BoxIconLin,
@@ -185,6 +266,11 @@ const LINEAR_MAP = {
   MenuDots: MenuDotsIconLin,
   AddCircle: AddCircleIconLin,
   ArrowLeft: ArrowLeftIconLin,
+  AltArrowLeft: ArrowLeftIconLin, 
+  AltArrowRight: AltArrowRightIconLin,
+  AltArrowDown: AltArrowDownIconLin,
+  AltArrowUp: AltArrowUpIconLin,
+  ArrowRight: AltArrowRightIconLin,
   Maximize: MaximizeIconLin,
   CheckCircle: CheckCircleIconLin,
   Copy: CopyIconLin,
@@ -198,9 +284,6 @@ const LINEAR_MAP = {
   Check: CheckIconLin,
   Lock: LockIconLin,
   Key: KeyIconLin,
-  AltArrowRight: AltArrowRightIconLin,
-  AltArrowDown: AltArrowDownIconLin,
-  AltArrowUp: AltArrowUpIconLin,
   InfoCircle: InfoCircleIconLin,
   ShieldCheck: ShieldCheckIconLin,
   Bell: BellIconLin,
@@ -209,9 +292,29 @@ const LINEAR_MAP = {
   Calendar: CalendarIconLin,
   Clock: ClockCircleIconLin,
   Refresh: RefreshIconLin,
-  // Fallbacks
+  User: UserIconLin,
+  Home: HomeIconLin,
+  Trash: TrashIconLin,
+  Plus: AddIconLin,
+  Minus: MinusIconLin,
+  QrCode: QrCodeIconLin,
+  Car: CarIconLin,
+  TagPrice: TagPriceIconLin,
+  CloudCross: CloudCrossIconLin,
+  Magnet: MagnetIconLin,
+  History: HistoryIconLin,
+  Map: MapIconLin,
+  RecordCircle: RecordCircleIconLin,
+  UsersGroup: UsersGroupIconLin, 
+  Letter: LetterIconLin,         
+  DocumentText: DocumentTextIconLin, 
+  Microphone: MicrophoneIconLin,
+  MicrophoneSlash: MicrophoneSlashIconLin, // <-- Mapped correctly
+  CloudUpload: CloudUploadIconLin, 
+  Compass: CompassIconLin, // <-- Mapped correctly
   Scales: ScaleIconDuo,
   Warning: DangerTriangleIconDuo,
+  DangerCircle: DangerTriangleIconDuo,
   Info: InfoCircleIconDuo,
   Question: QuestionCircleIconDuo,
   ChatCircleText: ChatRoundDotsIconDuo,
@@ -227,7 +330,9 @@ const DUOTONE_MAP = {
   Package: BoxIconDuo,
   Scales: ScaleIconDuo,
   Warning: DangerTriangleIconDuo,
+  DangerCircle: DangerTriangleIconDuo,
   Info: InfoCircleIconDuo,
+  InfoCircle: InfoCircleIconDuo, 
   Question: QuestionCircleIconDuo,
   ShieldCheck: ShieldCheckIconDuo,
   ChatCircleText: ChatRoundDotsIconDuo,
@@ -244,6 +349,11 @@ const DUOTONE_MAP = {
   MenuDots: MenuDotsIconDuo,
   AddCircle: AddCircleIconDuo,
   ArrowLeft: ArrowLeftIconDuo,
+  AltArrowLeft: ArrowLeftIconDuo, 
+  AltArrowRight: AltArrowRightIconDuo,
+  AltArrowDown: AltArrowDownIconDuo,
+  AltArrowUp: AltArrowUpIconDuo,
+  ArrowRight: AltArrowRightIconDuo,
   Maximize: MaximizeIconDuo,
   CheckCircle: CheckCircleIconDuo,
   Copy: CopyIconDuo,
@@ -257,22 +367,41 @@ const DUOTONE_MAP = {
   Check: CheckIconDuo,
   Lock: LockIconDuo,
   Key: KeyIconDuo,
-  AltArrowRight: AltArrowRightIconDuo,
-  AltArrowDown: AltArrowDownIconDuo,
-  AltArrowUp: AltArrowUpIconDuo,
   Bell: BellIconDuo,
   Lightning: BoltIconDuo,
   Flag: FlagIconDuo,
   Calendar: CalendarIconDuo,
   Clock: ClockCircleIconDuo,
   Refresh: RefreshIconDuo,
+  User: UserIconDuo,
+  Home: HomeIconDuo,
+  Trash: TrashIconDuo,
+  Plus: AddIconDuo,
+  Minus: MinusIconDuo,
+  QrCode: QrCodeIconDuo,
+  Car: CarIconDuo,
+  TagPrice: TagPriceIconDuo,
+  CloudCross: CloudCrossIconDuo,
+  Magnet: MagnetIconDuo,
+  History: HistoryIconDuo,
+  Map: MapIconDuo,
+  RecordCircle: RecordCircleIconDuo,
+  UsersGroup: UsersGroupIconDuo, 
+  Letter: LetterIconDuo,         
+  DocumentText: DocumentTextIconDuo,
+  Microphone: MicrophoneIconDuo,
+  MicrophoneSlash: MicrophoneSlashIconDuo, // <-- Mapped correctly
+  CloudUpload: CloudUploadIconDuo, 
+  Compass: CompassIconDuo, // <-- Mapped correctly
 } as const;
 
 const BOLD_MAP = {
   Package: BoxIconBold,
   Scales: ScaleIconBold,
   Warning: DangerTriangleIconBold,
+  DangerCircle: DangerTriangleIconBold,
   Info: InfoCircleIconBold,
+  InfoCircle: InfoCircleIconBold, 
   Question: QuestionCircleIconBold,
   ShieldCheck: ShieldCheckIconBold,
   ChatCircleText: ChatRoundDotsIconBold,
@@ -289,6 +418,11 @@ const BOLD_MAP = {
   MenuDots: MenuDotsIconBold,
   AddCircle: AddCircleIconBold,
   ArrowLeft: ArrowLeftIconBold,
+  AltArrowLeft: ArrowLeftIconBold, 
+  AltArrowRight: AltArrowRightIconBold,
+  AltArrowDown: AltArrowDownIconBold,
+  AltArrowUp: AltArrowUpIconBold,
+  ArrowRight: AltArrowRightIconBold,
   Maximize: MaximizeIconBold,
   CheckCircle: CheckCircleIconBold,
   Copy: CopyIconBold,
@@ -302,22 +436,41 @@ const BOLD_MAP = {
   Check: CheckIconBold,
   Lock: LockIconBold,
   Key: KeyIconBold,
-  AltArrowRight: AltArrowRightIconBold,
-  AltArrowDown: AltArrowDownIconBold,
-  AltArrowUp: AltArrowUpIconBold,
   Bell: BellIconBold,
   Lightning: BoltIconBold,
   Flag: FlagIconBold,
   Calendar: CalendarIconBold,
   Clock: ClockCircleIconBold,
   Refresh: RefreshIconBold,
+  User: UserIconBold,
+  Home: HomeIconBold,
+  Trash: TrashIconBold,
+  Plus: AddIconBold,
+  Minus: MinusIconBold,
+  QrCode: QrCodeIconBold,
+  Car: CarIconBold,
+  TagPrice: TagPriceIconBold,
+  CloudCross: CloudCrossIconBold,
+  Magnet: MagnetIconBold,
+  History: HistoryIconBold,
+  Map: MapIconBold,
+  RecordCircle: RecordCircleIconBold,
+  UsersGroup: UsersGroupIconBold, 
+  Letter: LetterIconBold,         
+  DocumentText: DocumentTextIconBold, 
+  Microphone: MicrophoneIconBold,
+  MicrophoneSlash: MicrophoneSlashIconBold, // <-- Mapped correctly
+  CloudUpload: CloudUploadIconBold, 
+  Compass: CompassIconBold, // <-- Mapped correctly
 } as const;
 
 const BOLD_DUOTONE_MAP = {
   Package: BoxIconBoldDuo,
   Scales: ScaleIconBoldDuo,
   Warning: DangerTriangleIconBoldDuo,
+  DangerCircle: DangerTriangleIconBoldDuo,
   Info: InfoCircleIconBoldDuo,
+  InfoCircle: InfoCircleIconBoldDuo, 
   Question: QuestionCircleIconBoldDuo,
   ShieldCheck: ShieldCheckIconBoldDuo,
   ChatCircleText: ChatRoundDotsIconBoldDuo,
@@ -334,6 +487,11 @@ const BOLD_DUOTONE_MAP = {
   MenuDots: MenuDotsIconBoldDuo,
   AddCircle: AddCircleIconBoldDuo,
   ArrowLeft: ArrowLeftIconBoldDuo,
+  AltArrowLeft: ArrowLeftIconBoldDuo, 
+  AltArrowRight: AltArrowRightIconBoldDuo,
+  AltArrowDown: AltArrowDownIconBoldDuo,
+  AltArrowUp: AltArrowUpIconBoldDuo,
+  ArrowRight: AltArrowRightIconBoldDuo,
   Maximize: MaximizeIconBoldDuo,
   CheckCircle: CheckCircleIconBoldDuo,
   Copy: CopyIconBoldDuo,
@@ -347,54 +505,74 @@ const BOLD_DUOTONE_MAP = {
   Check: CheckIconBoldDuo,
   Lock: LockIconBoldDuo,
   Key: KeyIconBoldDuo,
-  AltArrowRight: AltArrowRightIconBoldDuo,
-  AltArrowDown: AltArrowDownIconBoldDuo,
-  AltArrowUp: AltArrowUpIconBoldDuo,
   Bell: BellIconBoldDuo,
   Lightning: BoltIconBoldDuo,
   Flag: FlagIconBoldDuo,
   Calendar: CalendarIconBoldDuo,
   Clock: ClockCircleIconBoldDuo,
   Refresh: RefreshIconBoldDuo,
+  User: UserIconBoldDuo,
+  Home: HomeIconBoldDuo,
+  Trash: TrashIconBoldDuo,
+  Plus: AddIconBoldDuo,
+  Minus: MinusIconBoldDuo,
+  QrCode: QrCodeIconBoldDuo,
+  Car: CarIconBoldDuo,
+  TagPrice: TagPriceIconBoldDuo,
+  CloudCross: CloudCrossIconBoldDuo,
+  Magnet: MagnetIconBoldDuo,
+  History: HistoryIconBoldDuo,
+  Map: MapIconBoldDuo,
+  RecordCircle: RecordCircleIconBoldDuo,
+  UsersGroup: UsersGroupIconBoldDuo, 
+  Letter: LetterIconBoldDuo,         
+  DocumentText: DocumentTextIconBoldDuo, 
+  Microphone: MicrophoneIconBoldDuo,
+  MicrophoneSlash: MicrophoneSlashIconBoldDuo, // <-- Mapped correctly
+  CloudUpload: CloudUploadIconBoldDuo, 
+  Compass: CompassIconBoldDuo, // <-- Mapped correctly
 } as const;
 
 export type SolarIconName = keyof typeof DUOTONE_MAP;
 export type SolarIconVariant = 'linear' | 'duotone' | 'bold' | 'boldDuotone';
 
-// Icons that natively render with swapped colors in the library
 const INVERTED_ICONS = new Set([
   'Scales',
   'Warning',
+  'DangerCircle',
   'ShieldCheck',
   'HeadphonesRound',
   'Settings',
-  'AddCircle', 
-  'Camera',    
-  'Moon',              
-  'Logout',            
-  'TransferHorizontal', 
+  'AddCircle',
+  'Camera',
+  'Moon',
+  'Logout',
+  'TransferHorizontal',
   'MapPoint',
   'Routing',
 ]);
 
+const SOLID_ICONS = new Set(['Plus', 'Minus']);
+
 interface SolarIconProps {
   name: SolarIconName;
   size?: number;
-  color?: string;          
-  secondaryColor?: string; 
-  variant?: SolarIconVariant; 
+  color?: string;
+  secondaryColor?: string;
+  variant?: SolarIconVariant;
+  style?: StyleProp<ViewStyle>;
 }
 
-export const SolarIcon = ({ 
-  name, 
-  size = 24, 
-  color, 
+export const SolarIcon = ({
+  name,
+  size = 24,
+  color,
   secondaryColor,
-  variant = 'duotone' 
+  variant = 'duotone',
+  style,
 }: SolarIconProps) => {
   const { colors, isDark } = useTheme();
-  
-  // 1. Select the correct map based on the variant
+
   let IconComponent: any = null;
   switch (variant) {
     case 'linear': IconComponent = LINEAR_MAP[name]; break;
@@ -408,7 +586,6 @@ export const SolarIcon = ({
     return null;
   }
 
-  // 2. Smart Theme Logic
   const defaultOutline = isDark ? colors.accent : colors.textPrimary;
   const defaultFill = isDark ? '#FFFFFF' : colors.accent;
 
@@ -416,25 +593,38 @@ export const SolarIcon = ({
   const fillColor = secondaryColor || defaultFill;
 
   const isInverted = INVERTED_ICONS.has(name);
-  
-  // 3. Render Logic
-  // Linear and Bold only use the outline color
+  const isSolid = SOLID_ICONS.has(name);
+
   if (variant === 'linear' || variant === 'bold') {
     return (
       <IconComponent
         size={size}
-        color={isInverted ? fillColor : outlineColor} 
+        color={isInverted ? fillColor : outlineColor}
+        style={style}
       />
     );
   }
 
-  // Duotone and BoldDuotone use both colors
+  if (isSolid) {
+    const solidColor = isInverted ? fillColor : outlineColor;
+    return (
+      <IconComponent
+        size={size}
+        color={solidColor}
+        secondaryColor={solidColor}
+        secondaryOpacity={1}
+        style={style}
+      />
+    );
+  }
+
   return (
     <IconComponent
       size={size}
-      color={isInverted ? fillColor : outlineColor} 
-      secondaryColor={isInverted ? outlineColor : fillColor} 
-      secondaryOpacity={1} 
+      color={isInverted ? fillColor : outlineColor}
+      secondaryColor={isInverted ? outlineColor : fillColor}
+      secondaryOpacity={1}
+      style={style}
     />
   );
 };

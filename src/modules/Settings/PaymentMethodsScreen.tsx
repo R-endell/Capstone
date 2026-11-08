@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Settings_Sender/PaymentMethodsScreen.tsx
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
@@ -5,7 +6,6 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../utils/supabase';
 import {
   fetchPaymentMethods,
@@ -15,8 +15,7 @@ import {
 import { PaymentMethod } from '../../types/payment';
 import PaymentMethodCard from './PaymentMethodCard';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-
-const ORANGE = '#FF751F';
+import { SolarIcon } from '../../components/ui/SolarIcon';
 
 export default function PaymentMethodsScreen() {
   const navigation = useNavigation<any>();
@@ -103,22 +102,22 @@ export default function PaymentMethodsScreen() {
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.8}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Payment Methods</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 42 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {loading ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={ORANGE} />
+            <ActivityIndicator size="large" color={colors.accent} />
           </View>
         ) : methods.length === 0 ? (
           <View style={styles.emptyContainer}>
             <View style={styles.emptyIcon}>
-              <Ionicons name="card-outline" size={40} color={ORANGE} />
+              <SolarIcon name="Card" variant="duotone" size={40} color={colors.accent} />
             </View>
             <Text style={styles.emptyTitle}>No payment methods linked</Text>
             <Text style={styles.emptySubtext}>
@@ -139,9 +138,9 @@ export default function PaymentMethodsScreen() {
         <TouchableOpacity
           style={styles.addButton}
           onPress={() => navigation.navigate('AddPaymentMethod')}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
         >
-          <Ionicons name="add-circle-outline" size={20} color="#FFFFFF" />
+          <SolarIcon name="AddCircle" variant="linear" size={20} color="#FFFFFF" />
           <Text style={styles.addButtonText}>Add Payment Method</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -154,18 +153,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 16,
+    paddingHorizontal: 20, paddingBottom: 16,
     backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  headerTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
 
-  content: { padding: 20, paddingBottom: 40 },
+  content: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
   center: { paddingVertical: 60, alignItems: 'center' },
 
   emptyContainer: { alignItems: 'center', paddingVertical: 60 },
@@ -173,14 +172,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 80, height: 80, borderRadius: 40, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary, marginBottom: 4 },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 18 },
+  emptyTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 4 },
+  emptySubtext: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 18 },
 
   addButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, paddingVertical: 14, borderRadius: 14, marginTop: 12, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14, marginTop: 12, gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2, shadowRadius: 8, elevation: 3,
   },
-  addButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
+  addButtonText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 });

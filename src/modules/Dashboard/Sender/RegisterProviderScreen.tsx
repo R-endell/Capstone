@@ -7,15 +7,14 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
-const ORANGE = '#FA7A25';
 const BUCKET_NAME = 'vehicle-documents';
 
 const ID_ANALYZER_KEY = 'idk_lpCmsQcDtGPddpKFSEAFoWySTEwD3C3usJcIBzkz';
@@ -188,10 +187,6 @@ export default function RegisterProviderScreen() {
     return null;
   };
 
-  /**
-   * Checks if the scanned document is genuinely a Driver's License
-   * and contains actual ID fields (not a random photo of a pet, vehicle, or scenery).
-   */
   const checkIsDriverLicense = (
     docType: string | null,
     docName: string | null,
@@ -215,7 +210,6 @@ export default function RegisterProviderScreen() {
 
     if (!matchesDriverLicenseType) return false;
 
-    // Must have extracted at least some recognizable personal/ID fields
     const hasMeaningfulFields = Boolean(
       unwrapField(dataObj?.documentNumber) ||
       unwrapField(dataObj?.licenseNumber) ||
@@ -227,7 +221,6 @@ export default function RegisterProviderScreen() {
 
     if (!hasMeaningfulFields) return false;
 
-    // Reject ultra-low confidence hallucinations
     if (confidence !== null && confidence < MIN_CONFIDENCE_PERCENT) {
       return false;
     }
@@ -235,16 +228,11 @@ export default function RegisterProviderScreen() {
     return true;
   };
 
-  /**
-   * Validates that a single image (used when Back is uploaded before Front, or verifying Back)
-   * actually looks like an ID document and not a random object/animal/truck.
-   */
   const checkIsAtLeastIdDocument = (result: any, confidence: number | null): boolean => {
     if (!result || result.error) return false;
     const dataObj = result.data || {};
     const fieldKeys = Object.keys(dataObj);
 
-    // If ID Analyzer couldn't extract any ID fields at all, it's a random image
     if (fieldKeys.length === 0) return false;
 
     const dt = (unwrapField(dataObj.documentType || result.documentType) || '').toUpperCase();
@@ -420,7 +408,6 @@ export default function RegisterProviderScreen() {
       setLicenseNumber(docNum);
       setManualNumberEntryAllowed(false);
     } else {
-      // Valid Driver's License detected, but OCR missed the number string
       setManualNumberEntryAllowed(true);
     }
 
@@ -479,15 +466,10 @@ export default function RegisterProviderScreen() {
     }
   };
 
-  /**
-   * Validates the chosen image with ID Analyzer BEFORE accepting it or uploading to Supabase.
-   * Rejects non-ID photos (cats, vehicles, random objects) and non-Driver's License IDs immediately.
-   */
   const handlePickedImage = async (side: Side, uri: string) => {
     setUploadingSide(side);
     setScanAttempted(false);
 
-    // Temporarily show preview while scanning
     if (side === 'front') {
       setLicenseFrontUri(uri);
       setLicenseFrontUrl(null);
@@ -502,19 +484,16 @@ export default function RegisterProviderScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('No user found');
 
-      // Read image as Base64 so we can scan it BEFORE uploading to Supabase storage
       const base64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
       if (side === 'front') {
-        // 1. Scan the FRONT image directly (or together with back if back is already verified)
         const scan = await runIdAnalyzerScan(
           base64,
           backVerified && licenseBackBase64 ? licenseBackBase64 : null
         );
 
-        // Block random photos, animals, trucks, blurry images, or rejected scans
         if (!scan || scan.decision === 'error' || scan.decision === 'reject' || !scan.isValidDriverLicense) {
           resetSideState('front');
           clearLicenseFields();
@@ -531,7 +510,6 @@ export default function RegisterProviderScreen() {
           return;
         }
 
-        // Front is a valid Driver's License! Upload to Supabase
         const url = await uploadFileFromBase64(uri, base64, user.id, 'license_front');
         setLicenseFrontBase64(base64);
         setLicenseFrontUrl(url);
@@ -547,8 +525,6 @@ export default function RegisterProviderScreen() {
           );
         }
       } else {
-        // Scanning the BACK image:
-        // Step A: First scan the back image on its own to make sure it isn't a random photo (e.g., truck/cat)
         const singleBackScan = await runIdAnalyzerScan(base64, null);
         const isBackAtLeastId = checkIsAtLeastIdDocument(singleBackScan?.raw, singleBackScan?.confidence ?? null);
 
@@ -561,7 +537,6 @@ export default function RegisterProviderScreen() {
           return;
         }
 
-        // Make sure the user didn't upload a completely different type of ID for the back
         if (singleBackScan.documentType && singleBackScan.documentName) {
           const dt = singleBackScan.documentType.toUpperCase();
           const dn = singleBackScan.documentName.toLowerCase();
@@ -579,7 +554,6 @@ export default function RegisterProviderScreen() {
           }
         }
 
-        // Prevent uploading the exact same front image as the back image
         const singleBackDocNum = unwrapField(singleBackScan.data?.documentNumber || singleBackScan.data?.licenseNumber);
         const singleBackHasPortrait = Boolean(unwrapField(singleBackScan.data?.face) || singleBackScan.raw?.face);
         if (licenseFrontBase64 && base64 === licenseFrontBase64) {
@@ -591,7 +565,6 @@ export default function RegisterProviderScreen() {
           return;
         }
 
-        // Step B: If front is already uploaded, run a combined Dual Scan to verify front + back match
         let finalScan = singleBackScan;
         if (frontVerified && licenseFrontBase64) {
           const dualScan = await runIdAnalyzerScan(licenseFrontBase64, base64);
@@ -606,7 +579,6 @@ export default function RegisterProviderScreen() {
           finalScan = dualScan;
         }
 
-        // Back is verified! Upload to Supabase
         const url = await uploadFileFromBase64(uri, base64, user.id, 'license_back');
         setLicenseBackBase64(base64);
         setLicenseBackUrl(url);
@@ -950,11 +922,11 @@ export default function RegisterProviderScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
 
       <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerSubtitle}>Become a partner</Text>
@@ -965,7 +937,7 @@ export default function RegisterProviderScreen() {
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Animated.View style={[styles.introCard, fadeUp(introAnim, 20)]}>
           <View style={styles.introIconBox}>
-            <Ionicons name="shield-checkmark" size={22} color={ORANGE} />
+            <SolarIcon name="ShieldCheck" variant="duotone" size={22} color={colors.accent} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.introTitle}>Apply to become a provider</Text>
@@ -979,28 +951,28 @@ export default function RegisterProviderScreen() {
         <Animated.View style={[styles.progressRow, fadeUp(introAnim, 20)]}>
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, licenseComplete && styles.progressDotDone]}>
-              {licenseComplete ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>1</Text>}
+              {licenseComplete ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>1</Text>}
             </View>
             <Text style={[styles.progressLabel, licenseComplete && styles.progressLabelDone]}>License</Text>
           </View>
           <View style={[styles.progressLine, licenseComplete && styles.progressLineDone]} />
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, detailsFilled && styles.progressDotDone]}>
-              {detailsFilled ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>2</Text>}
+              {detailsFilled ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>2</Text>}
             </View>
             <Text style={[styles.progressLabel, detailsFilled && styles.progressLabelDone]}>Details</Text>
           </View>
           <View style={[styles.progressLine, selfieComplete && styles.progressLineDone]} />
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, selfieComplete && styles.progressDotDone]}>
-              {selfieComplete ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>3</Text>}
+              {selfieComplete ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>3</Text>}
             </View>
             <Text style={[styles.progressLabel, selfieComplete && styles.progressLabelDone]}>Selfie</Text>
           </View>
           <View style={[styles.progressLine, canSubmit && styles.progressLineDone]} />
           <View style={styles.progressStep}>
             <View style={[styles.progressDot, canSubmit && styles.progressDotDone]}>
-              {canSubmit ? <Ionicons name="checkmark" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>4</Text>}
+              {canSubmit ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" /> : <Text style={styles.progressDotText}>4</Text>}
             </View>
             <Text style={[styles.progressLabel, canSubmit && styles.progressLabelDone]}>Ready</Text>
           </View>
@@ -1019,7 +991,7 @@ export default function RegisterProviderScreen() {
             </View>
             {licenseComplete && (
               <View style={styles.completedBadge}>
-                <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+                <SolarIcon name="CheckCircle" variant="duotone" size={12} color={colors.success} />
                 <Text style={styles.completedBadgeText}>Verified</Text>
               </View>
             )}
@@ -1048,7 +1020,7 @@ export default function RegisterProviderScreen() {
                 </>
               ) : (
                 <View style={styles.tileEmpty}>
-                  <Ionicons name="card-outline" size={26} color={ORANGE} />
+                  <SolarIcon name="DocumentText" variant="linear" size={26} color={colors.accent} />
                   <Text style={styles.tileEmptyText}>Front</Text>
                 </View>
               )}
@@ -1076,7 +1048,7 @@ export default function RegisterProviderScreen() {
                 </>
               ) : (
                 <View style={styles.tileEmpty}>
-                  <Ionicons name="card-outline" size={26} color={ORANGE} />
+                  <SolarIcon name="DocumentText" variant="linear" size={26} color={colors.accent} />
                   <Text style={styles.tileEmptyText}>Back</Text>
                 </View>
               )}
@@ -1089,7 +1061,7 @@ export default function RegisterProviderScreen() {
 
           {scanningLicense && (
             <View style={styles.scanningBadge}>
-              <ActivityIndicator size="small" color={ORANGE} />
+              <ActivityIndicator size="small" color={colors.accent} />
               <Text style={styles.scanningText}>Verifying Driver's License photo...</Text>
             </View>
           )}
@@ -1101,8 +1073,9 @@ export default function RegisterProviderScreen() {
                 lastScanResult.decision === 'accept' ? styles.scanResultAccept : styles.scanResultReview,
               ]}
             >
-              <Ionicons
-                name={lastScanResult.decision === 'accept' ? 'checkmark-circle' : 'alert-circle'}
+              <SolarIcon
+                name={lastScanResult.decision === 'accept' ? 'CheckCircle' : 'DangerCircle'}
+                variant="duotone"
                 size={16}
                 color={lastScanResult.decision === 'accept' ? colors.success : colors.warning}
               />
@@ -1142,12 +1115,12 @@ export default function RegisterProviderScreen() {
               </View>
               {numberLocked ? (
                 <View style={styles.lockedBadge}>
-                  <Ionicons name="lock-closed" size={10} color={colors.success} />
+                  <SolarIcon name="Lock" variant="linear" size={10} color={colors.success} />
                   <Text style={styles.lockedBadgeText}>AUTO</Text>
                 </View>
               ) : (
                 <View style={styles.unlockedBadge}>
-                  <Ionicons name="pencil" size={10} color={colors.warning} />
+                  <SolarIcon name="Pen" variant="linear" size={10} color={colors.warning} />
                   <Text style={styles.unlockedBadgeText}>MANUAL</Text>
                 </View>
               )}
@@ -1156,7 +1129,7 @@ export default function RegisterProviderScreen() {
 
           {numberLocked && frontVerified && scanAttempted && !scanningLicense && (
             <View style={styles.lockedNote}>
-              <Ionicons name="sparkles" size={14} color={colors.success} />
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.success} />
               <Text style={styles.lockedNoteText}>
                 License number was auto-filled from your verified Driver's License. Please pick
                 the correct expiry date below.
@@ -1166,7 +1139,7 @@ export default function RegisterProviderScreen() {
 
           {showWaitingHint && (
             <View style={styles.waitingNote}>
-              <Ionicons name="cloud-upload-outline" size={14} color={colors.textSecondary} />
+              <SolarIcon name="CloudUpload" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.waitingNoteText}>
                 Upload clear photos of both the front and back of your Driver's License above to
                 auto-fill your license number.
@@ -1176,7 +1149,7 @@ export default function RegisterProviderScreen() {
 
           {!numberLocked && (
             <View style={styles.manualNote}>
-              <Ionicons name="pencil-outline" size={14} color={colors.warning} />
+              <SolarIcon name="Pen" variant="linear" size={14} color={colors.warning} />
               <Text style={styles.manualNoteText}>
                 Your Driver's License was verified, but the number was unclear. Please type it
                 manually below.
@@ -1205,11 +1178,11 @@ export default function RegisterProviderScreen() {
               onPress={() => setShowDatePicker(true)}
               activeOpacity={0.85}
             >
-              <Ionicons name="calendar-outline" size={18} color={ORANGE} />
+              <SolarIcon name="Calendar" variant="linear" size={18} color={colors.accent} />
               <Text style={[styles.datePickerText, !licenseExpiry && styles.datePickerPlaceholder]}>
                 {licenseExpiry || 'Select expiry date'}
               </Text>
-              <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowDown" variant="linear" size={18} color={colors.textMuted} />
             </TouchableOpacity>
             <Text style={styles.manualDateHint}>
               Always verify the expiry date manually — the scan may misread it.
@@ -1246,7 +1219,7 @@ export default function RegisterProviderScreen() {
             </View>
             {selfieComplete && (
               <View style={styles.completedBadge}>
-                <Ionicons name="checkmark-circle" size={12} color={colors.success} />
+                <SolarIcon name="CheckCircle" variant="duotone" size={12} color={colors.success} />
                 <Text style={styles.completedBadgeText}>Uploaded</Text>
               </View>
             )}
@@ -1272,7 +1245,7 @@ export default function RegisterProviderScreen() {
               </>
             ) : (
               <View style={styles.tileEmpty}>
-                <Ionicons name="camera-outline" size={30} color={ORANGE} />
+                <SolarIcon name="Camera" variant="linear" size={30} color={colors.accent} />
                 <Text style={styles.tileEmptyText}>Take selfie</Text>
               </View>
             )}
@@ -1284,7 +1257,7 @@ export default function RegisterProviderScreen() {
         </Animated.View>
 
         <Animated.View style={[styles.infoNote, fadeUp(buttonAnim, 20)]}>
-          <Ionicons name="information-circle-outline" size={16} color={isDark ? '#93C5FD' : '#3B82F6'} />
+          <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.info} />
           <Text style={styles.infoNoteText}>
             Your application will be reviewed by an admin. You'll be able to accept deliveries
             once approved.
@@ -1307,7 +1280,7 @@ export default function RegisterProviderScreen() {
               </View>
             ) : (
               <>
-                <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" />
+                <SolarIcon name="ShieldCheck" variant="linear" size={18} color="#FFFFFF" />
                 <Text style={styles.registerButtonText}>Submit for Verification</Text>
               </>
             )}
@@ -1322,11 +1295,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
   header: {
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 20, paddingBottom: 26, gap: 12,
-    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
   },
   backBtn: {
@@ -1335,25 +1308,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
   },
-  headerSubtitle: { fontSize: 11, color: '#FFE0C7', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
+  headerSubtitle: { fontSize: 11, color: 'rgba(255,255,255,0.8)', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
 
   content: { flex: 1 },
   scrollContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 60 },
 
   introCard: {
     flexDirection: 'row', alignItems: 'flex-start',
-    backgroundColor: c.card, borderRadius: 18, padding: 16, gap: 12, marginBottom: 20,
-    borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.card, borderRadius: 12, padding: 16, gap: 12, marginBottom: 20,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 12, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 12, elevation: 0,
   },
   introIconBox: {
-    width: 46, height: 46, borderRadius: 14, backgroundColor: c.accentSoft,
+    width: 46, height: 46, borderRadius: 12, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center',
   },
-  introTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginBottom: 3, letterSpacing: -0.2 },
-  introText: { fontSize: 12, color: c.textSecondary, lineHeight: 17, fontWeight: '500' },
+  introTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 3, letterSpacing: -0.2 },
+  introText: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 17 },
 
   progressRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -1361,15 +1334,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   progressStep: { alignItems: 'center', gap: 6 },
   progressDot: {
-    width: 26, height: 26, borderRadius: 13, backgroundColor: c.border,
+    width: 26, height: 26, borderRadius: 13, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 2, borderColor: c.card,
   },
   progressDotDone: { backgroundColor: c.success },
-  progressDotText: { fontSize: 12, fontWeight: '800', color: c.textMuted },
-  progressLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, letterSpacing: 0.3 },
+  progressDotText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted },
+  progressLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, letterSpacing: 0.3 },
   progressLabelDone: { color: c.success },
-  progressLine: { flex: 1, height: 2, backgroundColor: c.border, marginHorizontal: 6, marginBottom: 20 },
+  progressLine: { flex: 1, height: 2, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginHorizontal: 6, marginBottom: 20 },
   progressLineDone: { backgroundColor: c.success },
 
   uploadSection: { marginBottom: 20 },
@@ -1378,71 +1351,71 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   uploadTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   uploadNumberBadge: {
-    width: 26, height: 26, borderRadius: 13, backgroundColor: ORANGE,
+    width: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3, shadowRadius: 4, elevation: 2,
   },
-  uploadNumberText: { fontSize: 12, fontWeight: '800', color: '#FFFFFF' },
-  uploadTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  uploadSubtitle: { fontSize: 11, color: c.textMuted, fontWeight: '500', marginTop: 1 },
+  uploadNumberText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  uploadTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
+  uploadSubtitle: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted, marginTop: 1 },
   completedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
     borderWidth: 1, borderColor: c.success,
   },
-  completedBadgeText: { fontSize: 10, fontWeight: '800', color: c.success, letterSpacing: 0.2 },
+  completedBadgeText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.success, letterSpacing: 0.2 },
 
   tilesRow: { flexDirection: 'row', gap: 12 },
   tile: {
-    flex: 1, height: 140, borderRadius: 16,
-    borderWidth: 2, borderStyle: 'dashed', borderColor: c.border,
+    flex: 1, height: 140, borderRadius: 12,
+    borderWidth: 2, borderStyle: 'dashed', borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
     backgroundColor: c.background, overflow: 'hidden', position: 'relative',
   },
   selfieTile: { flex: 0, width: '100%', height: 200 },
-  tileFilled: { borderStyle: 'solid', borderColor: ORANGE, backgroundColor: c.accentSoft },
+  tileFilled: { borderStyle: 'solid', borderColor: c.accent, backgroundColor: c.accentSoft },
   tileEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  tileEmptyText: { fontSize: 12, fontWeight: '700', color: c.textSecondary, letterSpacing: 0.2 },
+  tileEmptyText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary, letterSpacing: 0.2 },
   tileImage: { width: '100%', height: '100%', resizeMode: 'cover' },
   tileLabelBadge: {
     position: 'absolute', bottom: 8, left: 8,
     backgroundColor: 'rgba(17,24,39,0.75)',
-    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
   },
-  tileLabelText: { fontSize: 10, color: '#FFFFFF', fontWeight: '800', letterSpacing: 0.5 },
+  tileLabelText: { fontSize: 10, color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
   tileOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center', justifyContent: 'center',
   },
   uploadHint: {
-    fontSize: 11, color: c.textMuted, fontWeight: '500',
+    fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted,
     marginTop: 10, letterSpacing: 0.2, textAlign: 'center',
   },
 
   scanningBadge: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, marginTop: 10, paddingVertical: 8, paddingHorizontal: 12,
-    backgroundColor: c.accentSoft, borderRadius: 10,
-    borderWidth: 1, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderRadius: 8,
+    borderWidth: 1, borderColor: c.accent,
   },
-  scanningText: { fontSize: 12, fontWeight: '700', color: ORANGE, letterSpacing: 0.2 },
+  scanningText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent, letterSpacing: 0.2 },
   scanResultBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10,
-    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1,
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1,
   },
   scanResultAccept: { backgroundColor: c.successBg, borderColor: c.success },
   scanResultReview: { backgroundColor: c.warningBg, borderColor: c.warning },
   scanResultReject: { backgroundColor: c.errorBg, borderColor: c.error },
   scanResultError: { backgroundColor: c.divider, borderColor: c.border },
-  scanResultText: { flex: 1, fontSize: 12, fontWeight: '700', letterSpacing: 0.2 },
+  scanResultText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.2 },
 
   detailsSection: { marginBottom: 20 },
   fieldGroup: { marginBottom: 14 },
-  fieldLabel: { fontSize: 12, fontWeight: '700', color: c.textPrimary, marginBottom: 6, letterSpacing: 0.2 },
+  fieldLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 6, letterSpacing: 0.2 },
   textInput: {
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: c.textPrimary, fontWeight: '600',
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_500Medium',
   },
   textInputLocked: {
     backgroundColor: c.divider,
@@ -1452,75 +1425,75 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   lockedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
     borderWidth: 1, borderColor: c.success,
   },
-  lockedBadgeText: { fontSize: 9, fontWeight: '900', color: c.success, letterSpacing: 0.6 },
+  lockedBadgeText: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.success, letterSpacing: 0.6 },
   unlockedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.warningBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10,
+    backgroundColor: c.warningBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
     borderWidth: 1, borderColor: c.warning,
   },
-  unlockedBadgeText: { fontSize: 9, fontWeight: '900', color: c.warning, letterSpacing: 0.6 },
+  unlockedBadgeText: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.warning, letterSpacing: 0.6 },
 
   lockedNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: c.successBg, borderRadius: 12, padding: 10, marginBottom: 14,
     borderWidth: 1, borderColor: c.success,
   },
-  lockedNoteText: { flex: 1, fontSize: 11, color: c.success, fontWeight: '600', lineHeight: 15 },
+  lockedNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.success, lineHeight: 15 },
 
   waitingNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: c.divider, borderRadius: 12, padding: 10, marginBottom: 14,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  waitingNoteText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '600', lineHeight: 15 },
+  waitingNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 15 },
 
   manualNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: c.warningBg, borderRadius: 12, padding: 10, marginBottom: 14,
     borderWidth: 1, borderColor: c.warning,
   },
-  manualNoteText: { flex: 1, fontSize: 11, color: c.warning, fontWeight: '600', lineHeight: 15 },
+  manualNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 15 },
 
   datePickerButton: {
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 14,
     flexDirection: 'row', alignItems: 'center', gap: 10,
   },
-  datePickerText: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '600' },
-  datePickerPlaceholder: { color: c.textMuted, fontWeight: '500' },
+  datePickerText: { flex: 1, fontSize: 14, fontFamily: 'Poppins_500Medium', color: c.textPrimary },
+  datePickerPlaceholder: { color: c.textMuted },
   manualDateHint: {
-    fontSize: 11, color: c.textMuted, fontWeight: '500', marginTop: 6,
+    fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted, marginTop: 6,
     fontStyle: 'italic',
   },
   iosDoneButton: {
     marginTop: 8, alignSelf: 'flex-end',
     paddingVertical: 8, paddingHorizontal: 16,
-    backgroundColor: ORANGE, borderRadius: 10,
+    backgroundColor: c.accent, borderRadius: 10,
   },
-  iosDoneText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
+  iosDoneText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 13 },
 
   infoNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: isDark ? '#0F172A' : '#EFF6FF',
-    borderRadius: 14, padding: 12, marginBottom: 20,
-    borderWidth: 1, borderColor: isDark ? '#1E3A5F' : '#DBEAFE',
+    backgroundColor: c.infoSoft,
+    borderRadius: 12, padding: 12, marginBottom: 20,
+    borderWidth: 1, borderColor: isDark ? 'rgba(96, 165, 250, 0.2)' : 'rgba(59, 130, 246, 0.2)',
   },
   infoNoteText: {
-    flex: 1, fontSize: 11,
-    color: isDark ? '#93C5FD' : '#1E40AF',
-    fontWeight: '600', lineHeight: 16,
+    flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium',
+    color: c.info,
+    lineHeight: 16,
   },
 
   registerButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 16, marginTop: 4, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
+    backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14, marginTop: 4, gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
   registerButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  registerButtonText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF', letterSpacing: 0.2 },
+  registerButtonText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: 0.2 },
   loadingContainer: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 });

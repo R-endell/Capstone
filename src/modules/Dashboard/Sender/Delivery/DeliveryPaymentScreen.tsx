@@ -1,20 +1,20 @@
+// src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen.tsx
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
   Alert, StatusBar, ScrollView, Image, BackHandler, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import { fetchPaymentMethods, chargeDelivery, getDeliveryPaymentStatus } from '../../../../services/paymentService';
 import type { PaymentMethod, PaymentProvider } from '../../../../types/payment';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../../assets/maya.png');
-const ORANGE = '#F27024';
 
 export default function DeliveryPaymentScreen({ route, navigation }: any) {
   const { requestId, amount } = route.params;
@@ -76,7 +76,6 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
       if (!userId) return;
       if (methods.length === 0) setLoading(true);
       loadMethods();
-      // NOTE: do NOT include methods.length in deps — that causes loop.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userId, loadMethods]),
   );
@@ -248,7 +247,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} style={{ marginTop: 100 }} />
+        <ActivityIndicator size="large" color={colors.accent} style={{ marginTop: 100 }} />
       </View>
     );
   }
@@ -259,7 +258,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 
       <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
         <TouchableOpacity onPress={handleBack} style={styles.backBtn} disabled={paying} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Payment</Text>
       </View>
@@ -270,7 +269,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
           <Text style={styles.amountLabel}>TOTAL TO PAY</Text>
           <Text style={styles.amountValue}>₱{Number(amount).toFixed(2)}</Text>
           <View style={styles.escrowRow}>
-            <Ionicons name="shield-checkmark-outline" size={13} color={colors.success} />
+            <SolarIcon name="ShieldCheck" variant="duotone" size={13} color={colors.success} />
             <Text style={styles.amountNote}>
               Held in escrow and released to the provider only after delivery is confirmed
             </Text>
@@ -283,7 +282,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
         {methods.length === 0 ? (
           <View style={styles.emptyBox}>
             <View style={styles.emptyIconBox}>
-              <Ionicons name="card-outline" size={34} color={ORANGE} />
+              <SolarIcon name="Card" variant="linear" size={34} color={colors.accent} />
             </View>
             <Text style={styles.emptyTitle}>No payment methods linked</Text>
             <Text style={styles.emptyText}>Link GCash or Maya to pay for this delivery.</Text>
@@ -320,10 +319,11 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
                     <Text style={styles.methodName}>{label}</Text>
                     {m.is_default && <Text style={styles.methodDefault}>Default</Text>}
                   </View>
-                  <Ionicons
-                    name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                  <SolarIcon
+                    name={isSelected ? 'CheckCircle' : 'RecordCircle'}
+                    variant={isSelected ? 'duotone' : 'linear'}
                     size={24}
-                    color={isSelected ? ORANGE : colors.textMuted}
+                    color={isSelected ? colors.accent : colors.textMuted}
                   />
                 </TouchableOpacity>
               );
@@ -343,7 +343,7 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
             <ActivityIndicator color="#FFFFFF" />
           ) : (
             <>
-              <Ionicons name="lock-closed" size={16} color="#FFFFFF" />
+              <SolarIcon name="Lock" variant="bold" size={16} color="#FFFFFF" />
               <Text style={styles.payBtnText}>Pay ₱{Number(amount).toFixed(2)}</Text>
             </>
           )}
@@ -356,73 +356,73 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  /* header (same as the receiver picker / location screens) */
+  /* header */
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
   backBtn: {
     width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center', marginRight: 12,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
+  headerTitle: { fontSize: 22, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
 
   content: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 40 },
 
   /* total */
   amountCard: {
-    backgroundColor: c.card, borderRadius: 18, paddingVertical: 22, paddingHorizontal: 20,
-    alignItems: 'center', borderWidth: 1, borderColor: c.border, marginBottom: 22,
+    backgroundColor: c.card, borderRadius: 16, paddingVertical: 22, paddingHorizontal: 20,
+    alignItems: 'center', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginBottom: 22,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
-  amountLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
-  amountValue: { fontSize: 38, fontWeight: '900', color: ORANGE, marginVertical: 6, letterSpacing: -1 },
+  amountLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
+  amountValue: { fontSize: 38, fontFamily: 'Poppins_800ExtraBold', color: c.accent, marginVertical: 6, letterSpacing: -1 },
   escrowRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 8 },
-  amountNote: { flexShrink: 1, fontSize: 12, lineHeight: 17, color: c.textSecondary, textAlign: 'center', fontWeight: '500' },
+  amountNote: { flexShrink: 1, fontSize: 12, lineHeight: 17, color: c.textSecondary, textAlign: 'center', fontFamily: 'Poppins_500Medium' },
 
   /* methods */
-  sectionLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1, marginBottom: 8, paddingHorizontal: 4 },
+  sectionLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1, marginBottom: 8, paddingHorizontal: 4 },
   methodList: {
-    backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
   },
   methodRow: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     paddingVertical: 14, paddingHorizontal: 16,
     borderBottomWidth: 1, borderBottomColor: c.divider, backgroundColor: c.card,
   },
-  methodRowSelected: { backgroundColor: 'rgba(242,112,36,0.09)' },
+  methodRowSelected: { backgroundColor: c.accentSoft },
   methodIcon: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF',
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
   },
   methodLogo: { width: 30, height: 30 },
-  methodName: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
-  methodDefault: { fontSize: 12, color: c.success, fontWeight: '700', marginTop: 2 },
+  methodName: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  methodDefault: { fontSize: 12, color: c.success, fontFamily: 'Poppins_700Bold', marginTop: 2 },
 
   /* empty */
   emptyBox: {
     alignItems: 'center', paddingVertical: 32, paddingHorizontal: 24,
-    backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   emptyIconBox: {
-    width: 72, height: 72, borderRadius: 36, backgroundColor: 'rgba(242,112,36,0.09)',
+    width: 72, height: 72, borderRadius: 36, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 14,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  emptyText: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
+  emptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
+  emptyText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
   linkBtn: {
-    marginTop: 18, backgroundColor: ORANGE, borderRadius: 30, paddingHorizontal: 26, paddingVertical: 13,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    marginTop: 18, backgroundColor: c.accent, borderRadius: 14, paddingHorizontal: 26, paddingVertical: 13,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  linkBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14, letterSpacing: 0.2 },
+  linkBtnText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 14, letterSpacing: 0.2 },
 
   /* footer */
   footer: { paddingHorizontal: 20, paddingTop: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
   payBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 16,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
   payBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  payBtnText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
+  payBtnText: { color: '#FFFFFF', fontSize: 17, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 });

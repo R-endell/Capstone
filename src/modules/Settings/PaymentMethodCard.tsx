@@ -1,13 +1,12 @@
+// src/modules/Dashboard/Sender/Settings_Sender/PaymentMethodCard.tsx
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { PaymentMethod } from '../../types/payment';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { SolarIcon } from '../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../assets/maya.png');
-
-const ORANGE = '#FF751F';
 
 interface Props {
   method: PaymentMethod;
@@ -38,16 +37,16 @@ export default function PaymentMethodCard({ method, onSetDefault, onUnlink }: Pr
       <View style={styles.actions}>
         {method.is_default ? (
           <View style={styles.defaultBadge}>
-            <Ionicons name="checkmark-circle" size={14} color={colors.success} />
+            <SolarIcon name="CheckCircle" variant="bold" size={14} color={colors.success} />
             <Text style={styles.defaultText}>Default</Text>
           </View>
         ) : (
-          <TouchableOpacity onPress={onSetDefault} style={styles.actionBtn}>
+          <TouchableOpacity onPress={onSetDefault} style={styles.actionBtn} activeOpacity={0.7}>
             <Text style={styles.actionBtnText}>Set Default</Text>
           </TouchableOpacity>
         )}
-        <TouchableOpacity onPress={onUnlink} style={styles.unlinkBtn}>
-          <Ionicons name="trash-outline" size={16} color={colors.error} />
+        <TouchableOpacity onPress={onUnlink} style={styles.unlinkBtn} activeOpacity={0.7}>
+          <SolarIcon name="Trash" variant="linear" size={16} color={colors.error} />
         </TouchableOpacity>
       </View>
     </View>
@@ -57,31 +56,31 @@ export default function PaymentMethodCard({ method, onSetDefault, onUnlink }: Pr
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   card: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 8, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 8, elevation: 0,
   },
   left: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   iconWrapper: {
-    width: 44, height: 44, borderRadius: 14,
+    width: 44, height: 44, borderRadius: 12,
     backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    marginRight: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
   },
   logo: { width: 34, height: 34 },
   info: { flex: 1 },
-  providerName: { fontSize: 15, fontWeight: '700', color: c.textPrimary },
-  linkedText: { fontSize: 11, color: c.textSecondary, marginTop: 2 },
+  providerName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  linkedText: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   actions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   defaultBadge: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.successBg,
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, gap: 4,
   },
-  defaultText: { fontSize: 10, fontWeight: '700', color: c.success },
+  defaultText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.success },
   actionBtn: {
     paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: 8, borderWidth: 1, borderColor: c.border,
+    borderRadius: 8, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  actionBtnText: { fontSize: 11, fontWeight: '600', color: c.textSecondary },
+  actionBtnText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   unlinkBtn: { padding: 6 },
 });

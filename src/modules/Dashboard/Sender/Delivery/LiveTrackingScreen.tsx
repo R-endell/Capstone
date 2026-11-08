@@ -6,19 +6,17 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../../utils/supabase';
 import { fetchLatestFix, ProviderFix } from '../../../../services/locationService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS } from '../../../../utils/mapConfig';
 import { getNavRoute, fmtDistance, fmtDuration } from '../../../../components/map/directions';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
-const ORANGE = '#FF751F';
-const GREEN = '#22C55E';
 const STALE_MS = 45_000;
-const REROUTE_MIN_MS = 15_000;      // never ask for a new route more often than this
-const REROUTE_MIN_MOVE_M = 80;      // ...or before the courier moved this far
+const REROUTE_MIN_MS = 15_000;
+const REROUTE_MIN_MOVE_M = 80;
 const MIN_GLIDE_MS = 600;
 const MAX_GLIDE_MS = 2000;
 const FRAME_MS = 33;
@@ -49,7 +47,6 @@ const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg:
 
 const STEPS = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
 
-/** Which step is "current" (index). 5 = everything done. */
 function currentStep(r: RouteData | null): number {
   if (!r || !r.acceptedAt) return 0;
   if (r.completedAt) return 5;
@@ -74,7 +71,6 @@ function formatLastSeen(iso: string | null | undefined): string {
   return `Last seen ${new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 }
 
-/** One entry per package: from items_json when present, otherwise from the per-size counts. */
 const buildItems = (cargo: any): PkgItem[] => {
   if (!cargo) return [];
   let arr: any = cargo.items_json;
@@ -106,10 +102,8 @@ const haversineM = (a: LatLng, b: LatLng) => {
 const angDiff = (to: number, from: number) => ((((to - from) % 360) + 540) % 360) - 180;
 const norm360 = (a: number) => ((a % 360) + 360) % 360;
 
-/* -------------------------------------------------------------------------- */
-/*  Courier marker: glides between GPS fixes, turns with the heading, pulses    */
-/* -------------------------------------------------------------------------- */
 const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: ProviderFix; live: boolean }) {
+  const { colors } = useTheme();
   const focused = useIsFocused();
   const [pos, setPos] = useState<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
   const [rot, setRot] = useState(fix.heading ?? 0);
@@ -193,32 +187,16 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
 
   return (
     <Marker coordinate={pos} anchor={{ x: 0.5, y: 0.5 }} flat rotation={rot} tracksViewChanges zIndex={10}>
-      <View style={mk.courierBox}>
-        <Animated.View style={[mk.courierHalo, !live && { backgroundColor: 'rgba(100,116,139,0.25)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
-        <View style={mk.courierDisc}>
+      <View style={{ width: 76, height: 76, alignItems: 'center', justifyContent: 'center' }}>
+        <Animated.View style={[{ position: 'absolute', width: 76, height: 76, borderRadius: 38, backgroundColor: live ? 'rgba(16,185,129,0.35)' : 'rgba(100,116,139,0.25)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
+        <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6 }}>
           <View style={{ transform: [{ rotate: '-45deg' }] }}>
-            <Ionicons name="navigate" size={26} color="#000000" style={{ marginLeft: -1, marginTop: 1 }} />
+            <SolarIcon name="Routing" variant="bold" size={26} color="#000000" />
           </View>
         </View>
       </View>
     </Marker>
   );
-});
-
-const mk = StyleSheet.create({
-  courierBox: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center' },
-  courierHalo: { position: 'absolute', width: 76, height: 76, borderRadius: 38, backgroundColor: 'rgba(34,197,94,0.35)' },
-  courierDisc: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
-  },
-  pin: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFFFFF',
-    borderWidth: 1.5, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
-  },
-  pinLetter: { fontSize: 14, fontWeight: '900', color: '#000000' },
 });
 
 const polylineDistanceKm = (coords: LatLng[]): number => {
@@ -234,6 +212,7 @@ export default function LiveTrackingScreen() {
   const focused = useIsFocused();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+  const mk = useMemo(() => makeMarkerStyles(colors), [colors]);
 
   const deliveryId: number = route.params?.deliveryId;
   const providerParamId: number | undefined = route.params?.providerId;
@@ -262,7 +241,6 @@ export default function LiveTrackingScreen() {
   const lastRoute = useRef<{ at: number; from: LatLng | null; tKey: string }>({ at: 0, from: null, tKey: '' });
   const lastFitKey = useRef('');
 
-  /* ------------------------------ data loading ------------------------------ */
   const loadProviderStatic = useCallback(async () => {
     if (!providerParamId) return;
 
@@ -314,7 +292,6 @@ export default function LiveTrackingScreen() {
       .maybeSingle();
     setProvider(p);
 
-    // providers who are online but have no delivery yet publish to provider_live_locations
     const { data: f } = await supabase
       .from('provider_live_locations')
       .select('latitude, longitude, heading, speed, accuracy, updated_at')
@@ -454,13 +431,11 @@ export default function LiveTrackingScreen() {
     return () => { supabase.removeChannel(ch); };
   }, [deliveryId, isProviderMode, loadStatic]);
 
-  // refreshes "Updated 12s ago" and the stale check
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), 15_000);
     return () => clearInterval(t);
   }, []);
 
-  /* ------------------------------ route + ETA ------------------------------ */
   const targetIsDropoff = isProviderMode || (!!data?.pickupVerified && !data?.completedAt);
 
   useEffect(() => {
@@ -489,7 +464,6 @@ export default function LiveTrackingScreen() {
     return () => { cancelled = true; };
   }, [data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, fix?.latitude, fix?.longitude, targetIsDropoff]);
 
-  /* ------------------------------ camera ------------------------------ */
   const fitAll = useCallback((animated: boolean) => {
     if (!data) return;
     const pts: LatLng[] = [
@@ -513,7 +487,6 @@ export default function LiveTrackingScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetIsDropoff, sheetHeight, data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, follow]);
 
-  // "follow courier" keeps the courier in view while they drive
   useEffect(() => {
     if (!follow || !fix) return;
     mapRef.current?.animateCamera(
@@ -522,7 +495,6 @@ export default function LiveTrackingScreen() {
     );
   }, [follow, fix?.latitude, fix?.longitude]);
 
-  /* ------------------------------ stage banner ------------------------------ */
   const stage = timelineStage(data);
   useEffect(() => {
     if (stage === lastStageRef.current) return;
@@ -546,7 +518,6 @@ export default function LiveTrackingScreen() {
   const isStale = fix ? Date.now() - new Date(fix.updated_at).getTime() > STALE_MS : true;
   void tick;
 
-  // live pill pulse - restarted whenever this screen regains focus
   useEffect(() => {
     pulse.setValue(0);
     if (isStale || !focused) return;
@@ -579,7 +550,7 @@ export default function LiveTrackingScreen() {
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle={colors.statusBarStyle} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Loading live tracking…</Text>
         </View>
       </SafeAreaView>
@@ -617,7 +588,7 @@ export default function LiveTrackingScreen() {
         pitchEnabled={false}
       >
         {routeCoords.length > 1 && (
-          <Polyline coordinates={routeCoords} strokeColor={ORANGE} strokeWidth={6} lineCap="round" lineJoin="round" />
+          <Polyline coordinates={routeCoords} strokeColor={colors.accent} strokeWidth={6} lineCap="round" lineJoin="round" />
         )}
 
         <Marker
@@ -633,7 +604,7 @@ export default function LiveTrackingScreen() {
           anchor={{ x: 0.5, y: 0.5 }}
           tracksViewChanges={false}
         >
-          <View style={mk.pin}><Ionicons name="person" size={16} color="#000000" /></View>
+          <View style={mk.pin}><SolarIcon name="User" variant="bold" size={16} color="#000000" /></View>
         </Marker>
 
         {fix && <CourierMarker fix={fix} live={!isStale} />}
@@ -641,10 +612,10 @@ export default function LiveTrackingScreen() {
 
       <View style={[styles.topBar, { top: insets.top + 10 }]}>
         <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={18} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={[styles.livePill, isStale && styles.livePillStale]}>
-          <Animated.View style={[styles.liveDot, { backgroundColor: isStale ? colors.warning : GREEN, opacity: isStale ? 1 : pulseOpacity }]} />
+          <Animated.View style={[styles.liveDot, { backgroundColor: isStale ? colors.warning : colors.success, opacity: isStale ? 1 : pulseOpacity }]} />
           <Text style={styles.liveText}>{isStale ? 'Stale' : 'Live'}</Text>
         </View>
       </View>
@@ -656,10 +627,10 @@ export default function LiveTrackingScreen() {
           disabled={!fix}
           activeOpacity={0.85}
         >
-          <Ionicons name="navigate" size={20} color={follow ? '#FFFFFF' : ORANGE} />
+          <SolarIcon name="Routing" variant="bold" size={20} color={follow ? '#FFFFFF' : colors.accent} />
         </TouchableOpacity>
         <TouchableOpacity style={styles.fab} onPress={() => { setFollow(false); fitAll(true); }} activeOpacity={0.85}>
-          <Ionicons name="scan" size={20} color={ORANGE} />
+          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.accent} />
         </TouchableOpacity>
       </View>
 
@@ -674,7 +645,7 @@ export default function LiveTrackingScreen() {
             },
           ]}
         >
-          <Ionicons name="notifications" size={14} color="#FFFFFF" />
+          <SolarIcon name="Bell" variant="bold" size={14} color="#FFFFFF" />
           <Text style={styles.bannerText}>{stageBanner}</Text>
         </Animated.View>
       )}
@@ -688,7 +659,6 @@ export default function LiveTrackingScreen() {
         </TouchableOpacity>
 
         <ScrollView showsVerticalScrollIndicator={false} bounces={false} scrollEnabled={expanded} contentContainerStyle={{ paddingBottom: 4 }}>
-          {/* step progress */}
           {!isProviderMode && (
             <View style={styles.stepper}>
               {STEPS.map((label, i) => {
@@ -700,7 +670,7 @@ export default function LiveTrackingScreen() {
                       <View style={[styles.stepLine, i === 0 && { opacity: 0 }, (done || current) && styles.stepLineOn]} />
                       <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
                         {done
-                          ? <Ionicons name="checkmark" size={11} color="#FFFFFF" />
+                          ? <SolarIcon name="Check" variant="bold" size={11} color="#FFFFFF" />
                           : current ? <View style={styles.stepDotCore} /> : null}
                       </View>
                       <View style={[styles.stepLine, i === STEPS.length - 1 && { opacity: 0 }, done && styles.stepLineOn]} />
@@ -720,7 +690,7 @@ export default function LiveTrackingScreen() {
                 <Text style={styles.avatarText}>{initials}</Text>
               )}
               <View style={styles.verifiedDot}>
-                <Ionicons name="checkmark" size={9} color="#FFFFFF" />
+                <SolarIcon name="Check" variant="bold" size={9} color="#FFFFFF" />
               </View>
             </View>
             <View style={{ flex: 1 }}>
@@ -730,14 +700,14 @@ export default function LiveTrackingScreen() {
               </Text>
             </View>
             <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.85}>
-              <Ionicons name="call" size={17} color={ORANGE} />
+              <SolarIcon name="Phone" variant="bold" size={17} color={colors.accent} />
             </TouchableOpacity>
           </View>
 
           <View style={styles.stats}>
             <View style={styles.statBox}>
               <Text style={styles.statLabel}>ETA</Text>
-              <Text style={[styles.statValue, { color: ORANGE }]} numberOfLines={1}>{etaLabel}</Text>
+              <Text style={[styles.statValue, { color: colors.accent }]} numberOfLines={1}>{etaLabel}</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statBox}>
@@ -759,18 +729,16 @@ export default function LiveTrackingScreen() {
             {headingTo}{arrivalClock ? ` · arriving ${arrivalClock}` : ''} · {formatLastSeen(fix?.updated_at)}
           </Text>
 
-          {/* package chip: quantity only, tap for sizes */}
           {!isProviderMode && pkgTotal > 0 && (
             <TouchableOpacity style={styles.pkgChip} onPress={() => setPkgOpen(true)} activeOpacity={0.85}>
-              <Ionicons name="cube-outline" size={15} color={ORANGE} />
+              <SolarIcon name="Package" variant="linear" size={15} color={colors.accent} />
               <Text style={styles.pkgChipText}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'}</Text>
               <View style={{ flex: 1 }} />
               <Text style={styles.pkgChipHint}>See sizes</Text>
-              <Ionicons name="chevron-forward" size={14} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} />
             </TouchableOpacity>
           )}
 
-          {/* route + package details (swipe the sheet up / tap the handle) */}
           {expanded && (
             <View style={{ marginTop: 14 }}>
               <View style={styles.routeCard}>
@@ -782,18 +750,18 @@ export default function LiveTrackingScreen() {
                     <Text style={styles.routeLabel}>PICKUP</Text>
                     <Text style={styles.routeAddr} numberOfLines={2}>{data.pickup.address}</Text>
                   </View>
-                  {data.pickupVerified && <Ionicons name="checkmark-circle" size={18} color={colors.success} />}
+                  {data.pickupVerified && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
                 </View>
                 <View style={styles.routeLink} />
                 <View style={styles.routeRow}>
                   <View style={[styles.routePin, targetIsDropoff && !data.completedAt && styles.routePinActive]}>
-                    <Ionicons name="person" size={14} color="#000000" />
+                    <SolarIcon name="User" variant="bold" size={14} color="#000000" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.routeLabel}>DROP-OFF</Text>
                     <Text style={styles.routeAddr} numberOfLines={2}>{data.dropoff.address}</Text>
                   </View>
-                  {data.completedAt && <Ionicons name="checkmark-circle" size={18} color={colors.success} />}
+                  {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
                 </View>
               </View>
 
@@ -825,14 +793,13 @@ export default function LiveTrackingScreen() {
         </ScrollView>
       </View>
 
-      {/* package sizes pop-up */}
       <Modal visible={pkgOpen} transparent animationType="fade" onRequestClose={() => setPkgOpen(false)}>
         <Pressable style={styles.popOverlay} onPress={() => setPkgOpen(false)}>
           <Pressable style={styles.popCard} onPress={() => { /* keep open */ }}>
             <View style={styles.popHead}>
               <Text style={styles.popTitle}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'} in this order</Text>
               <TouchableOpacity onPress={() => setPkgOpen(false)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             {(['Small', 'Medium', 'Large'] as const).filter(k => counts[k] > 0).map(k => (
@@ -854,10 +821,19 @@ export default function LiveTrackingScreen() {
   );
 }
 
+const makeMarkerStyles = (c: ThemeColors) => StyleSheet.create({
+  pin: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFFFFF',
+    borderWidth: 1.5, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
+  },
+  pinLetter: { fontSize: 14, fontFamily: 'Poppins_800ExtraBold', color: '#000000' },
+});
+
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
   topBar: {
     position: 'absolute', left: 16, right: 16,
@@ -865,40 +841,38 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     zIndex: 20,
   },
   circleBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
-    shadowRadius: 6, elevation: 4,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   livePill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
   },
   livePillStale: { borderColor: c.warning },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontSize: 11, fontWeight: '800', color: c.textPrimary, letterSpacing: 0.4 },
+  liveText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.4 },
 
   fabCol: { position: 'absolute', right: 16, gap: 10, zIndex: 15 },
   fab: {
-    width: 46, height: 46, borderRadius: 23, backgroundColor: c.card,
+    width: 46, height: 46, borderRadius: 14, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
-    shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: c.border,
+    shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  fabOn: { backgroundColor: ORANGE, borderColor: ORANGE },
+  fabOn: { backgroundColor: c.accent, borderColor: c.accent },
 
   banner: {
     position: 'absolute', left: 16, right: 16,
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: ORANGE, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: c.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
     zIndex: 25,
   },
-  bannerText: { color: '#FFFFFF', fontWeight: '700', fontSize: 12, flex: 1 },
+  bannerText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 12, flex: 1 },
 
   sheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -906,44 +880,42 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 20, paddingTop: 4, maxHeight: '62%',
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.5,
-    shadowRadius: 16, elevation: 14,
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
   },
   grabberWrap: { alignItems: 'center', paddingVertical: 8 },
   grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
 
-  /* step progress */
   stepper: { flexDirection: 'row', marginBottom: 14, marginTop: 2 },
   stepCol: { flex: 1, alignItems: 'center' },
   stepTrack: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.border },
-  stepLineOn: { backgroundColor: ORANGE },
+  stepLineOn: { backgroundColor: c.accent },
   stepDot: {
     width: 22, height: 22, borderRadius: 11, backgroundColor: c.card,
     borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center',
   },
-  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  stepDotCurrent: { borderColor: ORANGE },
-  stepDotCore: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  stepDotCurrent: { borderColor: c.accent },
+  stepDotCore: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
+  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
   providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: ORANGE,
+    width: 48, height: 48, borderRadius: 24, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 2, borderColor: isDark ? '#3A2411' : '#FFE4D2',
     overflow: 'hidden',
   },
   avatarImg: { width: '100%', height: '100%' },
-  avatarText: { color: '#FFFFFF', fontWeight: '900', fontSize: 16 },
+  avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 16 },
   verifiedDot: {
     position: 'absolute', right: -1, bottom: -1, width: 16, height: 16, borderRadius: 8,
     backgroundColor: c.success, borderWidth: 2, borderColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  providerName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  providerSub: { fontSize: 12, color: c.textSecondary, fontWeight: '600', marginTop: 1 },
+  providerName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  providerSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
   iconBtn: {
     width: 40, height: 40, borderRadius: 20, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
@@ -951,50 +923,50 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   stats: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    borderRadius: 14, paddingVertical: 12, marginTop: 14,
-    borderWidth: 1, borderColor: c.divider,
+    borderRadius: 12, paddingVertical: 12, marginTop: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   statBox: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
-  statLabel: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  statValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
+  statLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  statValue: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
   statDivider: { width: 1, height: 26, backgroundColor: c.border },
 
-  updated: { fontSize: 11, color: c.textSecondary, fontWeight: '600', marginTop: 10, textAlign: 'center' },
+  updated: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 10, textAlign: 'center' },
 
   pkgChip: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12,
-    backgroundColor: c.background, borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
   },
-  pkgChipText: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
-  pkgChipHint: { fontSize: 12, fontWeight: '700', color: c.textMuted },
+  pkgChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  pkgChipHint: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textMuted },
 
-  routeCard: { backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 12 },
+  routeCard: { backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
   routeRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   routePin: {
     width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF',
     borderWidth: 1.5, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
   },
-  routePinActive: { borderColor: ORANGE, borderWidth: 2 },
+  routePinActive: { borderColor: c.accent, borderWidth: 2 },
   routeLink: { width: 2, height: 14, backgroundColor: c.border, marginLeft: 13, marginVertical: 3 },
-  routeLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  routeAddr: { fontSize: 14, fontWeight: '700', color: c.textPrimary, marginTop: 1 },
+  routeLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  routeAddr: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 1 },
 
-  sectionLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8, marginTop: 16, marginBottom: 8 },
+  sectionLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8, marginTop: 16, marginBottom: 8 },
   itemRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background,
-    borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10,
+    borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 10,
   },
-  itemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  itemSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
+  itemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  itemSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
 
   popOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  popCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
+  popCard: { backgroundColor: c.card, borderRadius: 16, padding: 20 },
   popHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  popTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flex: 1, paddingRight: 8 },
-  popRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
-  popName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  popQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
+  popTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3, flex: 1, paddingRight: 8 },
+  popRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.border },
+  popName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  popQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 });

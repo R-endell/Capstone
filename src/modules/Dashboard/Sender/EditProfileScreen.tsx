@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+// src/modules/Dashboard/Sender/EditProfileScreen.tsx
+import React, { useState, useEffect, useRef, useMemo } from 'react'; // <-- FIXED: added useMemo
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, ScrollView, Alert, Image,
@@ -9,18 +10,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { decode } from 'base64-arraybuffer';
-import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'react-native';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-
-const ORANGE = '#FA7A25';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 export default function EditProfileScreen() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -77,9 +76,8 @@ export default function EditProfileScreen() {
 
         if (userData?.locations) {
           const loc: any = userData.locations;
-          // Reconstruct the text fields from what's saved in DB
           setStreetAddress(loc.street_address || '');
-          setUnitInfo(loc.barangay !== 'Unknown' ? loc.barangay : ''); // using barangay as line 2 for legacy data
+          setUnitInfo(loc.barangay !== 'Unknown' ? loc.barangay : ''); 
           setCityState(loc.city && loc.city !== 'Unknown' ? `${loc.city}, ${loc.province}` : '');
           setZipCode(loc.zip_code !== '0000' ? loc.zip_code : '');
           setLocationId(userData.location_id || null);
@@ -102,7 +100,6 @@ export default function EditProfileScreen() {
     } catch { Alert.alert('Error', 'Could not pick an image.'); }
   };
 
-  // Background Geocoding: Converts text to lat/lng
   const geocodeAddress = async (fullAddress: string) => {
     try {
       const response = await fetch(
@@ -157,17 +154,12 @@ export default function EditProfileScreen() {
         
         if (tableError) console.warn('Could not update users table:', tableError);
 
-        // Combine for geocoding
         const fullTextAddress = `${streetAddress}${unitInfo ? ', ' + unitInfo : ''}, ${cityState} ${zipCode}`;
-        
-        // Convert to coordinates behind the scenes
         const coords = await geocodeAddress(fullTextAddress);
         
-        // Fallback to Cebu center if the address is not found on the map
         const finalLat = coords?.lat || 10.3157;
         const finalLng = coords?.lng || 123.8854;
         
-        // Split CityState back for database columns (assuming "City, Province")
         const cityParts = cityState.split(',');
         const finalCity = cityParts[0]?.trim() || 'Unknown';
         const finalProvince = cityParts[1]?.trim() || 'Unknown';
@@ -215,7 +207,7 @@ export default function EditProfileScreen() {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading profile...</Text>
       </View>
     );
@@ -223,11 +215,11 @@ export default function EditProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
 
       <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
         <View style={{ width: 42 }} />
@@ -243,11 +235,11 @@ export default function EditProfileScreen() {
                 <Image source={{ uri: imageUri }} style={styles.profilePreview} />
               ) : (
                 <View style={styles.imagePlaceholder}>
-                  <Ionicons name="person" size={48} color="#FFFFFF" />
+                  <SolarIcon name="User" variant="boldDuotone" size={48} color="#FFFFFF" />
                 </View>
               )}
               <View style={styles.cameraBadge}>
-                <Ionicons name="camera" size={14} color="#FFFFFF" />
+                <SolarIcon name="Camera" variant="linear" size={14} color="#FFFFFF" />
               </View>
             </TouchableOpacity>
             <Text style={styles.uploadHint}>Tap to change photo</Text>
@@ -298,13 +290,13 @@ export default function EditProfileScreen() {
                   value={email} editable={false}
                   placeholderTextColor={colors.textMuted}
                 />
-                <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} style={{ marginRight: 14 }} />
+                <SolarIcon name="Lock" variant="linear" size={14} color={colors.textMuted} style={{ marginRight: 14 }} />
               </View>
             </View>
 
-                        {/* --- TEXT-BASED ADDRESS SECTION --- */}
+            {/* --- TEXT-BASED ADDRESS SECTION --- */}
             <View style={{ marginTop: 10 }}>
-              <Text style={[styles.label, { fontSize: 15, marginBottom: 12, color: ORANGE }]}>Home Address</Text>
+              <Text style={[styles.label, { fontSize: 15, marginBottom: 12, color: colors.accent }]}>Home Address</Text>
               
               <View style={styles.inputGroup}>
                 <Text style={styles.label}>Building No. & Street (Line 1)</Text>
@@ -364,7 +356,7 @@ export default function EditProfileScreen() {
                 </View>
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
                   <Text style={styles.saveButtonText}>Save Changes</Text>
                 </>
               )}
@@ -402,27 +394,27 @@ export default function EditProfileScreen() {
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: c.background, gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: ORANGE, paddingHorizontal: 20, paddingBottom: 26,
-    borderBottomLeftRadius: 28, borderBottomRightRadius: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6, zIndex: 10, 
+    backgroundColor: c.accent, paddingHorizontal: 20, paddingBottom: 26,
+    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 14, elevation: 6, zIndex: 10, 
   },
   backButton: {
     width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
   },
-  headerTitle: { fontSize: 19, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
+  headerTitle: { fontSize: 19, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
   scrollContent: { paddingBottom: 60, paddingTop: 10 },
   bottomSpacer: { height: 40 },
 
   imageUploadSection: { alignItems: 'center', marginTop: 10, marginBottom: 24, zIndex: 5 },
   imagePicker: {
-    width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+    width: 110, height: 110, borderRadius: 55, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center',
     borderWidth: 4, borderColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.18, shadowRadius: 12, elevation: 6, overflow: 'visible',
   },
@@ -433,42 +425,45 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center',
     borderWidth: 3, borderColor: c.card,
   },
-  uploadHint: { marginTop: 12, fontSize: 12, color: c.textSecondary, fontWeight: '500' },
+  uploadHint: { marginTop: 12, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   formContainer: { paddingHorizontal: 24 },
   row: { flexDirection: 'row', justifyContent: 'space-between' },
   inputGroup: { marginBottom: 18 },
-  label: { fontSize: 13, color: c.textPrimary, fontWeight: '700', marginBottom: 8, letterSpacing: 0.2 },
+  label: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 8, letterSpacing: 0.2 },
   inputWrapper: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
-    borderRadius: 14, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.25, shadowRadius: 4, elevation: 1,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, 
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 4, elevation: 0,
     paddingVertical: 14, paddingHorizontal: 12,
   },
-  inputWrapperFocused: { borderColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 0.12, shadowRadius: 8, elevation: 2 },
+  inputWrapperFocused: { borderColor: c.accent, shadowColor: c.accent, shadowOpacity: 0.12, shadowRadius: 8, elevation: 2 },
   inputWrapperDisabled: { backgroundColor: c.divider },
   inputIcon: { marginRight: 10 },
-  input: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '500', padding: 0 },
-  helperText: { fontSize: 11, color: c.textMuted, marginTop: 6, marginLeft: 4, fontWeight: '500' },
+  input: { flex: 1, fontSize: 14, fontFamily: 'Poppins_500Medium', color: c.textPrimary, padding: 0 },
+  helperText: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 6, marginLeft: 4 },
   saveButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: ORANGE,
-    paddingVertical: 16, borderRadius: 16, marginTop: 8, marginBottom: 8, gap: 8,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.accent,
+    paddingVertical: 16, borderRadius: 14, marginTop: 8, marginBottom: 8, gap: 8,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
-  saveButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15, letterSpacing: 0.2 },
+  saveButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 15, letterSpacing: 0.2 },
   savingContainer: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   linkedAccountsSection: { paddingHorizontal: 24, marginTop: 24 },
-  sectionTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 12, letterSpacing: -0.2 },
+  sectionTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 12, letterSpacing: -0.2 },
   linkedCard: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: c.divider,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25, shadowRadius: 10, elevation: 2,
+    backgroundColor: c.card, borderRadius: 12, padding: 16, 
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 10, elevation: 0,
   },
   linkedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   linkedLeft: { flexDirection: 'row', alignItems: 'center' },
   googleIconWrapper: {
     width: 40, height: 40, borderRadius: 12, backgroundColor: c.background,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: c.divider,
+    justifyContent: 'center', alignItems: 'center', marginRight: 12, 
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   googleIcon: { width: 22, height: 22, resizeMode: 'contain' },
-  linkedText: { fontSize: 14, color: c.textPrimary, fontWeight: '700' },
-  linkedSubtext: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  linkedText: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  linkedSubtext: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 });

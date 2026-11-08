@@ -1,15 +1,14 @@
 // src/components/InAppCallModal.tsx
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import {
   Modal, View, Text, StyleSheet, TouchableOpacity, StatusBar,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { useCameraPermissions } from 'expo-camera';
 import { supabase } from '../utils/supabase';
 import { onOutgoingCall, updateCallStatus } from '../services/callService';
-
-const ORANGE = '#FF751F';
+import { useTheme, ThemeColors } from '../utils/themeContext';
+import { SolarIcon } from './ui/SolarIcon';
 
 const WEBRTC_HTML = `
 <!DOCTYPE html>
@@ -112,6 +111,9 @@ const WEBRTC_HTML = `
 `;
 
 export default function InAppCallModal() {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [activeCall, setActiveCall] = useState<any | null>(null);
   const [isIncoming, setIsIncoming] = useState(false);
@@ -318,7 +320,7 @@ export default function InAppCallModal() {
   return (
     <Modal visible transparent animationType="slide" onRequestClose={handleHangUp}>
       <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor="#111827" />
+        <StatusBar barStyle="light-content" backgroundColor={colors.background} />
 
         <View style={{ width: 1, height: 1, opacity: 0 }}>
           <WebView
@@ -357,7 +359,7 @@ export default function InAppCallModal() {
 
         <View style={styles.content}>
           <View style={styles.rolePill}>
-            <Ionicons name="shield-checkmark" size={14} color={ORANGE} />
+            <SolarIcon name="ShieldCheck" variant="linear" size={14} color={colors.accent} />
             <Text style={styles.rolePillText}>PACK-N-SHIP IN-APP CALL</Text>
           </View>
 
@@ -381,22 +383,22 @@ export default function InAppCallModal() {
             <View style={styles.actionRow}>
               <View style={styles.btnCol}>
                 <TouchableOpacity
-                  style={[styles.callBtn, { backgroundColor: '#EF4444' }]}
+                  style={[styles.callBtn, { backgroundColor: colors.error }]}
                   onPress={handleReject}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="call" size={30} color="#FFF" style={{ transform: [{ rotate: '135deg' }] }} />
+                  <SolarIcon name="Phone" variant="bold" size={30} color="#FFF" style={{ transform: [{ rotate: '135deg' }] }} />
                 </TouchableOpacity>
                 <Text style={styles.btnCaption}>Decline</Text>
               </View>
 
               <View style={styles.btnCol}>
                 <TouchableOpacity
-                  style={[styles.callBtn, { backgroundColor: '#10B981' }]}
+                  style={[styles.callBtn, { backgroundColor: colors.success }]}
                   onPress={handleAccept}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="call" size={30} color="#FFF" />
+                  <SolarIcon name="Phone" variant="bold" size={30} color="#FFF" />
                 </TouchableOpacity>
                 <Text style={styles.btnCaption}>Accept</Text>
               </View>
@@ -413,18 +415,18 @@ export default function InAppCallModal() {
                   }}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name={isMuted ? 'mic-off' : 'mic'} size={26} color="#FFF" />
+                  <SolarIcon name={isMuted ? 'MicrophoneSlash' : 'Microphone'} variant="bold" size={26} color="#FFF" />
                 </TouchableOpacity>
                 <Text style={styles.btnCaption}>{isMuted ? 'Unmute' : 'Mute'}</Text>
               </View>
 
               <View style={styles.btnCol}>
                 <TouchableOpacity
-                  style={[styles.callBtn, { backgroundColor: '#EF4444' }]}
+                  style={[styles.callBtn, { backgroundColor: colors.error }]}
                   onPress={handleHangUp}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="call" size={30} color="#FFF" style={{ transform: [{ rotate: '135deg' }] }} />
+                  <SolarIcon name="Phone" variant="bold" size={30} color="#FFF" style={{ transform: [{ rotate: '135deg' }] }} />
                 </TouchableOpacity>
                 <Text style={styles.btnCaption}>End Call</Text>
               </View>
@@ -436,10 +438,10 @@ export default function InAppCallModal() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'rgba(17,24,39,0.97)',
+    backgroundColor: c.background, // Respects dark/light mode automatically
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -448,41 +450,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(255,117,31,0.14)',
+    backgroundColor: c.accentSoft,
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(255,117,31,0.35)',
+    borderColor: c.accent,
     marginBottom: 32,
   },
-  rolePillText: { color: ORANGE, fontSize: 11, fontWeight: '900', letterSpacing: 0.8 },
+  rolePillText: { color: c.accent, fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
   avatarRing: {
     width: 128,
     height: 128,
     borderRadius: 64,
-    backgroundColor: 'rgba(255,117,31,0.18)',
+    backgroundColor: c.accentSoft,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 22,
+    borderWidth: 1,
+    borderColor: c.accent,
   },
   avatarCircle: {
     width: 104,
     height: 104,
     borderRadius: 52,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarInitials: { fontSize: 36, fontWeight: '900', color: '#FFFFFF' },
-  nameText: { fontSize: 26, fontWeight: '900', color: '#FFFFFF', textAlign: 'center' },
-  roleSubText: { fontSize: 13, fontWeight: '700', color: ORANGE, marginTop: 4, letterSpacing: 0.5 },
+  avatarInitials: { fontSize: 36, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  nameText: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, textAlign: 'center' },
+  roleSubText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4, letterSpacing: 0.5 },
   statusText: {
     fontSize: 16,
-    color: 'rgba(255,255,255,0.75)',
+    color: c.textSecondary,
     marginTop: 10,
     marginBottom: 64,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
   },
   actionRow: { flexDirection: 'row', gap: 64, alignItems: 'center' },
   activeControlsRow: { flexDirection: 'row', gap: 48, alignItems: 'center' },
@@ -493,15 +497,16 @@ const styles = StyleSheet.create({
     borderRadius: 36,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
   controlButton: {
     width: 68,
     height: 68,
     borderRadius: 34,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.08)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  controlActive: { backgroundColor: ORANGE },
-  btnCaption: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  controlActive: { backgroundColor: c.accent },
+  btnCaption: { color: c.textPrimary, fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
 });

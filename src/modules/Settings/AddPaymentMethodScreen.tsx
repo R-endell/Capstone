@@ -1,3 +1,4 @@
+// src/modules/Dashboard/Sender/Settings_Sender/AddPaymentMethodScreen.tsx
 import React, { useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert,
@@ -5,17 +6,15 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '../../utils/supabase';
 import { createLinkSession, fetchPaymentMethods } from '../../services/paymentService';
 import type { PaymentProvider } from '../../types/payment';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { SolarIcon } from '../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../assets/maya.png');
-
-const ORANGE = '#FF751F';
 
 export default function AddPaymentMethodScreen() {
   const navigation = useNavigation<any>();
@@ -72,11 +71,11 @@ export default function AddPaymentMethodScreen() {
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Add Payment Method</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 42 }} />
       </View>
 
       <View style={styles.content}>
@@ -98,8 +97,8 @@ export default function AddPaymentMethodScreen() {
             <Text style={styles.providerDesc}>Link your GCash wallet</Text>
           </View>
           {loading === 'gcash'
-            ? <ActivityIndicator color={ORANGE} />
-            : <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />}
+            ? <ActivityIndicator color={colors.accent} />
+            : <SolarIcon name="AltArrowRight" variant="linear" size={20} color={colors.textMuted} />}
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -116,8 +115,8 @@ export default function AddPaymentMethodScreen() {
             <Text style={styles.providerDesc}>Link your Maya wallet</Text>
           </View>
           {loading === 'maya'
-            ? <ActivityIndicator color={ORANGE} />
-            : <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />}
+            ? <ActivityIndicator color={colors.accent} />
+            : <SolarIcon name="AltArrowRight" variant="linear" size={20} color={colors.textMuted} />}
         </TouchableOpacity>
       </View>
     </View>
@@ -128,34 +127,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingBottom: 16, backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    paddingHorizontal: 20, paddingBottom: 16, backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  headerTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
   content: { padding: 20 },
   subtitle: {
-    fontSize: 13, color: c.textSecondary, lineHeight: 20,
+    fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 20,
     marginBottom: 24, textAlign: 'center',
   },
   providerCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderRadius: 16, padding: 18, marginBottom: 12,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 12, padding: 18, marginBottom: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 8, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 8, elevation: 0,
   },
   providerIcon: {
-    width: 52, height: 52, borderRadius: 16,
+    width: 52, height: 52, borderRadius: 12,
     backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center',
-    marginRight: 16, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    marginRight: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
   },
   providerLogo: { width: 40, height: 40 },
   providerInfo: { flex: 1 },
-  providerName: { fontSize: 16, fontWeight: '700', color: c.textPrimary },
-  providerDesc: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  providerName: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  providerDesc: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 });

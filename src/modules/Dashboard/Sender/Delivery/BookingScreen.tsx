@@ -6,13 +6,13 @@ import {
 } from 'react-native';
 import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
 import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown } from '../../../../services/routeService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 import { notifyUser } from '../../../../services/pushService';
 
 const { height } = Dimensions.get('window');
@@ -287,10 +287,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const cancellingRef = useRef(false);
 
   // ---- PREFERRED-PROVIDER SNAPSHOT ----
-  // Captured right before navigating to DeliveryPayment. Used by the
-  // post-payment effect and by resumeBooking so we NEVER accidentally
-  // enter the finding radar for route bookings, even if the Schedule
-  // context is reset by the payment screen or the DB write fails.
   const preferredAtPaymentRef = useRef<PreferredSnapshot>({
     requestId: null,
     providerId: null,
@@ -376,7 +372,6 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, []);
 
-  // Re-enable the Proceed button ONLY when the user comes back to this screen
   useEffect(() => {
     const unsub = navigation.addListener('focus', () => {
       if (proceedReturnToRef.current !== null) {
@@ -770,9 +765,6 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
-      // If this booking was made for a specific preferred provider from Explore,
-      // do NOT show the finding radar. Read from DB first, then fall back to the
-      // snapshot captured just before navigating to payment.
       const preferredFromRequest = req.preferred_provider_id ? Number(req.preferred_provider_id) : null;
       const snapshotMatches = preferredAtPaymentRef.current.requestId === requestId;
       const preferredFromSnapshot = snapshotMatches ? preferredAtPaymentRef.current.providerId : null;
@@ -865,14 +857,6 @@ export default function BookingScreen({ route, navigation }: any) {
     };
   }, [bookingState, resumeSubId]);
 
-  // ---- Handle return from DeliveryPaymentScreen ----
-  //
-  // Route bookings (Explore → Request Delivery):
-  //   provider is already chosen → NO radar, NO matched screen.
-  //   Notify provider, fire local confirmation, go home.
-  //
-  // Generic bookings (Send Package Now / Schedule a Delivery):
-  //   run the provider-matching radar as usual.
   useEffect(() => {
     const justPaid = route.params?.paymentJustCompleted;
     const reqId = route.params?.requestId;
@@ -883,10 +867,6 @@ export default function BookingScreen({ route, navigation }: any) {
     setSavedRequestId(numericReqId);
 
     (async () => {
-      // Resolve preferred provider using three layers of defence:
-      //   1) live Schedule context (fastest, but can be reset by payment screen)
-      //   2) snapshot captured in handleProceedToPayment (survives context reset)
-      //   3) DB row (survives app restarts; backed by our belt-and-suspenders write)
       let prefProviderId: number | null = state.preferredProviderId ?? null;
       let prefRouteId: number | null = state.preferredRouteId ?? null;
       let prefProviderName: string | null = state.preferredProviderName ?? null;
@@ -910,10 +890,6 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       if (prefProviderId) {
-        // ============================================================
-        // ROUTE BOOKING — provider already chosen.
-        // NO radar, NO matched screen. Show "Request Sent to Provider!"
-        // ============================================================
         try {
           const { data: provider } = await supabase
             .from('users')
@@ -953,12 +929,11 @@ export default function BookingScreen({ route, navigation }: any) {
           searchTimeoutRef.current = null;
         }
 
-        // Finalize the UI to show "Request Sent to Provider!"
         await finalizePreferredProviderBooking({
           requestId: numericReqId,
           providerId: prefProviderId,
           routeId: prefRouteId ?? null,
-          notifyProvider: false, // Already notified above
+          notifyProvider: false,
         });
 
         proceedingRef.current = false;
@@ -967,17 +942,12 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
-      // ============================================================
-      // GENERIC BOOKING (Send Package Now / Schedule a Delivery) —
-      // run the provider-matching radar.
-      // ============================================================
       searchStartRef.current = Date.now();
       setBookingState('finding');
       startMatching({ reuseRequestId: numericReqId });
     })();
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
-  // ---- DOUBLE-TAP SAFE ----
   const handleProceedToPayment = async () => {
     if (proceedingRef.current) return;
     proceedingRef.current = true;
@@ -1019,9 +989,6 @@ export default function BookingScreen({ route, navigation }: any) {
         requestId = savedRequest.request_id;
       }
 
-      // Belt-and-suspenders: explicitly persist preferred_provider_id so the
-      // post-payment effect and resume flow can always detect route bookings,
-      // even if saveScheduleToDB doesn't copy these fields.
       if (state.preferredProviderId) {
         try {
           await supabase
@@ -1036,9 +1003,6 @@ export default function BookingScreen({ route, navigation }: any) {
         }
       }
 
-      // Snapshot preferred-provider info so the post-payment effect can
-      // still detect a route booking even if the Schedule context has been
-      // reset by the payment screen.
       preferredAtPaymentRef.current = {
         requestId,
         providerId: state.preferredProviderId ?? null,
@@ -1313,7 +1277,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
       <View style={[styles.topOverlay, { top: insets.top + 8 }]}>
         <TouchableOpacity style={styles.backCircleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
       </View>
 
@@ -1337,7 +1301,7 @@ export default function BookingScreen({ route, navigation }: any) {
               {state.preferredProviderId && (
                 <View style={styles.preferredProviderBanner}>
                   <View style={styles.preferredProviderIcon}>
-                    <Ionicons name="car-sport" size={18} color="#FFFFFF" />
+                    <SolarIcon name="Car" variant="boldDuotone" size={18} color="#FFFFFF" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.preferredProviderLabel}>SELECTED COURIER PARTNER</Text>
@@ -1350,7 +1314,7 @@ export default function BookingScreen({ route, navigation }: any) {
                       </Text>
                     )}
                   </View>
-                  <Ionicons name="checkmark-circle" size={20} color={colors.success} />
+                  <SolarIcon name="CheckCircle" variant="duotone" size={20} color={colors.success} />
                 </View>
               )}
 
@@ -1367,7 +1331,7 @@ export default function BookingScreen({ route, navigation }: any) {
                         {(receiver.receiver_name || receiver.first_name || '?').trim().charAt(0).toUpperCase()}
                       </Text>
                     ) : (
-                      <Ionicons name="person-add-outline" size={18} color={ORANGE} />
+                      <SolarIcon name="User" variant="duotone" size={18} color={ORANGE} />
                     )}
                   </View>
                   <View style={{ flex: 1 }}>
@@ -1392,13 +1356,13 @@ export default function BookingScreen({ route, navigation }: any) {
                       <Text style={styles.rvChangeText}>Change</Text>
                     </View>
                   ) : (
-                    <Ionicons name="chevron-forward" size={18} color={ORANGE} />
+                    <SolarIcon name="AltArrowRight" variant="linear" size={18} color={ORANGE} />
                   )}
                 </TouchableOpacity>
 
                 {receiver && (
                   <View style={styles.rvNote}>
-                    <Ionicons name="qr-code-outline" size={14} color={colors.textSecondary} />
+                    <SolarIcon name="QrCode" variant="linear" size={14} color={colors.textSecondary} />
                     <Text style={styles.rvNoteText}>
                       Show your pickup QR or PIN when the courier arrives. A delivery OTP follows for the receiver.
                     </Text>
@@ -1457,7 +1421,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rvTotalLabel}>Total{refiningDistance ? ' · updating…' : ''}</Text>
                   <View style={styles.rvEscrowRow}>
-                    <Ionicons name="shield-checkmark-outline" size={12} color={colors.success} />
+                    <SolarIcon name="ShieldCheck" variant="linear" size={12} color={colors.success} />
                     <Text style={styles.rvEscrowText}>Held in escrow until delivery</Text>
                   </View>
                 </View>
@@ -1479,7 +1443,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   <ActivityIndicator color="#FFFFFF" />
                 ) : (
                   <>
-                    <Ionicons name="card-outline" size={16} color="#FFFFFF" />
+                    <SolarIcon name="Card" variant="linear" size={16} color="#FFFFFF" />
                     <Text style={styles.primaryButtonText}>
                       {pricing ? 'Proceed to Payment' : 'Calculating fare…'}
                     </Text>
@@ -1538,7 +1502,7 @@ export default function BookingScreen({ route, navigation }: any) {
                       { transform: [{ scale: pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.08] }) }] },
                     ]}
                   >
-                    <Ionicons name="location" size={16} color="#FFFFFF" />
+                    <SolarIcon name="MapPoint" variant="bold" size={16} color="#FFFFFF" />
                   </Animated.View>
                 </View>
 
@@ -1571,12 +1535,12 @@ export default function BookingScreen({ route, navigation }: any) {
                 {receiver && (
                   <View style={styles.searchingReceiverMiniCard}>
                     <View style={styles.searchMiniAvatar}>
-                      <Ionicons name="person" size={15} color="#FFFFFF" />
+                      <SolarIcon name="User" variant="bold" size={15} color="#FFFFFF" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <View style={styles.searchMiniLabelRow}>
                         <Text style={styles.searchMiniLabel}>RECIPIENT</Text>
-                        <Ionicons name="shield-checkmark" size={12} color="#7C3AED" />
+                        <SolarIcon name="ShieldCheck" variant="duotone" size={12} color="#7C3AED" />
                       </View>
                       <Text style={styles.searchMiniName} numberOfLines={1}>
                         {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Receiver'}
@@ -1611,7 +1575,7 @@ export default function BookingScreen({ route, navigation }: any) {
               </View>
 
               <TouchableOpacity style={styles.cancelTextButton} onPress={handleCancelBooking} activeOpacity={0.85}>
-                <Ionicons name="close-circle-outline" size={18} color={colors.error} />
+                <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.error} />
                 <Text style={styles.cancelTextButtonLabel}>Cancel Search</Text>
               </TouchableOpacity>
             </ScrollView>
@@ -1631,7 +1595,7 @@ export default function BookingScreen({ route, navigation }: any) {
             >
               <View style={styles.matchedHeader}>
                 <View style={styles.matchedHeaderIcon}>
-                  <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+                  <SolarIcon name="CheckCircle" variant="duotone" size={22} color={colors.success} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.matchedHeaderTitle}>
@@ -1649,10 +1613,10 @@ export default function BookingScreen({ route, navigation }: any) {
                 <View style={styles.matchedRow}>
                   <View style={styles.matchedLeftCol}>
                     <View style={styles.matchedAvatarCircle}>
-                      <Ionicons name="person" size={28} color="#FFFFFF" />
+                      <SolarIcon name="User" variant="boldDuotone" size={28} color="#FFFFFF" />
                     </View>
                     <View style={styles.matchedVerifiedBadge}>
-                      <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+                      <SolarIcon name="Check" variant="bold" size={10} color="#FFFFFF" />
                     </View>
                   </View>
                   <View style={styles.matchedRightCol}>
@@ -1661,16 +1625,16 @@ export default function BookingScreen({ route, navigation }: any) {
                     </Text>
                     <View style={styles.carDetailBox}>
                       <View style={styles.carDetailRow}>
-                        <Ionicons name="car-sport-outline" size={12} color={colors.textSecondary} />
+                        <SolarIcon name="Car" variant="linear" size={12} color={colors.textSecondary} />
                         <Text style={styles.carText} numberOfLines={1}>{providerData?.vehicle_type || 'Loading...'}</Text>
                       </View>
                       <View style={styles.carDetailRow}>
-                        <Ionicons name="pricetag-outline" size={12} color={colors.textSecondary} />
+                        <SolarIcon name="TagPrice" variant="linear" size={12} color={colors.textSecondary} />
                         <Text style={styles.carText}>{providerData?.plate_number || 'Loading...'}</Text>
                       </View>
                       {departureTime && (
                         <View style={styles.carDetailRow}>
-                          <Ionicons name="time-outline" size={12} color={colors.textSecondary} />
+                          <SolarIcon name="Clock" variant="linear" size={12} color={colors.textSecondary} />
                           <Text style={styles.carText}>
                             Departure: {formatDepartureTime(departureTime)}
                           </Text>
@@ -1686,9 +1650,10 @@ export default function BookingScreen({ route, navigation }: any) {
                     <View style={styles.ratingSummaryRow}>
                       <View style={styles.ratingStarsInline}>
                         {[1, 2, 3, 4, 5].map(n => (
-                          <Ionicons
+                          <SolarIcon
                             key={n}
-                            name={n <= Math.round(providerRating.avg) ? 'star' : 'star-outline'}
+                            name="Star"
+                            variant={n <= Math.round(providerRating.avg) ? 'boldDuotone' : 'linear'}
                             size={14}
                             color={colors.warning}
                           />
@@ -1707,9 +1672,10 @@ export default function BookingScreen({ route, navigation }: any) {
                           <View key={i} style={styles.recentReviewItem}>
                             <View style={styles.recentReviewHead}>
                               {[1, 2, 3, 4, 5].map(n => (
-                                <Ionicons
+                                <SolarIcon
                                   key={n}
-                                  name={n <= r.rating ? 'star' : 'star-outline'}
+                                  name="Star"
+                                  variant={n <= r.rating ? 'boldDuotone' : 'linear'}
                                   size={11}
                                   color={colors.warning}
                                 />
@@ -1731,7 +1697,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   <>
                     <View style={styles.matchedDivider} />
                     <View style={styles.matchedReceiverRow}>
-                      <Ionicons name="person-circle-outline" size={16} color={colors.textSecondary} />
+                      <SolarIcon name="User" variant="linear" size={16} color={colors.textSecondary} />
                       <View style={{ flex: 1, marginLeft: 8 }}>
                         <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
                         <Text style={styles.matchedReceiverName} numberOfLines={1}>
@@ -1746,7 +1712,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 )}
 
                 <View style={styles.otpSentBanner}>
-                  <Ionicons name="qr-code-outline" size={16} color={colors.success} />
+                  <SolarIcon name="QrCode" variant="linear" size={16} color={colors.success} />
                   <Text style={styles.otpSentText}>
                     Show your pickup QR code when the courier arrives
                   </Text>
@@ -1769,7 +1735,7 @@ export default function BookingScreen({ route, navigation }: any) {
             <View style={styles.sheetFooter}>
               <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
                 <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
-                <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+                <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
           </Animated.View>
@@ -1780,7 +1746,7 @@ export default function BookingScreen({ route, navigation }: any) {
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.noMatchIconCircle}>
-              <Ionicons name="cloud-offline-outline" size={36} color={ORANGE} />
+              <SolarIcon name="CloudCross" variant="linear" size={36} color={ORANGE} />
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
@@ -1793,7 +1759,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 onPress={handleTryAgain}
                 activeOpacity={0.9}
               >
-                <Ionicons name="refresh" size={15} color="#FFFFFF" />
+                <SolarIcon name="Refresh" variant="linear" size={15} color="#FFFFFF" />
                 <Text style={styles.retryBtnText}>Try Again</Text>
               </TouchableOpacity>
 
@@ -1802,7 +1768,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 onPress={handleGoHome}
                 activeOpacity={0.9}
               >
-                <Ionicons name="home-outline" size={15} color={colors.textSecondary} />
+                <SolarIcon name="Home" variant="linear" size={15} color={colors.textSecondary} />
                 <Text style={styles.modifyBtnText}>Go Home</Text>
               </TouchableOpacity>
             </View>
@@ -1840,25 +1806,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sheetScroll: { flexGrow: 0, flexShrink: 1 },
   sheetScrollContent: { paddingBottom: 8 },
   sheetFooter: { paddingTop: 10, borderTopWidth: 1, borderTopColor: c.divider },
-  /* review sheet */
+
   rvHeader: { marginBottom: 12 },
-  rvTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  rvTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
 
   preferredProviderBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
-    borderRadius: 16, padding: 12, marginBottom: 10,
+    borderRadius: 12, padding: 12, marginBottom: 10,
   },
   preferredProviderIcon: {
     width: 38, height: 38, borderRadius: 19, backgroundColor: ORANGE,
     alignItems: 'center', justifyContent: 'center',
   },
-  preferredProviderLabel: { fontSize: 9, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
-  preferredProviderName: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 1 },
-  preferredProviderRoute: { fontSize: 11, fontWeight: '600', color: c.textSecondary, marginTop: 2 },
+  preferredProviderLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: ORANGE, letterSpacing: 0.8 },
+  preferredProviderName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 1 },
+  preferredProviderRoute: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary, marginTop: 2 },
 
   rvCard: {
-    backgroundColor: c.background, borderRadius: 16, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.border,
     marginBottom: 10, overflow: 'hidden',
   },
   rvCardEmpty: { borderStyle: 'dashed', borderColor: ORANGE, backgroundColor: c.accentSoft },
@@ -1866,45 +1832,45 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rvReceiverRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
   rvAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: ORANGE, alignItems: 'center', justifyContent: 'center' },
   rvAvatarEmpty: { backgroundColor: c.card, borderWidth: 1.5, borderColor: ORANGE },
-  rvAvatarText: { fontSize: 16, fontWeight: '800', color: '#FFFFFF' },
-  rvReceiverName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  rvReceiverSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  rvAvatarText: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
+  rvReceiverName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  rvReceiverSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
   rvChangePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: c.card, borderWidth: 1, borderColor: c.border },
-  rvChangeText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  rvChangeText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: ORANGE },
   rvNote: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     paddingHorizontal: 14, paddingVertical: 10,
     borderTopWidth: 1, borderTopColor: c.divider,
   },
-  rvNoteText: { flex: 1, fontSize: 11, lineHeight: 15, color: c.textSecondary, fontWeight: '500' },
+  rvNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', lineHeight: 15, color: c.textSecondary },
 
   rvFareRows: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 10 },
   rvFareRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
-  rvFareLabel: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
-  rvFareValue: { fontSize: 13, color: c.textPrimary, fontWeight: '700' },
+  rvFareLabel: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  rvFareValue: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   rvCalcRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 14 },
   rvTotalRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 4, paddingBottom: 12,
   },
-  rvTotalLabel: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  rvTotalLabel: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   rvEscrowRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
-  rvEscrowText: { fontSize: 11, color: c.textMuted, fontWeight: '500' },
-  rvTotalValue: { fontSize: 22, fontWeight: '900', color: ORANGE, letterSpacing: -0.5 },
+  rvEscrowText: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+  rvTotalValue: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: ORANGE, letterSpacing: -0.5 },
 
   primaryButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    backgroundColor: c.textPrimary, borderRadius: 14, paddingVertical: 16, gap: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
   primaryButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  primaryButtonText: { color: c.card, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
-  primaryButtonHint: { textAlign: 'center', fontSize: 11, color: c.textMuted, marginTop: 8, fontWeight: '500' },
+  primaryButtonText: { color: c.card, fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
+  primaryButtonHint: { textAlign: 'center', fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 8 },
 
   sheetCardFinding: {
     width: '100%', backgroundColor: c.card,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
     maxHeight: height * 0.45, minHeight: 320,
@@ -1936,39 +1902,39 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   findingTextGroup: { flex: 1, alignItems: 'flex-start' },
   findingTitleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  findingTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  findingTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
   findingDots: { width: 20, textAlign: 'left', color: ORANGE },
   findingSubWrap: { minHeight: 36, justifyContent: 'flex-start' },
-  findingSub: { fontSize: 12, lineHeight: 16, color: c.textSecondary, fontWeight: '500' },
+  findingSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', lineHeight: 16, color: c.textSecondary },
 
   findingInfoRow: { flexDirection: 'row', alignItems: 'stretch', gap: 10, width: '100%', marginBottom: 12 },
   searchingReceiverMiniCard: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
-    borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10,
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
   },
   searchMiniAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
   searchMiniLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 1 },
-  searchMiniLabel: { fontSize: 10, fontWeight: '800', color: ORANGE, letterSpacing: 0.8 },
-  searchMiniName: { fontSize: 14, fontWeight: '700', color: c.textPrimary },
-  searchMiniPhone: { fontSize: 12, fontWeight: '500', color: c.textSecondary, marginTop: 1 },
+  searchMiniLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: ORANGE, letterSpacing: 0.8 },
+  searchMiniName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  searchMiniPhone: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
 
   searchCostOnlyBox: {
     minWidth: 104, backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
-    borderRadius: 14, paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14,
     justifyContent: 'center', alignItems: 'center',
   },
-  searchCostLabel: { fontSize: 10, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
-  searchCostValue: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
+  searchCostLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
+  searchCostValue: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
 
   progressContainer: { width: '100%', height: 5, backgroundColor: c.divider, borderRadius: 3, marginBottom: 16, overflow: 'hidden' },
   progressBar: { height: '100%', backgroundColor: ORANGE, borderRadius: 3 },
 
   cancelTextButton: {
     width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 14, borderRadius: 14, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
+    paddingVertical: 14, borderRadius: 12, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
   },
-  cancelTextButtonLabel: { color: c.error, fontWeight: '700', fontSize: 15 },
+  cancelTextButtonLabel: { color: c.error, fontFamily: 'Poppins_700Bold', fontSize: 15 },
 
   sheetCardMatched: {
     width: '100%', backgroundColor: c.card, paddingHorizontal: 24, paddingTop: 8,
@@ -1981,10 +1947,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 40, height: 40, borderRadius: 12, backgroundColor: c.successBg,
     justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.success,
   },
-  matchedHeaderTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  matchedHeaderSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  matchedHeaderTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  matchedHeaderSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
   matchedInnerCard: {
-    borderWidth: 1, borderColor: c.border, borderRadius: 16, padding: 14,
+    borderWidth: 1, borderColor: c.border, borderRadius: 12, padding: 14,
     backgroundColor: c.background, marginBottom: 14,
   },
   matchedRow: { flexDirection: 'row', alignItems: 'center' },
@@ -2002,25 +1968,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 2, borderColor: c.card,
   },
   noMatchModifyLink: { marginTop: 14, alignItems: 'center' },
-  noMatchModifyLinkText: { fontSize: 12, fontWeight: '700', color: c.textMuted, textDecorationLine: 'underline' },
+  noMatchModifyLinkText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textMuted, textDecorationLine: 'underline' },
   matchedRightCol: { flex: 1 },
-  matchedName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.2 },
+  matchedName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
   carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  carText: { fontSize: 11, color: c.textSecondary, fontWeight: '600' },
+  carText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   matchedDivider: { height: 1, backgroundColor: c.border, marginVertical: 10 },
   matchedReceiverRow: { flexDirection: 'row', alignItems: 'center' },
-  matchedReceiverLabel: { fontSize: 9, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
-  matchedReceiverName: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  matchedReceiverPhone: { fontSize: 11, color: c.textSecondary, marginTop: 1, fontWeight: '500' },
+  matchedReceiverLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
+  matchedReceiverName: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  matchedReceiverPhone: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  totalLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
-  totalValue: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  totalPaidBadge: { fontSize: 10, color: c.success, fontWeight: '700', marginTop: 2 },
+  totalLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  totalValue: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  totalPaidBadge: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.success, marginTop: 2 },
 
   ratingSummaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   ratingStarsInline: { flexDirection: 'row', gap: 2 },
-  ratingAvgText: { fontSize: 12, fontWeight: '800', color: c.textPrimary },
+  ratingAvgText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   recentReviewsWrap: { marginTop: 10, gap: 8 },
   recentReviewItem: {
     backgroundColor: isDark ? '#2A1F0A' : '#FFFBEB',
@@ -2029,24 +1995,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   recentReviewHead: { flexDirection: 'row', gap: 2, marginBottom: 4 },
   recentReviewComment: {
-    fontSize: 12, color: isDark ? '#FCD34D' : '#78350F',
-    fontWeight: '600', lineHeight: 16,
+    fontSize: 12, fontFamily: 'Poppins_500Medium',
+    color: isDark ? '#FCD34D' : '#78350F', lineHeight: 16,
   },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.textPrimary, borderRadius: 16, paddingVertical: 16, gap: 8,
+    backgroundColor: c.textPrimary, borderRadius: 14, paddingVertical: 16, gap: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: isDark ? 0.4 : 0.15, shadowRadius: 8, elevation: 4,
   },
-  confirmButtonText: { color: c.card, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  confirmButtonText: { color: c.card, fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 
   otpSentBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: c.successBg, borderRadius: 12, padding: 10, marginTop: 10,
     borderWidth: 1, borderColor: c.success,
   },
-  otpSentText: { flex: 1, fontSize: 12, color: c.success, fontWeight: '600' },
+  otpSentText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.success },
 
   sheetCardNoMatch: {
     width: '100%', backgroundColor: c.card, paddingHorizontal: 24, paddingTop: 8,
@@ -2059,15 +2025,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 12, marginTop: 2, borderWidth: 1, borderColor: ORANGE,
   },
-  noMatchTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 4, letterSpacing: -0.3, textAlign: 'center' },
+  noMatchTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4, letterSpacing: -0.3, textAlign: 'center' },
   noMatchSubtitle: {
-    fontSize: 12, color: c.textSecondary, textAlign: 'center',
-    lineHeight: 18, marginBottom: 18, paddingHorizontal: 10, fontWeight: '500',
+    fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center',
+    lineHeight: 18, marginBottom: 18, paddingHorizontal: 10,
   },
   noMatchActions: { flexDirection: 'row', gap: 12, width: '100%' },
-  noMatchBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, borderRadius: 16, gap: 6 },
+  noMatchBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 15, borderRadius: 14, gap: 6 },
   retryBtn: { backgroundColor: ORANGE, shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 3 },
-  retryBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
+  retryBtnText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 13, letterSpacing: 0.2 },
   modifyBtn: { backgroundColor: c.divider, borderWidth: 1, borderColor: c.border },
-  modifyBtnText: { color: c.textSecondary, fontWeight: '700', fontSize: 13, letterSpacing: 0.2 },
+  modifyBtnText: { color: c.textSecondary, fontFamily: 'Poppins_700Bold', fontSize: 13, letterSpacing: 0.2 },
 });

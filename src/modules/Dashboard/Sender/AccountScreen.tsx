@@ -12,8 +12,7 @@ import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { PhIcon } from '../../../components/ui/PhIcon';
-import { SolarIcon } from '../../../components/ui/SolarIcon'; 
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -40,16 +39,9 @@ export default function AccountScreen() {
 
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
-      Animated.timing(value, {
-        toValue: 1, duration, delay,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      });
+      Animated.timing(value, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
 
-    Animated.parallel([
-      animate(headerAnim, 0),
-      animate(contentAnim, 180),
-    ]).start();
+    Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
 
     const pulse = Animated.loop(
       Animated.sequence([
@@ -122,7 +114,6 @@ export default function AccountScreen() {
         .maybeSingle();
 
       if (userError || !userData) return;
-
       setUserId(userData.user_id);
 
       if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
@@ -171,11 +162,7 @@ export default function AccountScreen() {
         const reason = verif.rejection_reason?.trim() || null;
         setProviderState('rejected');
         setRejectionReason(reason);
-        await checkAndShowRejectionAutoModal(
-          userData.user_id,
-          verif.verification_id ?? null,
-          reason
-        );
+        await checkAndShowRejectionAutoModal(userData.user_id, verif.verification_id ?? null, reason);
       } else {
         setProviderState('pending');
         setRejectionReason(null);
@@ -185,25 +172,15 @@ export default function AccountScreen() {
     }
   }, [checkAndShowRejectionAutoModal]);
 
-  useFocusEffect(
-    useCallback(() => {
-      fetchUserData();
-    }, [fetchUserData])
-  );
+  useFocusEffect(useCallback(() => { fetchUserData(); }, [fetchUserData]));
 
   useEffect(() => {
     if (!userId) return;
-
     const channel = supabase
       .channel(`account-provider-verif-${userId}`)
       .on(
         'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'provider_verifications',
-          filter: `provider_id=eq.${userId}`,
-        },
+        { event: '*', schema: 'public', table: 'provider_verifications', filter: `provider_id=eq.${userId}` },
         (payload) => {
           const updated = payload.new as any;
           if (!updated) return;
@@ -225,30 +202,22 @@ export default function AccountScreen() {
         }
       )
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [userId]);
 
   const handleLogoutConfirm = () => {
-    Alert.alert(
-      'Log Out',
-      'Are you sure you want to log out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out',
-          style: 'destructive',
-          onPress: async () => {
-            await clearLastMode();
-            await supabase.auth.signOut();
-            navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-          },
+    Alert.alert('Log Out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log Out',
+        style: 'destructive',
+        onPress: async () => {
+          await clearLastMode();
+          await supabase.auth.signOut();
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
         },
-      ],
-      { cancelable: true }
-    );
+      },
+    ], { cancelable: true });
   };
 
   const handleReapplyProvider = () => {
@@ -265,29 +234,20 @@ export default function AccountScreen() {
       } as any);
       return;
     }
-
     if (providerState === 'pending') {
-      Alert.alert(
-        'Awaiting Approval',
-        'Your provider application is pending admin review. You will be able to switch to Provider Mode once approved.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Awaiting Approval', 'Your provider application is pending admin review. You will be able to switch to Provider Mode once approved.', [{ text: 'OK' }]);
       return;
     }
-
     if (providerState === 'rejected') {
       setRejectionModalVisible(true);
       return;
     }
-
     navigation.navigate('RegisterProvider');
   };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
-    transform: [{
-      translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }),
-    }],
+    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
   });
 
   const avatarScale = avatarPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.03] });
@@ -306,24 +266,16 @@ export default function AccountScreen() {
       case 'approved': return 'Manage delivery tasks';
       case 'pending':  return 'Waiting for admin approval';
       case 'rejected':
-        return rejectionReason
-          ? `Reason: ${rejectionReason}`
-          : 'Tap to view rejection reason & register again';
+        return rejectionReason ? `Reason: ${rejectionReason}` : 'Tap to view rejection reason & register again';
       default:         return 'Earn by delivering packages';
     }
   })();
 
   return (
     <View style={styles.container}>
-      <StatusBar
-        barStyle={colors.statusBarStyle}
-        backgroundColor="transparent"
-        translucent
-      />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <Animated.View
-        style={[styles.fixedTopContainer, { paddingTop: Math.max(insets.top, 16) + 14 }, fadeUp(headerAnim, 14)]}
-      >
+      <Animated.View style={[styles.fixedTopContainer, { paddingTop: Math.max(insets.top, 16) + 14 }, fadeUp(headerAnim, 14)]}>
         <View style={styles.headerTopBar}>
           <Text style={styles.headerTitle}>My Profile</Text>
         </View>
@@ -340,7 +292,7 @@ export default function AccountScreen() {
                     onError={() => setImageError(true)}
                   />
                 ) : (
-                  <PhIcon name="User" size={28} color={colors.accent} weight="fill" />
+                  <SolarIcon name="User" variant="boldDuotone" size={28} color={colors.accent} />
                 )}
               </View>
             </Animated.View>
@@ -353,7 +305,6 @@ export default function AccountScreen() {
                 <View style={styles.roleBadgeSender}>
                   <Text style={[styles.roleBadgeTextInline, { color: colors.accent }]}>SENDER</Text>
                 </View>
-
                 {providerState === 'approved' && (
                   <View style={styles.roleBadgeProvider}>
                     <Text style={[styles.roleBadgeTextInline, { color: colors.success }]}>PROVIDER</Text>
@@ -363,32 +314,20 @@ export default function AccountScreen() {
               <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
             </View>
 
-            <TouchableOpacity
-              style={styles.editIconBtn}
-              onPress={() => navigation.navigate('EditProfile')}
-              activeOpacity={0.8}
-            >
-              <PhIcon name="PencilSimple" size={16} color={colors.textSecondary} weight="bold" />
+            <TouchableOpacity style={styles.editIconBtn} onPress={() => navigation.navigate('EditProfile')} activeOpacity={0.8}>
+              <SolarIcon name="Pen" variant="linear" size={16} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
       </Animated.View>
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        style={styles.mainContent}
-        contentContainerStyle={styles.mainScrollContent}
-      >
+      <ScrollView showsVerticalScrollIndicator={false} style={styles.mainContent} contentContainerStyle={styles.mainScrollContent}>
         <Animated.View style={[styles.bodyContentWrapper, fadeUp(contentAnim, 20)]}>
 
           {providerState === 'rejected' && (
-            <TouchableOpacity
-              style={styles.rejectionAlertBanner}
-              onPress={() => setRejectionModalVisible(true)}
-              activeOpacity={0.85}
-            >
+            <TouchableOpacity style={styles.rejectionAlertBanner} onPress={() => setRejectionModalVisible(true)} activeOpacity={0.85}>
               <View style={styles.rejectionBannerIconWrap}>
-                <PhIcon name="WarningCircle" size={22} color={colors.error} weight="fill" />
+                <SolarIcon name="DangerCircle" variant="boldDuotone" size={22} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rejectionBannerTitle}>Provider Application Rejected</Text>
@@ -426,18 +365,18 @@ export default function AccountScreen() {
               )}
               {providerState === 'pending' && (
                 <View style={styles.pendingBadge}>
-                  <PhIcon name="Clock" size={10} color={colors.warning} weight="bold" />
+                  <SolarIcon name="Clock" variant="bold" size={10} color={colors.warning} />
                   <Text style={styles.pendingBadgeText}>Pending</Text>
                 </View>
               )}
               {providerState === 'rejected' && (
                 <View style={styles.rejectedBadge}>
-                  <PhIcon name="XCircle" size={10} color={colors.error} weight="fill" />
+                  <SolarIcon name="CloseCircle" variant="bold" size={10} color={colors.error} />
                   <Text style={styles.rejectedBadgeText}>Rejected</Text>
                 </View>
               )}
               {providerState === 'none' && (
-                <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
+                <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
               )}
             </TouchableOpacity>
 
@@ -453,7 +392,7 @@ export default function AccountScreen() {
                   <Text style={styles.menuSubtext} numberOfLines={1}>Manage cards & wallets</Text>
                 </View>
               </View>
-              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -468,7 +407,7 @@ export default function AccountScreen() {
                   <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem with a delivery</Text>
                 </View>
               </View>
-              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -483,7 +422,7 @@ export default function AccountScreen() {
                   <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
                 </View>
               </View>
-              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
 
@@ -500,7 +439,7 @@ export default function AccountScreen() {
                   <Text style={styles.menuSubtext} numberOfLines={1}>App preferences & notifications</Text>
                 </View>
               </View>
-              <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
@@ -538,7 +477,7 @@ export default function AccountScreen() {
                   <Text style={styles.menuSubtext} numberOfLines={1}>Sign out of your account</Text>
                 </View>
               </View>
-              <PhIcon name="CaretRight" size={16} color={colors.error} weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.error} />
             </TouchableOpacity>
           </View>
 
@@ -546,16 +485,11 @@ export default function AccountScreen() {
         </Animated.View>
       </ScrollView>
 
-      <Modal
-        visible={rejectionModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRejectionModalVisible(false)}
-      >
+      <Modal visible={rejectionModalVisible} transparent animationType="fade" onRequestClose={() => setRejectionModalVisible(false)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalIconCircle}>
-              <PhIcon name="XCircle" size={38} color={colors.error} weight="fill" />
+              <SolarIcon name="CloseCircle" variant="boldDuotone" size={38} />
             </View>
 
             <Text style={styles.modalTitle}>Application Rejected</Text>
@@ -575,20 +509,12 @@ export default function AccountScreen() {
             </Text>
 
             <View style={styles.modalActionsRow}>
-              <TouchableOpacity
-                style={styles.modalSecondaryBtn}
-                onPress={() => setRejectionModalVisible(false)}
-                activeOpacity={0.8}
-              >
+              <TouchableOpacity style={styles.modalSecondaryBtn} onPress={() => setRejectionModalVisible(false)} activeOpacity={0.8}>
                 <Text style={styles.modalSecondaryBtnText}>Close</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.modalPrimaryBtn}
-                onPress={handleReapplyProvider}
-                activeOpacity={0.85}
-              >
-                <PhIcon name="ArrowsClockwise" size={17} color="#FFFFFF" weight="bold" />
+              <TouchableOpacity style={styles.modalPrimaryBtn} onPress={handleReapplyProvider} activeOpacity={0.85}>
+                <SolarIcon name="Refresh" variant="bold" size={17} color="#FFFFFF" />
                 <Text style={styles.modalPrimaryBtnText}>Register Again</Text>
               </TouchableOpacity>
             </View>
@@ -602,30 +528,20 @@ export default function AccountScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  fixedTopContainer: {
-    backgroundColor: 'transparent',
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-  },
+  fixedTopContainer: { backgroundColor: 'transparent', paddingHorizontal: 20, paddingBottom: 12 },
   headerTopBar: { marginBottom: 16 },
-  
-  headerTitle: {
-    fontSize: 28, 
-    fontFamily: 'Poppins_700Bold', 
-    color: c.textPrimary, 
-    letterSpacing: -0.4,
-  },
-  
-  // ✅ ATOME STYLE APPLIED
+
+  headerTitle: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
+
   profileContainerCard: {
     backgroundColor: c.card,
-    borderRadius: 12, // Flatter radius
+    borderRadius: 12,
     padding: 18,
     borderWidth: 1,
-    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02, // Flat shadow
+    shadowOpacity: 0.02,
     shadowRadius: 1,
     elevation: 0,
   },
@@ -640,7 +556,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   profileImage: { width: '100%', height: '100%' },
   nameContainer: { flex: 1, marginRight: 8, justifyContent: 'center' },
   nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  
+
   profileName: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   profileEmail: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   editIconBtn: {
@@ -650,11 +566,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
 
-  roleBadgeInline: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeProvider: { backgroundColor: c.successBg, borderColor: c.success, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeSender:   { backgroundColor: c.accentSoft, borderColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
-  roleBadgePending:  { backgroundColor: c.warningBg, borderColor: c.warning, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
-  roleBadgeRejected: { backgroundColor: c.errorBg, borderColor: c.error, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeTextInline: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 1 },
 
   mainContent: { flex: 1 },
@@ -673,55 +586,26 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 12,
   },
   rejectionBannerIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: 42, height: 42, borderRadius: 12,
     backgroundColor: isDark ? 'rgba(239,68,68,0.18)' : '#FEE2E2',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
-  rejectionBannerTitle: {
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-    color: c.error,
-  },
-  rejectionBannerSubtext: {
-    fontSize: 12,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 3,
-    lineHeight: 16,
-  },
-  rejectionBannerActionPill: {
-    backgroundColor: c.error,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-  rejectionBannerActionText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontFamily: 'Poppins_700Bold',
-  },
+  rejectionBannerTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.error },
+  rejectionBannerSubtext: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 3, lineHeight: 16 },
+  rejectionBannerActionPill: { backgroundColor: c.error, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10 },
+  rejectionBannerActionText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_700Bold' },
 
-  sectionTitle: {
-    fontSize: 20, 
-    fontFamily: 'Poppins_700Bold', 
-    color: c.textPrimary,
-    marginBottom: 16, 
-    letterSpacing: -0.2,
-  },
+  sectionTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16, letterSpacing: -0.2 },
 
-  // ✅ ATOME STYLE APPLIED
   menuCard: {
     backgroundColor: c.card,
-    borderRadius: 12, // Flatter radius
+    borderRadius: 12,
     paddingHorizontal: 6, paddingVertical: 6,
-    borderWidth: 1, 
-    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02, // Flat shadow
+    shadowOpacity: 0.02,
     shadowRadius: 1,
     elevation: 0,
   },
@@ -731,23 +615,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 10, borderRadius: 12,
   },
   menuItemLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
-  
+
   menuIconWrapper: {
-    width: 32, height: 42, 
-    justifyContent: 'center', alignItems: 'flex-start', 
+    width: 32, height: 42,
+    justifyContent: 'center', alignItems: 'flex-start',
     marginRight: 14,
   },
-  
+
   menuTextWrapper: { flex: 1 },
-  
+
   menuText: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0 },
   menuSubtext: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
-  
-  // ✅ ATOME STYLE DIVIDER (Subtle)
-  menuDivider: { 
-    height: 1, 
-    backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)', 
-    marginLeft: 56, marginRight: 10 
+
+  menuDivider: {
+    height: 1,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
+    marginLeft: 56, marginRight: 10
   },
 
   providerBadge: {
@@ -778,7 +661,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontFamily: 'Poppins_500Medium', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
   },
 
-  // ✅ ATOME STYLE APPLIED TO MODAL
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
@@ -790,7 +672,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     backgroundColor: c.card,
-    borderRadius: 16, // Softer modal radius
+    borderRadius: 16,
     padding: 26,
     alignItems: 'center',
     borderWidth: 1,
@@ -802,15 +684,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     elevation: 5,
   },
   modalIconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 72, height: 72, borderRadius: 36,
     backgroundColor: c.errorBg,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
     marginBottom: 18,
-    borderWidth: 1.5,
-    borderColor: c.error,
+    borderWidth: 1.5, borderColor: c.error,
   },
   modalTitle: {
     fontSize: 24,
@@ -858,34 +736,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     lineHeight: 19,
     marginBottom: 24,
   },
-  modalActionsRow: {
-    flexDirection: 'row',
-    width: '100%',
-    gap: 12,
-  },
+  modalActionsRow: { flexDirection: 'row', width: '100%', gap: 12 },
   modalSecondaryBtn: {
-    flex: 1,
-    height: 50,
-    borderRadius: 12,
+    flex: 1, height: 50, borderRadius: 12,
     borderWidth: 1,
     borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     backgroundColor: c.background,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
   },
-  modalSecondaryBtnText: {
-    fontSize: 15,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textSecondary,
-  },
+  modalSecondaryBtnText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   modalPrimaryBtn: {
-    flex: 1.6,
-    height: 50,
-    borderRadius: 12,
+    flex: 1.6, height: 50, borderRadius: 12,
     backgroundColor: c.accent,
     flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'center', alignItems: 'center',
     gap: 8,
     shadowColor: c.accent,
     shadowOffset: { width: 0, height: 4 },
@@ -893,9 +757,5 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  modalPrimaryBtnText: {
-    fontSize: 15,
-    fontFamily: 'Poppins_700Bold',
-    color: '#FFFFFF',
-  },
+  modalPrimaryBtnText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
 });

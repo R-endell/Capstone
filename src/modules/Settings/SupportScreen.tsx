@@ -1,5 +1,4 @@
 // src/modules/Settings/SupportScreen.tsx
-// Customer Service page (moved from the old floating SupportFab button).
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar,
@@ -7,11 +6,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-
-const ORANGE = '#FF751F';
+import { SolarIcon, SolarIconName } from '../../components/ui/SolarIcon';
 
 type SupportCase = {
   kind: 'dispute' | 'issue' | 'delivery';
@@ -33,8 +30,6 @@ export default function SupportScreen() {
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // The Account screens pass the role. If it is missing, fall back to looking
-  // at which tab navigator sits lower in the stack.
   const paramRole: Role | undefined = route.params?.role;
   const role: Role = useMemo(() => {
     if (paramRole === 'provider' || paramRole === 'sender') return paramRole;
@@ -150,7 +145,7 @@ export default function SupportScreen() {
             status: 'In Progress',
             created_at: d.accepted_at,
             ref: `DEL-${d.delivery_id}`,
-            badge_color: ORANGE,
+            badge_color: colors.accent,
           });
         });
       }
@@ -162,9 +157,8 @@ export default function SupportScreen() {
     } finally {
       setLoading(false);
     }
-  }, [me, role, colors.error, colors.warning]);
+  }, [me, role, colors.error, colors.warning, colors.accent]);
 
-  // Reload whenever the page is shown (e.g. coming back from a dispute).
   useFocusEffect(
     useCallback(() => {
       loadCases();
@@ -217,14 +211,9 @@ export default function SupportScreen() {
     >
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      {/* Header */}
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backBtn}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>Customer Service</Text>
@@ -245,13 +234,13 @@ export default function SupportScreen() {
         <View style={styles.quickRow}>
           <QuickAction
             styles={styles}
-            icon="alert-circle-outline"
+            icon="DangerCircle"
             label={role === 'provider' ? 'Report an issue' : 'Report a problem'}
             onPress={() => navigation.navigate('ReportIssue')}
           />
           <QuickAction
             styles={styles}
-            icon="shield-checkmark-outline"
+            icon="ShieldCheck"
             label="Dispute center"
             onPress={() => navigation.navigate('DisputeCenter', role === 'provider' ? { mode: 'provider' } : undefined)}
           />
@@ -259,13 +248,13 @@ export default function SupportScreen() {
         <View style={styles.quickRow}>
           <QuickAction
             styles={styles}
-            icon="chatbubbles-outline"
+            icon="ChatCircleText"
             label="Messages"
             onPress={goToMessages}
           />
           <QuickAction
             styles={styles}
-            icon="document-text-outline"
+            icon="DocumentText"
             label="Policies"
             onPress={() => navigation.navigate('LegalPolicies')}
           />
@@ -273,10 +262,10 @@ export default function SupportScreen() {
 
         <Text style={[styles.sectionLabel, { marginTop: 20 }]}>YOUR CASES</Text>
         {loading ? (
-          <View style={styles.center}><ActivityIndicator color={ORANGE} /></View>
+          <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
         ) : cases.length === 0 ? (
           <View style={styles.emptyBox}>
-            <Ionicons name="checkmark-circle" size={22} color={colors.success} />
+            <SolarIcon name="CheckCircle" variant="duotone" size={22} color={colors.success} />
             <Text style={styles.emptyText}>No open cases — you're all set.</Text>
           </View>
         ) : (
@@ -295,14 +284,13 @@ export default function SupportScreen() {
                     {c.subtitle} · {c.status}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
               </TouchableOpacity>
             ))}
           </View>
         )}
       </ScrollView>
 
-      {/* Composer pinned to the bottom */}
       <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
         <TextInput
           style={styles.input}
@@ -322,7 +310,7 @@ export default function SupportScreen() {
           {sending ? (
             <ActivityIndicator size="small" color="#FFFFFF" />
           ) : (
-            <Ionicons name="send" size={16} color="#FFFFFF" />
+            <SolarIcon name="PaperPlane" variant="bold" size={16} color="#FFFFFF" />
           )}
         </TouchableOpacity>
       </View>
@@ -330,10 +318,10 @@ export default function SupportScreen() {
   );
 }
 
-const QuickAction = ({ icon, label, onPress, styles }: any) => (
+const QuickAction = ({ icon, label, onPress, styles }: { icon: SolarIconName, label: string, onPress: () => void, styles: any }) => (
   <TouchableOpacity style={styles.quickCard} onPress={onPress} activeOpacity={0.8}>
     <View style={styles.quickIcon}>
-      <Ionicons name={icon} size={18} color={ORANGE} />
+      <SolarIcon name={icon} variant="linear" size={18} color={styles.quickIconColor.color} />
     </View>
     <Text style={styles.quickLabel} numberOfLines={2}>{label}</Text>
   </TouchableOpacity>
@@ -350,23 +338,23 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingBottom: 16,
     backgroundColor: c.card,
     borderBottomWidth: 1,
-    borderBottomColor: c.border,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: c.divider,
+    backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   headerCenter: { flex: 1, alignItems: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  headerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  headerTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  headerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontFamily: 'Poppins_400Regular' },
 
   body: { flex: 1 },
   scrollBody: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 24 },
 
   sectionLabel: {
-    fontSize: 10, fontWeight: '800', color: c.textMuted,
+    fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted,
     letterSpacing: 1.2, marginBottom: 10,
   },
 
@@ -374,61 +362,63 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   quickCard: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 12, paddingHorizontal: 12,
-    borderRadius: 14, backgroundColor: c.card,
-    borderWidth: 1, borderColor: c.divider,
+    borderRadius: 12, backgroundColor: c.card,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: isDark ? 0.3 : 0.03, shadowRadius: 4, elevation: 1,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 4, elevation: 0,
   },
   quickIcon: {
-    width: 34, height: 34, borderRadius: 17,
+    width: 34, height: 34, borderRadius: 12,
     backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
+  quickIconColor: { color: c.textPrimary }, // Changed to textPrimary for contrast
   quickLabel: {
-    flex: 1, fontSize: 13, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2,
+    flex: 1, fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2,
   },
 
   caseList: {
-    backgroundColor: c.card, borderRadius: 16,
-    borderWidth: 1, borderColor: c.divider, overflow: 'hidden',
+    backgroundColor: c.card, borderRadius: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
   },
   caseRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingVertical: 14, paddingHorizontal: 14,
-    borderBottomWidth: 1, borderBottomColor: c.divider,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   caseRowLast: { borderBottomWidth: 0 },
   caseDot: { width: 8, height: 8, borderRadius: 4 },
-  caseTitle: { fontSize: 13.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  caseSub: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500' },
+  caseTitle: { fontSize: 13.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
+  caseSub: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontFamily: 'Poppins_400Regular' },
 
   center: { paddingVertical: 24, alignItems: 'center' },
   emptyBox: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: c.successBg, borderWidth: 1, borderColor: c.success,
-    borderRadius: 14, padding: 14,
+    borderRadius: 12, padding: 14,
   },
-  emptyText: { flex: 1, fontSize: 13, color: c.success, fontWeight: '600' },
+  emptyText: { flex: 1, fontSize: 13, color: c.success, fontFamily: 'Poppins_500Medium' },
 
   composer: {
     flexDirection: 'row', alignItems: 'flex-end', gap: 10,
     paddingHorizontal: 20, paddingTop: 12,
     backgroundColor: c.card,
-    borderTopWidth: 1, borderTopColor: c.border,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   input: {
-    flex: 1, backgroundColor: c.divider, borderRadius: 22,
+    flex: 1, backgroundColor: c.background, borderRadius: 16,
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'ios' ? 12 : 10,
     paddingBottom: Platform.OS === 'ios' ? 12 : 10,
     minHeight: 44, maxHeight: 110, fontSize: 14,
-    color: c.textPrimary, fontWeight: '500',
+    color: c.textPrimary, fontFamily: 'Poppins_400Regular',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   sendBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
+    width: 44, height: 44, borderRadius: 14, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
 });
