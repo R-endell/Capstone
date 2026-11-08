@@ -21,7 +21,7 @@ import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -59,9 +59,6 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
   return detail;
 };
 
-/* ==================================================================== */
-/* Helpers                                                              */
-/* ==================================================================== */
 const hydrateQr = async (deliveries: any[]) => {
   if (!deliveries || deliveries.length === 0) return deliveries;
   const ids = deliveries.map(d => d.delivery_id).filter(Boolean);
@@ -201,9 +198,6 @@ const enrichDeliveries = async (list: any[]) => {
   });
 };
 
-/* ==================================================================== */
-/* Cancellation detection                                               */
-/* ==================================================================== */
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -222,9 +216,6 @@ const isCancelledDelivery = (d: any): boolean => {
   return false;
 };
 
-/* ==================================================================== */
-/* Payment method badge                                                 */
-/* ==================================================================== */
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
   if (!provider) return null;
   const p = String(provider).toLowerCase();
@@ -249,16 +240,11 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
       }}>
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
-      <Text style={{ fontSize: 12, fontWeight: '800', color: tint }}>{label}</Text>
+      <Text style={{ fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: tint }}>{label}</Text>
     </View>
   );
 };
 
-/* ==================================================================== */
-/* TaskScreen                                                           */
-/* ==================================================================== */
-const BLUE = '#3B82F6';
-const PURPLE = '#8B5CF6';
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
@@ -305,7 +291,6 @@ export default function TaskScreen() {
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
   const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
-  // --- Proof of Delivery (POD) Camera States ---
   const podCameraRef = useRef<any>(null);
   const [podCameraOpen, setPodCameraOpen] = useState(false);
   const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
@@ -840,7 +825,7 @@ export default function TaskScreen() {
   /* --------------------------- shared pieces --------------------------- */
   const renderServicePill = (info: any) => (
     <View style={styles.svcPill}>
-      <PhIcon name="Package" size={12} color={BLUE} weight="fill" />
+      <SolarIcon name="Package" variant="duotone" size={14} color={colors.info} />
       <Text style={styles.svcPillText}>{serviceLabel(info.request?.pickup_type)}</Text>
     </View>
   );
@@ -877,7 +862,7 @@ export default function TaskScreen() {
 
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <PhIcon name="ChatCircleDots" size={12} color={colors.accent} weight="fill" />
+                <SolarIcon name="ChatCircleText" variant="duotone" size={14} color={colors.accent} />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -940,7 +925,7 @@ export default function TaskScreen() {
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <PhIcon name="PhoneCall" size={13} color={colors.accent} weight="fill" />
+            <SolarIcon name="Phone" variant="bold" size={13} color={colors.accent} />
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -995,7 +980,7 @@ export default function TaskScreen() {
               phone: info.senderPhone,
               userId: info.senderId,
               deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
-              color: BLUE,
+              color: colors.info,
               hideCall: false,
             })}
             {renderMiniContact({
@@ -1003,7 +988,7 @@ export default function TaskScreen() {
               name: info.receiverName,
               phone: info.receiverPhone,
               deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
-              color: PURPLE,
+              color: colors.secondary,
               hideCall: false,
             })}
           </View>
@@ -1012,12 +997,12 @@ export default function TaskScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
-            <PhIcon name="Cube" size={14} color={colors.accent} weight="fill" />
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
           </TouchableOpacity>
           {info.fragile && (
             <View style={styles.oChip}>
-              <PhIcon name="Star" size={14} color={colors.accent} weight="fill" />
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
@@ -1032,13 +1017,13 @@ export default function TaskScreen() {
             <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
               {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <PhIcon name="ChatCircleDots" size={16} color={colors.accent} weight="bold" />
+                  <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.oRouteBtn} onPress={() => openRoute(d)} activeOpacity={0.9}>
-              <PhIcon name="ArrowRight" size={16} color="#FFFFFF" weight="bold" />
+              <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
               <Text style={styles.oRouteText}>Start Route</Text>
             </TouchableOpacity>
           </View>
@@ -1135,10 +1120,10 @@ export default function TaskScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]} onPress={() => setSelectedId(null)} activeOpacity={0.85}>
-          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]} onPress={() => setMapModalVisible(true)} activeOpacity={0.85}>
-          <PhIcon name="ArrowsOut" size={20} color={colors.textPrimary} weight="bold" />
+          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <ScrollView
@@ -1168,7 +1153,7 @@ export default function TaskScreen() {
             <View style={styles.dCodeRow}>
               <Text style={styles.dCode} selectable numberOfLines={1}>#{code}</Text>
               <TouchableOpacity onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.trackTextCopy}>
-                <PhIcon name={copied ? 'CheckCircle' : 'Copy'} size={16} color={colors.accent} weight={copied ? 'fill' : 'bold'} />
+                <SolarIcon name={copied ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1187,7 +1172,7 @@ export default function TaskScreen() {
                       <View style={styles.stepLineRow}>
                         <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <PhIcon name="Check" size={12} color="#FFFFFF" weight="bold" />
+                          {done ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
                         <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
@@ -1202,7 +1187,7 @@ export default function TaskScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <PhIcon name="XCircle" size={22} color={colors.error} weight="fill" />
+                  <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.error} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1213,7 +1198,7 @@ export default function TaskScreen() {
               </View>
             ) : stage === 'done' ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><PhIcon name="Check" size={20} color={colors.success} weight="bold" /></View>
+                <View style={styles.doneIcon}><SolarIcon name="Check" variant="bold" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1224,7 +1209,7 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <PhIcon name="Info" size={18} color={colors.accent} weight="fill" />
+                <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.accent} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1238,7 +1223,7 @@ export default function TaskScreen() {
                 phone: info.senderPhone,
                 userId: info.senderId,
                 deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
-                color: BLUE,
+                color: colors.info,
                 hideCall: false,
               })}
               {renderMiniContact({
@@ -1246,7 +1231,7 @@ export default function TaskScreen() {
                 name: info.receiverName,
                 phone: info.receiverPhone,
                 deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
-                color: PURPLE,
+                color: colors.secondary,
                 hideCall: false,
               })}
             </View>
@@ -1257,7 +1242,7 @@ export default function TaskScreen() {
                   <ActivityIndicator size="small" color={colors.accent} />
                 ) : (
                   <>
-                    <PhIcon name="Bell" size={16} color={colors.accent} weight="fill" />
+                    <SolarIcon name="Bell" variant="bold" size={16} color={colors.accent} />
                     <Text style={styles.mSoftText}>Let sender know I’m on my way</Text>
                   </>
                 )}
@@ -1267,13 +1252,13 @@ export default function TaskScreen() {
             {!!d.pod_photo_url && (
               <>
                 <View style={styles.dSecHead}>
-                  <PhIcon name="ShieldCheck" size={17} color={colors.success} weight="fill" />
+                  <SolarIcon name="ShieldCheck" variant="duotone" size={17} color={colors.success} />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                 </View>
                 <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pod_photo_url)}>
                   <Image
                     source={{ uri: d.pod_photo_url }}
-                    style={{ width: '100%', height: 190, borderRadius: 16, borderWidth: 1, borderColor: colors.border }}
+                    style={{ width: '100%', height: 190, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
                     resizeMode="cover"
                   />
                 </TouchableOpacity>
@@ -1283,7 +1268,7 @@ export default function TaskScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <PhIcon name="Images" size={17} color={colors.accent} weight="fill" />
+                  <SolarIcon name="Gallery" variant="duotone" size={17} color={colors.accent} />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1302,7 +1287,7 @@ export default function TaskScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <PhIcon name="Cube" size={17} color={colors.accent} weight="fill" />
+              <SolarIcon name="Package" variant="duotone" size={17} color={colors.accent} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {items.some((it: any) => !!it.description) && (
@@ -1354,10 +1339,10 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircleDots" size={20} color={colors.accent} weight="bold" />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <SolarIcon name="ChatCircleText" variant="linear" size={20} color={colors.accent} />}
             </TouchableOpacity>
             <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <PhIcon name="ArrowRight" size={16} color={colors.accent} weight="bold" />
+              <SolarIcon name="Routing" variant="bold" size={16} color={colors.accent} />
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1365,7 +1350,7 @@ export default function TaskScreen() {
               onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
               activeOpacity={0.9}
             >
-              <PhIcon name={stage === 'pickup' ? 'QrCode' : 'CheckCircle'} size={18} color="#FFFFFF" weight="fill" />
+              <SolarIcon name={stage === 'pickup' ? 'QrCode' : 'CheckCircle'} variant="linear" size={18} color="#FFFFFF" />
               <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
             </TouchableOpacity>
           </View>
@@ -1406,7 +1391,7 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
           <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
-            <PhIcon name="X" size={24} color="#FFF" weight="bold" />
+            <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
           </TouchableOpacity>
         </View>
 
@@ -1475,7 +1460,7 @@ export default function TaskScreen() {
             );
           })()}
           <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
-            <PhIcon name="ArrowLeft" size={20} color={colors.textPrimary} weight="bold" />
+            <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -1503,7 +1488,7 @@ export default function TaskScreen() {
                   onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
                   activeOpacity={0.9}
                 >
-                  <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
+                  <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
                   <Text style={styles.actionBtnText}>Open Route</Text>
                 </TouchableOpacity>
               );
@@ -1519,7 +1504,7 @@ export default function TaskScreen() {
       <View style={styles.previewOverlay}>
         {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
         <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
-          <PhIcon name="X" size={22} color="#FFFFFF" weight="bold" />
+          <SolarIcon name="CloseCircle" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1542,7 +1527,7 @@ export default function TaskScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{info ? pkgCount(info) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgInfo(null)} hitSlop={10}>
-                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -1572,7 +1557,7 @@ export default function TaskScreen() {
           <CameraView ref={podCameraRef} style={StyleSheet.absoluteFill} facing="back" />
           <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
             <TouchableOpacity style={styles.scannerCloseBtn} onPress={() => setPodCameraOpen(false)}>
-              <PhIcon name="X" size={24} color="#FFF" weight="bold" />
+              <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
             </TouchableOpacity>
           </View>
           <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
@@ -1591,7 +1576,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <PhIcon name="Camera" size={20} color="#FFF" weight="fill" />
+                  <SolarIcon name="Camera" variant="linear" size={20} color="#FFF" />
                   <Text style={styles.mPrimaryText}>Capture Photo</Text>
                 </>
               )}
@@ -1603,10 +1588,10 @@ export default function TaskScreen() {
           <View style={styles.otpModalCard}>
             <View style={styles.otpModalHeader}>
               <View style={styles.otpModalIconBox}>
-                <PhIcon name="ShieldCheck" size={24} color={colors.success} weight="fill" />
+                <SolarIcon name="ShieldCheck" variant="duotone" size={24} color={colors.success} />
               </View>
               <TouchableOpacity onPress={closeDeliveryOTPModal}>
-                <PhIcon name="X" size={24} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1615,9 +1600,8 @@ export default function TaskScreen() {
               Take a Proof of Delivery photo and enter the receiver's 6-digit OTP to release payment.
             </Text>
 
-            {/* POD Photo Capture Slot */}
             {podPhotoUri ? (
-              <View style={{ marginBottom: 14, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: colors.border }}>
+              <View style={{ marginBottom: 14, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>
                 <Image source={{ uri: podPhotoUri }} style={{ width: '100%', height: 150 }} resizeMode="cover" />
                 <TouchableOpacity
                   style={{
@@ -1627,8 +1611,8 @@ export default function TaskScreen() {
                   }}
                   onPress={openPodCamera}
                 >
-                  <PhIcon name="Camera" size={14} color="#FFF" weight="fill" />
-                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>Retake</Text>
+                  <SolarIcon name="Camera" variant="linear" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontFamily: 'Poppins_700Bold' }}>Retake</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -1636,13 +1620,13 @@ export default function TaskScreen() {
                 style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
                   borderWidth: 1.5, borderStyle: 'dashed', borderColor: colors.accent,
-                  backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 14, marginBottom: 14,
+                  backgroundColor: colors.accentSoft, borderRadius: 12, paddingVertical: 14, marginBottom: 14,
                 }}
                 onPress={openPodCamera}
                 activeOpacity={0.85}
               >
-                <PhIcon name="Camera" size={20} color={colors.accent} weight="fill" />
-                <Text style={{ color: colors.accent, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
+                <SolarIcon name="Camera" variant="linear" size={20} color={colors.accent} />
+                <Text style={{ color: colors.accent, fontSize: 13, fontFamily: 'Poppins_700Bold' }}>Take Proof of Delivery Photo (Required)</Text>
               </TouchableOpacity>
             )}
 
@@ -1659,7 +1643,7 @@ export default function TaskScreen() {
             </View>
 
             <View style={styles.otpInfoBox}>
-              <PhIcon name="Info" size={16} color={colors.textSecondary} weight="bold" />
+              <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.textSecondary} />
               <Text style={styles.otpInfoText} numberOfLines={2}>
                 Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
                 {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
@@ -1688,7 +1672,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <PhIcon name="CheckCircle" size={18} color="#FFF" weight="fill" />
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFF" />
                   <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
                 </>
               )}
@@ -1755,55 +1739,55 @@ export default function TaskScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
 
   headerSection: {
     paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    backgroundColor: c.background,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  tabBarScroll: { gap: 8, paddingTop: 14 },
+  pageTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  tabBarScroll: { gap: 8, paddingTop: 16 },
   tabItem: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
   },
   tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1.5 },
-  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: c.accent },
+  tabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  tabCountText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 20 },
 
   actionBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,
     paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
     shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
   },
-  actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  actionBtnText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 13 },
 
-  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
 
   cancelBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
-    borderRadius: 20, padding: 16, marginBottom: 14,
+    borderRadius: 12, padding: 16, marginBottom: 14,
   },
   cancelBannerIcon: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  cancelBannerTitle: { fontSize: 15, fontWeight: '800', color: c.error },
-  cancelBannerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  cancelBannerTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.error },
+  cancelBannerSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
+  stepper: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
@@ -1811,24 +1795,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
   stepDotCurrent: { borderColor: c.accent },
   stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
-  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
-  mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
+  mCancelledText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.error, marginTop: 8 },
   mPrimaryBtn: { 
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, 
-    backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14,
+    backgroundColor: c.accent, paddingVertical: 14, borderRadius: 14,
     shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4
   },
-  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
-  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
-  mSoftText: { color: c.accent, fontSize: 13, fontWeight: '800' },
+  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 14 },
+  mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
 
-  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.info },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
 
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
@@ -1837,16 +1821,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 2 },
+  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
   oCard: { 
     backgroundColor: c.card, 
-    borderRadius: 22, 
+    borderRadius: 12, 
     marginBottom: 14, 
     borderWidth: 1, 
-    borderColor: c.border, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
     overflow: 'hidden',
     shadowColor: '#000', 
     shadowOffset: { width: 0, height: 3 }, 
@@ -1860,107 +1844,107 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
   mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-  mcRoleSmall: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcNameSmall: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
-  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_700Bold' },
+  mcRoleSmall: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  mcNameSmall: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
 
-  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
-  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
-  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  oPrice: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: c.accent, fontSize: 14, fontWeight: '800' },
+  oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
-  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 
   dMap: { overflow: 'hidden' },
-  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
-  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
+  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: c.accent, marginTop: 2 },
-  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 10 },
-  dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
-  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
-  dSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
-  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
-  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  dCode: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+  dWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
+  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 14, marginTop: 4 },
+  dHintText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, color: c.textPrimary },
+  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
+  dSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
-  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
-  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
-  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
-  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
-  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
-  dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  pkgCard: { backgroundColor: c.card, borderRadius: 16, padding: 24 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  pkgTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  pkgSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
+  tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 6 },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dBarIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
-  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: c.accent },
+  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  trackTextCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   doneCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: c.successBg,
-    borderWidth: 1, borderColor: c.success, borderRadius: 20, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success, borderRadius: 12, padding: 16, marginBottom: 16,
   },
   doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
-  doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  doneTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.success },
+  doneSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
   sdMap: { width: '100%', height: 120, backgroundColor: '#F3F4F6' },
   mapTapHint: {
     position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
   },
-  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
+  mapTapHintText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   sdRoutePad: { padding: 18 },
   sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
   sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
   sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
   sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
+  sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
   sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
   sdRouteText: { flex: 1, paddingBottom: 16 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
-  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(242,112,36,0.1)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
-  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
+  sdRouteMain: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 3 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
-  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+  contactDivider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 16 },
 
   mapCloseBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
+    shadowOpacity: isDark ? 0.4 : 0.1,
     shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
+    shadowOpacity: isDark ? 0.4 : 0.1,
     shadowRadius: 12, elevation: 12,
-    borderTopWidth: 1, borderColor: c.border,
+    borderTopWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
   },
 
@@ -1984,30 +1968,30 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   scannerBottomSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: c.card,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12,
   },
   sheetHandle: {
     alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
     backgroundColor: c.border, marginBottom: 18,
   },
-  sheetHeading: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sheetSubheading: { fontSize: 13, color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
+  sheetHeading: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
+  sheetSubheading: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
   orLine: { flex: 1, height: 1, backgroundColor: c.border },
-  orText: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1.2 },
+  orText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1.2 },
   pinRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinInput: {
-    flex: 1, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    flex: 1, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 16, paddingVertical: 14, fontSize: 18, letterSpacing: 6,
-    color: c.textPrimary, fontWeight: '700', textAlign: 'center', backgroundColor: c.background,
+    color: c.textPrimary, fontFamily: 'Poppins_700Bold', textAlign: 'center', backgroundColor: c.background,
   },
   pinBtn: {
     backgroundColor: c.accent, paddingHorizontal: 24, justifyContent: 'center',
-    borderRadius: 14, alignItems: 'center', minWidth: 100,
+    borderRadius: 12, alignItems: 'center', minWidth: 100,
     shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
   },
-  pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+  pinBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   otpModalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
@@ -2015,8 +1999,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   otpModalCard: {
     width: '100%', maxWidth: 380,
-    backgroundColor: c.card, borderRadius: 24, padding: 24,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 16, padding: 24,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   otpModalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
@@ -2026,34 +2010,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 48, height: 48, borderRadius: 14, backgroundColor: c.successBg,
     justifyContent: 'center', alignItems: 'center',
   },
-  otpModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
-  otpModalSubtitle: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
+  otpModalTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
+  otpModalSubtitle: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
   otpInputContainer: { marginBottom: 16 },
   otpInput: {
-    borderWidth: 2, borderColor: c.border, borderRadius: 16,
+    borderWidth: 2, borderColor: c.border, borderRadius: 14,
     paddingHorizontal: 20, paddingVertical: 18,
     fontSize: 28, letterSpacing: 12, color: c.textPrimary,
-    fontWeight: '800', textAlign: 'center', backgroundColor: c.background,
+    fontFamily: 'Poppins_800ExtraBold', textAlign: 'center', backgroundColor: c.background,
   },
   otpInfoBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: c.divider, paddingHorizontal: 12,
     paddingVertical: 10, borderRadius: 10, marginBottom: 20,
   },
-  otpInfoText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '500' },
+  otpInfoText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   otpPayoutRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
   },
-  otpPayoutLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  otpPayoutLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.accent, borderRadius: 16,
+    backgroundColor: c.accent, borderRadius: 14,
     paddingVertical: 16, gap: 8, marginBottom: 12,
     shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   otpVerifyButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 });

@@ -11,6 +11,7 @@ import {
   InfoCircleIcon as InfoCircleIconDuo,
   QuestionCircleIcon as QuestionCircleIconDuo,
   ShieldCheckIcon as ShieldCheckIconDuo,
+  ShieldWarningIcon as ShieldWarningIconDuo,
   ChatRoundDotsIcon as ChatRoundDotsIconDuo,
   TransferHorizontalIcon as TransferHorizontalIconDuo,
   CardIcon as CardIconDuo,
@@ -64,9 +65,13 @@ import {
   LetterIcon as LetterIconDuo,                
   DocumentTextIcon as DocumentTextIconDuo,    
   MicrophoneIcon as MicrophoneIconDuo,
-  MicrophoneOffIcon as MicrophoneSlashIconDuo, // <-- FIXED
+  MicrophoneOffIcon as MicrophoneSlashIconDuo, 
   CloudUploadIcon as CloudUploadIconDuo, 
-  CompassIcon as CompassIconDuo, // <-- ADDED
+  CompassIcon as CompassIconDuo, 
+  WalletIcon as WalletIconDuo,
+  SnowflakeIcon as SnowflakeIconDuo,
+  LinkIcon as LinkIconDuo,
+  VolumeIcon as VolumeHighIconDuo, // <-- FIXED
 } from '@solar-icons/react-native/line-duotone';
 
 // --- Linear ---
@@ -97,6 +102,7 @@ import {
   KeyIcon as KeyIconLin,
   InfoCircleIcon as InfoCircleIconLin,
   ShieldCheckIcon as ShieldCheckIconLin,
+  ShieldWarningIcon as ShieldWarningIconLin,
   BellIcon as BellIconLin,
   BoltIcon as BoltIconLin,
   FlagIcon as FlagIconLin,
@@ -120,9 +126,13 @@ import {
   LetterIcon as LetterIconLin,                
   DocumentTextIcon as DocumentTextIconLin,    
   MicrophoneIcon as MicrophoneIconLin,
-  MicrophoneOffIcon as MicrophoneSlashIconLin, // <-- FIXED
+  MicrophoneOffIcon as MicrophoneSlashIconLin, 
   CloudUploadIcon as CloudUploadIconLin, 
-  CompassIcon as CompassIconLin, // <-- ADDED
+  CompassIcon as CompassIconLin, 
+  WalletIcon as WalletIconLin,
+  SnowflakeIcon as SnowflakeIconLin,
+  LinkIcon as LinkIconLin,
+  VolumeIcon as VolumeHighIconLin, // <-- FIXED
 } from '@solar-icons/react-native/linear';
 
 // --- Bold ---
@@ -163,6 +173,7 @@ import {
   InfoCircleIcon as InfoCircleIconBold,
   QuestionCircleIcon as QuestionCircleIconBold,
   ShieldCheckIcon as ShieldCheckIconBold,
+  ShieldWarningIcon as ShieldWarningIconBold,
   ChatRoundDotsIcon as ChatRoundDotsIconBold,
   TransferHorizontalIcon as TransferHorizontalIconBold,
   CardIcon as CardIconBold,
@@ -186,9 +197,13 @@ import {
   LetterIcon as LetterIconBold,                
   DocumentTextIcon as DocumentTextIconBold,    
   MicrophoneIcon as MicrophoneIconBold,
-  MicrophoneOffIcon as MicrophoneSlashIconBold, // <-- FIXED
+  MicrophoneOffIcon as MicrophoneSlashIconBold, 
   CloudUploadIcon as CloudUploadIconBold, 
-  CompassIcon as CompassIconBold, // <-- ADDED
+  CompassIcon as CompassIconBold, 
+  WalletIcon as WalletIconBold,
+  SnowflakeIcon as SnowflakeIconBold,
+  LinkIcon as LinkIconBold,
+  VolumeIcon as VolumeHighIconBold, // <-- FIXED
 } from '@solar-icons/react-native/bold';
 
 // --- Bold Duotone ---
@@ -229,6 +244,7 @@ import {
   InfoCircleIcon as InfoCircleIconBoldDuo,
   QuestionCircleIcon as QuestionCircleIconBoldDuo,
   ShieldCheckIcon as ShieldCheckIconBoldDuo,
+  ShieldWarningIcon as ShieldWarningIconBoldDuo,
   ChatRoundDotsIcon as ChatRoundDotsIconBoldDuo,
   TransferHorizontalIcon as TransferHorizontalIconBoldDuo,
   CardIcon as CardIconBoldDuo,
@@ -252,9 +268,13 @@ import {
   LetterIcon as LetterIconBoldDuo,                
   DocumentTextIcon as DocumentTextIconBoldDuo,    
   MicrophoneIcon as MicrophoneIconBoldDuo,
-  MicrophoneOffIcon as MicrophoneSlashIconBoldDuo, // <-- FIXED
+  MicrophoneOffIcon as MicrophoneSlashIconBoldDuo, 
   CloudUploadIcon as CloudUploadIconBoldDuo, 
-  CompassIcon as CompassIconBoldDuo, // <-- ADDED
+  CompassIcon as CompassIconBoldDuo, 
+  WalletIcon as WalletIconBoldDuo,
+  SnowflakeIcon as SnowflakeIconBoldDuo,
+  LinkIcon as LinkIconBoldDuo,
+  VolumeIcon as VolumeHighIconBoldDuo, // <-- FIXED
 } from '@solar-icons/react-native/bold-duotone';
 
 const LINEAR_MAP = {
@@ -286,6 +306,7 @@ const LINEAR_MAP = {
   Key: KeyIconLin,
   InfoCircle: InfoCircleIconLin,
   ShieldCheck: ShieldCheckIconLin,
+  ShieldWarning: ShieldWarningIconLin, // <-- ADDED
   Bell: BellIconLin,
   Lightning: BoltIconLin,
   Flag: FlagIconLin,
@@ -309,9 +330,13 @@ const LINEAR_MAP = {
   Letter: LetterIconLin,         
   DocumentText: DocumentTextIconLin, 
   Microphone: MicrophoneIconLin,
-  MicrophoneSlash: MicrophoneSlashIconLin, // <-- Mapped correctly
+  MicrophoneSlash: MicrophoneSlashIconLin, 
   CloudUpload: CloudUploadIconLin, 
-  Compass: CompassIconLin, // <-- Mapped correctly
+  Compass: CompassIconLin,
+  Wallet: WalletIconLin,
+  Snowflake: SnowflakeIconLin,
+  Link: LinkIconLin,
+  VolumeHigh: VolumeHighIconLin,
   Scales: ScaleIconDuo,
   Warning: DangerTriangleIconDuo,
   DangerCircle: DangerTriangleIconDuo,
@@ -335,6 +360,7 @@ const DUOTONE_MAP = {
   InfoCircle: InfoCircleIconDuo, 
   Question: QuestionCircleIconDuo,
   ShieldCheck: ShieldCheckIconDuo,
+  ShieldWarning: ShieldWarningIconDuo, // <-- ADDED
   ChatCircleText: ChatRoundDotsIconDuo,
   TransferHorizontal: TransferHorizontalIconDuo,
   Card: CardIconDuo,
@@ -390,9 +416,13 @@ const DUOTONE_MAP = {
   Letter: LetterIconDuo,         
   DocumentText: DocumentTextIconDuo,
   Microphone: MicrophoneIconDuo,
-  MicrophoneSlash: MicrophoneSlashIconDuo, // <-- Mapped correctly
+  MicrophoneSlash: MicrophoneSlashIconDuo, 
   CloudUpload: CloudUploadIconDuo, 
-  Compass: CompassIconDuo, // <-- Mapped correctly
+  Compass: CompassIconDuo,
+  Wallet: WalletIconDuo,
+  Snowflake: SnowflakeIconDuo,
+  Link: LinkIconDuo,
+  VolumeHigh: VolumeHighIconDuo,
 } as const;
 
 const BOLD_MAP = {
@@ -404,6 +434,7 @@ const BOLD_MAP = {
   InfoCircle: InfoCircleIconBold, 
   Question: QuestionCircleIconBold,
   ShieldCheck: ShieldCheckIconBold,
+  ShieldWarning: ShieldWarningIconBold, // <-- ADDED
   ChatCircleText: ChatRoundDotsIconBold,
   TransferHorizontal: TransferHorizontalIconBold,
   Card: CardIconBold,
@@ -459,9 +490,13 @@ const BOLD_MAP = {
   Letter: LetterIconBold,         
   DocumentText: DocumentTextIconBold, 
   Microphone: MicrophoneIconBold,
-  MicrophoneSlash: MicrophoneSlashIconBold, // <-- Mapped correctly
+  MicrophoneSlash: MicrophoneSlashIconBold, 
   CloudUpload: CloudUploadIconBold, 
-  Compass: CompassIconBold, // <-- Mapped correctly
+  Compass: CompassIconBold,
+  Wallet: WalletIconBold,
+  Snowflake: SnowflakeIconBold,
+  Link: LinkIconBold,
+  VolumeHigh: VolumeHighIconBold,
 } as const;
 
 const BOLD_DUOTONE_MAP = {
@@ -473,6 +508,7 @@ const BOLD_DUOTONE_MAP = {
   InfoCircle: InfoCircleIconBoldDuo, 
   Question: QuestionCircleIconBoldDuo,
   ShieldCheck: ShieldCheckIconBoldDuo,
+  ShieldWarning: ShieldWarningIconBoldDuo, // <-- ADDED
   ChatCircleText: ChatRoundDotsIconBoldDuo,
   TransferHorizontal: TransferHorizontalIconBoldDuo,
   Card: CardIconBoldDuo,
@@ -528,9 +564,13 @@ const BOLD_DUOTONE_MAP = {
   Letter: LetterIconBoldDuo,         
   DocumentText: DocumentTextIconBoldDuo, 
   Microphone: MicrophoneIconBoldDuo,
-  MicrophoneSlash: MicrophoneSlashIconBoldDuo, // <-- Mapped correctly
+  MicrophoneSlash: MicrophoneSlashIconBoldDuo, 
   CloudUpload: CloudUploadIconBoldDuo, 
-  Compass: CompassIconBoldDuo, // <-- Mapped correctly
+  Compass: CompassIconBoldDuo,
+  Wallet: WalletIconBoldDuo,
+  Snowflake: SnowflakeIconBoldDuo,
+  Link: LinkIconBoldDuo,
+  VolumeHigh: VolumeHighIconBoldDuo,
 } as const;
 
 export type SolarIconName = keyof typeof DUOTONE_MAP;

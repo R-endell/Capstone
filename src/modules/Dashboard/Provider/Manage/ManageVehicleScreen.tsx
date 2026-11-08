@@ -23,7 +23,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { PhIcon } from '../../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
 const EMPTY_BOX_ICON = require('../../../../../assets/empty-box-icon.png');
 
@@ -331,7 +331,7 @@ export default function ManageVehicleScreen() {
   });
 
   /* ==================================================================== */
-  /* Vehicle Card — TaskScreen style (oCard + tileGrid)                   */
+  /* Vehicle Card                                                         */
   /* ==================================================================== */
   const renderVehicleItem = ({ item }: { item: Vehicle }) => {
     const isVerified = item.verification_status === 'Verified';
@@ -350,7 +350,7 @@ export default function ManageVehicleScreen() {
           {/* Top Row: Vehicle Type Pill + Verification Status Pill */}
           <View style={styles.oTopRow}>
             <View style={styles.svcPill}>
-              <PhIcon name="Car" size={14} color={colors.textPrimary} weight="fill" />
+              <SolarIcon name="Car" variant="duotone" size={14} />
               <Text style={styles.svcPillText}>{item.vehicle_type}</Text>
             </View>
             <View style={[styles.stPill, { backgroundColor: statusBg }]}>
@@ -364,7 +364,7 @@ export default function ManageVehicleScreen() {
           {/* Plate Number Hero */}
           <View style={styles.plateHeroRow}>
             <View style={styles.plateIconCircle}>
-              <PhIcon name="Car" size={20} color={colors.accent} weight="fill" />
+              <SolarIcon name="Car" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rtLabel}>PLATE NUMBER</Text>
@@ -372,7 +372,7 @@ export default function ManageVehicleScreen() {
             </View>
           </View>
 
-          {/* Specs Grid (TaskScreen tileGrid style) */}
+          {/* Specs Grid */}
           <View style={styles.tileGrid}>
             <View style={styles.tile}>
               <Text style={styles.tileLabel}>MAX WEIGHT</Text>
@@ -394,12 +394,11 @@ export default function ManageVehicleScreen() {
         {/* Footer Row: OR/CR Document Status */}
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
-            <PhIcon
-              name={item.vehicle_doc ? 'FileText' : 'WarningCircle'}
-              size={14}
-              color={item.vehicle_doc ? colors.accent : colors.textMuted}
-              weight={item.vehicle_doc ? 'fill' : 'regular'}
-            />
+            {item.vehicle_doc ? (
+              <SolarIcon name="DocumentText" variant="linear" size={14} color={colors.accent} />
+            ) : (
+              <SolarIcon name="Warning" variant="linear" size={14} secondaryColor={colors.textMuted} />
+            )}
             <Text style={styles.oChipText}>
               {item.vehicle_doc ? 'OR/CR Document Attached' : 'No OR/CR Document'}
             </Text>
@@ -414,7 +413,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleDelete(item)}
             activeOpacity={0.85}
           >
-            <PhIcon name="Trash" size={16} color={colors.error} weight="bold" />
+            <SolarIcon name="Trash" variant="bold" size={16} color={colors.error} />
             <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -422,7 +421,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleEdit(item)}
             activeOpacity={0.9}
           >
-            <PhIcon name="PencilSimple" size={16} color="#FFFFFF" weight="bold" />
+            <SolarIcon name="Pen" variant="bold" size={16} color="#FFFFFF" />
             <Text style={styles.oRouteText}>Edit Vehicle</Text>
           </TouchableOpacity>
         </View>
@@ -436,7 +435,7 @@ export default function ManageVehicleScreen() {
 
       <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1, paddingLeft: 14 }}>
           <Text style={styles.headerTitle}>Manage Vehicles</Text>
@@ -445,7 +444,7 @@ export default function ManageVehicleScreen() {
           </Text>
         </View>
         <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-          <PhIcon name="Plus" size={22} color="#FFFFFF" weight="bold" />
+          <SolarIcon name="Plus" variant="bold" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
 
@@ -466,7 +465,7 @@ export default function ManageVehicleScreen() {
             Add your first vehicle to start accepting deliveries
           </Text>
           <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-            <PhIcon name="PlusCircle" size={18} color="#FFFFFF" weight="fill" />
+            <SolarIcon name="AddCircle" variant="duotone" size={18} />
             <Text style={styles.emptyAddBtnText}>Add Vehicle</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -496,12 +495,12 @@ export default function ManageVehicleScreen() {
             <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn} activeOpacity={0.85}>
-                <PhIcon name="X" size={20} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
                 {editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}
               </Text>
-              <View style={{ width: 40 }} />
+              <View style={{ width: 42 }} />
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalScrollContent}>
@@ -526,7 +525,7 @@ export default function ManageVehicleScreen() {
               <View style={styles.formField}>
                 <Text style={styles.inputLabel}>Plate Number</Text>
                 <View style={styles.inputWrapper}>
-                  <PhIcon name="FileText" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
+                  <SolarIcon name="DocumentText" variant="linear" size={16} color={colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.textInput}
                     value={plateNumber}
@@ -542,7 +541,7 @@ export default function ManageVehicleScreen() {
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Volume (L)</Text>
                   <View style={styles.inputWrapper}>
-                    <PhIcon name="Cube" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
+                    <SolarIcon name="Package" variant="linear" size={16} color={colors.textMuted} style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxVolume}
@@ -556,7 +555,7 @@ export default function ManageVehicleScreen() {
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Weight (kg)</Text>
                   <View style={styles.inputWrapper}>
-                    <PhIcon name="Scales" size={16} color={colors.textMuted} weight="bold" style={styles.inputIcon} />
+                    <SolarIcon name="Scales" variant="linear" size={16} secondaryColor={colors.textMuted} style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxWeight}
@@ -623,7 +622,7 @@ export default function ManageVehicleScreen() {
                     <View style={styles.uploadedContainer}>
                       {vehicleDoc.endsWith('.pdf') ? (
                         <View style={styles.docIconBox}>
-                          <PhIcon name="FileText" size={32} color={colors.accent} weight="fill" />
+                          <SolarIcon name="DocumentText" variant="duotone" size={32} />
                         </View>
                       ) : (
                         <Image source={{ uri: vehicleDoc }} style={styles.uploadedImage} />
@@ -632,14 +631,14 @@ export default function ManageVehicleScreen() {
                         {docFileName || 'Document uploaded'}
                       </Text>
                       <TouchableOpacity style={styles.removeDocBtn} onPress={() => { setVehicleDoc(null); setDocFileName(null); }}>
-                        <PhIcon name="Trash" size={14} color={colors.error} weight="bold" />
+                        <SolarIcon name="Trash" variant="bold" size={14} color={colors.error} />
                         <Text style={styles.removeDocText}>Remove</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
                     <>
                       <View style={styles.uploadIconBox}>
-                        <PhIcon name="ArrowUp" size={28} color={colors.accent} weight="bold" />
+                        <SolarIcon name="CloudUpload" variant="duotone" size={28} />
                       </View>
                       <Text style={styles.uploadText}>Tap to upload OR/CR</Text>
                       <Text style={styles.uploadSubtext}>Image or PDF</Text>
@@ -653,7 +652,7 @@ export default function ManageVehicleScreen() {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <>
-                    <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
+                    <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
                     <Text style={styles.submitBtnText}>
                       {editingVehicle ? 'Update Vehicle' : 'Add Vehicle'}
                     </Text>
@@ -679,7 +678,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingBottom: 16,
     backgroundColor: c.card,
     borderBottomWidth: 1,
-    borderBottomColor: c.border,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
     width: 42,
@@ -689,18 +688,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 20,
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
     fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
     color: c.textSecondary,
-    fontWeight: '500',
     marginTop: 1,
   },
   headerAddBtn: {
@@ -710,7 +709,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.accent,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
 
   listContent: {
@@ -728,7 +731,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginTop: 4,
     color: c.textSecondary,
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: 'Poppins_500Medium',
   },
 
   emptyContainer: {
@@ -739,12 +742,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginTop: 4,
   },
   emptySubtitle: {
     fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
     color: c.textSecondary,
     textAlign: 'center',
     marginTop: 6,
@@ -759,24 +763,31 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingVertical: 13,
     borderRadius: 14,
     gap: 8,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   emptyAddBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
 
-  /* TaskScreen Card & Tile Grid Styles */
+  /* Card & Tile Grid */
   oCard: {
     backgroundColor: c.card,
-    borderRadius: 22,
+    borderRadius: 12,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   oPad: { padding: 16 },
   oTopRow: {
@@ -791,12 +802,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 6,
     backgroundColor: c.divider,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: c.textPrimary },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   stPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -806,7 +817,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 999,
   },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
 
   plateHeroRow: {
     flexDirection: 'row',
@@ -824,13 +835,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   rtLabel: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textMuted,
     letterSpacing: 0.8,
   },
   plateHeroText: {
-    fontSize: 22,
-    fontWeight: '900',
+    fontSize: 20,
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textPrimary,
     letterSpacing: 0.5,
     marginTop: 1,
@@ -846,19 +857,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexGrow: 1,
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.divider,
-    borderRadius: 14,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12,
     padding: 12,
   },
   tileLabel: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textMuted,
     letterSpacing: 0.8,
   },
   tileValue: {
     fontSize: 15,
-    fontWeight: '900',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textPrimary,
     marginTop: 4,
   },
@@ -871,7 +882,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderTopWidth: 1,
-    borderTopColor: c.divider,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   oChip: {
     flexDirection: 'row',
@@ -879,14 +890,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 6,
     backgroundColor: c.card,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 10,
   },
   oChipText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textPrimary,
   },
 
@@ -895,7 +906,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 10,
     padding: 14,
     borderTopWidth: 1,
-    borderTopColor: c.divider,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   oDeleteBtn: {
     flex: 1,
@@ -910,7 +921,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oDeleteText: {
     color: c.error,
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
   oRouteBtn: {
     flex: 2,
@@ -925,7 +936,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oRouteText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '900',
+    fontFamily: 'Poppins_700Bold',
   },
 
   /* Modal Styles */
@@ -936,8 +947,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   modalContainer: {
     backgroundColor: c.card,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     paddingTop: 8,
     maxHeight: '94%',
     flex: 1,
@@ -958,19 +969,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: c.divider,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   modalCloseBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: c.divider,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalTitle: {
     fontSize: 17,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     letterSpacing: -0.2,
   },
@@ -983,7 +994,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   formSection: { marginBottom: 20 },
   sectionLabel: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginBottom: 10,
     letterSpacing: 0.3,
@@ -997,8 +1008,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 16,
     borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: c.border,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   typeBtnActive: {
     backgroundColor: c.accentSoft,
@@ -1007,24 +1018,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   typeBtnText: {
     fontSize: 13,
     color: c.textSecondary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
   },
   typeBtnTextActive: {
     color: c.accent,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
 
   formField: { marginBottom: 18 },
   inputLabel: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginBottom: 8,
     letterSpacing: 0.3,
   },
   inputLabelSmall: {
     fontSize: 11,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textSecondary,
     marginBottom: 6,
     letterSpacing: 0.2,
@@ -1034,12 +1045,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.border,
-    borderRadius: 14,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12,
   },
   inputIcon: {
-    paddingLeft: 14,
-    paddingRight: 4,
+    marginLeft: 14,
+    marginRight: 4,
   },
   textInput: {
     flex: 1,
@@ -1047,18 +1058,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 10,
     fontSize: 14,
     color: c.textPrimary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
   },
   textInputCompact: {
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 12,
     fontSize: 14,
     color: c.textPrimary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
     textAlign: 'center',
   },
 
@@ -1071,10 +1082,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   thirdField: { flex: 1 },
 
   uploadBox: {
-    borderWidth: 2,
-    borderColor: c.border,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     borderStyle: 'dashed',
-    borderRadius: 16,
+    borderRadius: 12,
     paddingVertical: 24,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1098,20 +1109,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   uploadText: {
     fontSize: 13,
     color: c.textPrimary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     marginTop: 8,
   },
   uploadSubtext: {
     fontSize: 11,
     color: c.textMuted,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     marginTop: 2,
   },
   uploadingContainer: { alignItems: 'center', gap: 10 },
   uploadingText: {
     fontSize: 13,
     color: c.textSecondary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_600SemiBold',
   },
   uploadedContainer: {
     alignItems: 'center',
@@ -1120,7 +1131,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   docIconBox: {
     width: 56,
     height: 56,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: c.card,
     justifyContent: 'center',
     alignItems: 'center',
@@ -1133,7 +1144,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   uploadedText: {
     fontSize: 12,
     color: c.textPrimary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     maxWidth: 220,
   },
   removeDocBtn: {
@@ -1149,7 +1160,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   removeDocText: {
     color: c.error,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
   },
 
   submitBtn: {
@@ -1161,7 +1172,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 14,
     marginTop: 12,
     gap: 8,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   submitBtnDisabled: {
     backgroundColor: c.textMuted,
@@ -1171,6 +1186,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   submitBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '900',
+    fontFamily: 'Poppins_700Bold',
   },
 });
