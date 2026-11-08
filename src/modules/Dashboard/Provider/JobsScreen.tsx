@@ -355,7 +355,7 @@ const makeMapStyles = (c: ThemeColors) => StyleSheet.create({
     borderWidth: 3, borderColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
   mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
   meMarker: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center' },
@@ -368,7 +368,7 @@ const makeMapStyles = (c: ThemeColors) => StyleSheet.create({
     width: 22, height: 22, borderRadius: 11,
     backgroundColor: c.accent, borderWidth: 3, borderColor: '#FFFFFF',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35, shadowRadius: 4, elevation: 3,
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
   meArrowWrap: { position: 'absolute', width: 76, height: 76 },
   meArrow: {
@@ -1208,7 +1208,7 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   bubble: {
     height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.card, borderRadius: 21, paddingHorizontal: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   bubbleText: { flexShrink: 1, fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
@@ -1218,7 +1218,7 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   pinDot: {
     width: 24, height: 24, borderRadius: 12, borderWidth: 3, borderColor: '#FFF',
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6, zIndex: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1, zIndex: 2,
   },
   pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
@@ -1226,20 +1226,21 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   iconBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   locateMeBtn: {
     position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   sheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.04, shadowRadius: 12, elevation: 1,
     zIndex: 6,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   dragHandle: { width: 44, height: 5, borderRadius: 3, alignSelf: 'center', marginTop: 8, marginBottom: 6, backgroundColor: c.border },
   list: { maxHeight: 232 },
@@ -1255,7 +1256,7 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   confirmBtn: {
     marginHorizontal: 20, marginTop: 6, borderRadius: 14, paddingVertical: 16,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   confirmBtnText: { color: '#FFF', fontSize: 17, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
   searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20 },
@@ -2588,9 +2589,9 @@ export default function JobsScreen() {
           borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
           shadowColor: '#000',
           shadowOffset: { width: 0, height: -4 },
-          shadowOpacity: 0.18,
-          shadowRadius: 16,
-          elevation: 16,
+          shadowOpacity: 0.05,
+          shadowRadius: 12,
+          elevation: 1,
         }}
       >
         <View style={styles.offerTimerTrack}>
@@ -3468,24 +3469,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.4 : 0.15,
-    shadowRadius: 8, elevation: 5,
+    shadowOpacity: 0.04,
+    shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   sosBtn: { backgroundColor: c.error, borderColor: c.error },
   mapToolBadge: {
     position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18,
     borderRadius: 9, paddingHorizontal: 4, backgroundColor: c.error,
-    borderWidth: 1.5, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
   },
   mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
 
   bottomWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-  offlineBack: { position: 'absolute', left: 14, width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(30,38,54,0.88)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', zIndex: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
+  offlineBack: { position: 'absolute', left: 14, width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(30,38,54,0.88)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', zIndex: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
   mapToolBtnOff: { backgroundColor: 'rgba(30,38,54,0.88)', borderColor: 'rgba(255,255,255,0.05)' },
   toolDim: { opacity: 0.35 },
 
-  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', borderTopLeftRadius: 24, borderTopRightRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.18, shadowRadius: 24, elevation: 18 },
+  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', borderTopLeftRadius: 24, borderTopRightRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 1 },
   dashBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
   dashHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
   dashHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
@@ -3506,10 +3507,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   routeLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8, color: c.textMuted },
   routeTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 3, letterSpacing: -0.2 },
   routeDetail: { fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 3 },
-  swapBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  swapBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   swapBtnOff: { backgroundColor: 'rgba(30,38,54,0.8)', borderColor: 'rgba(255,255,255,0.06)' },
   powerBtn: { borderColor: 'rgba(239,68,68,0.35)' },
-  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 14, backgroundColor: c.accent, overflow: 'hidden', shadowColor: c.accent, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 8 },
+  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 14, backgroundColor: c.accent, overflow: 'hidden', shadowColor: c.accent, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1 },
   ctaShineWrap: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 90 },
   ctaShine: { flex: 1, backgroundColor: 'rgba(255,255,255,0.3)', transform: [{ skewX: '-20deg' }] },
   ctaText: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.2 },
@@ -3551,8 +3552,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 14,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04,
-    shadowRadius: 8, elevation: 1,
+    shadowOpacity: 0.04,
+    shadowRadius: 6, elevation: 1,
   },
   eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
@@ -3590,13 +3591,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 16,
     borderTopWidth: 1, borderTopColor: c.border,
     shadowColor: '#000', shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.05, shadowRadius: 5, elevation: 10,
+    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   acceptPrice: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.accent, marginTop: 2 },
   acceptBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: c.accent, paddingHorizontal: 22, paddingVertical: 14, borderRadius: 14, minWidth: 180,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 
@@ -3627,14 +3628,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   offerAcceptBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 15, borderRadius: 14, backgroundColor: c.accent,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   offerAcceptText: { fontSize: 16, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
 
   viewDetailsBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     marginTop: 18, paddingVertical: 14, borderRadius: 12,
-    backgroundColor: c.accentSoft, borderWidth: 1.5, borderColor: c.accent,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: c.accent,
   },
   viewDetailsText: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.accent },
 
@@ -3668,7 +3669,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 34, height: 34, borderRadius: 17, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
   emptyManageRouteBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
@@ -3683,7 +3684,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingVertical: 14, paddingHorizontal: 12,
     backgroundColor: c.background, borderRadius: 12, marginBottom: 8,
-    borderWidth: 1.5, borderColor: 'transparent',
+    borderWidth: 1, borderColor: 'transparent',
   },
   routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
   routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
@@ -3692,7 +3693,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   weekdayRow: { flexDirection: 'row', gap: 6 },
   weekdayChip: {
-    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5,
+    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1,
     borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
   },
   weekdayChipActive: { backgroundColor: c.accent, borderColor: c.accent },
@@ -3704,8 +3705,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   inputLabel: { marginBottom: 6, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontSize: 11, letterSpacing: 0.2 },
   dateTimeButton: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
-    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
   },
   dateTimeValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
@@ -3714,8 +3715,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.card, borderRadius: 16,
     paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
     shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: isDark ? 0.5 : 0.18,
-    shadowRadius: 20, elevation: 12,
+    shadowOpacity: 0.05,
+    shadowRadius: 12, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   notifHeader: {
@@ -3788,7 +3789,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   frequencyOption: {
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
-    borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
   },
   frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
   frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
@@ -3798,7 +3799,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   vehicleOption: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
-    borderRadius: 999, borderWidth: 1.5, borderColor: c.border,
+    borderRadius: 999, borderWidth: 1, borderColor: c.border,
   },
   vehicleOptionActive: { backgroundColor: c.accent, borderColor: c.accent },
   vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
@@ -3814,7 +3815,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   submitBtn: {
     backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', marginTop: 6,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   submitBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 
@@ -3823,7 +3824,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 3, borderColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
   mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
 });

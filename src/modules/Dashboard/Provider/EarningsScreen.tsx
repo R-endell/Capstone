@@ -263,7 +263,8 @@ export default function EarningsScreen() {
 
         {walletMissing && (
           <View style={styles.walletMissingBox}>
-            <SolarIcon name="DangerCircle" variant="linear" size={16} color={colors.warning} />
+            {/* DangerCircle is an INVERTED_ICON — pass secondaryColor so it renders warning-tinted */}
+            <SolarIcon name="DangerCircle" variant="linear" size={16} color={colors.warning} secondaryColor={colors.warning} />
             <Text style={styles.walletMissingText}>Wallet not initialized yet. Complete a delivery or contact support to activate.</Text>
           </View>
         )}
@@ -438,7 +439,8 @@ export default function EarningsScreen() {
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  <SolarIcon name={headIcon as any} variant="linear" size={26} color={headColor} />
+                  {/* DangerCircle is INVERTED — needs secondaryColor to honor headColor */}
+                  <SolarIcon name={headIcon as any} variant="linear" size={26} color={headColor} secondaryColor={headColor} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.heroStatus, { color: headColor }]}>{st === 'Pending_Compliance' ? 'Under Compliance Review' : isRefunded ? `${st} — Balance Restored` : st}</Text>
@@ -517,7 +519,7 @@ export default function EarningsScreen() {
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ flexGrow: 1, paddingBottom: 8 }}>
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  <SolarIcon name={headIcon} variant="linear" size={26} color={headColor} />
+                  <SolarIcon name={headIcon} variant="linear" size={26} color={headColor} secondaryColor={headColor} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.heroStatus, { color: headColor }]}>{headLabel}</Text>
@@ -658,13 +660,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 40 },
   walletCard: {
     backgroundColor: c.card, borderRadius: 12, padding: 20, marginBottom: 20,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 12, elevation: 3,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   walletHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   walletIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
   withdrawBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.divider, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6 },
-  withdrawBtnActive: { backgroundColor: c.accent, borderColor: c.accent, shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  withdrawBtnActive: { backgroundColor: c.accent, borderColor: c.accent, shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
   withdrawBtnTextActive: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   balanceSection: { marginBottom: 4 },
   balanceLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 4 },
@@ -694,13 +696,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   walletUpdated: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: c.textMuted, textAlign: 'center', marginTop: 14, fontStyle: 'italic' },
   historyTabsRow: { flexDirection: 'row', backgroundColor: c.divider, borderRadius: 12, padding: 4, marginBottom: 16 },
   historyTabBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  historyTabBtnActive: { backgroundColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: isDark ? 0.4 : 0.08, shadowRadius: 4, elevation: 2 },
+  historyTabBtnActive: { backgroundColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
   historyTabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   historyTabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   transactionCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   transactionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 12 },
@@ -717,7 +719,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyText: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6 },
   emptySubText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: c.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 20, paddingTop: 12, maxHeight: '92%', flexGrow: 1 },
+  modalCard: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, maxHeight: '92%', flexGrow: 1 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
@@ -738,11 +740,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   totalLabel: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   totalValue: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4 },
   hashBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 12 },
-  hashText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, fontWeight: '600' },
+  hashText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   noteBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning, borderRadius: 12, padding: 12, marginTop: 16 },
   noteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 16 },
-  reconcileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1.5, borderColor: c.accent, backgroundColor: c.accentSoft },
+  reconcileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: c.accent, backgroundColor: c.accentSoft },
   reconcileBtnText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
-  modalDoneBtn: { marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 15, alignItems: 'center', shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
+  modalDoneBtn: { marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 15, alignItems: 'center', shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
   modalDoneBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 });
