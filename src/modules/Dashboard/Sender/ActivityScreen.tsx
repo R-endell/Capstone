@@ -17,7 +17,8 @@ import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
-import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../components/ui/SolarIcon'; 
+import { PhIcon } from '../../../components/ui/PhIcon'; // Kept for specific double-check receipts
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -81,7 +82,7 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
       }}>
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
-      <Text style={{ fontSize: 12, fontWeight: '800', color: tint }}>{label}</Text>
+      <Text style={{ fontSize: 12, fontFamily: 'Poppins_700Bold', color: tint }}>{label}</Text>
     </View>
   );
 };
@@ -423,7 +424,6 @@ export default function ActivityScreen() {
     [deliveries, selectedId]
   );
 
-  // Auto-open Completed tab & specific shipment when arriving from ProofOfDeliveryModal
   useEffect(() => {
     const params = route.params;
     if (params?.tab) {
@@ -1145,11 +1145,11 @@ export default function ActivityScreen() {
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
-        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'NavigationArrow' };
+        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'Routing' };
       case 'pickup':
         return { label: 'Awaiting Pickup', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Package' };
       case 'cancelled':
-        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'XCircle' };
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'CloseCircle' };
       case 'pending':
       default:
         return hasPreferredProvider
@@ -1216,7 +1216,7 @@ export default function ActivityScreen() {
   /* --------------------------- Shared Pieces --------------------------- */
   const renderServicePill = (item: MappedDelivery) => (
     <View style={styles.svcPill}>
-      <PhIcon name="Package" size={13} color={BLUE} weight="fill" />
+      <SolarIcon name="Package" variant="duotone" size={16} color={BLUE} />
       <Text style={styles.svcPillText}>{serviceLabel(item.pickup_type)}</Text>
     </View>
   );
@@ -1249,14 +1249,14 @@ export default function ActivityScreen() {
             <Text style={styles.rtLabel}>{r.label}</Text>
             <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
             {!!r.road && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                <PhIcon name="MapTrifold" size={12} color={colors.textMuted} weight="bold" />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                <SolarIcon name="MapPoint" variant="linear" size={12} color={colors.textMuted} />
                 <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
               </View>
             )}
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <PhIcon name="ChatCircleDots" size={13} color={colors.accent} weight="fill" />
+                <SolarIcon name="ChatCircleText" variant="duotone" size={14} />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -1306,7 +1306,7 @@ export default function ActivityScreen() {
           <Text style={styles.mcAvatarTextSmall}>{initials(o.name)}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.mcRoleSmall}>{o.role}</Text>
+          <Text style={styles.mcRoleSmall} numberOfLines={1}>{o.role}</Text>
           <Text style={styles.mcNameSmall} numberOfLines={1}>{o.name || 'N/A'}</Text>
           {!!o.subBadge && (
             <Text style={styles.mcSubBadgeSmall} numberOfLines={1}>{o.subBadge}</Text>
@@ -1322,7 +1322,7 @@ export default function ActivityScreen() {
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           >
-            <PhIcon name="PhoneCall" size={13} color={colors.accent} weight="fill" />
+            <SolarIcon name="Phone" variant="linear" size={16} color={colors.accent} />
           </TouchableOpacity>
         )}
       </TouchableOpacity>
@@ -1379,15 +1379,15 @@ export default function ActivityScreen() {
                 resizeMode="cover"
               />
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <PhIcon name="ShieldCheck" size={14} color={colors.success} weight="fill" />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <SolarIcon name="ShieldCheck" variant="duotone" size={14} color={colors.success} />
                   <Text style={styles.cardPodTitle}>Proof of Delivery Attached</Text>
                 </View>
                 <Text style={styles.cardPodSub} numberOfLines={1}>
                   Tap photo to enlarge or tap card for full details
                 </Text>
               </View>
-              <PhIcon name="ArrowsOut" size={16} color={colors.success} weight="bold" />
+              <SolarIcon name="Maximize" variant="linear" size={16} color={colors.success} />
             </TouchableOpacity>
           )}
 
@@ -1415,19 +1415,19 @@ export default function ActivityScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgItem(item)} activeOpacity={0.8} hitSlop={6}>
-            <PhIcon name="Cube" size={14} color={colors.accent} weight="fill" />
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(item)}</Text>
-            <PhIcon name="CaretRight" size={13} color={colors.textMuted} weight="bold" />
+            <SolarIcon name="AltArrowRight" variant="linear" size={13} color={colors.textMuted} />
           </TouchableOpacity>
           {item.fragile && (
             <View style={styles.oChip}>
-              <PhIcon name="Star" size={14} color={colors.accent} weight="fill" />
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
           {!!item.deliveryData?.pod_photo_url && (
             <View style={[styles.oChip, { borderColor: colors.success }]}>
-              <PhIcon name="Camera" size={14} color={colors.success} weight="fill" />
+              <SolarIcon name="Camera" variant="duotone" size={14} color={colors.success} />
               <Text style={[styles.oChipText, { color: colors.success }]} numberOfLines={1}>POD</Text>
             </View>
           )}
@@ -1447,7 +1447,7 @@ export default function ActivityScreen() {
             >
               {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <PhIcon name="ChatCircleDots" size={16} color={colors.accent} weight="bold" />
+                  <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
@@ -1457,7 +1457,7 @@ export default function ActivityScreen() {
               onPress={() => openLiveTrack(item)}
               activeOpacity={0.9}
             >
-              <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
+              <SolarIcon name="Routing" variant="linear" size={16} color="#FFFFFF" />
               <Text style={styles.oRouteText}>Live Track</Text>
             </TouchableOpacity>
           </View>
@@ -1470,7 +1470,7 @@ export default function ActivityScreen() {
               onPress={() => openEditModal(item)}
               activeOpacity={0.85}
             >
-              <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
+              <SolarIcon name="Pen" variant="linear" size={16} color={colors.accent} />
               <Text style={styles.oChatText}>Edit</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1482,11 +1482,11 @@ export default function ActivityScreen() {
               }
               activeOpacity={0.9}
             >
-              <PhIcon
-                name={item.hasPreferredProvider ? 'Hourglass' : 'MagnifyingGlass'}
+              <SolarIcon
+                name={item.hasPreferredProvider ? 'Hourglass' : 'Magnifier'}
+                variant="linear"
                 size={16}
                 color="#FFFFFF"
-                weight="bold"
               />
               <Text style={styles.oRouteText}>
                 {item.hasPreferredProvider ? 'Awaiting Courier' : 'Find Courier'}
@@ -1546,7 +1546,7 @@ export default function ActivityScreen() {
             <View style={styles.emptyContainer}>
               {deliveries.length === 0 ? (
                 <View style={styles.emptyIconCircle}>
-                  <PhIcon name="Cube" size={30} color={colors.accent} weight="fill" />
+                  <SolarIcon name="Package" variant="duotone" size={32} />
                 </View>
               ) : (
                 <Image 
@@ -1637,14 +1637,14 @@ export default function ActivityScreen() {
           onPress={() => setSelectedId(null)}
           activeOpacity={0.85}
         >
-          <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} weight="bold" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]}
           onPress={() => setShowFullMap(true)}
           activeOpacity={0.85}
         >
-          <PhIcon name="ArrowsOut" size={20} color={colors.textPrimary} weight="bold" />
+          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <ScrollView
@@ -1662,7 +1662,7 @@ export default function ActivityScreen() {
                 dropoffLng={d.coords.dropoff.longitude}
                 padTop={insets.top + 70}
                 padBottom={60}
-                userInterfaceStyle="light" // ✅ FIX: Force light theme
+                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1683,7 +1683,7 @@ export default function ActivityScreen() {
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 style={styles.trackTextCopy}
               >
-                <PhIcon name={copied ? 'CheckCircle' : 'Copy'} size={16} color={colors.accent} weight={copied ? 'fill' : 'bold'} />
+                <SolarIcon name={copied ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1702,7 +1702,7 @@ export default function ActivityScreen() {
                       <View style={styles.stepLineRow}>
                         <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <PhIcon name="Check" size={14} color="#FFFFFF" weight="bold" />
+                          {done ? <SolarIcon name="Check" variant="linear" size={14} color="#FFFFFF" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
                         <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
@@ -1717,7 +1717,7 @@ export default function ActivityScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <PhIcon name="XCircle" size={22} color={colors.error} weight="fill" />
+                  <SolarIcon name="CloseCircle" variant="duotone" size={22} color={colors.error} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1728,7 +1728,7 @@ export default function ActivityScreen() {
               </View>
             ) : isCompleted ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><PhIcon name="Check" size={20} color={colors.success} weight="bold" /></View>
+                <View style={styles.doneIcon}><SolarIcon name="Check" variant="linear" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1739,7 +1739,7 @@ export default function ActivityScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <PhIcon name={d.hasPreferredProvider && !d.isMatched ? 'Hourglass' : 'Info'} size={18} color={colors.accent} weight="fill" />
+                <SolarIcon name={d.hasPreferredProvider && !d.isMatched ? 'Hourglass' : 'Info'} variant="duotone" size={18} color={colors.accent} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
@@ -1782,10 +1782,10 @@ export default function ActivityScreen() {
             {!!podPhotoUrl && (
               <>
                 <View style={styles.dSecHead}>
-                  <PhIcon name="ShieldCheck" size={17} color={colors.success} weight="fill" />
+                  <SolarIcon name="ShieldCheck" variant="duotone" size={18} color={colors.success} />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                   <View style={[styles.sdRatedBadge, { backgroundColor: colors.successBg }]}>
-                    <PhIcon name="CheckCircle" size={12} color={colors.success} weight="fill" />
+                    <SolarIcon name="CheckCircle" variant="linear" size={12} color={colors.success} />
                     <Text style={[styles.sdRatedBadgeText, { color: colors.success }]}>Verified</Text>
                   </View>
                 </View>
@@ -1801,7 +1801,7 @@ export default function ActivityScreen() {
                   />
                   <View style={styles.podPhotoOverlay}>
                     <View style={styles.podPhotoBadge}>
-                      <PhIcon name="ArrowsOut" size={13} color="#FFFFFF" weight="bold" />
+                      <SolarIcon name="Maximize" variant="linear" size={13} color="#FFFFFF" />
                       <Text style={styles.podPhotoBadgeText}>Tap to view full photo</Text>
                     </View>
                     {!!d.deliveryData?.completed_at && (
@@ -1815,7 +1815,7 @@ export default function ActivityScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <PhIcon name="Images" size={17} color={colors.accent} weight="fill" />
+                  <SolarIcon name="Gallery" variant="duotone" size={18} />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1834,7 +1834,7 @@ export default function ActivityScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <PhIcon name="Cube" size={17} color={colors.accent} weight="fill" />
+              <SolarIcon name="Package" variant="duotone" size={18} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {d.cargo_items.length > 0 && (
@@ -1907,11 +1907,11 @@ export default function ActivityScreen() {
             {!isCancelled && (
               <>
                 <View style={styles.dSecHead}>
-                  <PhIcon name="Star" size={17} color={colors.accent} weight="fill" />
+                  <SolarIcon name="Star" variant="duotone" size={18} color={colors.accent} />
                   <Text style={styles.dSecTitle}>Rate Your Courier</Text>
                   {!!ratingSaved && (
                     <View style={styles.sdRatedBadge}>
-                      <PhIcon name="CheckCircle" size={12} color={colors.accent} weight="fill" />
+                      <SolarIcon name="CheckCircle" variant="linear" size={12} color={colors.accent} />
                       <Text style={styles.sdRatedBadgeText}>Rated</Text>
                     </View>
                   )}
@@ -1926,9 +1926,9 @@ export default function ActivityScreen() {
                         activeOpacity={0.7}
                         hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
                       >
-                        <PhIcon
+                        <SolarIcon
                           name="Star"
-                          weight={n <= shownRating ? 'fill' : 'regular'}
+                          variant={n <= shownRating ? 'duotone' : 'linear'}
                           size={36}
                           color={n <= shownRating ? colors.accent : (isDark ? '#5A3418' : '#FFC9A3')}
                         />
@@ -1942,7 +1942,7 @@ export default function ActivityScreen() {
                     </Text>
                   ) : (
                     <View style={styles.sdLockedNote}>
-                      <PhIcon name="LockSimple" size={12} color={colors.textMuted} weight="bold" />
+                      <SolarIcon name="Lock" variant="linear" size={14} color={colors.textMuted} />
                       <Text style={styles.sdLockedNoteText}>
                         {d.isMatched ? 'You can rate once the delivery is completed.' : 'Available after a courier is assigned.'}
                       </Text>
@@ -2014,12 +2014,12 @@ export default function ActivityScreen() {
               <View style={styles.detailActionsRow}>
                 {!d.isMatched && (
                   <TouchableOpacity style={styles.editBtn} onPress={() => openEditModal(d)} activeOpacity={0.9}>
-                    <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
+                    <SolarIcon name="Pen" variant="linear" size={16} color={colors.accent} />
                     <Text style={styles.editBtnText}>Edit Details</Text>
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity style={styles.sdCancelBtn} onPress={() => handleCancelDelivery(d.rawData)} activeOpacity={0.9}>
-                  <PhIcon name="XCircle" size={16} color={colors.error} weight="bold" />
+                  <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
                   <Text style={styles.sdCancelBtnText}>Cancel Booking</Text>
                 </TouchableOpacity>
               </View>
@@ -2036,14 +2036,14 @@ export default function ActivityScreen() {
               disabled={openingChat}
               activeOpacity={0.85}
             >
-              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <PhIcon name="ChatCircleDots" size={20} color={colors.accent} weight="bold" />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <SolarIcon name="ChatCircleText" variant="linear" size={20} color={colors.accent} />}
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mSoftBtn, { flex: 1 }]}
               onPress={() => openLiveTrack(d)}
               activeOpacity={0.85}
             >
-              <PhIcon name="NavigationArrow" size={16} color={colors.accent} weight="fill" />
+              <SolarIcon name="Routing" variant="linear" size={16} color={colors.accent} />
               <Text style={styles.mSoftText}>Live Track</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -2051,7 +2051,7 @@ export default function ActivityScreen() {
               onPress={() => (stage === 'pickup' ? setShowPickupQR(true) : setShowDeliveryOTP(true))}
               activeOpacity={0.9}
             >
-              <PhIcon name={stage === 'pickup' ? 'QrCode' : 'Key'} size={18} color="#FFFFFF" weight="bold" />
+              <SolarIcon name={stage === 'pickup' ? 'Maximize' : 'Key'} variant="linear" size={18} color="#FFFFFF" />
               <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Pickup QR' : 'Delivery OTP'}</Text>
             </TouchableOpacity>
           </View>
@@ -2064,7 +2064,7 @@ export default function ActivityScreen() {
               onPress={() => openEditModal(d)}
               activeOpacity={0.85}
             >
-              <PhIcon name="PencilSimple" size={16} color={colors.accent} weight="bold" />
+              <SolarIcon name="Pen" variant="linear" size={16} color={colors.accent} />
               <Text style={styles.mSoftText}>Edit Request</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -2076,11 +2076,11 @@ export default function ActivityScreen() {
               }
               activeOpacity={0.9}
             >
-              <PhIcon
-                name={d.hasPreferredProvider ? 'NavigationArrow' : 'MagnifyingGlass'}
+              <SolarIcon
+                name={d.hasPreferredProvider ? 'Routing' : 'Magnifier'}
+                variant="linear"
                 size={18}
                 color="#FFFFFF"
-                weight="bold"
               />
               <Text style={styles.mPrimaryText}>
                 {d.hasPreferredProvider ? 'Track Provider' : 'Find Courier'}
@@ -2114,7 +2114,7 @@ export default function ActivityScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Edit Shipment #{trackingCode(editTarget.request_id)}</Text>
               <TouchableOpacity onPress={() => setEditModalVisible(false)}>
-                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             <Text style={[styles.modalSubtitle, { textAlign: 'left', marginBottom: 14 }]}>
@@ -2172,7 +2172,7 @@ export default function ActivityScreen() {
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
-                  <PhIcon name="CheckCircle" size={18} color="#FFFFFF" weight="fill" />
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
                   <Text style={styles.mPrimaryText}>Save Changes</Text>
                 </>
               )}
@@ -2184,7 +2184,7 @@ export default function ActivityScreen() {
                 onPress={() => handleOpenFullEditWizard(editTarget)}
                 activeOpacity={0.85}
               >
-                <PhIcon name="MapTrifold" size={16} color={colors.accent} weight="bold" />
+                <SolarIcon name="MapPoint" variant="linear" size={16} color={colors.accent} />
                 <Text style={styles.mSoftText}>Change Route / Package Items</Text>
               </TouchableOpacity>
             )}
@@ -2211,14 +2211,14 @@ export default function ActivityScreen() {
             dropoffLng={selectedDelivery.coords.dropoff.longitude}
             padTop={100}
             padBottom={260}
-            userInterfaceStyle="light" // ✅ FIX: Force light theme
+            userInterfaceStyle="light" 
           />
           <TouchableOpacity
             style={[styles.mapCloseBtn, { top: insets.top + 12 }]}
             onPress={() => setShowFullMap(false)}
             activeOpacity={0.85}
           >
-            <PhIcon name="ArrowLeft" size={20} color={colors.textPrimary} weight="bold" />
+            <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -2246,7 +2246,7 @@ export default function ActivityScreen() {
                 }}
                 activeOpacity={0.9}
               >
-                <PhIcon name="NavigationArrow" size={16} color="#FFFFFF" weight="fill" />
+                <SolarIcon name="Routing" variant="linear" size={16} color="#FFFFFF" />
                 <Text style={styles.mPrimaryText}>Open Live Tracking</Text>
               </TouchableOpacity>
             )}
@@ -2263,7 +2263,7 @@ export default function ActivityScreen() {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Pickup Verification</Text>
             <TouchableOpacity onPress={() => setShowPickupQR(false)}>
-              <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
+              <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
           <Text style={styles.modalSubtitle}>
@@ -2328,7 +2328,7 @@ export default function ActivityScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Delivery OTP</Text>
               <TouchableOpacity onPress={() => setShowDeliveryOTP(false)}>
-                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -2340,7 +2340,7 @@ export default function ActivityScreen() {
 
             {verified ? (
               <View style={styles.verifiedBox}>
-                <PhIcon name="CheckCircle" size={40} color={colors.success} weight="fill" />
+                <SolarIcon name="CheckCircle" variant="duotone" size={40} color={colors.success} />
                 <Text style={styles.verifiedText}>Verified & Completed</Text>
               </View>
             ) : (
@@ -2352,13 +2352,13 @@ export default function ActivityScreen() {
 
                 {!!receiverPhone && (
                   <TouchableOpacity style={styles.otpSendBtn} onPress={sendSMS} disabled={!otp} activeOpacity={0.9}>
-                    <PhIcon name="PaperPlaneTilt" size={16} color="#FFF" weight="fill" />
+                    <SolarIcon name="PaperPlane" variant="linear" size={16} color="#FFF" />
                     <Text style={styles.otpSendBtnText}>Send SMS to {receiverName}</Text>
                   </TouchableOpacity>
                 )}
 
                 <TouchableOpacity style={styles.otpCopyBtn} onPress={copySMS} disabled={!otp} activeOpacity={0.85}>
-                  <PhIcon name="Copy" size={16} color={colors.accent} weight="bold" />
+                  <SolarIcon name="Copy" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.otpCopyBtnText}>Copy message</Text>
                 </TouchableOpacity>
               </>
@@ -2384,7 +2384,7 @@ export default function ActivityScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{item ? pkgCount(item) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgItem(null)} hitSlop={10}>
-                <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -2415,7 +2415,7 @@ export default function ActivityScreen() {
           onPress={() => setPhotoPreview(null)}
           activeOpacity={0.85}
         >
-          <PhIcon name="X" size={22} color="#FFFFFF" weight="bold" />
+          <SolarIcon name="CloseCircle" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -2448,40 +2448,45 @@ export default function ActivityScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
   headerSection: {
-    paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    paddingHorizontal: 24, paddingBottom: 16,
+    backgroundColor: c.background,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  tabBarScroll: { gap: 8, paddingTop: 14 },
+  pageTitle: { 
+    fontSize: 26, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.3 
+  },
+  tabBarScroll: { gap: 8, paddingTop: 16 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
   },
   tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1.5 },
-  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: c.accent },
+  tabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
   tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  tabCountText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
-  bottomSpacer: { height: 60 },
+  bottomSpacer: { height: 80 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  emptyIconCircle: { width: 72, height: 72, borderRadius: 36, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 20 },
 
   /* Shared Card & Route Styles */
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
-  stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: BLUE },
+  stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
 
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
@@ -2490,20 +2495,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  rtLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 2 },
+  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
-  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
+  sdNoteText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', lineHeight: 17, color: c.textPrimary },
 
   /* Completed Card POD Banner */
   cardPodBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     marginTop: 14,
-    padding: 10,
-    borderRadius: 14,
+    padding: 12,
+    borderRadius: 12,
     backgroundColor: c.successBg,
     borderWidth: 1,
     borderColor: c.success,
@@ -2515,55 +2520,57 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.card,
   },
   cardPodTitle: {
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
     color: c.success,
   },
   cardPodSub: {
-    fontSize: 11,
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
     color: c.textSecondary,
     marginTop: 2,
   },
 
+  // ✅ Atome Card Style
   oCard: { 
-    backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 10, elevation: 3,
+    backgroundColor: c.card, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
-  oPad: { padding: 16 },
-  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  oPad: { padding: 20 },
+  oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
   
-  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
+  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 16 },
   mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
-  mcRoleSmall: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcNameSmall: { fontSize: 13, fontWeight: '800', color: c.textPrimary },
-  mcSubBadgeSmall: { fontSize: 10, fontWeight: '700', color: BLUE, marginTop: 1 },
-  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
+  mcAvatarSmall: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_700Bold' },
+  mcRoleSmall: { fontSize: 9, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.4 },
+  mcNameSmall: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  mcSubBadgeSmall: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: BLUE, marginTop: 1 },
+  mcCallSmall: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  mCancelledText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.error, marginTop: 12 },
 
-  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
-  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
-  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: c.accent, fontSize: 14, fontWeight: '800' },
-  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
-  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 20, paddingVertical: 16, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  oPrice: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flexShrink: 0 },
+  oActions: { flexDirection: 'row', gap: 12, padding: 16, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)' },
+  oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 16 },
+  oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 16 },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 
   /* Detail View Styles */
   dMap: { overflow: 'hidden' },
-  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
-  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
+  dRoundBtn: { position: 'absolute', width: 44, height: 44, borderRadius: 22, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2, zIndex: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 24, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: c.accent, marginTop: 2 },
-  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: c.accent },
+  dCode: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
+  dWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
+  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  trackTextCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
-  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginTop: 14, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
+  stepper: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 12, paddingVertical: 16, paddingHorizontal: 8, marginTop: 16, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
@@ -2571,39 +2578,39 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
   stepDotCurrent: { borderColor: c.accent },
   stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
-  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 8, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
   cancelBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
-    borderRadius: 20, padding: 16, marginBottom: 14,
+    borderRadius: 12, padding: 16, marginBottom: 16,
   },
   cancelBannerIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  cancelBannerTitle: { fontSize: 15, fontWeight: '800', color: c.error },
-  cancelBannerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  cancelBannerTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.error },
+  cancelBannerSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
   doneCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: c.successBg,
-    borderWidth: 1, borderColor: c.success, borderRadius: 20, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success, borderRadius: 12, padding: 16, marginBottom: 16,
   },
   doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
-  doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  doneTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.success },
+  doneSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 4 },
-  dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
+  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 14, marginTop: 4 },
+  dHintText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, color: c.textPrimary },
 
-  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
-  dSecTitle: { flex: 1, fontSize: 16, fontWeight: '900', color: c.textPrimary },
-  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
+  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
+  dSecTitle: { flex: 1, fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
 
   /* Proof of Delivery Card Styles */
   podPhotoCard: {
     width: '100%',
     height: 200,
-    borderRadius: 18,
+    borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: c.background,
     borderWidth: 1.5,
@@ -2623,154 +2630,152 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: 'rgba(17,24,39,0.72)',
   },
   podPhotoBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  podPhotoBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  podPhotoTime: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '600' },
+  podPhotoBadgeText: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
+  podPhotoTime: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontFamily: 'Poppins_500Medium' },
 
-  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
-  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
-  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
-  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
-  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
-  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
+  pkgCard: { backgroundColor: c.card, borderRadius: 16, padding: 24 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  pkgTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  pkgSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
-  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
+  tileLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 6 },
 
-  sdCardInner: { backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 16, padding: 16 },
+  sdCardInner: { backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
   tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingBottom: 14 },
-  tlTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  tlSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  tlTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tlSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
   /* Rating Styles */
   sdRatedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.accentSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  sdRatedBadgeText: { fontSize: 10, fontWeight: '800', color: c.accent },
+  sdRatedBadgeText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.accent },
   sdStarsRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginVertical: 4 },
-  sdRatingLabel: { textAlign: 'center', fontSize: 14, fontWeight: '800', color: c.accent, marginTop: 8 },
+  sdRatingLabel: { textAlign: 'center', fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 8 },
   sdLockedNote: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 10 },
-  sdLockedNoteText: { fontSize: 12, color: c.textMuted, fontWeight: '600' },
+  sdLockedNoteText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textMuted },
   sdTagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
-  sdTag: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: c.border, backgroundColor: c.card },
+  sdTag: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card },
   sdTagOn: { backgroundColor: c.accentSoft, borderColor: c.accent },
-  sdTagText: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
+  sdTagText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   sdTagTextOn: { color: c.accent },
   sdCommentInput: {
-    marginTop: 14, minHeight: 74, borderWidth: 1, borderColor: c.border, borderRadius: 14,
-    paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12, fontSize: 13, color: c.textPrimary,
+    marginTop: 14, minHeight: 74, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
     backgroundColor: c.card, textAlignVertical: 'top',
   },
   sdThanks: { marginTop: 4 },
-  sdThanksComment: { marginTop: 12, fontSize: 13, color: c.textSecondary, fontStyle: 'italic', textAlign: 'center' },
-  sdThanksText: { marginTop: 10, textAlign: 'center', fontSize: 12, fontWeight: '700', color: c.textMuted },
+  sdThanksComment: { marginTop: 12, fontSize: 13, fontFamily: 'Poppins_400Regular', fontStyle: 'italic', textAlign: 'center', color: c.textSecondary },
+  sdThanksText: { marginTop: 10, textAlign: 'center', fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textMuted },
 
   /* Edit & Cancel Actions */
-  detailActionsRow: { flexDirection: 'row', gap: 10, marginTop: 22 },
+  detailActionsRow: { flexDirection: 'row', gap: 12, marginTop: 24 },
   editBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 14,
   },
-  editBtnText: { color: c.accent, fontWeight: '800', fontSize: 14 },
+  editBtnText: { color: c.accent, fontFamily: 'Poppins_700Bold', fontSize: 14 },
   sdCancelBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 14, borderRadius: 14, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
   },
-  sdCancelBtnText: { color: c.error, fontWeight: '800', fontSize: 14 },
+  sdCancelBtnText: { color: c.error, fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   /* Edit Modal Styles */
   editFieldLabel: {
-    fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8, marginBottom: 6, marginTop: 8,
+    fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8, marginBottom: 6, marginTop: 10,
   },
   editInput: {
-    borderWidth: 1.5, borderColor: c.border, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 11, fontSize: 14, color: c.textPrimary,
-    backgroundColor: c.background, fontWeight: '600', marginBottom: 6,
+    borderWidth: 1.5, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
+    backgroundColor: c.background, marginBottom: 6,
   },
 
   /* Bottom Sticky Bar */
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
-  dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 13, borderRadius: 14 },
-  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
-  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 13, borderRadius: 14 },
-  mSoftText: { color: c.accent, fontSize: 13, fontWeight: '800' },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dBarIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 14, borderRadius: 12 },
+  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 12 },
+  mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
 
   /* Full Map Modal */
   mapCloseBtn: {
-    position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
+    position: 'absolute', left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
-    shadowRadius: 8, elevation: 6, borderWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.1, shadowRadius: 4, elevation: 2, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
+    borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 24, paddingTop: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
-    shadowRadius: 12, elevation: 12, borderTopWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.05, shadowRadius: 8, elevation: 4, borderTopWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
   sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
-  sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
-  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
-  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+  sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
+  eyebrow: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 1 },
+  sdRouteMain: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 16 },
 
   /* Photo Preview Modal */
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
   },
 
   /* Pickup QR & Delivery OTP Modals */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalCard: { width: '100%', maxWidth: 360, backgroundColor: c.card, borderRadius: 24, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: c.border },
-  modalHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
-  modalSubtitle: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginBottom: 16, lineHeight: 18 },
-  qrWrap: { width: 216, height: 216, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border, borderRadius: 16, marginBottom: 16, backgroundColor: '#FFFFFF', padding: 8 },
-  modalDoneBtn: { width: '100%', backgroundColor: c.textPrimary, paddingVertical: 14, borderRadius: 14, alignItems: 'center', marginTop: 8 },
-  modalDoneBtnText: { color: c.card, fontWeight: '800', fontSize: 14 },
+  modalCard: { width: '100%', maxWidth: 360, backgroundColor: c.card, borderRadius: 16, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  modalHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  modalTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  modalSubtitle: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginBottom: 16, lineHeight: 20 },
+  qrWrap: { width: 216, height: 216, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 16, marginBottom: 16, backgroundColor: '#FFFFFF', padding: 8 },
+  modalDoneBtn: { width: '100%', backgroundColor: c.textPrimary, paddingVertical: 16, borderRadius: 12, alignItems: 'center', marginTop: 8 },
+  modalDoneBtnText: { color: c.card, fontFamily: 'Poppins_700Bold', fontSize: 15 },
   verifiedBox: { alignItems: 'center', paddingVertical: 20, marginBottom: 14 },
-  verifiedText: { fontSize: 15, fontWeight: '800', color: c.success, marginTop: 8 },
+  verifiedText: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.success, marginTop: 12 },
 
   pinRevealBox: {
-    width: '100%', backgroundColor: c.accentSoft, borderRadius: 16,
+    width: '100%', backgroundColor: c.accentSoft, borderRadius: 12,
     borderWidth: 1.5, borderColor: c.accent,
     paddingVertical: 16, paddingHorizontal: 16, alignItems: 'center', marginBottom: 12,
   },
-  pinRevealLabel: { fontSize: 10, fontWeight: '800', color: c.accent, letterSpacing: 1.2, marginBottom: 6 },
-  pinRevealValue: { fontSize: 32, fontWeight: '900', color: c.textPrimary, letterSpacing: 10 },
-  pinRevealHint: { fontSize: 11, color: c.textSecondary, marginTop: 8, textAlign: 'center', fontWeight: '600' },
+  pinRevealLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.accent, letterSpacing: 1.2, marginBottom: 6 },
+  pinRevealValue: { fontSize: 32, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 10 },
+  pinRevealHint: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 8, textAlign: 'center' },
 
   otpBigBox: {
     backgroundColor: c.accentSoft, borderWidth: 2, borderColor: c.accent,
-    borderRadius: 16, paddingVertical: 20, paddingHorizontal: 16,
+    borderRadius: 12, paddingVertical: 20, paddingHorizontal: 16,
     alignItems: 'center', marginBottom: 16, width: '100%',
   },
-  otpBigLabel: { fontSize: 10, fontWeight: '800', color: c.accent, letterSpacing: 1, marginBottom: 8 },
-  otpBigValue: { fontSize: 34, fontWeight: '900', color: c.textPrimary, letterSpacing: 6 },
+  otpBigLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.accent, letterSpacing: 1, marginBottom: 8 },
+  otpBigValue: { fontSize: 34, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 6 },
   otpSendBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14,
+    backgroundColor: c.accent, borderRadius: 12, paddingVertical: 14,
     marginBottom: 10, width: '100%',
   },
-  otpSendBtnText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
+  otpSendBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
   otpCopyBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 12, width: '100%',
+    backgroundColor: c.accentSoft, borderRadius: 12, paddingVertical: 12, width: '100%',
     borderWidth: 1.5, borderColor: c.accent, marginBottom: 4,
   },
-  otpCopyBtnText: { color: c.accent, fontSize: 13, fontWeight: '800' },
+  otpCopyBtnText: { color: c.accent, fontFamily: 'Poppins_600SemiBold', fontSize: 14 },
 });

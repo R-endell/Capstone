@@ -15,8 +15,12 @@ import { supabase } from '../../../utils/supabase';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
-
 import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../components/ui/SolarIcon'; 
+
+// 🚨 YOUR 3D ASSETS 🚨
+const ICON_3D_SEND = require('../../../../assets/package-icon.png');
+const ICON_3D_SCHEDULE = require('../../../../assets/schedule-icon.png');
 
 type Notif = NotifRow;
 
@@ -147,7 +151,7 @@ function BannerCarousel({ colors, navigation }: { colors: ThemeColors; navigatio
               style={{ 
                 width: cardW, 
                 height: cardH, 
-                borderRadius: 18, 
+                borderRadius: 12, 
                 overflow: 'hidden',
               }}
               accessible 
@@ -163,7 +167,7 @@ function BannerCarousel({ colors, navigation }: { colors: ThemeColors; navigatio
           );
         }}
       />
-      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 6, marginTop: 12 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 6, marginTop: 14 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
         {BANNERS.map((_, i) => {
           const inputRange = [(i - 1) * snap, i * snap, (i + 1) * snap];
           const width = scrollX.interpolate({ inputRange, outputRange: [6, 18, 6], extrapolate: 'clamp' });
@@ -196,11 +200,14 @@ export default function HomeScreen() {
   const notifChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [openItem, setOpenItem] = useState<string | null>(null);
 
-  // --- Animation Values for the Star Drift ---
+  const [activeDelivery, setActiveDelivery] = useState<any>(null);
+  const [loadingActive, setLoadingActive] = useState(true);
+  
+  const [actionSheetOpen, setActionSheetOpen] = useState(false);
+
   const driftY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // A very slow, subtle breathing motion for the starfield
     const driftAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(driftY, { toValue: -8, duration: 10000, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
@@ -226,6 +233,46 @@ export default function HomeScreen() {
     return () => { active = false; };
   }, []);
 
+  const fetchActiveDelivery = useCallback(async () => {
+    if (!myId) return;
+    try {
+      setLoadingActive(true);
+      const { data, error } = await supabase
+        .from('delivery_requests')
+        .select(`
+          request_id, delivery_status, pickup_type, estimated_cost,
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey(street_address),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(street_address),
+          deliveries(delivery_id, accepted_at)
+        `)
+        .eq('sender_id', myId)
+        .in('delivery_status', ['Pending', 'Accepted', 'In Transit'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        setActiveDelivery(data[0]);
+      } else {
+        setActiveDelivery(null);
+      }
+    } catch (e) {
+      console.warn('Error fetching active delivery', e);
+    } finally {
+      setLoadingActive(false);
+    }
+  }, [myId]);
+
+  useEffect(() => {
+    if (myId) fetchActiveDelivery();
+  }, [myId, fetchActiveDelivery]);
+
+  useFocusEffect(useCallback(() => { 
+    if (myId) {
+      loadNotifs(); 
+      fetchActiveDelivery();
+    }
+  }, [myId]));
+
   const loadNotifs = useCallback(async () => {
     if (!myId) { setNotifLoading(false); return; }
     setNotifLoading(true);
@@ -239,7 +286,6 @@ export default function HomeScreen() {
   }, [myId]);
 
   useEffect(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]);
-  useFocusEffect(useCallback(() => { if (myId) loadNotifs(); }, [myId, loadNotifs]));
 
   useEffect(() => {
     if (!myId) return;
@@ -254,19 +300,19 @@ export default function HomeScreen() {
   }, [myId, loadNotifs]);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
-  const helpAnim = useRef(new Animated.Value(0)).current;
+  const contentAnim = useRef(new Animated.Value(0)).current;
   const bellPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) => Animated.timing(value, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
-    Animated.stagger(80, [animate(headerAnim, 0), animate(helpAnim, 0)]).start();
+    Animated.stagger(80, [animate(headerAnim, 0), animate(contentAnim, 0)]).start();
     const pulse = Animated.loop(Animated.sequence([
       Animated.timing(bellPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       Animated.timing(bellPulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
     ]));
     pulse.start();
     return () => pulse.stop();
-  }, [headerAnim, helpAnim, bellPulse]);
+  }, [headerAnim, contentAnim, bellPulse]);
 
   const handleOpenNotifs = () => { setNotifModalOpen(true); loadNotifs(); };
 
@@ -300,7 +346,7 @@ export default function HomeScreen() {
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>Notifications</Text>
             <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
-              <PhIcon name="X" size={22} color={colors.textPrimary} />
+              <PhIcon name="X" size={22} color={colors.textPrimary} weight="bold" />
             </TouchableOpacity>
           </View>
           {notifLoading ? (
@@ -314,7 +360,7 @@ export default function HomeScreen() {
               contentContainerStyle={{ paddingBottom: 8 }}
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
-                  <View style={styles.notifIcon}><PhIcon name={iconForType(item.type) as any} size={18} color={colors.accent} /></View>
+                  <View style={styles.notifIcon}><PhIcon name={iconForType(item.type) as any} size={18} color={colors.accent} weight="fill" /></View>
                   <View style={{ flex: 1 }}>
                     <View style={styles.notifTitleRow}>
                       <Text style={styles.notifTitle} numberOfLines={1}>{titleForType(item.type, item.title)}</Text>
@@ -323,14 +369,14 @@ export default function HomeScreen() {
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
                     <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
-                  <PhIcon name="CaretRight" size={16} color={colors.textMuted} />
+                  <PhIcon name="CaretRight" size={16} color={colors.textMuted} weight="bold" />
                 </TouchableOpacity>
               )}
             />
           )}
           <TouchableOpacity style={styles.modalFooter} onPress={() => { setNotifModalOpen(false); setFullListOpen(true); }} activeOpacity={0.85}>
             <Text style={styles.modalFooterText}>See all in Notifications</Text>
-            <PhIcon name="ArrowRight" size={16} color={colors.accent} />
+            <PhIcon name="ArrowRight" size={16} color={colors.accent} weight="bold" />
           </TouchableOpacity>
         </View>
       </Pressable>
@@ -342,7 +388,7 @@ export default function HomeScreen() {
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <View style={styles.fullListHeader}>
           <TouchableOpacity onPress={() => setFullListOpen(false)} style={styles.fullListBackBtn} activeOpacity={0.7} hitSlop={10}>
-            <PhIcon name="CaretLeft" size={24} color={colors.textPrimary} />
+            <PhIcon name="CaretLeft" size={24} color={colors.textPrimary} weight="bold" />
           </TouchableOpacity>
           <Text style={styles.fullListTitle}>Notifications</Text>
           <View style={{ width: 32 }} />
@@ -352,80 +398,94 @@ export default function HomeScreen() {
     </Modal>
   );
 
-  // Highly layered star field with micro-dust, mid-stars, and glowing hero stars
   const stars = useMemo(() => {
     const arr = [];
     for (let i = 0; i < 220; i++) {
       const isHero = Math.random() > 0.95; 
       const isMid = !isHero && Math.random() > 0.25; 
-      
-      let r = 0;
-      let opacity = 0;
-      
-      if (isHero) {
-        r = Math.random() * 0.3 + 0.25;
-        opacity = Math.random() * 0.3 + 0.6;
-      } else if (isMid) {
-        r = Math.random() * 0.2 + 0.01;
-        opacity = Math.random() * 0.2 + 0.2;
-      } else {
-        r = Math.random() * 0.01 + 0.25;
-        opacity = Math.random() * 0.1 + 0.05;
-      }
-      
-      arr.push({
-        cx: `${Math.random() * 100}%`,
-        cy: `${Math.random() * 65}%`,
-        r,
-        opacity,
-        hasGlow: isHero,
-        glowR: isHero ? r * 2 : 0, 
-      });
+      let r = 0; let opacity = 0;
+      if (isHero) { r = Math.random() * 0.3 + 0.25; opacity = Math.random() * 0.3 + 0.6; } 
+      else if (isMid) { r = Math.random() * 0.2 + 0.01; opacity = Math.random() * 0.2 + 0.2; } 
+      else { r = Math.random() * 0.01 + 0.25; opacity = Math.random() * 0.1 + 0.05; }
+      arr.push({ cx: `${Math.random() * 100}%`, cy: `${Math.random() * 65}%`, r, opacity, hasGlow: isHero, glowR: isHero ? r * 2 : 0 });
     }
     return arr;
   }, []);
+
+  const renderActionSheet = () => (
+    <Modal visible={actionSheetOpen} transparent animationType="slide" onRequestClose={() => setActionSheetOpen(false)}>
+      <Pressable style={styles.actionBackdrop} onPress={() => setActionSheetOpen(false)}>
+        <Pressable style={styles.actionSheetCard} onPress={() => { /* swallow */ }}>
+          <View style={styles.actionHandle} />
+          <Text style={styles.actionTitle}>What would you like to do?</Text>
+          
+          <TouchableOpacity 
+            style={styles.actionCardPrimary} 
+            onPress={() => { setActionSheetOpen(false); navigation.navigate('SendNowIntro'); }}
+            activeOpacity={0.9}
+          >
+            <View style={styles.primaryIconBox}>
+              <Image source={ICON_3D_SEND} style={styles.actionIcon3D} resizeMode="contain" />
+            </View>
+            <View style={styles.actionTextWrap}>
+              <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
+              <Text style={styles.actionSubPrimary}>Instant booking & real-time tracking</Text>
+            </View>
+            <View style={styles.primaryArrowBox}>
+              <PhIcon name="CaretRight" size={18} color="#FFFFFF" weight="bold" />
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.actionCardSecondary} 
+            onPress={() => { setActionSheetOpen(false); navigation.navigate('ScheduleIntro'); }}
+            activeOpacity={0.9}
+          >
+            <View style={styles.secondaryIconBox}>
+              <Image source={ICON_3D_SCHEDULE} style={styles.actionIcon3D} resizeMode="contain" />
+            </View>
+            <View style={styles.actionTextWrap}>
+              <Text style={styles.actionTitleSecondary}>Schedule a Delivery</Text>
+              <Text style={styles.actionSubSecondary}>Plan shipments for a future date</Text>
+            </View>
+            <PhIcon name="CaretRight" size={18} color={colors.textMuted} weight="bold" style={{ marginLeft: 8 }} />
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.actionCancelBtn} onPress={() => setActionSheetOpen(false)} activeOpacity={0.8}>
+            <Text style={styles.actionCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle={isNightTime ? "light-content" : "dark-content"} backgroundColor="transparent" translucent />
       
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <View style={styles.heroSection}>
           
-          {/* STATIC GRADIENT BACKGROUND */}
           <View style={StyleSheet.absoluteFill} pointerEvents="none">
             <Svg height="100%" width="100%">
               <Defs>
                 <LinearGradient id="baseGrad" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : "colors.background"} stopOpacity="0.9" />
-                  <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : "colors.background"} stopOpacity="0.9" />
+                  <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : colors.background} stopOpacity="0.9" />
+                  <Stop offset="0.1" stopColor={isNightTime ? "#0F172A" : colors.background} stopOpacity="0.9" />
                   <Stop offset="1" stopColor={colors.background} stopOpacity="0.1" />
                 </LinearGradient>
-
                 <RadialGradient id="glow" cx="100%" cy="5%" r="60%" fx="30%" fy="10%">
                   <Stop offset="0" stopColor={colors.accent} stopOpacity={isNightTime ? "0.2" : "0"} />
                   <Stop offset="1" stopColor={colors.accent} stopOpacity="0" />
                 </RadialGradient>
               </Defs>
-              
               <Rect width="100%" height="100%" fill="url(#baseGrad)" />
               <Rect width="100%" height="100%" fill="url(#glow)" />
             </Svg>
           </View>
 
-          {/* ANIMATED STARFIELD LAYER */}
           {isNightTime && (
-            <Animated.View 
-              style={[
-                StyleSheet.absoluteFill, 
-                { transform: [{ translateY: driftY }] } // Subtle drift applied here
-              ]} 
-              pointerEvents="none"
-            >
-              {/* We make the SVG slightly larger (110%) so it doesn't show blank edges when drifting */}
+            <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ translateY: driftY }] }]} pointerEvents="none">
               <Svg height="110%" width="110%" viewBox="0 0 100 100" style={{ marginLeft: '-5%', marginTop: '-5%' }}>
                 <Defs>
                   <RadialGradient id="starGlow" cx="50%" cy="50%" r="50%">
@@ -434,24 +494,10 @@ export default function HomeScreen() {
                     <Stop offset="1" stopColor="#FFFFFF" stopOpacity="0" />
                   </RadialGradient>
                 </Defs>
-                
                 {stars.map((star, i) => (
                   <G key={i}>
-                    {star.hasGlow && (
-                      <Circle 
-                        cx={star.cx} 
-                        cy={star.cy} 
-                        r={star.glowR} 
-                        fill="url(#starGlow)" 
-                      />
-                    )}
-                    <Circle 
-                      cx={star.cx} 
-                      cy={star.cy} 
-                      r={star.r} 
-                      fill="#FFFFFF" 
-                      opacity={star.opacity} 
-                    />
+                    {star.hasGlow && <Circle cx={star.cx} cy={star.cy} r={star.glowR} fill="url(#starGlow)" />}
+                    <Circle cx={star.cx} cy={star.cy} r={star.r} fill="#FFFFFF" opacity={star.opacity} />
                   </G>
                 ))}
               </Svg>
@@ -466,7 +512,7 @@ export default function HomeScreen() {
             
             <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }} pointerEvents="box-none">
               <TouchableOpacity style={[styles.glassBell, { backgroundColor: isNightTime ? 'rgba(255,255,255,0.08)' : colors.card }]} onPress={handleOpenNotifs} activeOpacity={0.8} hitSlop={8}>
-                <PhIcon name="Bell" size={22} color={isNightTime ? '#FFFFFF' : colors.textPrimary} />
+                <PhIcon name="Bell" size={22} color={isNightTime ? '#FFFFFF' : colors.textPrimary} weight="regular" />
                 {unreadCount > 0 && (
                   <View style={styles.notificationBadge}>
                     {unreadCount <= 9 && (<Text style={styles.notificationBadgeText}>{unreadCount}</Text>)}
@@ -475,69 +521,102 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </Animated.View>
           </Animated.View>
+        </View>
+
+        <Animated.View style={[styles.contentWrapper, fadeUp(contentAnim)]}>
+          
+          {activeDelivery && (
+            <TouchableOpacity 
+              style={styles.activeDeliveryCard}
+              onPress={() => (navigation as any).navigate('Activity', { openRequestId: activeDelivery.request_id })}
+              activeOpacity={0.9}
+            >
+              <View style={styles.activeDeliveryHeader}>
+                <View style={styles.liveBadge}>
+                  <View style={styles.liveDot} />
+                  <Text style={styles.liveText}>ACTIVE DELIVERY</Text>
+                </View>
+                <PhIcon name="CaretRight" size={16} color={colors.textPrimary} weight="bold" />
+              </View>
+              <Text style={styles.activeDeliveryTitle}>
+                {activeDelivery.delivery_status === 'Pending' ? 'Finding a Courier...' : 
+                 activeDelivery.delivery_status === 'Accepted' ? 'Courier is on the way' : 
+                 'Package is in transit'}
+              </Text>
+              <View style={styles.activeDeliveryRoute}>
+                <PhIcon name="MapPin" size={14} color={colors.accent} weight="fill" />
+                <Text style={styles.activeDeliveryAddress} numberOfLines={1}>{activeDelivery.pickup_location?.street_address || 'Pickup'}</Text>
+                <PhIcon name="ArrowRight" size={12} color={colors.textMuted} weight="bold" />
+                <PhIcon name="MapPin" size={14} color={colors.textPrimary} weight="fill" />
+                <Text style={styles.activeDeliveryAddress} numberOfLines={1}>{activeDelivery.dropoff_location?.street_address || 'Dropoff'}</Text>
+              </View>
+            </TouchableOpacity>
+          )}
 
           <View style={styles.bannersContainer}>
             <BannerCarousel colors={colors} navigation={navigation} />
           </View>
-        </View>
 
-        <Animated.View style={[styles.sectionContainer, fadeUp(helpAnim)]}>
-          <Text style={styles.sectionTitle}>Help &amp; Guides</Text>
+          <View style={styles.helpSection}>
+            <Text style={styles.sectionHeaderTitle}>Help & Guides</Text>
 
-          <Text style={styles.subHeader}>Before you ship</Text>
-          <View style={styles.groupCard}>
-            {GUIDES.map((g, i) => {
-              const key = `guide-${i}`; const open = openItem === key; const danger = 'danger' in g && g.danger; const isLast = i === GUIDES.length - 1;
-              return (
-                <View key={key} style={!isLast && styles.rowDivider}>
-                  <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
-                    <View style={[styles.rowIcon, danger && { backgroundColor: isDark ? 'rgba(220,38,38,0.15)' : 'rgba(220,38,38,0.1)' }]}>
-                      <PhIcon name={g.icon as any} weight="fill" size={18} color={danger ? colors.error : colors.accent} />
-                    </View>
-                    <Text style={styles.rowTitle} numberOfLines={1}>{g.title}</Text>
-                    <PhIcon name={open ? 'CaretUp' : 'CaretDown'} size={16} color={colors.textMuted} weight="bold" />
-                  </TouchableOpacity>
-                  {open && (
-                    <View style={styles.rowBody}>
-                      {g.points.map((p) => (
-                        <View key={p} style={styles.bulletRow}>
-                          <View style={[styles.bulletDot, danger && { backgroundColor: colors.error }]} />
-                          <Text style={styles.bulletText}>{p}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              );
-            })}
+            <View style={styles.groupCard}>
+              {GUIDES.map((g, i) => {
+                const key = `guide-${i}`; const open = openItem === key; const danger = 'danger' in g && g.danger; const isLast = i === GUIDES.length - 1;
+                return (
+                  <View key={key} style={!isLast && styles.rowDivider}>
+                    <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
+                      
+                      <View style={styles.menuIconWrapper}>
+                        <SolarIcon name={g.icon as any} size={24} />
+                      </View>
+
+                      <Text style={styles.rowTitle} numberOfLines={1}>{g.title}</Text>
+                      <PhIcon name={open ? 'CaretUp' : 'CaretDown'} size={16} color={colors.textMuted} weight="bold" />
+                    </TouchableOpacity>
+                    {open && (
+                      <View style={styles.rowBody}>
+                        {g.points.map((p) => (
+                          <View key={p} style={styles.bulletRow}>
+                            <View style={[styles.bulletDot, danger && { backgroundColor: colors.error }]} />
+                            <Text style={styles.bulletText}>{p}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.sectionHeaderTitle, { marginTop: 32 }]}>Common questions</Text>
+            <View style={styles.groupCard}>
+              {FAQS.map((f, i) => {
+                const key = `faq-${i}`; const open = openItem === key; const isLast = i === FAQS.length - 1;
+                return (
+                  <View key={key} style={!isLast && styles.rowDivider}>
+                    <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
+                      <Text style={[styles.rowTitle, { flex: 1 }]} numberOfLines={2}>{f.q}</Text>
+                      <PhIcon name={open ? 'Minus' : 'Plus'} size={18} color={colors.accent} weight="bold" />
+                    </TouchableOpacity>
+                    {open && <Text style={styles.rowBodyText}>{f.a}</Text>}
+                  </View>
+                );
+              })}
+            </View>
+
+            <TouchableOpacity style={styles.supportLink} activeOpacity={0.8} onPress={() => (navigation as any).navigate('Support')}>
+              <PhIcon name="ChatCircleText" size={16} color={colors.accent} weight="fill" />
+              <Text style={styles.supportLinkText}>Still need help? Contact support</Text>
+              <PhIcon name="CaretRight" size={14} color={colors.accent} weight="bold" />
+            </TouchableOpacity>
           </View>
-
-          <Text style={styles.subHeader}>Common questions</Text>
-          <View style={styles.groupCard}>
-            {FAQS.map((f, i) => {
-              const key = `faq-${i}`; const open = openItem === key; const isLast = i === FAQS.length - 1;
-              return (
-                <View key={key} style={!isLast && styles.rowDivider}>
-                  <TouchableOpacity style={styles.rowHead} onPress={() => setOpenItem(open ? null : key)} activeOpacity={0.75}>
-                    <Text style={[styles.rowTitle, { flex: 1 }]} numberOfLines={2}>{f.q}</Text>
-                    <PhIcon name={open ? 'Minus' : 'Plus'} size={18} color={colors.accent} weight="bold" />
-                  </TouchableOpacity>
-                  {open && <Text style={styles.rowBodyText}>{f.a}</Text>}
-                </View>
-              );
-            })}
-          </View>
-
-          <TouchableOpacity style={styles.supportLink} activeOpacity={0.8} onPress={() => (navigation as any).navigate('Support')}>
-            <PhIcon name="ChatCircleText" size={16} color={colors.accent} weight="fill" />
-            <Text style={styles.supportLinkText}>Still need help? Contact support</Text>
-            <PhIcon name="CaretRight" size={14} color={colors.accent} weight="bold" />
-          </TouchableOpacity>
         </Animated.View>
       </ScrollView>
 
       {renderNotifModal()}
       {renderFullListModal()}
+      {renderActionSheet()}
     </View>
   );
 }
@@ -546,98 +625,213 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   scrollContent: { paddingBottom: Platform.OS === 'ios' ? 50 : 40 },
   
-  heroSection: {
-    width: '100%',
-    paddingBottom: 10,
-    zIndex: 1,
-  },
-  header: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 24,
-    marginBottom: 24,
-  },
+  heroSection: { width: '100%', paddingBottom: 10, zIndex: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, marginBottom: 24 },
   greetingTextContainer: { flex: 1, paddingRight: 16 },
-  greetingTitle: { fontSize: 26, fontWeight: '800', letterSpacing: -0.5, marginBottom: 4 },
-  greetingSubtitle: { fontSize: 15, fontWeight: '400' },
+  
+  greetingTitle: { 
+    fontSize: 26, 
+    fontFamily: 'Poppins_700Bold', 
+    letterSpacing: -0.3, 
+    marginBottom: 4 
+  },
+  greetingSubtitle: { fontSize: 15, fontFamily: 'Poppins_400Regular' },
   
   glassBell: {
     width: 46, height: 46, borderRadius: 23,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, 
     borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.05)', 
-    shadowColor: '#000', 
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.2 : 0.03, 
-    shadowRadius: isDark ? 10 : 4, 
-    elevation: isDark ? 5 : 2, 
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.2 : 0.03, shadowRadius: isDark ? 10 : 4, elevation: isDark ? 5 : 2, 
   },
   notificationBadge: {
     position: 'absolute', top: 10, right: 10, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4,
     backgroundColor: c.error, borderWidth: 1.5, borderColor: '#0F172A', justifyContent: 'center', alignItems: 'center',
   },
-  notificationBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
+  notificationBadgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
 
-  bannersContainer: {
-    marginTop: 0,
-    zIndex: 2, 
+  contentWrapper: { paddingHorizontal: 24, zIndex: 0 },
+
+  activeDeliveryCard: {
+    backgroundColor: c.card, 
+    borderRadius: 16, 
+    padding: 18, 
+    marginBottom: 24, 
+    borderWidth: 1, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.02, 
+    shadowRadius: 4, 
+    elevation: 1,
   },
+  activeDeliveryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accentSoft, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.accent },
+  liveText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.accent, letterSpacing: 0.5 },
+  
+  activeDeliveryTitle: { 
+    fontSize: 18, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    marginBottom: 8,
+    letterSpacing: -0.2 
+  },
+  activeDeliveryRoute: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  activeDeliveryAddress: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary, maxWidth: '35%' },
 
-  sectionContainer: { paddingHorizontal: 24, zIndex: 0, marginTop: 16 },
-  sectionTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4, marginBottom: 16 },
-  subHeader: { fontSize: 11, fontWeight: '800', color: c.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 10, marginTop: 8 },
+  quickActionWrapper: { marginBottom: 28 },
+  createDeliveryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.accent,
+    borderRadius: 16,
+    padding: 16,
+    gap: 14,
+    shadowColor: c.accent, 
+    shadowOffset: { width: 0, height: 8 }, 
+    shadowOpacity: 0.3, 
+    shadowRadius: 16, 
+    elevation: 6,
+  },
+  createBtnIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  createBtnTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
 
-  // ✨ THE 3D ELEVATED CARD STYLE ✨
+  bannersContainer: { marginBottom: 32, marginHorizontal: -24 },
+
+  helpSection: { marginBottom: 24 },
+  
+  sectionHeaderTitle: { 
+    fontSize: 20, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.2, 
+    marginBottom: 20 
+  },
+  
   groupCard: { 
     backgroundColor: c.card, 
-    borderRadius: 20, 
+    borderRadius: 12, 
     borderWidth: 1, 
-    borderColor: c.border, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
     overflow: 'hidden', 
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.2 : 0.05,
-    shadowRadius: 12,
-    elevation: 3,
+    marginBottom: 20,
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.05, 
+    shadowRadius: 1, 
+    elevation: 0,
   },
-  rowDivider: { borderBottomWidth: 1, borderBottomColor: c.divider },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, paddingHorizontal: 16, minHeight: 56 },
-  rowIcon: { 
-    width: 38, height: 38, borderRadius: 12, 
-    backgroundColor: c.accentSoft, 
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: isDark ? 'rgba(242,112,36,0.2)' : 'rgba(242,112,36,0.1)',
+  
+  // ✅ FIXED: Reverted to borderBottomWidth so the container doesn't collapse
+  rowDivider: { 
+    borderBottomWidth: 1, 
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)', 
   },
-  rowTitle: { flex: 1, fontSize: 15, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
-  rowBody: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 0, gap: 10 },
-  rowBodyText: { fontSize: 13.5, color: c.textSecondary, lineHeight: 20, paddingHorizontal: 16, paddingBottom: 16, fontWeight: '500' },
+  
+  rowHead: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 14, 
+    paddingVertical: 22, 
+    paddingHorizontal: 20, 
+    minHeight: 64 
+  },
+  
+  menuIconWrapper: {
+    width: 32, height: 42, 
+    justifyContent: 'center', alignItems: 'flex-start', 
+    marginRight: 0,
+  },
+  
+  rowTitle: { flex: 1, fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0 },
+  rowBody: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 0, gap: 10 },
+  rowBodyText: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22, paddingHorizontal: 20, paddingBottom: 20 },
   bulletRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
-  bulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.accent, marginTop: 7 },
-  bulletText: { flex: 1, fontSize: 13.5, color: c.textSecondary, lineHeight: 20, fontWeight: '500' },
+  bulletDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: c.accent, marginTop: 8 },
+  bulletText: { flex: 1, fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
 
-  supportLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, marginTop: -8 },
-  supportLinkText: { fontSize: 14, fontWeight: '700', color: c.accent, letterSpacing: -0.1 },
+  supportLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16 },
+  supportLinkText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
-  modalCard: { backgroundColor: c.card, borderRadius: 20, paddingTop: 6, paddingBottom: 4, maxHeight: '78%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5, shadowRadius: 20, elevation: 12, borderWidth: 1, borderColor: c.border },
+  modalCard: { backgroundColor: c.card, borderRadius: 16, paddingTop: 6, paddingBottom: 4, maxHeight: '78%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: isDark ? 0.5 : 0.18, shadowRadius: 20, elevation: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
-  modalTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
+  
+  modalTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  
   modalCenter: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
-  emptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontWeight: '600' },
+  emptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontFamily: 'Poppins_500Medium' },
 
   notifRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
   notifRowUnread: { backgroundColor: c.accentSoft },
   notifIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
   notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  notifTitle: { flex: 1, fontSize: 13.5, fontWeight: '800', color: c.textPrimary },
+  notifTitle: { flex: 1, fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: c.accent },
-  notifBody: { fontSize: 12.5, color: c.textSecondary, marginTop: 3, lineHeight: 17 },
-  notifTime: { fontSize: 10.5, color: c.textMuted, marginTop: 5, fontWeight: '600' },
+  notifBody: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 3, lineHeight: 18 },
+  notifTime: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 5 },
 
   modalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  modalFooterText: { color: c.accent, fontWeight: '800', fontSize: 13 },
+  modalFooterText: { color: c.accent, fontFamily: 'Poppins_700Bold', fontSize: 14 },
   
   fullListHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 60, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: c.divider },
   fullListBackBtn: { padding: 4 },
-  fullListTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
+  fullListTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+
+  actionBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  actionSheetCard: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+  },
+  actionHandle: {
+    alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
+    backgroundColor: c.border, marginBottom: 20,
+  },
+  actionTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 20, textAlign: 'center', letterSpacing: -0.2 },
+  
+  actionCardPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.accent,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+  },
+  actionCardSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.card,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 12, elevation: 3,
+  },
+  primaryIconBox: { width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center', marginRight: 14 },
+  secondaryIconBox: { width: 52, height: 52, borderRadius: 16, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center', marginRight: 14 },
+  actionIcon3D: { width: 36, height: 36 },
+  actionTextWrap: { flex: 1 },
+  actionTitlePrimary: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', marginBottom: 2 },
+  actionSubPrimary: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: 'rgba(255,255,255,0.85)' },
+  actionTitleSecondary: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 2 },
+  actionSubSecondary: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
+  primaryArrowBox: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
+  
+  actionCancelBtn: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    borderRadius: 16,
+    backgroundColor: c.divider,
+  },
+  actionCancelText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
 });

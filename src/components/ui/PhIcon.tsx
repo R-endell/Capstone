@@ -5,6 +5,7 @@ import { useTheme } from '../../utils/themeContext';
 
 const ICON_MAP = {
   regular: {
+    ArrowsOut: require('../../../assets/icons/phosphor/regular/ArrowsOut.svg').default,
     ArrowLeft: require('../../../assets/icons/phosphor/regular/ArrowLeft.svg').default,
     ArrowsClockwise: require('../../../assets/icons/phosphor/regular/ArrowsClockwise.svg').default,
     ArrowUDownLeft: require('../../../assets/icons/phosphor/regular/ArrowUDownLeft.svg').default,
@@ -22,6 +23,7 @@ const ICON_MAP = {
     ChartBar: require('../../../assets/icons/phosphor/regular/ChartBar.svg').default,
     ChatCircleDots: require('../../../assets/icons/phosphor/regular/ChatCircleDots.svg').default,
     ChatCircleText: require('../../../assets/icons/phosphor/regular/ChatCircleText.svg').default,
+    Checks: require('../../../assets/icons/phosphor/regular/Checks.svg').default,
     CheckCircle: require('../../../assets/icons/phosphor/regular/CheckCircle.svg').default,
     ClipboardText: require('../../../assets/icons/phosphor/regular/ClipboardText.svg').default,
     Clock: require('../../../assets/icons/phosphor/regular/Clock.svg').default,
@@ -125,6 +127,7 @@ const ICON_MAP = {
   bold: {
     ArrowLeft: require('../../../assets/icons/phosphor/bold/ArrowLeft.svg').default,
     ArrowRight: require('../../../assets/icons/phosphor/bold/ArrowRight.svg').default,
+    ArrowsOut: require('../../../assets/icons/phosphor/bold/ArrowsOut.svg').default,
     ArrowsClockwise: require('../../../assets/icons/phosphor/bold/ArrowsClockwise.svg').default,
     ArrowUp: require('../../../assets/icons/phosphor/bold/ArrowUp.svg').default,
     ArrowUDownLeft: require('../../../assets/icons/phosphor/bold/ArrowUDownLeft.svg').default,
@@ -132,6 +135,7 @@ const ICON_MAP = {
     Camera: require('../../../assets/icons/phosphor/bold/Camera.svg').default,
     CaretRight: require('../../../assets/icons/phosphor/bold/CaretRight.svg').default,
     CheckCircle: require('../../../assets/icons/phosphor/bold/CheckCircle.svg').default,
+    Checks: require('../../../assets/icons/phosphor/bold/Checks.svg').default,
     Clock: require('../../../assets/icons/phosphor/bold/Clock.svg').default,
     ClockCounterClockwise: require('../../../assets/icons/phosphor/bold/ClockCounterClockwise.svg').default,
     Cube: require('../../../assets/icons/phosphor/bold/Cube.svg').default,
@@ -185,20 +189,22 @@ export const PhIcon = ({
 }: PhIconProps) => {
   const { colors } = useTheme();
   
-  const IconComponent = (ICON_MAP[weight] as any)[name] || (ICON_MAP.regular as any)[name];
+  const IconComponent = (ICON_MAP[weight] as any)?.[name] || (ICON_MAP.regular as any)?.[name];
   
   if (!IconComponent) {
     console.warn(`[PhIcon] Icon "${name}" not found in "${weight}" or "regular" weight.`);
     return null;
   }
 
+  const iconColor = color || colors.textPrimary;
+
   return (
     <IconComponent 
       width={size} 
       height={size} 
-      color={color || colors.textPrimary} 
-      fill={color || colors.textPrimary} 
-      style={[{ color: color || colors.textPrimary }, style]} 
+      color={iconColor} 
+      fill={iconColor} 
+      style={[{ color: iconColor }, style]} 
       {...props} 
     />
   );

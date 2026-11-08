@@ -19,6 +19,7 @@ import { notifyUser } from '../../../services/pushService';
 import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../components/ui/SolarIcon'; 
 
 const CHAT_ICON = require('../../../../assets/empty-state-chathead-icon.png');
 const ARCHIVED_ICON = require('../../../../assets/empty-state-archived-icon.png');
@@ -969,7 +970,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
           <View style={styles.avatarWrapper}>
             {isSupport ? (
-              <View style={styles.supportAvatar}><PhIcon name="Headset" size={22} color="#FFFFFF" weight="fill" /></View>
+              <View style={styles.supportAvatar}>
+                <SolarIcon name="HeadphonesRound" variant="duotone" size={24} />
+              </View>
             ) : item.other.profile_photo ? (
               <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
             ) : (
@@ -1006,7 +1009,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.optionsButton} onPress={() => openChatOptions(item)} activeOpacity={0.6}>
-          <PhIcon name="DotsThreeVertical" size={20} color={colors.textMuted} weight="bold" />
+          <SolarIcon name="MenuDots" variant="linear" size={22} color={colors.textMuted} />
         </TouchableOpacity>
       </View>
     );
@@ -1037,7 +1040,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             <View style={styles.msgAvatarSlot}>
               {showAvatar ? (
                 selectedRoom?.is_support ? (
-                  <View style={styles.supportMsgAvatar}><PhIcon name="Headset" size={14} color="#FFFFFF" weight="fill" /></View>
+                  <View style={styles.supportMsgAvatar}>
+                    <SolarIcon name="HeadphonesRound" variant="duotone" size={16} color="#FFFFFF" />
+                  </View>
                 ) : (
                   renderAvatar(selectedRoom!.other, 32)
                 )
@@ -1056,8 +1061,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                   {isMe && (
                     <PhIcon
                       name={item.is_read ? 'Checks' : 'Check'}
-                      size={12}
-                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      size={14}
+                      color={item.is_read ? '#FFFFFF' : 'rgba(255,255,255,0.6)'}
                       weight="bold"
                       style={{ marginLeft: 4 }}
                     />
@@ -1072,8 +1077,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                   {isMe && (
                     <PhIcon
                       name={item.is_read ? 'Checks' : 'Check'}
-                      size={12}
-                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
+                      size={14}
+                      color={item.is_read ? '#FFFFFF' : 'rgba(255,255,255,0.6)'}
                       weight="bold"
                       style={{ marginLeft: 4 }}
                     />
@@ -1140,7 +1145,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromCamera} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <PhIcon name="Camera" size={20} color={colors.accent} weight="fill" />
+              <SolarIcon name="Camera" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Take a photo</Text>
@@ -1151,7 +1156,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <PhIcon name="Images" size={20} color={colors.accent} weight="fill" />
+              <SolarIcon name="Gallery" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Choose from gallery</Text>
@@ -1197,7 +1202,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <SafeAreaView edges={['top']} style={{ backgroundColor: colors.accent }}>
           <Animated.View style={[styles.chatHeaderFlat, fadeUp(detailHeaderAnim, -10)]}>
             <TouchableOpacity onPress={closeConversation} style={styles.backBtnFlat} activeOpacity={0.7}>
-              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" weight="bold" />
+              <SolarIcon name="ArrowLeft" variant="bold" size={22} color="#FFFFFF" />
             </TouchableOpacity>
 
             <View style={styles.chatHeaderInfo}>
@@ -1218,7 +1223,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               activeOpacity={0.7}
               onPress={handleCallPress}
             >
-              <PhIcon name="PhoneCall" size={20} color={colors.accent} weight="fill" />
+              <SolarIcon name="Phone" variant="bold" size={20} color={colors.accent} />
             </TouchableOpacity>
           </Animated.View>
         </SafeAreaView>
@@ -1269,7 +1274,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               onPress={openAttachmentSheet}
               disabled={sendingImage}
             >
-              <PhIcon name="PlusCircle" size={32} color={colors.textMuted} weight="fill" />
+              <SolarIcon name="AddCircle" variant="duotone" size={32} />
             </TouchableOpacity>
 
             <View style={styles.inputWrapperFlat}>
@@ -1291,7 +1296,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               disabled={!newMessage.trim()}
               activeOpacity={0.7}
             >
-              <PhIcon name="PaperPlaneTilt" size={26} color={newMessage.trim() ? colors.accent : colors.textMuted} weight="fill" />
+              <SolarIcon 
+                name="PaperPlane" 
+                variant="bold" 
+                size={26} 
+                color={newMessage.trim() ? colors.accent : colors.textMuted} 
+              />
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
@@ -1373,82 +1383,107 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   listHeaderFlat: {
     backgroundColor: c.background,
-    paddingHorizontal: 20, paddingTop: 24, paddingBottom: 16,
+    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16, 
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-  mainTitle: { fontSize: 26, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
+  
+  // ✅ ATOME STYLE
+  mainTitle: { 
+    fontSize: 26, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.3 
+  },
+  
   tabContainer: {
     flexDirection: 'row', backgroundColor: c.divider,
-    borderRadius: 16, padding: 4,
+    borderRadius: 12, padding: 4,
   },
-  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 12 },
-  tabText: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
+  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
+  tabText: { color: c.textSecondary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   tabButtonActive: {
     backgroundColor: c.card,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: isDark ? 0.4 : 0.08,
     shadowRadius: 4, elevation: 2,
   },
-  tabTextActive: { color: c.accent, fontWeight: '800' },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginTop: 8, letterSpacing: -0.3 },
-  emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 10, lineHeight: 20, fontWeight: '500' },
+  emptyTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8, letterSpacing: -0.3 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 10, lineHeight: 20 },
 
   listContentFlat: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 20 },
 
+  // ✅ ATOME STYLE APPLIED
   chatRowWrapper: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, marginBottom: 10, borderRadius: 20,
-    borderWidth: 1, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.2 : 0.04,
-    shadowRadius: 8, elevation: 2,
+    backgroundColor: c.card, marginBottom: 12, borderRadius: 12, 
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
-  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingLeft: 16 },
-  optionsButton: { paddingHorizontal: 16, paddingVertical: 16, justifyContent: 'center', alignItems: 'center' },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 18, paddingLeft: 16 },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 18, justifyContent: 'center', alignItems: 'center' },
 
   avatarWrapper: { position: 'relative', marginRight: 14 },
   avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
   avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.divider },
-  avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  avatarText: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   supportAvatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: c.success, borderWidth: 2.5, borderColor: c.card },
 
   chatInfo: { flex: 1, marginRight: 8 },
   chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
-  chatName: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
-  chatTime: { fontSize: 11, color: c.textMuted, fontWeight: '600' },
-  chatTimeUnread: { color: c.accent, fontWeight: '800' },
+  
+  chatName: { 
+    fontSize: 16, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.2, 
+    flex: 1, 
+    marginRight: 8 
+  },
+  chatTime: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+  chatTimeUnread: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chatLastMsg: { fontSize: 13.5, color: c.textSecondary, flex: 1, fontWeight: '500' },
-  chatLastMsgUnread: { color: c.textPrimary, fontWeight: '700' },
+  
+  chatLastMsg: { 
+    fontSize: 14, 
+    fontFamily: 'Poppins_400Regular', 
+    color: c.textSecondary, 
+    flex: 1, 
+  },
+  chatLastMsgUnread: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
+  
   supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
-  supportTagText: { color: c.card, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
+  supportTagText: { color: c.card, fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
   unreadBadge: { backgroundColor: c.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
+  unreadBadgeText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 11 },
 
   detailContainer: { flex: 1, backgroundColor: c.background },
   chatHeaderFlat: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.accent,
     paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20,
-    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.3, shadowRadius: 12, elevation: 6,
+    borderBottomLeftRadius: 16, borderBottomRightRadius: 16,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
   },
   backBtnFlat: { padding: 8, marginRight: 12, marginLeft: -8, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20 },
   chatHeaderInfo: { flex: 1 },
-  chatHeaderName: { fontSize: 18, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.2 },
-  chatHeaderSubtitle: { fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2, fontWeight: '600' },
-  callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
+  
+  chatHeaderName: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
+  chatHeaderSubtitle: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+  
+  callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 1 },
 
   chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, paddingHorizontal: 24, gap: 10 },
   dateSeparatorLine: { flex: 1, height: 1, backgroundColor: c.border },
-  dateSeparatorText: { fontSize: 11, color: c.textMuted, fontWeight: '700', letterSpacing: 0.3 },
+  dateSeparatorText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, letterSpacing: 0.3 },
 
   msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
@@ -1456,32 +1491,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   supportMsgAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
-  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 22 },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 20 },
   imageBubble: { padding: 4, overflow: 'hidden' },
   myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6, shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2 },
-  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.border, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 4, elevation: 1 },
-  msgText: { fontSize: 15, color: c.textPrimary, lineHeight: 22, fontWeight: '500' },
+  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 2, elevation: 0 },
+  
+  msgText: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 22 },
   myMsgText: { color: '#FFFFFF' },
-  chatImage: { width: 220, height: 220, borderRadius: 18 },
+  
+  chatImage: { width: 220, height: 220, borderRadius: 16 },
   msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 6, paddingHorizontal: 4 },
-  msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
+  msgTime: { fontSize: 10, fontFamily: 'Poppins_500Medium', color: c.textMuted },
   myMsgTime: { color: 'rgba(255,255,255,0.8)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
   inputContainerFlat: {
     flexDirection: 'row', alignItems: 'flex-end',
     backgroundColor: c.card, paddingHorizontal: 16, paddingTop: 12,
-    borderTopWidth: 1, borderTopColor: c.border,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   attachBtnFlat: { paddingBottom: 8, marginRight: 10 },
   inputWrapperFlat: {
-    flex: 1, backgroundColor: c.background, borderRadius: 24,
+    flex: 1, backgroundColor: c.background, borderRadius: 16,
     paddingHorizontal: 16, marginBottom: 8,
     minHeight: 44, maxHeight: 120, justifyContent: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   textInputFlat: {
-    flex: 1, fontSize: 15, color: c.textPrimary,
+    flex: 1, fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
     paddingTop: Platform.OS === 'ios' ? 12 : 10,
     paddingBottom: Platform.OS === 'ios' ? 12 : 10,
   },
@@ -1492,7 +1529,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 8, paddingVertical: 10, backgroundColor: c.accentSoft,
     borderTopWidth: 1, borderTopColor: c.border,
   },
-  uploadingText: { fontSize: 12, fontWeight: '700', color: c.accent },
+  uploadingText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   attachBackdrop: {
     flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
@@ -1508,7 +1545,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.border, marginBottom: 16,
   },
   attachTitle: {
-    fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 16,
+    fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16,
   },
   attachRow: {
     flexDirection: 'row', alignItems: 'center', gap: 16,
@@ -1518,13 +1555,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 48, height: 48, borderRadius: 16,
     justifyContent: 'center', alignItems: 'center',
   },
-  attachRowTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
-  attachRowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  attachRowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  attachRowSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   attachCancel: {
     marginTop: 16, paddingVertical: 16, borderRadius: 16,
     alignItems: 'center', backgroundColor: c.divider,
   },
-  attachCancelText: { fontSize: 15, fontWeight: '800', color: c.textSecondary },
+  attachCancelText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
   previewOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',

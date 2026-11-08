@@ -13,6 +13,7 @@ import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../components/ui/SolarIcon'; 
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -349,12 +350,10 @@ export default function AccountScreen() {
                 <Text style={styles.profileName} numberOfLines={1}>
                   {firstName} {lastName}
                 </Text>
-                {/* Always show Sender */}
                 <View style={styles.roleBadgeSender}>
                   <Text style={[styles.roleBadgeTextInline, { color: colors.accent }]}>SENDER</Text>
                 </View>
 
-                {/* Show Provider only if they are approved */}
                 {providerState === 'approved' && (
                   <View style={styles.roleBadgeProvider}>
                     <Text style={[styles.roleBadgeTextInline, { color: colors.success }]}>PROVIDER</Text>
@@ -410,8 +409,8 @@ export default function AccountScreen() {
           <View style={styles.menuCard}>
             <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToProvider} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <PhIcon name="ArrowsLeftRight" size={19} color={colors.accent} weight="bold" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="TransferHorizontal" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>{providerMenuTitle}</Text>
@@ -446,8 +445,8 @@ export default function AccountScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods')} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#16243B' : '#EFF6FF' }]}>
-                  <PhIcon name="CreditCard" size={19} color="#3B82F6" weight="bold" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Card" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Payment Methods</Text>
@@ -461,8 +460,8 @@ export default function AccountScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DisputeCenter' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#2A1F0A' : '#FEF3C7' }]}>
-                  <PhIcon name="ShieldCheck" size={19} color="#D97706" weight="fill" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="ShieldCheck" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Dispute Center</Text>
@@ -476,8 +475,8 @@ export default function AccountScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'sender' })} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <PhIcon name="Headset" size={19} color={colors.accent} weight="fill" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="HeadphonesRound" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
@@ -488,13 +487,13 @@ export default function AccountScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Preferences & System</Text>
+          <Text style={[styles.sectionTitle, { marginTop: 32 }]}>Preferences & System</Text>
 
           <View style={styles.menuCard}>
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('Settings')} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#1F262E' : '#F3F4F6' }]}>
-                  <PhIcon name="Gear" size={19} color={colors.textSecondary} weight="bold" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Settings" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Settings</Text>
@@ -508,8 +507,8 @@ export default function AccountScreen() {
 
             <View style={styles.menuItem}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
-                  <PhIcon name="Moon" size={19} color={colors.accent} weight="fill" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Moon" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Dark Mode</Text>
@@ -531,8 +530,8 @@ export default function AccountScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.errorBg }]}>
-                  <PhIcon name="SignOut" size={19} color={colors.error} weight="bold" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Logout" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.logoutText}>Log out</Text>
@@ -547,9 +546,6 @@ export default function AccountScreen() {
         </Animated.View>
       </ScrollView>
 
-      {/* ================================================================ */}
-      {/* PROVIDER REJECTION MODAL                                         */}
-      {/* ================================================================ */}
       <Modal
         visible={rejectionModalVisible}
         transparent
@@ -603,9 +599,6 @@ export default function AccountScreen() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Styles — generated from the current theme                           */
-/* ------------------------------------------------------------------ */
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
@@ -614,22 +607,27 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 12,
   },
-  headerTopBar: { marginBottom: 14 },
+  headerTopBar: { marginBottom: 16 },
+  
   headerTitle: {
-    fontSize: 30, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5,
+    fontSize: 28, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.4,
   },
   
+  // ✅ ATOME STYLE APPLIED
   profileContainerCard: {
     backgroundColor: c.card,
-    borderRadius: 24,
+    borderRadius: 12, // Flatter radius
     padding: 18,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.2 : 0.05,
-    shadowRadius: 12,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02, // Flat shadow
+    shadowRadius: 1,
+    elevation: 0,
   },
   profileRow: { flexDirection: 'row', alignItems: 'center' },
   profilePicContainer: {
@@ -642,13 +640,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   profileImage: { width: '100%', height: '100%' },
   nameContainer: { flex: 1, marginRight: 8, justifyContent: 'center' },
   nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  profileName: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  profileEmail: { fontSize: 13, color: c.textSecondary, fontWeight: '500', marginTop: 4 },
+  
+  profileName: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  profileEmail: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   editIconBtn: {
     width: 38, height: 38, borderRadius: 19,
     backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
 
   roleBadgeInline: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
@@ -656,7 +655,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   roleBadgeSender:   { backgroundColor: c.accentSoft, borderColor: c.accent, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgePending:  { backgroundColor: c.warningBg, borderColor: c.warning, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
   roleBadgeRejected: { backgroundColor: c.errorBg, borderColor: c.error, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
-  roleBadgeTextInline: { fontSize: 9, fontWeight: '900', letterSpacing: 0.8 },
+  roleBadgeTextInline: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 1 },
 
   mainContent: { flex: 1 },
   mainScrollContent: { paddingBottom: 40 },
@@ -668,9 +667,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.errorBg,
     borderWidth: 1,
     borderColor: c.error,
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 18,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
     gap: 12,
   },
   rejectionBannerIconWrap: {
@@ -683,12 +682,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   rejectionBannerTitle: {
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.error,
   },
   rejectionBannerSubtext: {
     fontSize: 12,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     color: c.textSecondary,
     marginTop: 3,
     lineHeight: 16,
@@ -702,37 +701,54 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rejectionBannerActionText: {
     color: '#FFFFFF',
     fontSize: 11,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
 
   sectionTitle: {
-    fontSize: 16, fontWeight: '800', color: c.textPrimary,
-    marginBottom: 12, letterSpacing: -0.3,
+    fontSize: 20, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary,
+    marginBottom: 16, 
+    letterSpacing: -0.2,
   },
 
+  // ✅ ATOME STYLE APPLIED
   menuCard: {
     backgroundColor: c.card,
-    borderRadius: 22,
+    borderRadius: 12, // Flatter radius
     paddingHorizontal: 6, paddingVertical: 6,
+    borderWidth: 1, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: isDark ? 0.2 : 0.05,
-    shadowRadius: 12, elevation: 3,
-    borderWidth: 1, borderColor: c.border,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02, // Flat shadow
+    shadowRadius: 1,
+    elevation: 0,
   },
   menuItem: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: 10, borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 10, borderRadius: 12,
   },
   menuItemLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
+  
   menuIconWrapper: {
-    width: 42, height: 42, borderRadius: 14,
-    justifyContent: 'center', alignItems: 'center', marginRight: 14,
+    width: 32, height: 42, 
+    justifyContent: 'center', alignItems: 'flex-start', 
+    marginRight: 14,
   },
+  
   menuTextWrapper: { flex: 1 },
-  menuText: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.1 },
-  menuSubtext: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500' },
-  menuDivider: { height: 1, backgroundColor: c.divider, marginLeft: 66, marginRight: 10 },
+  
+  menuText: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0 },
+  menuSubtext: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  
+  // ✅ ATOME STYLE DIVIDER (Subtle)
+  menuDivider: { 
+    height: 1, 
+    backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)', 
+    marginLeft: 56, marginRight: 10 
+  },
 
   providerBadge: {
     flexDirection: 'row', alignItems: 'center',
@@ -740,29 +756,29 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.success,
   },
   providerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.success },
-  providerBadgeText: { color: c.success, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  providerBadgeText: { color: c.success, fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
 
   pendingBadge: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.warningBg, paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.warning,
   },
-  pendingBadgeText: { color: c.warning, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  pendingBadgeText: { color: c.warning, fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
 
   rejectedBadge: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.errorBg, paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.error,
   },
-  rejectedBadgeText: { color: c.error, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  rejectedBadgeText: { color: c.error, fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
 
-  logoutText: { fontSize: 15, fontWeight: '800', color: c.error, letterSpacing: -0.1 },
+  logoutText: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.error, letterSpacing: 0 },
   versionText: {
     textAlign: 'center', color: c.textMuted, fontSize: 11,
-    fontWeight: '600', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
+    fontFamily: 'Poppins_500Medium', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
   },
 
-  /* Rejection Modal Styles */
+  // ✅ ATOME STYLE APPLIED TO MODAL
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.65)',
@@ -774,16 +790,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     backgroundColor: c.card,
-    borderRadius: 28,
+    borderRadius: 16, // Softer modal radius
     padding: 26,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.3,
-    shadowRadius: 24,
-    elevation: 10,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 5,
   },
   modalIconCircle: {
     width: 72,
@@ -797,8 +813,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderColor: c.error,
   },
   modalTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 24,
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     textAlign: 'center',
     marginBottom: 8,
@@ -806,7 +822,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   modalDescription: {
     fontSize: 14,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     color: c.textSecondary,
     textAlign: 'center',
     lineHeight: 20,
@@ -817,26 +833,26 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.errorBg,
     borderWidth: 1,
     borderColor: c.error,
-    borderRadius: 16,
+    borderRadius: 12,
     padding: 16,
     marginBottom: 18,
   },
   reasonLabel: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.error,
     letterSpacing: 1,
     marginBottom: 8,
   },
   reasonValue: {
     fontSize: 14,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textPrimary,
     lineHeight: 20,
   },
   modalHint: {
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     color: c.textMuted,
     textAlign: 'center',
     lineHeight: 19,
@@ -850,22 +866,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalSecondaryBtn: {
     flex: 1,
     height: 50,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalSecondaryBtnText: {
     fontSize: 15,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textSecondary,
   },
   modalPrimaryBtn: {
     flex: 1.6,
     height: 50,
-    borderRadius: 16,
+    borderRadius: 12,
     backgroundColor: c.accent,
     flexDirection: 'row',
     justifyContent: 'center',
@@ -879,7 +895,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   modalPrimaryBtnText: {
     fontSize: 15,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: '#FFFFFF',
   },
 });

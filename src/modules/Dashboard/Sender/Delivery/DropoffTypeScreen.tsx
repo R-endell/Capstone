@@ -7,7 +7,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { PhIcon } from '../../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../../components/ui/SolarIcon'; // ✅ Unified Icons
 
 export default function DropoffTypeScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
@@ -134,7 +134,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
 
           <View style={styles.headerTopRow}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.headerSub}>
@@ -171,15 +171,15 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               >
                 <View style={[styles.activeIndicator, state.dropoffType === 'curb-side' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'curb-side' && (
-                    <PhIcon name="Check" size={12} color="#FFFFFF" />
+                    <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                   )}
                 </View>
 
                 <View style={[styles.optionIconBox, state.dropoffType === 'curb-side' && styles.optionIconBoxActive]}>
-                  <PhIcon 
-                    name="MapPinLine" 
+                  <SolarIcon 
+                    name="MapPoint" 
+                    variant="duotone"
                     size={28} 
-                    color={state.dropoffType === 'curb-side' ? colors.accent : colors.textPrimary} 
                   />
                 </View>
                 <Text style={styles.optionLabel}>Curb-side</Text>
@@ -198,15 +198,15 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               >
                 <View style={[styles.activeIndicator, state.dropoffType === 'door-to-door' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'door-to-door' && (
-                    <PhIcon name="Check" size={12} color="#FFFFFF" />
+                    <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                   )}
                 </View>
 
                 <View style={[styles.optionIconBox, state.dropoffType === 'door-to-door' && styles.optionIconBoxActive]}>
-                  <PhIcon 
-                    name="House" 
+                  <SolarIcon 
+                    name="Routing" 
+                    variant="duotone"
                     size={28} 
-                    color={state.dropoffType === 'door-to-door' ? colors.accent : colors.textPrimary} 
                   />
                 </View>
                 <Text style={styles.optionLabel}>Door-to-Door</Text>
@@ -218,7 +218,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
           </View>
 
           <View style={styles.infoFooter}>
-            <PhIcon name="Info" size={18} color={colors.accent} />
+            <SolarIcon name="Info" variant="duotone" size={18} color={colors.textPrimary} />
             <Text style={styles.infoFooterText}>
               You can change this later before confirming your booking.
             </Text>
@@ -256,12 +256,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.25)',
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   stepText: {
     color: '#FFFFFF',
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     letterSpacing: 0.8,
   },
+  
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -278,16 +281,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.25)',
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   headerSub: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.8)',
-    fontWeight: '600',
+    fontFamily: 'Poppins_600SemiBold',
     letterSpacing: 0.3,
     marginBottom: 2,
   },
   headerTitle: {
     fontSize: 24,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: '#FFFFFF',
     letterSpacing: -0.3,
   },
@@ -296,7 +301,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     color: 'rgba(255,255,255,0.85)',
     lineHeight: 20,
     maxWidth: '90%',
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     marginTop: 4,
   },
 
@@ -317,17 +322,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   textTitleContainer: {
     marginBottom: 20,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   cardTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
     marginBottom: 4,
   },
   cardSubtitle: {
     fontSize: 14,
     color: c.textSecondary,
-    fontWeight: '400',
+    fontFamily: 'Poppins_400Regular',
     lineHeight: 20,
   },
 
@@ -336,26 +343,28 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginBottom: 24,
   },
   optionWrapper: { width: '100%' },
+  
+  // ✅ ATOME BORDERS & SHADOWS
   optionBox: {
     width: '100%',
     backgroundColor: c.card,
-    borderRadius: 20,
+    borderRadius: 12, // Flatter radius
     paddingVertical: 24,
     paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.2 : 0.03,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOpacity: 0.02, // Flat shadow
+    shadowRadius: 1,
+    elevation: 0,
   },
   optionBoxActive: {
     borderColor: c.accent,
-    borderWidth: 2,
+    borderWidth: 1.5,
     backgroundColor: c.accentSoft,
   },
   activeIndicator: {
@@ -366,7 +375,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
     backgroundColor: c.card,
     justifyContent: 'center',
     alignItems: 'center',
@@ -378,21 +387,23 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   optionIconBox: {
     width: 72,
     height: 72,
-    borderRadius: 24, // Squircle shape
+    borderRadius: 12, // Matches card radius
     backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   optionIconBoxActive: {
-    backgroundColor: '#FFFFFF', // Solid white when active
+    backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : '#FFFFFF', // Handles dark mode
     borderColor: c.accent,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   optionLabel: {
     fontSize: 16,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginBottom: 6,
     letterSpacing: -0.2,
@@ -403,7 +414,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     paddingHorizontal: 20,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
   },
 
   infoFooter: {
@@ -411,16 +422,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     backgroundColor: c.accentSoft,
-    borderRadius: 16,
+    borderRadius: 12,
     padding: 16,
     borderWidth: 1,
     borderColor: c.accent,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   infoFooterText: {
     flex: 1,
     fontSize: 13,
     color: c.textPrimary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
     lineHeight: 18,
   },
 });

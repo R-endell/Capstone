@@ -9,7 +9,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { PhIcon } from '../../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
 const ORANGE = '#F27024';
 
@@ -67,9 +67,6 @@ export default function AddItemScreen({ route, navigation }: any) {
     Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
   };
 
-  const meta = SIZE_META[size as keyof typeof SIZE_META] || SIZE_META.Small;
-  const sizeBg = isDark ? meta.bgDark : meta.bg;
-
   const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
@@ -117,7 +114,7 @@ export default function AddItemScreen({ route, navigation }: any) {
 
           <View style={styles.headerTopRow}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.headerSub}>Add to shipment</Text>
@@ -149,14 +146,14 @@ export default function AddItemScreen({ route, navigation }: any) {
                 <View style={styles.photoPreviewContainer}>
                   <Image source={{ uri: photoUri }} style={styles.photoPreview} />
                   <View style={styles.replaceBadge}>
-                    <PhIcon name="Camera" size={12} color="#FFFFFF" />
+                    <SolarIcon name="Camera" variant="linear" size={12} color="#FFFFFF" />
                     <Text style={styles.replaceBadgeText}>Replace</Text>
                   </View>
                 </View>
               ) : (
                 <>
                   <View style={styles.photoIconCircle}>
-                    <PhIcon name="Camera" size={28} color={colors.accent} />
+                    <SolarIcon name="Camera" variant="duotone" size={28} color={colors.accent} />
                   </View>
                   <Text style={styles.photoPlaceholderTitle}>Add package photo</Text>
                   <Text style={styles.photoPlaceholderText}>Helps providers handle with care</Text>
@@ -169,12 +166,15 @@ export default function AddItemScreen({ route, navigation }: any) {
           <Animated.View style={fadeUp(descAnim, 20)}>
             <Text style={styles.sectionLabel}>Description</Text>
             <View style={[styles.inputWrapper, focused && styles.inputWrapperFocused]}>
-              <PhIcon
-                name="PencilSimpleLine"
-                size={18}
-                color={focused ? colors.accent : colors.textMuted}
-                style={styles.inputIcon}
-              />
+              {/* ✅ FIX 1: Wrapped in View to apply padding properly */}
+              <View style={styles.inputIcon}>
+                <SolarIcon
+                  name="Pen"
+                  variant="linear"
+                  size={18}
+                  color={focused ? colors.accent : colors.textMuted}
+                />
+              </View>
               <TextInput
                 style={styles.input}
                 placeholder="e.g., Glass flower vase"
@@ -192,8 +192,9 @@ export default function AddItemScreen({ route, navigation }: any) {
           {/* Fragile Toggle */}
           <Animated.View style={[styles.toggleCard, fadeUp(fragileAnim, 20)]}>
             <View style={[styles.toggleIconBox, fragile && styles.toggleIconBoxOn]}>
-              <PhIcon
-                name={fragile ? 'Warning' : 'WarningCircle'}
+              <SolarIcon
+                name="Warning"
+                variant={fragile ? "bold" : "duotone"}
                 size={22}
                 color={fragile ? colors.error : colors.textMuted}
               />
@@ -215,9 +216,9 @@ export default function AddItemScreen({ route, navigation }: any) {
 
           {/* Summary chip */}
           <Animated.View style={[styles.summaryChip, fadeUp(fragileAnim, 20)]}>
-            <PhIcon name="Info" size={16} color={colors.accent} />
+            <SolarIcon name="Info" variant="duotone" size={16} color={colors.accent} />
             <Text style={styles.summaryChipText}>
-              This item will be added as a <Text style={{ fontWeight: '800' }}>{size}</Text> package
+              This item will be added as a <Text style={{ fontFamily: 'Poppins_700Bold' }}>{size}</Text> package
               {fragile ? ' marked as fragile' : ''}.
             </Text>
           </Animated.View>
@@ -231,7 +232,8 @@ export default function AddItemScreen({ route, navigation }: any) {
               onPressOut={animatePressOut}
               activeOpacity={0.9}
             >
-              <PhIcon name="PlusCircle" weight="fill" size={20} color="#FFFFFF" />
+              {/* ✅ FIX 2: Changed variant to linear so it shows up white on orange */}
+              <SolarIcon name="AddCircle" variant="linear" size={20} color="#FFFFFF" />
               <Text style={styles.addBtnText}>Add Item to Shipment</Text>
             </TouchableOpacity>
           </Animated.View>
@@ -260,7 +262,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  stepText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
+  
+  stepText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 16 },
   backButton: {
     width: 42, height: 42, borderRadius: 21,
@@ -268,10 +271,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 24, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
+  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.3 },
   headerSubtitle: {
-    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontWeight: '500', marginTop: 4,
+    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontFamily: 'Poppins_400Regular', marginTop: 4,
   },
 
   scrollContent: {
@@ -280,14 +283,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingBottom: 40,
     backgroundColor: c.background,
   },
+  
   sectionLabel: {
-    fontSize: 12, fontWeight: '800', color: c.textPrimary,
+    fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary,
     letterSpacing: 0.5, marginBottom: 12, textTransform: 'uppercase',
   },
 
   photoBox: {
-    borderWidth: 1.5, borderStyle: 'dashed', borderColor: c.border,
-    borderRadius: 20, height: 180,
+    borderWidth: 1.5, borderStyle: 'dashed', borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
+    borderRadius: 12, height: 180,
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 28, backgroundColor: c.card,
   },
@@ -301,10 +305,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginBottom: 12, borderWidth: 1, borderColor: c.accent,
   },
   photoPlaceholderTitle: {
-    fontSize: 15, fontWeight: '800', color: c.textPrimary, marginTop: 4,
+    fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4,
   },
   photoPlaceholderText: {
-    color: c.textSecondary, fontSize: 12, marginTop: 4, fontWeight: '500',
+    color: c.textSecondary, fontSize: 12, fontFamily: 'Poppins_400Regular', marginTop: 4,
   },
   photoPreviewContainer: { width: '100%', height: '100%', position: 'relative' },
   photoPreview: { width: '100%', height: '100%', resizeMode: 'cover' },
@@ -314,63 +318,63 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: 'rgba(17,24,39,0.75)',
     paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14,
   },
-  replaceBadgeText: { fontSize: 12, color: '#FFFFFF', fontWeight: '700', letterSpacing: 0.2 },
+  replaceBadgeText: { fontSize: 12, color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.2 },
 
   inputWrapper: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 16,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
   },
   inputWrapperFocused: {
     borderColor: c.accent, backgroundColor: c.accentSoft,
   },
-  inputIcon: { paddingLeft: 16, paddingRight: 8 },
+  inputIcon: { paddingLeft: 16, paddingRight: 8 }, // This now applies to the View wrapper
   input: {
     flex: 1, paddingVertical: 16, paddingHorizontal: 8,
-    fontSize: 16, color: c.textPrimary, fontWeight: '600',
+    fontSize: 16, color: c.textPrimary, fontFamily: 'Poppins_500Medium',
   },
   helperText: {
-    fontSize: 11, color: c.textMuted, fontWeight: '500',
+    fontSize: 11, color: c.textMuted, fontFamily: 'Poppins_400Regular',
     marginTop: 8, marginLeft: 4, textAlign: 'right',
   },
 
   toggleCard: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
-    backgroundColor: c.card, borderRadius: 20, padding: 16,
+    backgroundColor: c.card, borderRadius: 12, padding: 16,
     marginTop: 12, marginBottom: 16,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   toggleIconBox: {
-    width: 48, height: 48, borderRadius: 16,
+    width: 48, height: 48, borderRadius: 12,
     backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   toggleIconBoxOn: { backgroundColor: c.errorBg, borderColor: c.error },
   toggleLabel: {
-    fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2,
+    fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2,
   },
   toggleSub: {
-    fontSize: 12, color: c.textSecondary, fontWeight: '500', marginTop: 3,
+    fontSize: 12, color: c.textSecondary, fontFamily: 'Poppins_400Regular', marginTop: 3,
   },
 
   summaryChip: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 10,
     backgroundColor: c.accentSoft,
-    borderRadius: 16, padding: 14, marginBottom: 24,
+    borderRadius: 12, padding: 14, marginBottom: 24,
     borderWidth: 1, borderColor: c.accent,
   },
   summaryChipText: {
     flex: 1, fontSize: 13, color: c.textPrimary,
-    fontWeight: '500', lineHeight: 18,
+    fontFamily: 'Poppins_400Regular', lineHeight: 18,
   },
 
   addBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.accent, borderRadius: 16, paddingVertical: 18, gap: 10,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.accent, borderRadius: 12, paddingVertical: 18, gap: 10,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1, shadowRadius: 4, elevation: 1,
   },
   addBtnText: {
-    color: '#FFFFFF', fontWeight: '800', fontSize: 16, letterSpacing: 0.2,
+    color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 16, letterSpacing: 0.2,
   },
 });

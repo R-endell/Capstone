@@ -15,7 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { PhIcon } from '../../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../../components/ui/SolarIcon'; 
 
 const SIZE_META = {
   Small: {
@@ -40,6 +40,9 @@ const SIZE_META = {
     bgDark: '#231542',
   },
 } as const;
+
+// 🚨 YOUR 3D EMPTY ASSET 🚨
+const EMPTY_BOX_ICON = require('../../../../../assets/empty-box-icon.png');
 
 export default function ShipmentSizeScreen({ navigation }: any) {
   const { state, dispatch } = useSchedule();
@@ -118,7 +121,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
               <Text style={styles.itemSizeLabel}>{item.size} item</Text>
               {item.fragile && (
                 <View style={styles.fragileTag}>
-                  <PhIcon name="WarningCircle" size={10} color={colors.error} />
+                  <SolarIcon name="Warning" variant="bold" size={10} color={colors.error} />
                   <Text style={styles.fragileTagText}>Fragile</Text>
                 </View>
               )}
@@ -135,7 +138,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
           style={styles.removeBtn}
           activeOpacity={0.7}
         >
-          <PhIcon name="X" size={14} color={colors.error} />
+          <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
         </TouchableOpacity>
       </View>
     );
@@ -178,7 +181,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
           <View style={styles.headerTopRow}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-              <PhIcon name="ArrowLeft" size={22} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.headerSub}>
@@ -228,9 +231,12 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
             {state.items.length === 0 ? (
               <View style={styles.emptyBox}>
-                <View style={styles.emptyIconCircle}>
-                  <PhIcon name="Package" size={32} color={colors.textMuted} />
-                </View>
+                {/* ✅ Replaced flat icon with 3D asset */}
+                <Image 
+                  source={EMPTY_BOX_ICON} 
+                  style={styles.emptyImage} 
+                  resizeMode="contain" 
+                />
                 <Text style={styles.emptyTitle}>No items yet</Text>
                 <Text style={styles.emptyText}>Tap a size above to add your first item</Text>
               </View>
@@ -258,9 +264,10 @@ export default function ShipmentSizeScreen({ navigation }: any) {
               <Text style={[styles.confirmButtonText, state.items.length === 0 && styles.confirmButtonTextDisabled]}>
                 Continue
               </Text>
-              <PhIcon
-                name="ArrowRight"
-                size={16}
+              <SolarIcon
+                name="AltArrowRight"
+                variant="linear"
+                size={18}
                 color={state.items.length === 0 ? colors.textMuted : '#FFFFFF'}
               />
             </TouchableOpacity>
@@ -277,7 +284,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Item Details</Text>
                   <TouchableOpacity onPress={() => setSelectedItem(null)} style={styles.modalCloseBtn}>
-                    <PhIcon name="X" size={20} color={colors.textSecondary} />
+                    <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textSecondary} />
                   </TouchableOpacity>
                 </View>
 
@@ -297,7 +304,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                       />
                     )}
                     <View style={styles.zoomIconIndicator}>
-                      <PhIcon name="ArrowsOut" size={14} color="#FFFFFF" />
+                      <SolarIcon name="Maximize" variant="linear" size={14} color="#FFFFFF" />
                     </View>
                   </TouchableOpacity>
 
@@ -308,7 +315,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
                   {selectedItem.fragile && (
                     <View style={styles.modalFragileLarge}>
-                      <PhIcon name="Warning" size={16} color={colors.error} />
+                      <SolarIcon name="Warning" variant="duotone" size={18} color={colors.error} />
                       <Text style={styles.modalFragileTextLarge}>This item is marked as fragile</Text>
                     </View>
                   )}
@@ -328,7 +335,7 @@ export default function ShipmentSizeScreen({ navigation }: any) {
             onPress={() => setFullScreenImage(null)}
           />
           <TouchableOpacity style={styles.fsCloseBtn} onPress={() => setFullScreenImage(null)}>
-            <PhIcon name="X" size={28} color="#FFFFFF" />
+            <SolarIcon name="CloseCircle" variant="linear" size={28} color="#FFFFFF" />
           </TouchableOpacity>
           {fullScreenImage && (
             <Image
@@ -368,7 +375,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  stepText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
+  
+  stepText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 16 },
   backButton: {
     width: 42, height: 42, borderRadius: 21,
@@ -376,10 +384,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontWeight: '600', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 24, fontWeight: '800', color: '#FFFFFF', letterSpacing: -0.3 },
+  headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.3, marginBottom: 2 },
+  headerTitle: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.3 },
   headerSubtitle: {
-    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontWeight: '500', marginTop: 4,
+    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontFamily: 'Poppins_400Regular', marginTop: 4,
   },
 
   scrollView: { flex: 1, backgroundColor: c.background, zIndex: 3, elevation: 3 },
@@ -387,31 +395,35 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   card: { backgroundColor: c.background },
   textTitleContainer: { marginBottom: 20 },
   titleWithBadge: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4 },
-  cardTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
-  cardSubtitle: { fontSize: 14, color: c.textSecondary, fontWeight: '400', lineHeight: 20 },
+  
+  cardTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  cardSubtitle: { fontSize: 14, color: c.textSecondary, fontFamily: 'Poppins_400Regular', lineHeight: 20 },
   
   totalBadge: {
     minWidth: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8,
   },
-  totalBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  totalBadgeText: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_700Bold' },
 
   sizesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 28, gap: 12 },
   sizeItemWrapper: { flex: 1 },
+  
+  // ✅ ADDED flex: 1 HERE TO MAKE ALL CARDS STRETCH UNIFORMLY
   sizeItem: {
+    flex: 1,
     alignItems: 'center',
     backgroundColor: c.card,
-    borderRadius: 20,
+    borderRadius: 12,
     paddingVertical: 20, paddingHorizontal: 8,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: 2,
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
   sizeIconCircle: {
-    width: 64, height: 64, borderRadius: 20,
+    width: 64, height: 64, borderRadius: 16,
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 14, position: 'relative',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
   },
   sizeIconImage: { width: 40, height: 40 },
   countBadge: {
@@ -421,74 +433,77 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 2, borderColor: c.card,
     paddingHorizontal: 4, elevation: 2,
   },
-  countBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  sizeLabel: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sizeSub: { fontSize: 11, color: c.textSecondary, fontWeight: '500', textAlign: 'center' },
+  countBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_700Bold' },
+  sizeLabel: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
+  sizeSub: { fontSize: 11, color: c.textSecondary, fontFamily: 'Poppins_500Medium', textAlign: 'center' },
 
   itemsListContainer: { marginBottom: 16 },
   itemsHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     marginBottom: 12, paddingHorizontal: 2,
   },
-  itemsTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  itemsCount: { fontSize: 13, color: c.textSecondary, fontWeight: '600' },
+  itemsTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  itemsCount: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
 
   emptyBox: {
-    borderRadius: 20, paddingVertical: 40,
+    borderRadius: 12, paddingVertical: 40,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: c.card,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  emptyIconCircle: {
-    width: 64, height: 64, borderRadius: 22, backgroundColor: c.background,
-    justifyContent: 'center', alignItems: 'center',
-    marginBottom: 16, borderWidth: 1, borderColor: c.divider,
+  
+  // ✅ ADDED emptyImage style for the 3D icon
+  emptyImage: {
+    width: 120,
+    height: 120,
+    marginBottom: 16,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 6 },
-  emptyText: { fontSize: 13, color: c.textSecondary, fontWeight: '500', textAlign: 'center' },
+  
+  emptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6 },
+  emptyText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_400Regular', textAlign: 'center' },
 
   itemCard: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, borderRadius: 16, padding: 12, marginBottom: 12,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 12, padding: 12, marginBottom: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   itemCardContent: { flex: 1, flexDirection: 'row', alignItems: 'center' },
   itemSizeIcon: {
-    width: 48, height: 48, borderRadius: 14,
+    width: 48, height: 48, borderRadius: 12,
     justifyContent: 'center', alignItems: 'center',
     marginRight: 14, overflow: 'hidden',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
   },
   itemPhotoPlaceholder: { width: 28, height: 28 },
-  itemPhoto: { width: 48, height: 48, borderRadius: 14 },
+  itemPhoto: { width: 48, height: 48, borderRadius: 12 },
   itemInfo: { flex: 1, marginRight: 8 },
   itemTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  itemSizeLabel: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  itemSizeLabel: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   fragileTag: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: c.errorBg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
   },
-  fragileTagText: { fontSize: 10, fontWeight: '800', color: c.error },
-  itemDesc: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  fragileTagText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.error },
+  itemDesc: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_400Regular' },
   removeBtn: {
-    width: 34, height: 34, borderRadius: 17, backgroundColor: c.errorBg,
+    width: 34, height: 34, borderRadius: 12, backgroundColor: c.errorBg,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: c.error, marginLeft: 8,
   },
 
   confirmButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    borderRadius: 16, paddingVertical: 18, marginTop: 10, gap: 8,
+    borderRadius: 12, paddingVertical: 18, marginTop: 10, gap: 8,
   },
   confirmBtnDisabled: {
-    backgroundColor: c.divider, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.divider, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   confirmButtonActive: { 
     backgroundColor: c.accent,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1, shadowRadius: 4, elevation: 1,
   },
-  confirmButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  confirmButtonText: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_700Bold' },
   confirmButtonTextDisabled: { color: c.textMuted },
 
   modalOverlay: {
@@ -496,24 +511,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', padding: 24,
   },
   modalContent: {
-    width: '100%', backgroundColor: c.card, borderRadius: 24, padding: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: isDark ? 0.5 : 0.15, shadowRadius: 20, elevation: 10,
-    borderWidth: 1, borderColor: c.border,
+    width: '100%', backgroundColor: c.card, borderRadius: 16, padding: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15, shadowRadius: 16, elevation: 5,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20,
   },
-  modalTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary },
+  modalTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   modalCloseBtn: {
     width: 34, height: 34, borderRadius: 17, backgroundColor: c.divider,
     justifyContent: 'center', alignItems: 'center',
   },
   modalBody: { alignItems: 'center', paddingBottom: 8 },
   modalIconBox: {
-    width: 88, height: 88, borderRadius: 28,
+    width: 88, height: 88, borderRadius: 16,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: 16, borderWidth: 1, borderColor: c.divider,
+    marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     position: 'relative',
   },
   zoomIconIndicator: {
@@ -522,19 +537,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 2, borderColor: c.card,
   },
-  modalPhoto: { width: 88, height: 88, borderRadius: 28 },
+  modalPhoto: { width: 88, height: 88, borderRadius: 16 },
   modalImagePlaceholder: { width: 52, height: 52 },
-  modalSize: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8 },
+  modalSize: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8 },
   modalDesc: {
     fontSize: 14, color: c.textSecondary, textAlign: 'center', lineHeight: 20,
-    paddingHorizontal: 12, marginBottom: 16, fontWeight: '500',
+    paddingHorizontal: 12, marginBottom: 16, fontFamily: 'Poppins_400Regular',
   },
   modalFragileLarge: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: c.errorBg, paddingHorizontal: 14, paddingVertical: 10,
     borderRadius: 12, borderWidth: 1, borderColor: c.error,
   },
-  modalFragileTextLarge: { fontSize: 13, fontWeight: '800', color: c.error },
+  modalFragileTextLarge: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.error },
 
   fsOverlay: {
     flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.92)',

@@ -16,6 +16,9 @@ import "expo-crypto";
 import { supabase } from './src/utils/supabase';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
+// ✅ Reverted to strictly Poppins
+import { useFonts, Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold, Poppins_700Bold, Poppins_800ExtraBold } from '@expo-google-fonts/poppins';
+
 /* ------------------------------------------------------------------ */
 /* Silence noisy library warnings                                     */
 /* ------------------------------------------------------------------ */
@@ -345,7 +348,7 @@ function MainTabs() {
           tabBarActiveTintColor: '#F27024',
           tabBarInactiveTintColor: colors.textSecondary,
           tabBarStyle,
-          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
+          tabBarLabelStyle: { fontSize: 11, fontFamily: 'Poppins_500Medium' },
           headerShown: false,
         })}
       >
@@ -360,10 +363,7 @@ function MainTabs() {
         <Tab.Screen name="Account" component={AccountScreen} />
       </Tab.Navigator>
 
-      {/* Floating customer support bubble (sender) */}
       <SupportFab role="sender" />
-
-      {/* One-time Proof of Delivery popup strictly for Sender screens */}
       <ProofOfDeliveryModal
         isSenderMode={true}
         onViewDetails={(reqId) => {
@@ -440,7 +440,7 @@ function ProviderTabsInner() {
             route.name === 'Jobs' && tabBarHidden ? { display: 'none' } : tabBarStyle,
           tabBarLabelStyle: {
             fontSize: 11,
-            fontWeight: '500',
+            fontFamily: 'Poppins_500Medium',
           },
           headerShown: false,
         })}
@@ -451,8 +451,8 @@ function ProviderTabsInner() {
             name="Jobs" 
             component={JobsScreen} 
             options={{ 
-              title: 'My Route Requests', // Changes the screen title
-              tabBarLabel: 'My Requests'  // Changes the text under the icon in the bottom tab (shorter to fit)
+              title: 'My Route Requests',
+              tabBarLabel: 'My Requests'
             }} 
           />
         <ProviderTab.Screen
@@ -466,7 +466,6 @@ function ProviderTabsInner() {
         <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
       </ProviderTab.Navigator>
 
-      {/* Floating customer support bubble (provider) */}
       <SupportFab role="provider" />
     </View>
   );
@@ -976,7 +975,6 @@ function AppInner() {
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
 
-        {/* Provider Navigation Screen */}
         <Stack.Screen
           name="ProviderNavigation"
           component={ProviderNavigationScreen}
@@ -988,7 +986,6 @@ function AppInner() {
         />
       </Stack.Navigator>
 
-      {/* Global In-App Voice Call Modal for both Sender and Provider */}
       <InAppCallModal />
     </NavigationContainer>
   );
@@ -996,6 +993,18 @@ function AppInner() {
 
 // ---------- App ----------
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Poppins_400Regular,
+    Poppins_500Medium,
+    Poppins_600SemiBold,
+    Poppins_700Bold,
+    Poppins_800ExtraBold,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
     <SafeAreaProvider>
       <ThemeProvider>

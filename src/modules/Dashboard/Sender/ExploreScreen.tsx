@@ -11,7 +11,7 @@ import { supabase } from '../../../utils/supabase';
 import { useSchedule } from '../Sender/Delivery/ScheduleContext';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { useUser } from '../../../utils/userContext';
-import { PhIcon } from '../../../components/ui/PhIcon';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon'; 
 import {
   LiveFix, fetchLiveFixes, subscribeLiveFixes, isFixFresh,
 } from '../../../services/providerLiveService';
@@ -37,7 +37,6 @@ const splitAddress = (full?: string | null) => {
   return { main: parts[0], sub: parts.slice(1).join(', ') };
 };
 
-// ✅ HELPER: Safely extract a timestamp from a possible Date or undefined value
 const safeTime = (d?: Date | null): number => {
   if (!d) return Infinity;
   try {
@@ -63,7 +62,7 @@ type Trip = {
   dropoffCoords: { lat: number; lng: number };
   timeLabel: string;
   departureTime: Date;
-  endTime?: Date | null; // ✅ Made optional/nullable to prevent type issues
+  endTime?: Date | null;
   vehicleType: string;
   maxWeightKg: number | null;
   routeFrequency: string;
@@ -191,7 +190,6 @@ export default function ExploreScreen() {
           const end = r.end_location || {};
           const dep = r.departure_time ? new Date(r.departure_time) : new Date();
           
-          // ✅ Ensure endTime is always a valid Date
           let endTimeObj: Date;
           try {
             endTimeObj = r.end_time && !isNaN(new Date(r.end_time).getTime())
@@ -299,7 +297,6 @@ export default function ExploreScreen() {
       const live = isFixFresh(fix, now);
       const mins = minutesUntil(t.departureTime, now);
 
-      // ✅ Use safeTime to prevent crash if endTime is undefined
       const endTimeMs = safeTime(t.endTime);
       const isFinished = endTimeMs !== Infinity && now > endTimeMs;
 
@@ -342,7 +339,6 @@ export default function ExploreScreen() {
       return true;
     });
     if (myCoords) {
-      // ✅ Safe sort that prevents crash if departureTime is missing
       list.sort((a, b) => {
         const distDiff = (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
         if (distDiff !== 0) return distDiff;
@@ -418,18 +414,18 @@ export default function ExploreScreen() {
     }
   };
 
-  const stateBadge = (s: TripState) => {
+  const stateBadge = (s: TripState): { label: string; color: string; bg: string; icon: SolarIconName } => {
     switch (s) {
       case 'live':
-        return { label: 'On the way', color: colors.success, bg: colors.successBg, icon: 'NavigationArrow' as const };
+        return { label: 'On the way', color: colors.success, bg: colors.successBg, icon: 'Routing' };
       case 'onRoad':
-        return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' as const };
+        return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' };
       case 'soon':
-        return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'time-outline' as const };
+        return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' };
       case 'finished':
-        return { label: 'Route Finished', color: '#64748B', bg: '#F1F5F9', icon: 'flag' as const };
+        return { label: 'Route Finished', color: '#64748B', bg: '#F1F5F9', icon: 'Flag' };
       default:
-        return { label: 'Scheduled', color: BLUE, bg: 'rgba(59,130,246,0.14)', icon: 'Clock' as const };
+        return { label: 'Scheduled', color: BLUE, bg: 'rgba(59,130,246,0.14)', icon: 'Calendar' };
     }
   };
 
@@ -448,11 +444,13 @@ export default function ExploreScreen() {
         <View style={styles.oPad}>
           <View style={styles.oTopRow}>
             <View style={styles.svcPill}>
-              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              {/* ✅ Duotone for visual anchor */}
+              <SolarIcon name="Routing" variant="duotone" size={14} color={BLUE} />
               <Text style={styles.svcPillText} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
             <View style={[styles.statusPill, { backgroundColor: badge.bg }]}>
-              <PhIcon name={badge.icon} size={12} color={badge.color} />
+              {/* ✅ Bold for tiny status pill */}
+              <SolarIcon name={badge.icon} variant="bold" size={12} color={badge.color} />
               <Text style={[styles.statusPillText, { color: badge.color }]}>{badge.label}</Text>
             </View>
           </View>
@@ -494,7 +492,8 @@ export default function ExploreScreen() {
                 <Text style={styles.mcName} numberOfLines={1}>{item.name}</Text>
               </View>
               <View style={styles.mcRatingBadge}>
-                <Ionicons name="star" size={13} color={colors.warning} />
+                {/* ✅ Duotone for rating star */}
+                <SolarIcon name="Star" variant="duotone" size={13} color={colors.warning} />
                 <Text style={styles.mcRatingText}>{item.rating}</Text>
               </View>
             </View>
@@ -503,8 +502,10 @@ export default function ExploreScreen() {
 
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
-            <Ionicons
-              name={isFinished ? 'flag-outline' : item.state === 'scheduled' ? 'calendar-outline' : 'time-outline'}
+            {/* ✅ Bold for tiny footer icons */}
+            <SolarIcon
+              name={isFinished ? 'Flag' : item.state === 'scheduled' ? 'Calendar' : 'Clock'}
+              variant="bold"
               size={14}
               color={isFinished ? '#64748B' : ORANGE}
             />
@@ -514,7 +515,7 @@ export default function ExploreScreen() {
           </View>
           {item.maxWeightKg != null && (
             <View style={styles.oChip}>
-              <Ionicons name="cube-outline" size={14} color={isFinished ? '#64748B' : ORANGE} />
+              <SolarIcon name="Package" variant="bold" size={14} color={isFinished ? '#64748B' : ORANGE} />
               <Text style={[styles.oChipText, isFinished && { color: '#64748B' }]}>{item.maxWeightKg} kg</Text>
             </View>
           )}
@@ -530,7 +531,8 @@ export default function ExploreScreen() {
             onPress={() => setTrackRouteId(item.routeId)}
             activeOpacity={0.85}
           >
-            <PhIcon name="NavigationArrow" size={16} color={ORANGE} />
+            {/* ✅ Duotone for action button */}
+            <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
             <Text style={styles.trackBtnText}>Track</Text>
           </TouchableOpacity>
           
@@ -542,7 +544,8 @@ export default function ExploreScreen() {
             onPress={() => requestAlongRoute(item)}
             activeOpacity={0.9}
           >
-            <Ionicons name={isFinished ? 'close-circle' : 'paper-plane'} size={16} color="#FFFFFF" />
+            {/* ✅ Duotone for action button */}
+            <SolarIcon name={isFinished ? 'CloseCircle' : 'PaperPlane'} variant="duotone" size={16} color="#FFFFFF" />
             <Text style={styles.oRouteText}>
               {isFinished ? 'Route Finished' : 'Request Delivery'}
             </Text>
@@ -576,11 +579,11 @@ export default function ExploreScreen() {
             <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
           </View>
           <View style={styles.chevronPrimary}>
-            <PhIcon name="CaretRight" size={18} color="#FFFFFF" />
+            <SolarIcon name="AltArrowRight" variant="linear" size={18} color="#FFFFFF" />
           </View>
         </TouchableOpacity>
 
-        {/* SECONDARY CTA - NOW USING schedule-icon.png */}
+        {/* SECONDARY CTA */}
         <TouchableOpacity
           style={[styles.actionCard, styles.actionCardSecondary]}
           onPress={() => {
@@ -600,7 +603,7 @@ export default function ExploreScreen() {
             <Text style={styles.actionTitle}>Schedule a Delivery</Text>
             <Text style={styles.actionSubtitle}>Plan shipments for a future date</Text>
           </View>
-          <PhIcon name="CaretRight" size={18} color={colors.textMuted} />
+          <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
         </TouchableOpacity>
       </View>
 
@@ -612,7 +615,7 @@ export default function ExploreScreen() {
                 {filters.show === 'onTheWay' ? 'On the way' : 'Leaving later'}
               </Text>
               <TouchableOpacity onPress={() => setFilters({ ...filters, show: 'all' })}>
-                <PhIcon name="X" size={14} color={colors.textSecondary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={14} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
           )}
@@ -620,7 +623,7 @@ export default function ExploreScreen() {
             <View style={styles.filterChip}>
               <Text style={styles.filterChipText}>Within: {radiusLabel(filters.radiusKm)}</Text>
               <TouchableOpacity onPress={() => setFilters({ ...filters, radiusKm: DEFAULT_RADIUS_KM })}>
-                <PhIcon name="X" size={14} color={colors.textSecondary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={14} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
           )}
@@ -637,17 +640,17 @@ export default function ExploreScreen() {
         </View>
       ) : locationKnown ? (
         <View style={styles.locBanner}>
-          <PhIcon name="NavigationArrow" size={16} color={ORANGE} />
+          <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
           <Text style={styles.locBannerText}>
             {filters.radiusKm === null ? 'Showing providers closest to you' : `Providers within ${filters.radiusKm} km of you`}
           </Text>
           <TouchableOpacity onPress={locateMe} hitSlop={10}>
-            <PhIcon name="ArrowsClockwise" size={16} color={colors.textSecondary} />
+            <SolarIcon name="Refresh" variant="linear" size={16} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
       ) : (
         <View style={[styles.locBanner, styles.locBannerWarn]}>
-          <PhIcon name="MapPinLine" size={16} color={colors.error} />
+          <SolarIcon name="MapPoint" variant="bold" size={16} color={colors.error} />
           <Text style={styles.locBannerText}>
             {locStatus === 'denied' ? 'Location is off, so all providers are shown.' : 'Could not get your location.'}
           </Text>
@@ -666,7 +669,8 @@ export default function ExploreScreen() {
           style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
           onPress={() => setFilterModalVisible(true)}
         >
-          <PhIcon name="Gear" size={22} color={hasActiveFilters ? ORANGE : colors.textPrimary} />
+          {/* ✅ Changed to duotone as requested previously */}
+          <SolarIcon name="Settings" variant="duotone" size={22} color={hasActiveFilters ? ORANGE : colors.textPrimary} />
           {hasActiveFilters && <View style={styles.filterDot} />}
         </TouchableOpacity>
       </View>
@@ -694,7 +698,6 @@ export default function ExploreScreen() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} colors={[ORANGE]} />}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              {/* EMPTY STATE NOW USING empty-box-icon.png */}
               <Image 
                 source={require('../../../../assets/empty-box-icon.png')} 
                 style={styles.emptyImage} 
@@ -738,7 +741,7 @@ export default function ExploreScreen() {
             <View style={styles.filterModalHeader}>
               <Text style={styles.filterModalTitle}>Filters</Text>
               <TouchableOpacity onPress={() => setFilterModalVisible(false)}>
-                <PhIcon name="X" size={24} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -799,7 +802,13 @@ export default function ExploreScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   headerContainer: { paddingTop: 25, backgroundColor: c.background },
-  pageTitle: { fontSize: 32, fontWeight: '800', color: c.textPrimary, marginBottom: 20, letterSpacing: -0.5 },
+  pageTitle: { 
+    fontSize: 28,
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    marginBottom: 20, 
+    letterSpacing: -0.3 
+  },
 
   actionContainer: { marginHorizontal: 4, marginBottom: 20 },
   actionCard: {
@@ -808,14 +817,26 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginBottom: 14, minHeight: 80,
   },
   actionCardPrimary: {
-    backgroundColor: c.accent, borderWidth: 0,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 12, elevation: 6,
+    backgroundColor: c.accent, 
+    borderRadius: 12, 
+    borderWidth: 1, 
+    borderColor: 'transparent',
+    shadowColor: c.accent, 
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1, 
+    shadowRadius: 4, 
+    elevation: 1,
   },
   actionCardSecondary: {
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 8, elevation: 2,
+    backgroundColor: c.card, 
+    borderRadius: 12, 
+    borderWidth: 1, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02, 
+    shadowRadius: 1, 
+    elevation: 0,
   },
   actionIconContainer: {
     width: 52, height: 52, borderRadius: 14,
@@ -823,7 +844,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginRight: 14, borderWidth: 1, borderColor: c.accent,
   },
   actionIconPrimary: { backgroundColor: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.35)' },
-  actionCustomIcon: { width: 32, height: 32 }, // Adjusted for PNG icons
+  actionCustomIcon: { width: 32, height: 32 },
   actionTextContainer: { flex: 1, paddingRight: 8 },
   actionTitlePrimary: { color: '#FFFFFF', fontSize: 16, fontWeight: '700', letterSpacing: -0.3 },
   actionSubtitlePrimary: { color: 'rgba(255,255,255,0.88)', fontSize: 13, marginTop: 3, fontWeight: '400' },
@@ -835,8 +856,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
 
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 16 },
-  sectionTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sectionSubtitleTight: { fontSize: 13, color: c.textSecondary, lineHeight: 18 },
+  sectionTitle: { 
+    fontSize: 20, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    marginBottom: 4,
+    letterSpacing: -0.2 
+  },
+  sectionSubtitleTight: { 
+    fontSize: 14, 
+    fontFamily: 'Poppins_400Regular', 
+    color: c.textSecondary, 
+    lineHeight: 20 
+  },
   filterBtn: {
     width: 44, height: 44, borderWidth: 1, borderColor: c.border,
     borderRadius: 12, backgroundColor: c.card, justifyContent: 'center', alignItems: 'center', position: 'relative',
@@ -853,12 +885,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   filterChipText: { fontSize: 12, color: c.textSecondary },
   clearAllText: { fontSize: 12, color: c.accent, fontWeight: '600' },
   locBanner: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.accentSoft, borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12, marginBottom: 16,
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8,
+    backgroundColor: c.accentSoft, 
+    borderRadius: 12, 
+    borderWidth: 1, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
+    paddingHorizontal: 14, 
+    paddingVertical: 12, 
+    marginBottom: 16,
   },
   locBannerWarn: { backgroundColor: c.card, borderWidth: 1, borderColor: c.border },
-  locBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: c.textPrimary, lineHeight: 16 },
+  locBannerText: {
+    flex: 1, 
+    fontSize: 13, 
+    fontFamily: 'Poppins_600SemiBold', 
+    color: c.textPrimary, 
+    lineHeight: 16 
+  },
   locBannerAction: { fontSize: 12, fontWeight: '800', color: c.accent },
 
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 60, gap: 12 },
@@ -967,14 +1012,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },
   
-  // Updated empty state styles to fit the new 3D image
   emptyImage: {
     width: 140,
     height: 140,
     marginBottom: 16,
   },
-  
-  emptyText: { fontSize: 17, fontWeight: '700', color: c.textPrimary, marginBottom: 6 },
+  emptyText: { 
+    fontSize: 18, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    marginBottom: 6,
+    letterSpacing: -0.2
+  },
   emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 18, paddingHorizontal: 20 },
   emptyAction: {
     marginTop: 20, paddingHorizontal: 20, paddingVertical: 12,
@@ -984,23 +1033,48 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   filterModal: {
-    backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    backgroundColor: c.card, 
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24, 
     padding: 24, maxHeight: height * 0.7,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   filterModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  filterModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary },
+  filterModalTitle: { 
+    fontSize: 20, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary, 
+    letterSpacing: -0.2 
+  },
   filterSection: { marginBottom: 24 },
-  filterSectionTitle: { fontSize: 15, fontWeight: '700', color: c.textPrimary, marginBottom: 12 },
+  filterSectionTitle: { 
+    fontSize: 15, 
+    fontFamily: 'Poppins_600SemiBold', 
+    color: c.textPrimary, 
+    marginBottom: 12 
+  },
   filterOptionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   filterOption: {
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
-    borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
+    paddingHorizontal: 16, paddingVertical: 10, 
+    borderRadius: 12, 
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card,
   },
   filterOptionActive: { borderColor: c.accent, backgroundColor: c.accentSoft },
-  filterOptionText: { fontSize: 14, color: c.textSecondary, fontWeight: '500' },
-  filterOptionTextActive: { color: c.accent, fontWeight: '700' },
+  filterOptionText: {
+    fontSize: 14, 
+    fontFamily: 'Poppins_600SemiBold', 
+    color: c.textSecondary 
+  },
+  filterOptionTextActive: {
+    color: c.accent, 
+    fontFamily: 'Poppins_600SemiBold'
+  },
   filterHint: { fontSize: 12, color: c.textMuted, marginTop: 8 },
-  applyFiltersBtn: { backgroundColor: c.accent, borderRadius: 14, paddingVertical: 16, alignItems: 'center', marginTop: 8 },
+  applyFiltersBtn: { 
+    backgroundColor: c.accent, 
+    borderRadius: 12, 
+    paddingVertical: 16, alignItems: 'center', marginTop: 8 
+  },
   applyFiltersBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 16 },
   resetFiltersBtn: { paddingVertical: 14, alignItems: 'center' },
   resetFiltersBtnText: { color: c.textSecondary, fontWeight: '600', fontSize: 14 },

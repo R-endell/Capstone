@@ -9,7 +9,7 @@ import { useNavigation } from '@react-navigation/native';
 import Svg, { Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { useSchedule } from './ScheduleContext';
-import { PhIcon } from '../../../../components/ui/PhIcon';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
 const { width } = Dimensions.get('window');
 
@@ -48,7 +48,7 @@ export default function SendNowIntroScreen() {
         onPress={() => navigation.goBack()} 
         activeOpacity={0.8}
       >
-        <PhIcon name="ArrowLeft" size={22} color={colors.textPrimary} />
+        <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
       </TouchableOpacity>
 
       {/* Main Content */}
@@ -69,25 +69,21 @@ export default function SendNowIntroScreen() {
               icon="Lightning" 
               title="Instant matching" 
               desc="Get matched with a nearby provider immediately for the fastest possible delivery." 
-              colors={colors} 
             />
             <FeatureItem 
-              icon="NavigationArrow" 
+              icon="Routing" 
               title="Live tracking" 
               desc="Track your package in real-time on the map from the moment it's picked up." 
-              colors={colors} 
             />
             <FeatureItem 
               icon="ShieldCheck" 
               title="Secure escrow" 
               desc="Your payment is held safely and only released when the package is delivered." 
-              colors={colors} 
             />
             <FeatureItem 
               icon="Package" 
               title="Safe handling" 
               desc="All couriers are verified to ensure your package arrives safely and on time." 
-              colors={colors} 
             />
           </View>
         </View>
@@ -103,24 +99,32 @@ export default function SendNowIntroScreen() {
   );
 }
 
-const FeatureItem = ({ icon, title, desc, colors }: { icon: any, title: string, desc: string, colors: ThemeColors }) => (
-  <View style={featureStyles.container}>
-    <View style={[featureStyles.iconWrap, { backgroundColor: colors.accentSoft }]}>
-      <PhIcon name={icon} size={22} color={colors.accent} />
+const FeatureItem = ({ icon, title, desc }: { icon: any, title: string, desc: string }) => {
+  const { colors, isDark } = useTheme();
+  return (
+    <View style={featureStyles.container}>
+      <View style={[featureStyles.iconWrap, { backgroundColor: colors.accentSoft }]}>
+        <SolarIcon 
+          name={icon} 
+          variant="bold" 
+          size={22} 
+          color={isDark ? '#FFFFFF' : colors.accent} // ✅ Uniform Color
+        />
+      </View>
+      <View style={featureStyles.textWrap}>
+        <Text style={[featureStyles.title, { color: colors.textPrimary }]}>{title}</Text>
+        <Text style={[featureStyles.desc, { color: colors.textSecondary }]}>{desc}</Text>
+      </View>
     </View>
-    <View style={featureStyles.textWrap}>
-      <Text style={[featureStyles.title, { color: colors.textPrimary }]}>{title}</Text>
-      <Text style={[featureStyles.desc, { color: colors.textSecondary }]}>{desc}</Text>
-    </View>
-  </View>
-);
+  );
+};
 
 const featureStyles = StyleSheet.create({
   container: { flexDirection: 'row', gap: 16, marginBottom: 20 },
   iconWrap: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
   textWrap: { flex: 1, justifyContent: 'center' },
-  title: { fontSize: 16, fontWeight: '700', marginBottom: 4 },
-  desc: { fontSize: 13, lineHeight: 18 },
+  title: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', marginBottom: 4 },
+  desc: { fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 18 },
 });
 
 const makeStyles = (c: ThemeColors, isDark: boolean, insets: any) => StyleSheet.create({
@@ -133,18 +137,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean, insets: any) => StyleSheet.
     height: insets.top + 100,
     zIndex: 1,
   },
+  
   backBtn: {
     position: 'absolute',
     left: 20,
     zIndex: 10,
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 6, elevation: 3,
+    borderWidth: 1, 
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 }, 
+    shadowOpacity: 0.02, 
+    shadowRadius: 1, 
+    elevation: 0,
   },
+  
   contentContainer: {
     flex: 1,
-    paddingTop: insets.top > 0 ? insets.top * 0.5 : 20, 
+    paddingTop: insets.top > 0 ? insets.top * 0 : 10, 
   },
   heroContainer: {
     width: '100%', 
@@ -158,21 +169,38 @@ const makeStyles = (c: ThemeColors, isDark: boolean, insets: any) => StyleSheet.
     paddingHorizontal: 24,
     flex: 1,
   },
+  
   title: {
-    fontSize: 28, fontWeight: '800', color: c.textPrimary,
-    letterSpacing: -0.5, marginBottom: 24,
+    fontSize: 28, 
+    fontFamily: 'Poppins_700Bold', 
+    color: c.textPrimary,
+    letterSpacing: -0.3, 
+    marginBottom: 16,
   },
+  
   featureList: { flex: 1 },
   bottomBar: {
     paddingHorizontal: 24, paddingTop: 16,
     backgroundColor: c.background,
-    borderTopWidth: 1, borderTopColor: c.divider,
+    borderTopWidth: 1, 
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
+  
   primaryBtn: {
-    backgroundColor: c.accent, height: 56, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.accent, 
+    height: 56, 
+    borderRadius: 12,
+    alignItems: 'center', 
+    justifyContent: 'center',
+    shadowColor: c.accent, 
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1, 
+    shadowRadius: 4, 
+    elevation: 1,
   },
-  primaryBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  primaryBtnText: { 
+    color: '#FFFFFF', 
+    fontSize: 16, 
+    fontFamily: 'Poppins_700Bold' 
+  },
 });
