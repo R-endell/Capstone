@@ -40,6 +40,7 @@ type ChatRoom = {
   room_id: number;
   all_room_ids: number[];
   delivery_id: number;
+  request_id?: number | null;
   other: Party;
   role: 'sender' | 'provider' | 'support';
   latest_message: string | null;
@@ -92,6 +93,33 @@ const formatDateSeparator = (timestamp: string) => {
   if (day === today) return 'Today';
   if (day === yesterday) return 'Yesterday';
   return formatDate(timestamp, 'EEEE, MMM d');
+};
+
+/**
+ * Push to the other person in a chat. Same shape as the (working) cancellation push:
+ * module-level helper, always sends type + requestId + role, never throws.
+ */
+const notifyChatRecipient = async (opts: {
+  recipientId: number | null | undefined;
+  recipientRole: 'sender' | 'provider';
+  senderName: string;
+  preview: string;
+  roomId: number;
+  requestId?: number | null;
+  deliveryId?: number | null;
+}): Promise<void> => {
+  const { recipientId, recipientRole, senderName, preview, roomId, requestId, deliveryId } = opts;
+  if (!recipientId) return;
+  try {
+    await notifyUser(
+      recipientId,
+      `💬 ${senderName || 'Someone'}`,
+      preview,
+      { type: 'chat', requestId: requestId ?? null, deliveryId: deliveryId ?? null, roomId, role: recipientRole },
+    );
+  } catch (err) {
+    console.warn('[Chat] push notify failed:', err);
+  }
 };
 
 const sortByLatest = (list: ChatRoom[]) =>
@@ -311,6 +339,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 room_id: room.room_id,
                 all_room_ids: [room.room_id],
                 delivery_id: room.delivery_id,
+                request_id: d.request_id ?? null,
                 other,
                 role: isMeProvider ? 'provider' : 'sender',
                 latest_message: latestResult.data?.message || null,
@@ -497,6 +526,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     flatListRef.current?.scrollToOffset({ offset: 0, animated });
   };
 
+  // Fire-and-forget push to the other party. Runs right after the message row is saved so a
+  // later failure (e.g. chat_room_states upsert) can no longer swallow the notification.
+  const pushChatNotification = (room: ChatRoom, preview: string) => {
+    if (room.is_support || !room.other?.user_id || !currentUserId.current) return;
+    void notifyChatRecipient({
+      recipientId: room.other.user_id,
+      recipientRole: room.role === 'provider' ? 'sender' : 'provider',
+      senderName: currentUserName.current,
+      preview,
+      roomId: room.room_id,
+      requestId: room.request_id ?? null,
+      deliveryId: room.delivery_id ?? null,
+    });
+  };
+
   const sendMessage = async () => {
     const trimmed = newMessage.trim();
     if (!trimmed || !selectedRoom || !currentUserId.current) return;
@@ -515,8 +559,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const { data, error } = await supabase.from('chat_messages').insert({ message: trimmed, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
+      pushChatNotification(selectedRoom, trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed);
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        try {
+          await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        } catch (stateErr) { console.warn('[Chat] room state upsert failed:', stateErr); }
       }
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
@@ -526,13 +573,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       setConversations(prev =>
         sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
-        const senderLabel = currentUserName.current || 'Someone';
-        const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
-        try {
-          await notifyUser(selectedRoom.other.user_id, `💬 ${senderLabel}`, preview, { type: 'chat', roomId, senderId: currentUserId.current });
-        } catch (notifErr) { console.warn('[Chat] push notify failed:', notifErr); }
-      }
     } catch (error: any) {
       console.error('Send error:', error);
       Alert.alert('Error', 'Unable to send message.');
@@ -577,8 +617,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       const text = buildImageMessage(remoteUrl);
       const { data, error } = await supabase.from('chat_messages').insert({ message: text, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
+      pushChatNotification(selectedRoom, '📷 Photo');
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        try {
+          await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        } catch (stateErr) { console.warn('[Chat] room state upsert failed:', stateErr); }
       }
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
@@ -588,12 +631,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       setConversations(prev =>
         sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
-        const senderLabel = currentUserName.current || 'Someone';
-        try {
-          await notifyUser(selectedRoom.other.user_id, `💬 ${senderLabel}`, '📷 Photo', { type: 'chat', roomId, senderId: currentUserId.current });
-        } catch (notifErr) { console.warn('[Chat] image push notify failed:', notifErr); }
-      }
     } catch (e: any) {
       console.error('Send image error:', e);
       Alert.alert('Upload Failed', e?.message || 'Could not send the photo. Please try again.');

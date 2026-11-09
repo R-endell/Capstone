@@ -66,21 +66,70 @@ export async function registerPushToken(userId: number): Promise<boolean> {
   }
 }
 
+let lastPushError: string | null = null;
+/** Reason the most recent notifyUser() did not deliver (null if it did). */
+export const getLastPushError = () => lastPushError;
+
+/** supabase.functions.invoke does NOT throw on HTTP errors - dig the real reason out. */
+async function describeInvokeError(error: any): Promise<string> {
+  try {
+    const ctx = error?.context;
+    if (ctx && typeof ctx.text === 'function') {
+      return `${error?.message ?? 'error'} :: ${await ctx.text()}`;
+    }
+  } catch { /* ignore */ }
+  return String(error?.message ?? error);
+}
+
 /**
  * Fire a push to another user via the send-push edge function.
- * Fails silently — pushes are non-critical.
+ * Never throws (pushes are non-critical) but now resolves to true only when the
+ * push was really handed to at least one device, and logs why when it wasn't.
  */
 export async function notifyUser(
   targetUserId: number,
   title: string,
   body: string,
   data?: Record<string, any>,
-): Promise<void> {
+): Promise<boolean> {
+  if (!targetUserId || !Number.isFinite(Number(targetUserId))) {
+    lastPushError = 'invalid target user id';
+    console.warn('[push] notifyUser called without a valid target user id');
+    return false;
+  }
+
+  const payload: Record<string, any> = { ...(data ?? {}) };
+  if (!payload.type) payload.type = 'general';
+
   try {
-    await supabase.functions.invoke('send-push', {
-      body: { user_id: targetUserId, title, body, data: data ?? {} },
+    const { data: resp, error } = await supabase.functions.invoke('send-push', {
+      body: { user_id: Number(targetUserId), title, body, data: payload },
     });
-  } catch (e) {
+
+    if (error) {
+      lastPushError = await describeInvokeError(error);
+      console.warn('[push] send-push failed:', lastPushError);
+      return false;
+    }
+    const r: any = resp ?? {};
+    if (r.success === false) {
+      lastPushError = `send-push error: ${r.error ?? JSON.stringify(r)}`;
+      console.warn('[push]', lastPushError);
+      return false;
+    }
+    if (!r.delivered) {
+      // e.g. the recipient has no row in push_tokens, or Expo rejected every ticket
+      lastPushError = `not delivered to user ${targetUserId}: ${r.reason ?? 'no device accepted the push'}${
+        r.errors?.length ? ` ${JSON.stringify(r.errors)}` : ''
+      }`;
+      console.warn('[push]', lastPushError);
+      return false;
+    }
+    lastPushError = null;
+    return true;
+  } catch (e: any) {
+    lastPushError = String(e?.message ?? e);
     console.warn('[push] notify failed:', e);
+    return false;
   }
 }

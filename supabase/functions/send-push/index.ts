@@ -65,19 +65,25 @@ serve(async (req: Request) => {
 
     const result = await resp.json();
 
-    // Prune stale tokens (DeviceNotRegistered)
+    // Prune stale tokens (DeviceNotRegistered) and collect real Expo errors
     const tickets = Array.isArray(result) ? result : (result.data ?? []);
     const deadTokens: string[] = [];
+    const errors: Array<Record<string, unknown>> = [];
+    let accepted = 0;
     tickets.forEach((t: any, i: number) => {
-      if (t?.status === 'error' && t?.details?.error === 'DeviceNotRegistered') {
-        deadTokens.push(tokens[i].token);
+      if (t?.status === 'ok') {
+        accepted++;
+      } else if (t?.status === 'error') {
+        errors.push({ error: t?.details?.error ?? null, message: t?.message ?? null });
+        if (t?.details?.error === 'DeviceNotRegistered') deadTokens.push(tokens[i].token);
       }
     });
     if (deadTokens.length > 0) {
       await supabase.from('push_tokens').delete().in('token', deadTokens);
     }
+    if (errors.length > 0) console.error('[send-push] expo errors:', JSON.stringify(errors));
 
-    return json({ success: true, delivered: tokens.length });
+    return json({ success: true, delivered: accepted, attempted: tokens.length, errors });
   } catch (e: any) {
     return json({ success: false, error: e?.message ?? 'Unexpected error' });
   }

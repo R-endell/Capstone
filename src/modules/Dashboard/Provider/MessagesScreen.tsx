@@ -1,4 +1,4 @@
-// src/modules/Dashboard/Provider/MessagesScreen.tsx
+// src/modules/Dashboard/Sender/MessagesScreen.tsx
 import React, {
   useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo,
 } from 'react';
@@ -6,7 +6,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   Platform, ActivityIndicator, Alert, Image, RefreshControl,
   Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView, BackHandler,
-  Modal, Pressable, Linking, ScrollView,
+  Modal, Pressable, Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
@@ -40,6 +40,7 @@ type ChatRoom = {
   room_id: number;
   all_room_ids: number[];
   delivery_id: number;
+  request_id?: number | null;
   other: Party;
   role: 'sender' | 'provider' | 'support';
   latest_message: string | null;
@@ -59,11 +60,8 @@ type ChatMessage = {
   _temp_id?: number;
 };
 
-// --- Image marker helpers ---
 const isImageMessage = (text: string) =>
-  typeof text === 'string' &&
-  text.startsWith(IMG_MARKER_START) &&
-  text.endsWith(IMG_MARKER_END);
+  typeof text === 'string' && text.startsWith(IMG_MARKER_START) && text.endsWith(IMG_MARKER_END);
 
 const extractImageUrl = (text: string) =>
   text.slice(IMG_MARKER_START.length, text.length - IMG_MARKER_END.length);
@@ -74,7 +72,6 @@ const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
   const now = new Date();
   const diff = now.getTime() - date.getTime();
-
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
   if (diff < 86400000) return formatDate(timestamp, 'h:mm a');
@@ -84,22 +81,45 @@ const formatChatTime = (timestamp: string) => {
 
 const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
   if (!previous) return true;
-  const currDay = formatDate(current.sent_at, 'yyyy-MM-dd');
-  const prevDay = formatDate(previous.sent_at, 'yyyy-MM-dd');
-  return currDay !== prevDay;
+  return formatDate(current.sent_at, 'yyyy-MM-dd') !== formatDate(previous.sent_at, 'yyyy-MM-dd');
 };
 
 const formatDateSeparator = (timestamp: string) => {
   const day = formatDate(timestamp, 'yyyy-MM-dd');
   const today = formatDate(new Date().toISOString(), 'yyyy-MM-dd');
-
   const y = new Date();
   y.setDate(y.getDate() - 1);
   const yesterday = formatDate(y.toISOString(), 'yyyy-MM-dd');
-
   if (day === today) return 'Today';
   if (day === yesterday) return 'Yesterday';
   return formatDate(timestamp, 'EEEE, MMM d');
+};
+
+/**
+ * Push to the other person in a chat. Same shape as the (working) cancellation push:
+ * module-level helper, always sends type + requestId + role, never throws.
+ */
+const notifyChatRecipient = async (opts: {
+  recipientId: number | null | undefined;
+  recipientRole: 'sender' | 'provider';
+  senderName: string;
+  preview: string;
+  roomId: number;
+  requestId?: number | null;
+  deliveryId?: number | null;
+}): Promise<void> => {
+  const { recipientId, recipientRole, senderName, preview, roomId, requestId, deliveryId } = opts;
+  if (!recipientId) return;
+  try {
+    await notifyUser(
+      recipientId,
+      `💬 ${senderName || 'Someone'}`,
+      preview,
+      { type: 'chat', requestId: requestId ?? null, deliveryId: deliveryId ?? null, roomId, role: recipientRole },
+    );
+  } catch (err) {
+    console.warn('[Chat] push notify failed:', err);
+  }
 };
 
 const sortByLatest = (list: ChatRoom[]) =>
@@ -134,8 +154,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const openRoomIdParam: number | undefined =
-    propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
+  const openRoomIdParam: number | undefined = propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
   const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
   const [messagesView, setMessagesView] = useState<'inbox' | 'archived'>('inbox');
@@ -150,7 +169,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const [loadMore, setLoadMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  // Attachment state
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -177,20 +195,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
 
-  const navigationRef = useRef(navigation);
-  navigationRef.current = navigation;
-
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-  // Back handler
   useEffect(() => {
     const backAction = () => {
       if (previewImage) { setPreviewImage(null); return true; }
       if (attachSheetOpen) { setAttachSheetOpen(false); return true; }
-      if (selectedRoom) {
-        closeConversation();
-        return true;
-      }
+      if (selectedRoom) { closeConversation(); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
@@ -206,7 +217,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         setChatLoading(false);
       }
       fetchConversations();
-
       return () => {
         if (subscription.current) {
           supabase.removeChannel(subscription.current);
@@ -219,28 +229,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   useLayoutEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
-      Animated.timing(value, {
-        toValue: 1, duration, delay,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      });
+      Animated.timing(value, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
 
     if (!selectedRoom) {
       listHeaderAnim.setValue(0);
       listAnim.setValue(0);
-      Animated.parallel([
-        animate(listHeaderAnim, 0),
-        animate(listAnim, 150),
-      ]).start();
+      Animated.parallel([animate(listHeaderAnim, 0), animate(listAnim, 150)]).start();
     } else {
       detailHeaderAnim.setValue(0);
       detailAnim.setValue(0);
       inputAnim.setValue(0);
-      Animated.parallel([
-        animate(detailHeaderAnim, 0),
-        animate(detailAnim, 100),
-        animate(inputAnim, 150),
-      ]).start();
+      Animated.parallel([animate(detailHeaderAnim, 0), animate(detailAnim, 100), animate(inputAnim, 150)]).start();
     }
   }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
 
@@ -252,13 +251,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-
     const { data: userRecord } = await supabase
       .from('users')
       .select('user_id, first_name, last_name')
       .eq('auth_id', user.id)
       .single();
-
     if (userRecord) {
       currentUserName.current = [userRecord.first_name, userRecord.last_name].filter(Boolean).join(' ') || 'Someone';
     }
@@ -342,6 +339,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 room_id: room.room_id,
                 all_room_ids: [room.room_id],
                 delivery_id: room.delivery_id,
+                request_id: d.request_id ?? null,
                 other,
                 role: isMeProvider ? 'provider' : 'sender',
                 latest_message: latestResult.data?.message || null,
@@ -429,24 +427,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    fetchConversations();
-  };
+  const handleRefresh = () => { setRefreshing(true); fetchConversations(); };
 
   const fetchMessages = async (roomIds: number[], olderThan?: string) => {
-    let query = supabase
-      .from('chat_messages')
-      .select('*')
-      .in('room_id', roomIds)
-      .order('sent_at', { ascending: false })
-      .limit(PAGE_SIZE);
+    let query = supabase.from('chat_messages').select('*').in('room_id', roomIds).order('sent_at', { ascending: false }).limit(PAGE_SIZE);
     if (olderThan) query = query.lt('sent_at', olderThan);
     const { data, error } = await query;
     if (error) { console.error(error); return []; }
-    return (data || [])
-      .map((m: any) => ({ ...m, _temp_id: undefined }))
-      .reverse() as ChatMessage[];
+    return (data || []).map((m: any) => ({ ...m, _temp_id: undefined })).reverse() as ChatMessage[];
   };
 
   const subscribeToRoom = (roomIds: number[]) => {
@@ -456,10 +444,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
         const incoming = payload.new as ChatMessage;
         if (!roomIds.includes(incoming.room_id)) return;
-
         const isMine = incoming.sender_id === currentUserId.current;
         const newMsg: ChatMessage = isMine ? incoming : { ...incoming, is_read: true };
-
         setMessages(prev => {
           if (prev.some(m => m._temp_id === undefined && m.message_id === newMsg.message_id)) return prev;
           const tempIdx = prev.findIndex(m => m._temp_id !== undefined && m.sender_id === newMsg.sender_id && m.message === newMsg.message);
@@ -470,32 +456,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           }
           return [...prev, newMsg];
         });
-
         setConversations(prev =>
-          sortByLatest(
-            prev.map(c =>
-              c.all_room_ids.includes(newMsg.room_id)
-                ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at }
-                : c
-            )
-          )
+          sortByLatest(prev.map(c => c.all_room_ids.includes(newMsg.room_id) ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at } : c))
         );
-
         if (!isMine) {
-          supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id)
-            .then(() => {}, (e: any) => console.warn('Mark read error:', e));
+          supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id).then(() => {}, (e: any) => console.warn('Mark read error:', e));
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, (payload) => {
         const updated = payload.new as ChatMessage;
         if (!roomIds.includes(updated.room_id)) return;
-        setMessages(prev =>
-          prev.map(m =>
-            m._temp_id === undefined && m.message_id === updated.message_id
-              ? { ...m, is_read: updated.is_read }
-              : m
-          )
-        );
+        setMessages(prev => prev.map(m => m._temp_id === undefined && m.message_id === updated.message_id ? { ...m, is_read: updated.is_read } : m));
       })
       .subscribe();
   };
@@ -520,12 +491,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
     if (currentUserId.current) {
       try {
-        await supabase
-          .from('chat_messages')
-          .update({ is_read: true })
-          .in('room_id', room.all_room_ids)
-          .neq('sender_id', currentUserId.current)
-          .eq('is_read', false);
+        await supabase.from('chat_messages').update({ is_read: true }).in('room_id', room.all_room_ids).neq('sender_id', currentUserId.current).eq('is_read', false);
       } catch (e) { console.warn('Mark read error:', e); }
       if (token !== openToken.current) return;
       setConversations(prev => prev.map(c => (c.room_id === room.room_id ? { ...c, unread_count: 0 } : c)));
@@ -547,7 +513,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (loadingOlder.current || !hasMore || !selectedRoom || chatLoading) return;
     const oldest = messages.find(m => m._temp_id === undefined);
     if (!oldest) return;
-
     loadingOlder.current = true;
     setLoadMore(true);
     const older = await fetchMessages(selectedRoom.all_room_ids, oldest.sent_at);
@@ -559,6 +524,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const scrollToLatest = (animated = true) => {
     flatListRef.current?.scrollToOffset({ offset: 0, animated });
+  };
+
+  // Fire-and-forget push to the other party. Runs right after the message row is saved so a
+  // later failure (e.g. chat_room_states upsert) can no longer swallow the notification.
+  const pushChatNotification = (room: ChatRoom, preview: string) => {
+    if (room.is_support || !room.other?.user_id || !currentUserId.current) return;
+    void notifyChatRecipient({
+      recipientId: room.other.user_id,
+      recipientRole: room.role === 'provider' ? 'sender' : 'provider',
+      senderName: currentUserName.current,
+      preview,
+      roomId: room.room_id,
+      requestId: room.request_id ?? null,
+      deliveryId: room.delivery_id ?? null,
+    });
   };
 
   const sendMessage = async () => {
@@ -577,51 +557,22 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setTimeout(() => scrollToLatest(true), 50);
 
     try {
-      const { data, error } = await supabase.from('chat_messages').insert({
-        message: trimmed, room_id: roomId, sender_id: currentUserId.current,
-      }).select('*').single();
+      const { data, error } = await supabase.from('chat_messages').insert({ message: trimmed, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
-
+      pushChatNotification(selectedRoom, trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed);
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(
-          allRoomIds.map(id => ({
-            room_id: id,
-            user_id: currentUserId.current,
-            is_archived: false,
-            is_deleted: false,
-          }))
-        );
+        try {
+          await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        } catch (stateErr) { console.warn('[Chat] room state upsert failed:', stateErr); }
       }
-
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
         if (hasReal) return prev.filter(m => m._temp_id !== tempId);
         return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
       });
       setConversations(prev =>
-        sortByLatest(
-          prev.map(c =>
-            c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
-              : c
-          )
-        )
+        sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-
-      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
-        const senderLabel = currentUserName.current || 'Someone';
-        const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
-        try {
-          await notifyUser(
-            selectedRoom.other.user_id,
-            `💬 ${senderLabel}`,
-            preview,
-            { type: 'chat', roomId, senderId: currentUserId.current },
-          );
-        } catch (notifErr) {
-          console.warn('[Chat] push notify failed:', notifErr);
-        }
-      }
     } catch (error: any) {
       console.error('Send error:', error);
       Alert.alert('Error', 'Unable to send message.');
@@ -630,53 +581,33 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  // ---------------- Image upload ----------------
   const uploadChatImage = async (uri: string): Promise<string> => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user');
-
     const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
     const fileExt = ['jpg', 'jpeg', 'png', 'webp'].includes(rawExt) ? rawExt : 'jpg';
     const contentType = `image/${fileExt}`;
     const fileName = `${user.id}/chat_${Date.now()}.${fileExt}`;
-
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
     const binaryString = atob(base64);
     const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    const { error: uploadError } = await supabase.storage
-      .from(CHAT_ATTACHMENT_BUCKET)
-      .upload(fileName, bytes, { contentType, upsert: true });
+    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+    const { error: uploadError } = await supabase.storage.from(CHAT_ATTACHMENT_BUCKET).upload(fileName, bytes, { contentType, upsert: true });
     if (uploadError) throw new Error(uploadError.message);
-
-    const { data: urlData } = supabase.storage
-      .from(CHAT_ATTACHMENT_BUCKET)
-      .getPublicUrl(fileName);
+    const { data: urlData } = supabase.storage.from(CHAT_ATTACHMENT_BUCKET).getPublicUrl(fileName);
     if (!urlData?.publicUrl) throw new Error('No public URL');
     return urlData.publicUrl;
   };
 
   const sendImage = async (uri: string) => {
     if (!selectedRoom || !currentUserId.current) return;
-
     const roomId = selectedRoom.room_id;
     const allRoomIds = selectedRoom.all_room_ids;
     const tempId = Date.now();
     const optimistic: ChatMessage = {
-      message_id: tempId,
-      room_id: roomId,
-      message: buildImageMessage(uri),
-      sent_at: new Date().toISOString(),
-      sender_id: currentUserId.current,
-      is_read: false,
-      _temp_id: tempId,
+      message_id: tempId, room_id: roomId, message: buildImageMessage(uri), sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current, is_read: false, _temp_id: tempId,
     };
-
     setMessages(prev => [...prev, optimistic]);
     setSendingImage(true);
     setTimeout(() => scrollToLatest(true), 50);
@@ -684,53 +615,22 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const remoteUrl = await uploadChatImage(uri);
       const text = buildImageMessage(remoteUrl);
-
-      const { data, error } = await supabase.from('chat_messages').insert({
-        message: text,
-        room_id: roomId,
-        sender_id: currentUserId.current,
-      }).select('*').single();
+      const { data, error } = await supabase.from('chat_messages').insert({ message: text, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
-
+      pushChatNotification(selectedRoom, '📷 Photo');
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(
-          allRoomIds.map(id => ({
-            room_id: id,
-            user_id: currentUserId.current,
-            is_archived: false,
-            is_deleted: false,
-          }))
-        );
+        try {
+          await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
+        } catch (stateErr) { console.warn('[Chat] room state upsert failed:', stateErr); }
       }
-
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
         if (hasReal) return prev.filter(m => m._temp_id !== tempId);
         return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
       });
       setConversations(prev =>
-        sortByLatest(
-          prev.map(c =>
-            c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
-              : c
-          )
-        )
+        sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-
-      if (!selectedRoom.is_support && selectedRoom.other.user_id) {
-        const senderLabel = currentUserName.current || 'Someone';
-        try {
-          await notifyUser(
-            selectedRoom.other.user_id,
-            `💬 ${senderLabel}`,
-            '📷 Photo',
-            { type: 'chat', roomId, senderId: currentUserId.current },
-          );
-        } catch (notifErr) {
-          console.warn('[Chat] image push notify failed:', notifErr);
-        }
-      }
     } catch (e: any) {
       console.error('Send image error:', e);
       Alert.alert('Upload Failed', e?.message || 'Could not send the photo. Please try again.');
@@ -740,63 +640,34 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const openAttachmentSheet = () => {
-    if (!selectedRoom) return;
-    setAttachSheetOpen(true);
-  };
+  const openAttachmentSheet = () => { if (!selectedRoom) return; setAttachSheetOpen(true); };
 
   const pickFromLibrary = async () => {
     setAttachSheetOpen(false);
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow photo access to send photos.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: false,
-        quality: 0.85,
-      });
-      if (!result.canceled && result.assets.length > 0) {
-        await sendImage(result.assets[0].uri);
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to open library.');
-    }
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow photo access to send photos.'); return; }
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.85 });
+      if (!result.canceled && result.assets.length > 0) await sendImage(result.assets[0].uri);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed to open library.'); }
   };
 
   const pickFromCamera = async () => {
     setAttachSheetOpen(false);
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow camera access to take a photo.');
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'],
-        allowsEditing: false,
-        quality: 0.85,
-      });
-      if (!result.canceled && result.assets.length > 0) {
-        await sendImage(result.assets[0].uri);
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to open camera.');
-    }
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow camera access to take a photo.'); return; }
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.85 });
+      if (!result.canceled && result.assets.length > 0) await sendImage(result.assets[0].uri);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed to open camera.'); }
   };
 
   const handleCallPress = () => {
     if (!selectedRoom) return;
     if (selectedRoom.is_support) {
-      Alert.alert(
-        'Call unavailable',
-        'Pack-N-Ship System does not accept voice calls. Please send a message in chat instead.'
-      );
+      Alert.alert('Call unavailable', 'Pack-N-Ship System does not accept voice calls. Please send a message in chat instead.');
       return;
     }
-
     const fullName = `${selectedRoom.other.first_name || ''} ${selectedRoom.other.last_name || ''}`.trim() || 'User';
     promptCallChoice({
       name: fullName,
@@ -812,9 +683,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       Alert.alert('System conversation', 'This is an official conversation with Pack-N-Ship. You can\'t archive or delete it.');
       return;
     }
-
     const isArchived = room.is_archived;
-
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
@@ -829,10 +698,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
     setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
     try {
-      const payloads = room.all_room_ids.map(id => ({
-        room_id: id, user_id: currentUserId.current,
-        is_archived: archive, is_deleted: false,
-      }));
+      const payloads = room.all_room_ids.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: archive, is_deleted: false }));
       await supabase.from('chat_room_states').upsert(payloads);
     } catch (error) {
       console.error('Error toggling archive:', error);
@@ -848,10 +714,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         onPress: async () => {
           setConversations(prev => prev.filter(c => c.room_id !== room.room_id));
           try {
-            const payloads = room.all_room_ids.map(id => ({
-              room_id: id, user_id: currentUserId.current,
-              is_deleted: true, is_archived: false,
-            }));
+            const payloads = room.all_room_ids.map(id => ({ room_id: id, user_id: currentUserId.current, is_deleted: true, is_archived: false }));
             await supabase.from('chat_room_states').upsert(payloads);
           } catch (error) {
             console.error('Error deleting chat:', error);
@@ -863,14 +726,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   useEffect(() => {
-    if (!openRoomIdParam) {
-      autoOpenHandled.current = null;
-      autoOpenFetched.current = null;
-      return;
-    }
+    if (!openRoomIdParam) { autoOpenHandled.current = null; autoOpenFetched.current = null; return; }
     if (loading) return;
     if (autoOpenHandled.current === openRoomIdParam) return;
-
     const target = conversations.find(c => c.all_room_ids.includes(openRoomIdParam));
     if (target) {
       autoOpenHandled.current = openRoomIdParam;
@@ -878,7 +736,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       openConversation(target);
       return;
     }
-
     if (autoOpenFetched.current !== openRoomIdParam) {
       autoOpenFetched.current = openRoomIdParam;
       fetchConversations();
@@ -891,43 +748,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_rooms' }, () => fetchConversations())
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         fetchConversations();
-
         const incoming = payload.new as ChatMessage;
         const myId = currentUserId.current;
         if (!incoming || !myId || incoming.sender_id === myId) return;
         if (notifiedMsgIds.current.has(incoming.message_id)) return;
-
         const activeRoom = selectedRoomRef.current;
         if (activeRoom && activeRoom.all_room_ids.includes(incoming.room_id)) return;
-
         try {
-          const { data: roomRow } = await supabase
-            .from('chat_rooms')
-            .select('room_id, is_support, participant_a, participant_b')
-            .eq('room_id', incoming.room_id)
-            .maybeSingle();
-
-          if (
-            roomRow &&
-            roomRow.is_support &&
-            (roomRow.participant_a === myId || roomRow.participant_b === myId)
-          ) {
+          const { data: roomRow } = await supabase.from('chat_rooms').select('room_id, is_support, participant_a, participant_b').eq('room_id', incoming.room_id).maybeSingle();
+          if (roomRow && roomRow.is_support && (roomRow.participant_a === myId || roomRow.participant_b === myId)) {
             notifiedMsgIds.current.add(incoming.message_id);
-            const rawPreview = isImageMessage(incoming.message)
-              ? '📷 Sent you a photo'
-              : incoming.message;
+            const rawPreview = isImageMessage(incoming.message) ? '📷 Sent you a photo' : incoming.message;
             const preview = rawPreview.length > 80 ? `${rawPreview.slice(0, 80)}...` : rawPreview;
-
-            await notifyUser(
-              myId,
-              '💬 Pack-N-Ship',
-              `Pack-N-Ship messaged you: ${preview}`,
-              { type: 'chat', roomId: incoming.room_id, senderId: incoming.sender_id, isSystem: true },
-            );
+            await notifyUser(myId, '💬 Pack-N-Ship', `Pack-N-Ship messaged you: ${preview}`, { type: 'chat', roomId: incoming.room_id, senderId: incoming.sender_id, isSystem: true });
           }
-        } catch (err) {
-          console.warn('[Chat] system message notify error:', err);
-        }
+        } catch (err) { console.warn('[Chat] system message notify error:', err); }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
       .subscribe();
@@ -946,7 +781,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent }} />
         ) : (
           <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent, justifyContent: 'center', alignItems: 'center' }}>
-            <Text style={{ color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: size * 0.45 }}>{initial}</Text>
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: size * 0.45 }}>{initial}</Text>
           </View>
         )}
         {badgeColor && (
@@ -1019,7 +854,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const showDateSeparator = shouldShowDateSeparator(item, older);
     const olderSameSender = older && older.sender_id === item.sender_id;
     const showAvatar = !isMe && !olderSameSender;
-
     const isImage = isImageMessage(item.message);
     const imageUrl = isImage ? extractImageUrl(item.message) : null;
 
@@ -1128,12 +962,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   );
 
   const renderAttachmentSheet = () => (
-    <Modal
-      visible={attachSheetOpen}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setAttachSheetOpen(false)}
-    >
+    <Modal visible={attachSheetOpen} transparent animationType="fade" onRequestClose={() => setAttachSheetOpen(false)}>
       <Pressable style={styles.attachBackdrop} onPress={() => setAttachSheetOpen(false)}>
         <Pressable style={styles.attachSheet} onPress={() => {}}>
           <View style={styles.attachHandle} />
@@ -1161,11 +990,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.attachCancel}
-            onPress={() => setAttachSheetOpen(false)}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.attachCancel} onPress={() => setAttachSheetOpen(false)} activeOpacity={0.8}>
             <Text style={styles.attachCancelText}>Cancel</Text>
           </TouchableOpacity>
         </Pressable>
@@ -1179,11 +1004,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         {previewImage && (
           <Image source={{ uri: previewImage }} style={styles.previewImage} resizeMode="contain" />
         )}
-        <TouchableOpacity
-          style={[styles.previewClose, { top: insets.top + 12 }]}
-          onPress={() => setPreviewImage(null)}
-          activeOpacity={0.85}
-        >
+        <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPreviewImage(null)} activeOpacity={0.85}>
           <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
@@ -1206,11 +1027,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 {selectedRoom.is_support ? 'Pack-N-Ship' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
-                {selectedRoom.is_support
-                  ? 'System'
-                  : selectedRoom.role === 'sender'
-                  ? 'Provider'
-                  : 'Sender'}
+                {selectedRoom.is_support ? 'System' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
               </Text>
             </View>
           </Animated.View>
@@ -1256,12 +1073,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           )}
 
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
-            <TouchableOpacity
-              style={styles.attachBtnFlat}
-              activeOpacity={0.7}
-              onPress={openAttachmentSheet}
-              disabled={sendingImage}
-            >
+            <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7} onPress={openAttachmentSheet} disabled={sendingImage}>
               <SolarIcon name="AddCircle" variant="duotone" size={32} />
             </TouchableOpacity>
 
@@ -1307,33 +1119,23 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </View>
       ) : activeTab === 'notification' ? (
         <View style={{ flex: 1 }}>
-          <NotificationsList 
-            embedded 
+          <NotificationsList
+            embedded
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
-                <Image 
-                  source={NOTIFICATION_ICON} 
-                  style={{ width: 140, height: 140, marginBottom: 20 }} 
-                  resizeMode="contain" 
-                />
+                <Image source={NOTIFICATION_ICON} style={{ width: 140, height: 140, marginBottom: 20 }} resizeMode="contain" />
                 <Text style={styles.emptyTitle}>No notifications yet</Text>
-                <Text style={styles.emptySubtext}>
-                  Updates about your reports and disputes will appear here.
-                </Text>
+                <Text style={styles.emptySubtext}>Updates about your reports and disputes will appear here.</Text>
               </View>
             }
           />
         </View>
       ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Image 
-            source={
-              messagesView === 'archived' 
-                ? ARCHIVED_ICON 
-                : CHAT_ICON
-            } 
-            style={{ width: 140, height: 140, marginBottom: 20 }} 
-            resizeMode="contain" 
+          <Image
+            source={messagesView === 'archived' ? ARCHIVED_ICON : CHAT_ICON}
+            style={{ width: 140, height: 140, marginBottom: 20 }}
+            resizeMode="contain"
           />
           <Text style={styles.emptyTitle}>
             {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
@@ -1366,15 +1168,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   listHeaderFlat: {
     backgroundColor: c.background,
-    paddingHorizontal: 20, paddingTop: 24, paddingBottom: 16,
+    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-  mainTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
-  tabContainer: {
-    flexDirection: 'row', backgroundColor: c.divider,
-    borderRadius: 12, padding: 4,
+
+  mainTitle: {
+    fontSize: 26,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    letterSpacing: -0.3
   },
+
+  tabContainer: { flexDirection: 'row', backgroundColor: c.divider, borderRadius: 12, padding: 4 },
   tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
   tabText: { color: c.textSecondary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   tabButtonActive: {
@@ -1412,12 +1218,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   chatInfo: { flex: 1, marginRight: 8 },
   chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+
   chatName: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
   chatTime: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
   chatTimeUnread: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+
   chatLastMsg: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, flex: 1 },
   chatLastMsgUnread: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
+
   supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   supportTagText: { color: c.card, fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
   unreadBadge: { backgroundColor: c.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
@@ -1433,8 +1242,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   backBtnFlat: { padding: 8, marginRight: 12, marginLeft: -8, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20 },
   chatHeaderInfo: { flex: 1 },
+
   chatHeaderName: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
   chatHeaderSubtitle: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+
   callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 1 },
 
   chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
@@ -1452,8 +1263,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   imageBubble: { padding: 4, overflow: 'hidden' },
   myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6, shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2 },
   theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 2, elevation: 0 },
+
   msgText: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 22 },
   myMsgText: { color: '#FFFFFF' },
+
   chatImage: { width: 220, height: 220, borderRadius: 16 },
   msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 6, paddingHorizontal: 4, gap: 4 },
   msgTime: { fontSize: 10, fontFamily: 'Poppins_500Medium', color: c.textMuted },
@@ -1486,42 +1299,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   uploadingText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
-  attachBackdrop: {
-    flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
-    justifyContent: 'flex-end',
-  },
+  attachBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', justifyContent: 'flex-end' },
   attachSheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12, paddingBottom: 32,
   },
-  attachHandle: {
-    alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
-    backgroundColor: c.border, marginBottom: 16,
-  },
-  attachTitle: {
-    fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16,
-  },
-  attachRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 16,
-    paddingVertical: 16, borderRadius: 16,
-  },
-  attachIcon: {
-    width: 48, height: 48, borderRadius: 16,
-    justifyContent: 'center', alignItems: 'center',
-  },
+  attachHandle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
+  attachTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16 },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderRadius: 16 },
+  attachIcon: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   attachRowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   attachRowSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
-  attachCancel: {
-    marginTop: 16, paddingVertical: 16, borderRadius: 16,
-    alignItems: 'center', backgroundColor: c.divider,
-  },
+  attachCancel: { marginTop: 16, paddingVertical: 16, borderRadius: 16, alignItems: 'center', backgroundColor: c.divider },
   attachCancelText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
-  previewOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
-    alignItems: 'center', justifyContent: 'center',
-  },
+  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImage: { width: '100%', height: '80%' },
   previewClose: {
     position: 'absolute', right: 20, width: 44, height: 44, borderRadius: 22,
