@@ -6,17 +6,26 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import {
   ISSUE_TYPES, IssueType, ReportableDelivery, createDispute, fetchReportableDeliveries,
   getMyUserId, parseTrackingId, trackingIdFor,
 } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-
-const ORANGE = '#F27024';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 
 const MIN_DESC = 10;
 const MAX_DESC = 500;
+
+// Helper to map potential Ionicons/Phosphor strings from disputeService to Solar names
+const mapIconName = (name: string): SolarIconName => {
+  const n = name.toLowerCase();
+  if (n.includes('alert') || n.includes('warning')) return 'DangerCircle';
+  if (n.includes('package') || n.includes('box') || n.includes('cube')) return 'Package';
+  if (n.includes('time') || n.includes('clock')) return 'Clock';
+  if (n.includes('close') || n.includes('cancel')) return 'CloseCircle';
+  if (n.includes('shield')) return 'ShieldCheck';
+  return 'DangerCircle'; // Default fallback
+};
 
 export default function ReportIssueScreen() {
   const navigation = useNavigation<any>();
@@ -86,19 +95,19 @@ export default function ReportIssueScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <TouchableOpacity
           style={styles.backBtn}
           onPress={() => navigation.goBack()}
           hitSlop={10}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
         >
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Report an Issue</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 42 }} />
       </View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -116,7 +125,7 @@ export default function ReportIssueScreen() {
                 : null,
             ]}
           >
-            <Ionicons name="barcode-outline" size={20} color={colors.textSecondary} />
+            <SolarIcon name="QrCode" variant="linear" size={20} color={colors.textSecondary} />
             <TextInput
               style={styles.input}
               value={trackingInput}
@@ -127,7 +136,7 @@ export default function ReportIssueScreen() {
               autoCorrect={false}
             />
             {match && !match.hasOpenDispute && (
-              <Ionicons name="checkmark-circle" size={20} color={colors.success} />
+              <SolarIcon name="CheckCircle" variant="linear" size={20} color={colors.success} />
             )}
           </View>
           {trackingError ? <Text style={styles.errorText}>{trackingError}</Text> : null}
@@ -135,7 +144,7 @@ export default function ReportIssueScreen() {
           {match && !match.hasOpenDispute && (
             <View style={styles.matchCard}>
               <View style={styles.matchIconWrap}>
-                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.matchRoute} numberOfLines={2}>{match.route}</Text>
@@ -145,7 +154,7 @@ export default function ReportIssueScreen() {
           )}
 
           {loading ? (
-            <ActivityIndicator color={ORANGE} style={{ marginVertical: 12 }} />
+            <ActivityIndicator color={colors.accent} style={{ marginVertical: 12 }} />
           ) : deliveries.length > 0 ? (
             <>
               <Text style={styles.subLabel}>Or pick a recent delivery</Text>
@@ -160,7 +169,7 @@ export default function ReportIssueScreen() {
                       activeOpacity={0.85}
                     >
                       <Text style={[styles.recentId, active && { color: '#FFF' }]}>{d.tracking}</Text>
-                      <Text style={[styles.recentSub, active && { color: '#FFEDD5' }]}>{d.date}</Text>
+                      <Text style={[styles.recentSub, active && { color: 'rgba(255,255,255,0.8)' }]}>{d.date}</Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -176,6 +185,7 @@ export default function ReportIssueScreen() {
           <View style={styles.typeGrid}>
             {ISSUE_TYPES.map(t => {
               const active = issueType === t.type;
+              const iconName = mapIconName(t.icon);
               return (
                 <TouchableOpacity
                   key={t.type}
@@ -186,13 +196,13 @@ export default function ReportIssueScreen() {
                   <View
                     style={[
                       styles.typeIconWrap,
-                      active && { backgroundColor: 'rgba(255,255,255,0.22)', borderColor: 'rgba(255,255,255,0.4)' },
+                      active && { backgroundColor: 'rgba(255,255,255,0.2)', borderColor: 'rgba(255,255,255,0.3)' },
                     ]}
                   >
-                    <Ionicons name={t.icon as any} size={20} color={active ? '#FFF' : ORANGE} />
+                    <SolarIcon name={iconName} variant={active ? 'duotone' : 'linear'} size={20} color={active ? '#FFF' : colors.textPrimary} />
                   </View>
                   <Text style={[styles.typeTitle, active && { color: '#FFF' }]}>{t.type}</Text>
-                  <Text style={[styles.typeHint, active && { color: '#FFEDD5' }]} numberOfLines={2}>
+                  <Text style={[styles.typeHint, active && { color: 'rgba(255,255,255,0.9)' }]} numberOfLines={2}>
                     {t.hint}
                   </Text>
                 </TouchableOpacity>
@@ -216,7 +226,7 @@ export default function ReportIssueScreen() {
           </Text>
 
           <View style={styles.note}>
-            <Ionicons name="information-circle-outline" size={18} color="#3B82F6" />
+            <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.info} />
             <Text style={styles.noteText}>
               The provider will be asked to respond, then an admin reviews both sides. You will get a notification when the review is done.
             </Text>
@@ -232,7 +242,7 @@ export default function ReportIssueScreen() {
               <ActivityIndicator color="#FFF" />
             ) : (
               <>
-                <Ionicons name="paper-plane-outline" size={18} color="#FFF" />
+                <SolarIcon name="PaperPlane" variant="linear" size={18} color="#FFF" />
                 <Text style={styles.submitText}>Submit Report</Text>
               </>
             )}
@@ -251,119 +261,119 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20, paddingBottom: 12, gap: 12,
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.06, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   headerTitle: {
     flex: 1, textAlign: 'center',
-    fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
+    fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3,
   },
 
   content: { padding: 20, paddingBottom: 60 },
 
   label: {
-    fontSize: 15, fontWeight: '800', color: c.textPrimary,
+    fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary,
     marginBottom: 10, letterSpacing: -0.2,
   },
   subLabel: {
-    fontSize: 12, fontWeight: '700', color: c.textSecondary,
+    fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textSecondary,
     marginTop: 14, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5,
   },
 
   inputWrap: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 16,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   inputOk: { borderColor: c.success },
   inputError: { borderColor: c.error },
   input: {
     flex: 1, paddingVertical: 14, fontSize: 16,
-    color: c.textPrimary, fontWeight: '700', letterSpacing: 0.5,
+    color: c.textPrimary, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.5,
   },
-  errorText: { color: c.error, fontSize: 12, marginTop: 8, fontWeight: '600' },
-  hint: { color: c.textSecondary, fontSize: 12, marginTop: 12, lineHeight: 18 },
+  errorText: { color: c.error, fontSize: 12, marginTop: 8, fontFamily: 'Poppins_500Medium' },
+  hint: { color: c.textSecondary, fontSize: 12, marginTop: 12, lineHeight: 18, fontFamily: 'Poppins_400Regular' },
 
   matchCard: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: c.successBg, borderRadius: 16, padding: 14, marginTop: 12,
+    backgroundColor: c.successBg, borderRadius: 12, padding: 14, marginTop: 12,
     borderWidth: 1, borderColor: c.success,
   },
   matchIconWrap: {
     width: 36, height: 36, borderRadius: 18,
-    backgroundColor: isDark ? '#0F2A1F' : '#DCFCE7',
+    backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  matchRoute: { fontSize: 13, fontWeight: '800', color: c.success, letterSpacing: -0.2 },
-  matchMeta: { fontSize: 12, color: c.success, marginTop: 3, fontWeight: '500', opacity: 0.85 },
+  matchRoute: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.success, letterSpacing: -0.2 },
+  matchMeta: { fontSize: 12, color: c.success, marginTop: 3, fontFamily: 'Poppins_500Medium', opacity: 0.85 },
 
   recent: {
-    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 14, paddingVertical: 10,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 4, elevation: 1,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 4, elevation: 0,
   },
   recentActive: {
-    backgroundColor: ORANGE, borderColor: ORANGE,
-    shadowColor: ORANGE, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.accent, borderColor: c.accent,
+    shadowColor: c.accent, shadowOpacity: 0.2, shadowRadius: 8, elevation: 3,
   },
-  recentId: { fontSize: 13, fontWeight: '800', color: c.textPrimary, letterSpacing: 0.3 },
-  recentSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontWeight: '600' },
+  recentId: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.3 },
+  recentSub: { fontSize: 11, color: c.textSecondary, marginTop: 2, fontFamily: 'Poppins_500Medium' },
 
   typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   typeCard: {
-    width: '48%', backgroundColor: c.card, borderRadius: 16, padding: 14,
-    borderWidth: 1.5, borderColor: c.divider, gap: 8,
+    width: '48%', backgroundColor: c.card, borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 8,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   typeCardActive: {
-    backgroundColor: ORANGE, borderColor: ORANGE,
-    shadowColor: ORANGE, shadowOpacity: 0.28, shadowRadius: 10, elevation: 5,
+    backgroundColor: c.accent, borderColor: c.accent,
+    shadowColor: c.accent, shadowOpacity: 0.2, shadowRadius: 10, elevation: 3,
   },
   typeIconWrap: {
     width: 40, height: 40, borderRadius: 12,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
   },
-  typeTitle: { fontSize: 13.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  typeHint: { fontSize: 11, color: c.textSecondary, lineHeight: 15, fontWeight: '500' },
+  typeTitle: { fontSize: 13.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
+  typeHint: { fontSize: 11, color: c.textSecondary, lineHeight: 15, fontFamily: 'Poppins_400Regular' },
 
   textArea: {
     minHeight: 130, backgroundColor: c.card,
-    borderWidth: 1.5, borderColor: c.border, borderRadius: 16, padding: 16,
-    fontSize: 14, color: c.textPrimary, fontWeight: '500',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16,
+    fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_400Regular',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.04, shadowRadius: 6, elevation: 1,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
-  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontFamily: 'Poppins_500Medium' },
 
   note: {
-    flexDirection: 'row', gap: 10,
-    backgroundColor: isDark ? '#0F2744' : '#EFF6FF',
-    padding: 14, borderRadius: 14, marginTop: 16,
+    flexDirection: 'row', gap: 10, alignItems: 'flex-start',
+    backgroundColor: c.infoSoft,
+    padding: 14, borderRadius: 12, marginTop: 16,
+    borderWidth: 1, borderColor: isDark ? 'rgba(96, 165, 250, 0.2)' : 'rgba(59, 130, 246, 0.2)',
   },
   noteText: {
     flex: 1, fontSize: 12,
-    color: isDark ? '#93C5FD' : '#1E40AF',
-    lineHeight: 18, fontWeight: '500',
+    color: c.info,
+    lineHeight: 18, fontFamily: 'Poppins_400Regular',
   },
 
   submit: {
-    flexDirection: 'row', backgroundColor: ORANGE,
-    paddingVertical: 16, borderRadius: 16,
+    flexDirection: 'row', backgroundColor: c.accent,
+    paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 22,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28, shadowRadius: 12, elevation: 6,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25, shadowRadius: 12, elevation: 4,
   },
   submitDisabled: {
-    backgroundColor: isDark ? '#5A3418' : '#FDBA74',
-    shadowOpacity: 0, elevation: 0,
+    backgroundColor: c.accentSoft, shadowOpacity: 0, elevation: 0,
   },
-  submitText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
+  submitText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: -0.2 },
 });

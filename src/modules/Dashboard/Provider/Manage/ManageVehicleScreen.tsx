@@ -17,16 +17,15 @@ import {
   Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../../utils/supabase';
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
-const ORANGE = '#FF751F';
-const BLUE = '#3B82F6';
+const EMPTY_BOX_ICON = require('../../../../../assets/empty-box-icon.png');
 
 interface Vehicle {
   vehicle_id: number;
@@ -43,6 +42,18 @@ interface Vehicle {
 }
 
 const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck'];
+
+// Same box-volume scale used by matchingService.computeCargoVolumeLiters
+// (Small = 15L, Medium = 45L, Large = 95L), so a vehicle's trunk capacity can be
+// shown in the same "boxes" language senders/providers already see elsewhere,
+// instead of a bare liter figure that doesn't read as physical space on its own.
+const LARGE_BOX_LITERS = 95;
+const boxEquivalentLabel = (liters: number): string => {
+  const n = Number(liters) || 0;
+  if (n <= 0) return '';
+  const boxes = Math.max(1, Math.floor(n / LARGE_BOX_LITERS));
+  return `≈ ${boxes} Large box${boxes === 1 ? '' : 'es'}`;
+};
 
 export default function ManageVehicleScreen() {
   const navigation = useNavigation();
@@ -332,7 +343,7 @@ export default function ManageVehicleScreen() {
   });
 
   /* ==================================================================== */
-  /* Vehicle Card — TaskScreen style (oCard + tileGrid)                   */
+  /* Vehicle Card                                                         */
   /* ==================================================================== */
   const renderVehicleItem = ({ item }: { item: Vehicle }) => {
     const isVerified = item.verification_status === 'Verified';
@@ -351,7 +362,7 @@ export default function ManageVehicleScreen() {
           {/* Top Row: Vehicle Type Pill + Verification Status Pill */}
           <View style={styles.oTopRow}>
             <View style={styles.svcPill}>
-              <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+              <SolarIcon name="Car" variant="duotone" size={14} />
               <Text style={styles.svcPillText}>{item.vehicle_type}</Text>
             </View>
             <View style={[styles.stPill, { backgroundColor: statusBg }]}>
@@ -365,7 +376,7 @@ export default function ManageVehicleScreen() {
           {/* Plate Number Hero */}
           <View style={styles.plateHeroRow}>
             <View style={styles.plateIconCircle}>
-              <Ionicons name="car-sport" size={20} color={ORANGE} />
+              <SolarIcon name="Car" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.rtLabel}>PLATE NUMBER</Text>
@@ -373,7 +384,7 @@ export default function ManageVehicleScreen() {
             </View>
           </View>
 
-          {/* Specs Grid (TaskScreen tileGrid style) */}
+          {/* Specs Grid */}
           <View style={styles.tileGrid}>
             <View style={styles.tile}>
               <Text style={styles.tileLabel}>MAX WEIGHT</Text>
@@ -382,6 +393,9 @@ export default function ManageVehicleScreen() {
             <View style={styles.tile}>
               <Text style={styles.tileLabel}>MAX VOLUME</Text>
               <Text style={styles.tileValue}>{item.max_volume_liters} L</Text>
+              {boxEquivalentLabel(item.max_volume_liters) !== '' && (
+                <Text style={styles.tileSubValue}>{boxEquivalentLabel(item.max_volume_liters)}</Text>
+              )}
             </View>
             <View style={[styles.tile, { width: '100%' }]}>
               <Text style={styles.tileLabel}>CARGO DIMENSIONS</Text>
@@ -395,11 +409,11 @@ export default function ManageVehicleScreen() {
         {/* Footer Row: OR/CR Document Status */}
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
-            <Ionicons
-              name={item.vehicle_doc ? 'document-attach-outline' : 'alert-circle-outline'}
-              size={14}
-              color={item.vehicle_doc ? ORANGE : colors.textMuted}
-            />
+            {item.vehicle_doc ? (
+              <SolarIcon name="DocumentText" variant="linear" size={14} color={colors.accent} />
+            ) : (
+              <SolarIcon name="Warning" variant="linear" size={14} secondaryColor={colors.textMuted} />
+            )}
             <Text style={styles.oChipText}>
               {item.vehicle_doc ? 'OR/CR Document Attached' : 'No OR/CR Document'}
             </Text>
@@ -414,7 +428,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleDelete(item)}
             activeOpacity={0.85}
           >
-            <Ionicons name="trash-outline" size={16} color={colors.error} />
+            <SolarIcon name="Trash" variant="bold" size={16} color={colors.error} />
             <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -422,7 +436,7 @@ export default function ManageVehicleScreen() {
             onPress={() => handleEdit(item)}
             activeOpacity={0.9}
           >
-            <Ionicons name="create-outline" size={16} color="#FFFFFF" />
+            <SolarIcon name="Pen" variant="bold" size={16} color="#FFFFFF" />
             <Text style={styles.oRouteText}>Edit Vehicle</Text>
           </TouchableOpacity>
         </View>
@@ -436,7 +450,7 @@ export default function ManageVehicleScreen() {
 
       <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1, paddingLeft: 14 }}>
           <Text style={styles.headerTitle}>Manage Vehicles</Text>
@@ -445,26 +459,28 @@ export default function ManageVehicleScreen() {
           </Text>
         </View>
         <TouchableOpacity style={styles.headerAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-          <Ionicons name="add" size={22} color="#FFFFFF" />
+          <SolarIcon name="Plus" variant="bold" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
 
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Loading vehicles...</Text>
         </View>
       ) : vehicles.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(listAnim, 20)]}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons name="car-outline" size={34} color={ORANGE} />
-          </View>
+          <Image 
+            source={EMPTY_BOX_ICON} 
+            style={{ width: 140, height: 140, marginBottom: 20 }} 
+            resizeMode="contain" 
+          />
           <Text style={styles.emptyTitle}>No vehicles yet</Text>
           <Text style={styles.emptySubtitle}>
             Add your first vehicle to start accepting deliveries
           </Text>
           <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-            <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+            <SolarIcon name="AddCircle" variant="duotone" size={18} />
             <Text style={styles.emptyAddBtnText}>Add Vehicle</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -494,12 +510,12 @@ export default function ManageVehicleScreen() {
             <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => { resetForm(); setModalVisible(false); }} style={styles.modalCloseBtn} activeOpacity={0.85}>
-                <Ionicons name="close" size={20} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
                 {editingVehicle ? 'Edit Vehicle' : 'Add Vehicle'}
               </Text>
-              <View style={{ width: 40 }} />
+              <View style={{ width: 42 }} />
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.modalScrollContent}>
@@ -524,7 +540,7 @@ export default function ManageVehicleScreen() {
               <View style={styles.formField}>
                 <Text style={styles.inputLabel}>Plate Number</Text>
                 <View style={styles.inputWrapper}>
-                  <Ionicons name="pricetag-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                  <SolarIcon name="DocumentText" variant="linear" size={16} color={colors.textMuted} style={styles.inputIcon} />
                   <TextInput
                     style={styles.textInput}
                     value={plateNumber}
@@ -540,7 +556,7 @@ export default function ManageVehicleScreen() {
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Volume (L)</Text>
                   <View style={styles.inputWrapper}>
-                    <Ionicons name="water-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                    <SolarIcon name="Package" variant="linear" size={16} color={colors.textMuted} style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxVolume}
@@ -550,11 +566,14 @@ export default function ManageVehicleScreen() {
                       keyboardType="numeric"
                     />
                   </View>
+                  {boxEquivalentLabel(parseFloat(maxVolume) || 0) !== '' && (
+                    <Text style={styles.hintText}>{boxEquivalentLabel(parseFloat(maxVolume) || 0)} of trunk space</Text>
+                  )}
                 </View>
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Weight (kg)</Text>
                   <View style={styles.inputWrapper}>
-                    <Ionicons name="barbell-outline" size={16} color={colors.textMuted} style={styles.inputIcon} />
+                    <SolarIcon name="Scales" variant="linear" size={16} secondaryColor={colors.textMuted} style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
                       value={maxWeight}
@@ -614,14 +633,14 @@ export default function ManageVehicleScreen() {
                 >
                   {uploading ? (
                     <View style={styles.uploadingContainer}>
-                      <ActivityIndicator size="large" color={ORANGE} />
+                      <ActivityIndicator size="large" color={colors.accent} />
                       <Text style={styles.uploadingText}>Uploading...</Text>
                     </View>
                   ) : vehicleDoc ? (
                     <View style={styles.uploadedContainer}>
                       {vehicleDoc.endsWith('.pdf') ? (
                         <View style={styles.docIconBox}>
-                          <Ionicons name="document-text" size={32} color={ORANGE} />
+                          <SolarIcon name="DocumentText" variant="duotone" size={32} />
                         </View>
                       ) : (
                         <Image source={{ uri: vehicleDoc }} style={styles.uploadedImage} />
@@ -630,14 +649,14 @@ export default function ManageVehicleScreen() {
                         {docFileName || 'Document uploaded'}
                       </Text>
                       <TouchableOpacity style={styles.removeDocBtn} onPress={() => { setVehicleDoc(null); setDocFileName(null); }}>
-                        <Ionicons name="trash-outline" size={14} color={colors.error} />
+                        <SolarIcon name="Trash" variant="bold" size={14} color={colors.error} />
                         <Text style={styles.removeDocText}>Remove</Text>
                       </TouchableOpacity>
                     </View>
                   ) : (
                     <>
                       <View style={styles.uploadIconBox}>
-                        <Ionicons name="cloud-upload-outline" size={28} color={ORANGE} />
+                        <SolarIcon name="CloudUpload" variant="duotone" size={28} />
                       </View>
                       <Text style={styles.uploadText}>Tap to upload OR/CR</Text>
                       <Text style={styles.uploadSubtext}>Image or PDF</Text>
@@ -651,7 +670,7 @@ export default function ManageVehicleScreen() {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <>
-                    <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                    <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
                     <Text style={styles.submitBtnText}>
                       {editingVehicle ? 'Update Vehicle' : 'Add Vehicle'}
                     </Text>
@@ -677,37 +696,42 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingBottom: 16,
     backgroundColor: c.card,
     borderBottomWidth: 1,
-    borderBottomColor: c.border,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: c.divider,
+    backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 20,
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
     fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
     color: c.textSecondary,
-    fontWeight: '500',
     marginTop: 1,
   },
   headerAddBtn: {
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
 
   listContent: {
@@ -725,7 +749,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     marginTop: 4,
     color: c.textSecondary,
     fontSize: 13,
-    fontWeight: '500',
+    fontFamily: 'Poppins_500Medium',
   },
 
   emptyContainer: {
@@ -734,25 +758,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 40,
   },
-  emptyIconCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: c.accentSoft,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: c.border,
-  },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginTop: 4,
   },
   emptySubtitle: {
     fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
     color: c.textSecondary,
     textAlign: 'center',
     marginTop: 6,
@@ -762,26 +776,36 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     paddingHorizontal: 22,
     paddingVertical: 13,
     borderRadius: 14,
     gap: 8,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   emptyAddBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
 
-  /* TaskScreen Card & Tile Grid Styles */
+  /* Card & Tile Grid */
   oCard: {
     backgroundColor: c.card,
-    borderRadius: 22,
+    borderRadius: 12,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   oPad: { padding: 16 },
   oTopRow: {
@@ -794,14 +818,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(59,130,246,0.12)',
+    backgroundColor: c.divider,
     borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.35)',
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
   },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   stPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -811,7 +835,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 999,
   },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
 
   plateHeroRow: {
     flexDirection: 'row',
@@ -829,13 +853,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   rtLabel: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textMuted,
     letterSpacing: 0.8,
   },
   plateHeroText: {
-    fontSize: 22,
-    fontWeight: '900',
+    fontSize: 20,
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textPrimary,
     letterSpacing: 0.5,
     marginTop: 1,
@@ -851,20 +875,32 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexGrow: 1,
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.divider,
-    borderRadius: 14,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12,
     padding: 12,
   },
   tileLabel: {
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textMuted,
     letterSpacing: 0.8,
   },
   tileValue: {
     fontSize: 15,
-    fontWeight: '900',
+    fontFamily: 'Poppins_800ExtraBold',
     color: c.textPrimary,
+    marginTop: 4,
+  },
+  tileSubValue: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textMuted,
+    marginTop: 2,
+  },
+  hintText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textMuted,
     marginTop: 4,
   },
 
@@ -876,7 +912,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderTopWidth: 1,
-    borderTopColor: c.divider,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   oChip: {
     flexDirection: 'row',
@@ -884,14 +920,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 6,
     backgroundColor: c.card,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 10,
   },
   oChipText: {
     fontSize: 13,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textPrimary,
   },
 
@@ -900,7 +936,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     gap: 10,
     padding: 14,
     borderTopWidth: 1,
-    borderTopColor: c.divider,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   oDeleteBtn: {
     flex: 1,
@@ -915,7 +951,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oDeleteText: {
     color: c.error,
     fontSize: 14,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
   },
   oRouteBtn: {
     flex: 2,
@@ -923,14 +959,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     borderRadius: 14,
     paddingVertical: 14,
   },
   oRouteText: {
     color: '#FFFFFF',
     fontSize: 14,
-    fontWeight: '900',
+    fontFamily: 'Poppins_700Bold',
   },
 
   /* Modal Styles */
@@ -941,10 +977,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   modalContainer: {
     backgroundColor: c.card,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     paddingTop: 8,
     maxHeight: '94%',
+    flex: 1,
   },
   modalHandle: {
     alignSelf: 'center',
@@ -962,19 +999,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: c.divider,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   modalCloseBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: c.divider,
     justifyContent: 'center',
     alignItems: 'center',
   },
   modalTitle: {
     fontSize: 17,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     letterSpacing: -0.2,
   },
@@ -987,7 +1024,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   formSection: { marginBottom: 20 },
   sectionLabel: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginBottom: 10,
     letterSpacing: 0.3,
@@ -1001,34 +1038,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 16,
     borderRadius: 20,
-    borderWidth: 1.5,
-    borderColor: c.border,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   typeBtnActive: {
     backgroundColor: c.accentSoft,
-    borderColor: ORANGE,
+    borderColor: c.accent,
   },
   typeBtnText: {
     fontSize: 13,
     color: c.textSecondary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
   },
   typeBtnTextActive: {
-    color: ORANGE,
-    fontWeight: '800',
+    color: c.accent,
+    fontFamily: 'Poppins_700Bold',
   },
 
   formField: { marginBottom: 18 },
   inputLabel: {
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
     marginBottom: 8,
     letterSpacing: 0.3,
   },
   inputLabelSmall: {
     fontSize: 11,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     color: c.textSecondary,
     marginBottom: 6,
     letterSpacing: 0.2,
@@ -1038,12 +1075,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     alignItems: 'center',
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.border,
-    borderRadius: 14,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12,
   },
   inputIcon: {
-    paddingLeft: 14,
-    paddingRight: 4,
+    marginLeft: 14,
+    marginRight: 4,
   },
   textInput: {
     flex: 1,
@@ -1051,18 +1088,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 10,
     fontSize: 14,
     color: c.textPrimary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
   },
   textInputCompact: {
     backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 12,
     fontSize: 14,
     color: c.textPrimary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_500Medium',
     textAlign: 'center',
   },
 
@@ -1075,10 +1112,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   thirdField: { flex: 1 },
 
   uploadBox: {
-    borderWidth: 2,
-    borderColor: c.border,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     borderStyle: 'dashed',
-    borderRadius: 16,
+    borderRadius: 12,
     paddingVertical: 24,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1087,7 +1124,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   uploadBoxFilled: {
     borderStyle: 'solid',
-    borderColor: ORANGE,
+    borderColor: c.accent,
     backgroundColor: c.accentSoft,
   },
   uploadIconBox: {
@@ -1102,20 +1139,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   uploadText: {
     fontSize: 13,
     color: c.textPrimary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     marginTop: 8,
   },
   uploadSubtext: {
     fontSize: 11,
     color: c.textMuted,
-    fontWeight: '500',
+    fontFamily: 'Poppins_400Regular',
     marginTop: 2,
   },
   uploadingContainer: { alignItems: 'center', gap: 10 },
   uploadingText: {
     fontSize: 13,
     color: c.textSecondary,
-    fontWeight: '600',
+    fontFamily: 'Poppins_600SemiBold',
   },
   uploadedContainer: {
     alignItems: 'center',
@@ -1124,7 +1161,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   docIconBox: {
     width: 56,
     height: 56,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: c.card,
     justifyContent: 'center',
     alignItems: 'center',
@@ -1137,7 +1174,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   uploadedText: {
     fontSize: 12,
     color: c.textPrimary,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
     maxWidth: 220,
   },
   removeDocBtn: {
@@ -1153,25 +1190,32 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   removeDocText: {
     color: c.error,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: 'Poppins_600SemiBold',
   },
 
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     paddingVertical: 16,
     borderRadius: 14,
     marginTop: 12,
     gap: 8,
+    shadowColor: c.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   submitBtnDisabled: {
     backgroundColor: c.textMuted,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   submitBtnText: {
     color: '#FFFFFF',
     fontSize: 15,
-    fontWeight: '900',
+    fontFamily: 'Poppins_700Bold',
   },
 });

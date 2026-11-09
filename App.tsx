@@ -1,18 +1,23 @@
 // App.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, AppState, LogBox, Platform, View } from 'react-native';
+import { Alert, AppState, LogBox, Platform, View, Animated, Text } from 'react-native';
 import {
   NavigationContainer,
   useNavigation,
   useNavigationContainerRef,
 } from '@react-navigation/native';
+import ScheduleIntroScreen from './src/modules/Dashboard/Sender/Delivery/ScheduleIntroScreen';
+import SendNowIntroScreen from './src/modules/Dashboard/Sender/Delivery/SendNowIntroScreen';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+import { SolarIcon } from './src/components/ui/SolarIcon';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import "expo-crypto";
 import { supabase } from './src/utils/supabase';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
+
+// ✅ Reverted to strictly Poppins
+import { useFonts, Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold, Poppins_700Bold, Poppins_800ExtraBold } from '@expo-google-fonts/poppins';
 
 /* ------------------------------------------------------------------ */
 /* Silence noisy library warnings                                     */
@@ -91,8 +96,6 @@ import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsLis
 // Support FAB, Proof of Delivery Modal & In-App Call Modal
 import SupportFab from './src/components/SupportFab';
 import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
-
-
 // Canonical background matcher
 import {
   startBackgroundMatcher,
@@ -139,6 +142,8 @@ export type RootStackParamList = {
   LegalPolicies: undefined;
   PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
+  SendNowIntro: undefined;
+  ScheduleIntro: undefined; 
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
@@ -180,6 +185,53 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
 const ProviderTab = createBottomTabNavigator<ProviderTabParamList>();
 
+// ---------- ANIMATED TAB ICON COMPONENT ----------
+const AnimatedTabIcon = ({ name, focused, size, colors }: { name: any, focused: boolean, size: number, colors: any }) => {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (focused) {
+      Animated.sequence([
+        Animated.spring(scale, { toValue: 1.2, useNativeDriver: true, speed: 20, bounciness: 12 }),
+        Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 12 }),
+      ]).start();
+    } else {
+      scale.setValue(1);
+    }
+  }, [focused, scale]);
+
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <SolarIcon 
+        name={name} 
+        variant={focused ? 'boldDuotone' : 'linear'} 
+        size={size} 
+        // ALWAYS textPrimary (Black in light mode, White in dark mode)
+        color={colors.textPrimary} 
+        // ONLY apply the orange fill when active
+        secondaryColor={focused ? colors.accent : undefined} 
+      />
+    </Animated.View>
+  );
+};
+
+// ---------- CUSTOM TAB LABEL COMPONENT ----------
+const CustomTabLabel = ({ focused, color, children }: { focused: boolean, color: string, children: string }) => {
+  return (
+    <Text
+      style={{
+        fontSize: 11,
+        // Active: Bold. Inactive: Medium.
+        fontFamily: 'Poppins_500Medium',
+        color: color,
+        marginTop: 2,
+      }}
+    >
+      {children}
+    </Text>
+  );
+};
+
 // --- GLOBAL UNREAD BADGE HOOK ---
 function useUnreadMessages() {
   const [unreadCount, setUnreadCount] = useState(0);
@@ -190,101 +242,39 @@ function useUnreadMessages() {
 
     const fetchUnread = async () => {
       try {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
+        const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
-
-        const { data: userRecord } = await supabase
-          .from('users')
-          .select('user_id')
-          .eq('auth_id', user.id)
-          .single();
-
+        const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
         if (!userRecord) return;
-
         const userId = userRecord.user_id;
 
-        const { data: providerDelivs } = await supabase
-          .from('deliveries')
-          .select('delivery_id')
-          .eq('provider_id', userId);
-
-        const { data: senderReqs } = await supabase
-          .from('delivery_requests')
-          .select('request_id')
-          .eq('sender_id', userId);
-
+        const { data: providerDelivs } = await supabase.from('deliveries').select('delivery_id').eq('provider_id', userId);
+        const { data: senderReqs } = await supabase.from('delivery_requests').select('request_id').eq('sender_id', userId);
         const reqIds = (senderReqs || []).map((r) => r.request_id);
 
         let senderDelivs: any[] = [];
-
         if (reqIds.length > 0) {
-          const { data } = await supabase
-            .from('deliveries')
-            .select('delivery_id')
-            .in('request_id', reqIds);
-
+          const { data } = await supabase.from('deliveries').select('delivery_id').in('request_id', reqIds);
           senderDelivs = data || [];
         }
 
-        const deliveryIds = Array.from(
-          new Set([
-            ...(providerDelivs || []).map((d) => d.delivery_id),
-            ...(senderDelivs || []).map((d) => d.delivery_id),
-          ])
-        );
+        const deliveryIds = Array.from(new Set([...(providerDelivs || []).map((d) => d.delivery_id), ...(senderDelivs || []).map((d) => d.delivery_id)]));
+        if (deliveryIds.length === 0) { if (isMounted) setUnreadCount(0); return; }
 
-        if (deliveryIds.length === 0) {
-          if (isMounted) setUnreadCount(0);
-          return;
-        }
-
-        const { data: rooms } = await supabase
-          .from('chat_rooms')
-          .select('room_id')
-          .in('delivery_id', deliveryIds);
-
+        const { data: rooms } = await supabase.from('chat_rooms').select('room_id').in('delivery_id', deliveryIds);
         const roomIds = (rooms || []).map((r) => r.room_id);
+        if (roomIds.length === 0) { if (isMounted) setUnreadCount(0); return; }
 
-        if (roomIds.length === 0) {
-          if (isMounted) setUnreadCount(0);
-          return;
-        }
-
-        const { count } = await supabase
-          .from('chat_messages')
-          .select('*', { count: 'exact', head: true })
-          .in('room_id', roomIds)
-          .eq('is_read', false)
-          .neq('sender_id', userId);
-
+        const { count } = await supabase.from('chat_messages').select('*', { count: 'exact', head: true }).in('room_id', roomIds).eq('is_read', false).neq('sender_id', userId);
         if (isMounted) setUnreadCount(count || 0);
-      } catch (e) {
-        console.log(e);
-      }
+      } catch (e) { console.log(e); }
     };
 
     fetchUnread();
 
-    channel = supabase
-      .channel(`global-unread-${Date.now()}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'chat_messages',
-        },
-        () => fetchUnread()
-      )
-      .subscribe();
+    channel = supabase.channel(`global-unread-${Date.now()}`).on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => fetchUnread()).subscribe();
 
-    return () => {
-      isMounted = false;
-      if (channel) supabase.removeChannel(channel);
-    };
+    return () => { isMounted = false; if (channel) supabase.removeChannel(channel); };
   }, []);
 
   return unreadCount;
@@ -330,19 +320,24 @@ function MainTabs() {
     <View style={{ flex: 1 }}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color, size }) => {
+          tabBarIcon: ({ focused, size }) => {
             let iconName: any;
-            if (route.name === 'Home') iconName = focused ? 'home' : 'home-outline';
-            else if (route.name === 'Activity') iconName = focused ? 'time' : 'time-outline';
-            else if (route.name === 'Explore') iconName = focused ? 'compass' : 'compass-outline';
-            else if (route.name === 'Messages') iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-            else if (route.name === 'Account') iconName = focused ? 'person' : 'person-outline';
-            return <Ionicons name={iconName} size={size} color={color} />;
+            if (route.name === 'Home') iconName = 'Home';
+            else if (route.name === 'Activity') iconName = 'Clock';
+            else if (route.name === 'Explore') iconName = 'Compass';
+            else if (route.name === 'Messages') iconName = 'ChatCircleText';
+            else if (route.name === 'Account') iconName = 'User';
+
+            return <AnimatedTabIcon name={iconName} focused={focused} size={size} colors={colors} />;
           },
-          tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: colors.textSecondary,
+          tabBarLabel: ({ focused, color, children }) => (
+            <CustomTabLabel focused={focused} color={color}>
+              {children}
+            </CustomTabLabel>
+          ),
+          tabBarActiveTintColor: colors.textPrimary, // Black text (or white in dark mode)
+          tabBarInactiveTintColor: colors.textMuted, // Grey text
           tabBarStyle,
-          tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
           headerShown: false,
         })}
       >
@@ -352,22 +347,19 @@ function MainTabs() {
         <Tab.Screen
           name="Messages"
           component={MessagesScreen}
-          options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: '#EF4444' } }}
+          options={{ 
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined, 
+            tabBarBadgeStyle: { backgroundColor: colors.error } 
+          }}
         />
         <Tab.Screen name="Account" component={AccountScreen} />
       </Tab.Navigator>
 
-      {/* Floating customer support bubble (sender) */}
       <SupportFab role="sender" />
-
-      {/* One-time Proof of Delivery popup strictly for Sender screens */}
       <ProofOfDeliveryModal
         isSenderMode={true}
         onViewDetails={(reqId) => {
-          navigation.navigate('Activity', {
-            tab: 'completed',
-            openRequestId: reqId,
-          });
+          navigation.navigate('Activity', { tab: 'completed', openRequestId: reqId });
         }}
       />
     </View>
@@ -414,56 +406,38 @@ function ProviderTabsInner() {
     <View style={{ flex: 1 }}>
       <ProviderTab.Navigator
         screenOptions={({ route }) => ({
-          tabBarIcon: ({ focused, color, size }) => {
+          tabBarIcon: ({ focused, size }) => {
             let iconName: any;
+            if (route.name === 'Task') iconName = 'Package';
+            else if (route.name === 'Earnings') iconName = 'Card';
+            else if (route.name === 'Jobs') iconName = 'Map';
+            else if (route.name === 'Messages') iconName = 'ChatCircleText';
+            else if (route.name === 'Account') iconName = 'User';
 
-            if (route.name === 'Task') {
-              iconName = focused ? 'clipboard' : 'clipboard-outline';
-            } else if (route.name === 'Earnings') {
-              iconName = focused ? 'bar-chart' : 'bar-chart-outline';
-            } else if (route.name === 'Jobs') {
-              iconName = focused ? 'map' : 'map-outline';
-            } else if (route.name === 'Messages') {
-              iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
-            } else if (route.name === 'Account') {
-              iconName = focused ? 'person' : 'person-outline';
-            }
-
-            return <Ionicons name={iconName} size={size} color={color} />;
+            return <AnimatedTabIcon name={iconName} focused={focused} size={size} colors={colors} />;
           },
-          tabBarActiveTintColor: '#F27024',
-          tabBarInactiveTintColor: colors.textSecondary,
-          tabBarStyle:
-            route.name === 'Jobs' && tabBarHidden ? { display: 'none' } : tabBarStyle,
-          tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '500',
-          },
+          tabBarLabel: ({ focused, color, children }) => (
+            <CustomTabLabel focused={focused} color={color}>
+              {children}
+            </CustomTabLabel>
+          ),
+          tabBarActiveTintColor: colors.textPrimary,
+          tabBarInactiveTintColor: colors.textMuted,
+          tabBarStyle: route.name === 'Jobs' && tabBarHidden ? { display: 'none' } : tabBarStyle,
           headerShown: false,
         })}
       >
         <ProviderTab.Screen name="Task" component={TaskScreen} />
         <ProviderTab.Screen name="Earnings" component={EarningsScreen} />
-        <ProviderTab.Screen 
-            name="Jobs" 
-            component={JobsScreen} 
-            options={{ 
-              title: 'My Route Requests', // Changes the screen title
-              tabBarLabel: 'My Requests'  // Changes the text under the icon in the bottom tab (shorter to fit)
-            }} 
-          />
+        <ProviderTab.Screen name="Jobs" component={JobsScreen} options={{ title: 'My Route Requests', tabBarLabel: 'My Requests' }} />
         <ProviderTab.Screen
           name="Messages"
           component={ProviderMessagesScreen}
-          options={{
-            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
-            tabBarBadgeStyle: { backgroundColor: '#EF4444' },
-          }}
+          options={{ tabBarBadge: unreadCount > 0 ? unreadCount : undefined, tabBarBadgeStyle: { backgroundColor: colors.error } }}
         />
         <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
       </ProviderTab.Navigator>
 
-      {/* Floating customer support bubble (provider) */}
       <SupportFab role="provider" />
     </View>
   );
@@ -499,59 +473,25 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) {
-        navigationRef.current?.reset({
-          index: 0,
-          routes: [{ name: 'Login' }],
-        });
+        navigationRef.current?.reset({ index: 0, routes: [{ name: 'Login' }] });
         return;
       }
 
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('user_id')
-        .eq('auth_id', session.user.id)
-        .maybeSingle();
-
+      const { data: userRow } = await supabase.from('users').select('user_id').eq('auth_id', session.user.id).maybeSingle();
       if (!userRow?.user_id) {
-        navigationRef.current?.reset({
-          index: 0,
-          routes: [{ name: 'MainTabs' }],
-        });
+        navigationRef.current?.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
         return;
       }
 
-      const { data: providerRole } = await supabase
-        .from('roles')
-        .select('role_id')
-        .eq('role_name', 'Provider')
-        .maybeSingle();
+      const { data: providerRole } = await supabase.from('roles').select('role_id').eq('role_name', 'Provider').maybeSingle();
+      const { data: userRole } = providerRole?.role_id ? await supabase.from('user_roles').select('user_id').eq('user_id', userRow.user_id).eq('role_id', providerRole.role_id).maybeSingle() : { data: null };
+      const { data: verif } = await supabase.from('provider_verifications').select('verification_status').eq('provider_id', userRow.user_id).maybeSingle();
 
-      const { data: userRole } = providerRole?.role_id
-        ? await supabase
-            .from('user_roles')
-            .select('user_id')
-            .eq('user_id', userRow.user_id)
-            .eq('role_id', providerRole.role_id)
-            .maybeSingle()
-        : { data: null };
-
-      const { data: verif } = await supabase
-        .from('provider_verifications')
-        .select('verification_status')
-        .eq('provider_id', userRow.user_id)
-        .maybeSingle();
-
-      const isApprovedProvider =
-        !!userRole && verif?.verification_status === 'Approved';
+      const isApprovedProvider = !!userRole && verif?.verification_status === 'Approved';
 
       if (!isApprovedProvider) {
-        console.warn(
-          '⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.',
-        );
-        navigationRef.current?.reset({
-          index: 0,
-          routes: [{ name: 'MainTabs' }],
-        });
+        console.warn('⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.');
+        navigationRef.current?.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
       }
     } catch (err) {
       console.warn('Role guard error:', err);
@@ -561,21 +501,14 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
   };
 
   useEffect(() => {
-    const unsub = navigationRef.current?.addListener?.('state', () => {
-      validateCurrentRoute();
-    });
-    return () => {
-      unsub?.();
-    };
+    const unsub = navigationRef.current?.addListener?.('state', () => validateCurrentRoute());
+    return () => { unsub?.(); };
   }, [navigationRef.current]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      const wasBackground =
-        appStateRef.current.match(/inactive|background/);
-      if (wasBackground && next === 'active') {
-        validateCurrentRoute();
-      }
+      const wasBackground = appStateRef.current.match(/inactive|background/);
+      if (wasBackground && next === 'active') validateCurrentRoute();
       appStateRef.current = next;
     });
     return () => sub.remove();
@@ -617,29 +550,14 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
     }
 
     if (navigationRef.current?.isReady?.()) {
-      navigationRef.current.reset({
-        index: 0,
-        routes: [{ name: 'Login' }],
-      });
+      navigationRef.current.reset({ index: 0, routes: [{ name: 'Login' }] });
     }
 
     Alert.alert(
       'Account Deactivated',
       'Your account has been deactivated by an administrator. You have been logged out.',
-      [
-        {
-          text: 'OK',
-          onPress: () => {
-            handlingKickRef.current = false;
-          },
-        },
-      ],
-      {
-        cancelable: false,
-        onDismiss: () => {
-          handlingKickRef.current = false;
-        },
-      }
+      [{ text: 'OK', onPress: () => { handlingKickRef.current = false; } }],
+      { cancelable: false, onDismiss: () => { handlingKickRef.current = false; } }
     );
   };
 
@@ -654,44 +572,20 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
     };
 
     const checkAndSubscribe = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) { cleanupChannel(); return; }
 
-      if (!session?.user) {
-        cleanupChannel();
-        return;
-      }
-
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('user_id, is_active')
-        .eq('auth_id', session.user.id)
-        .maybeSingle();
-
+      const { data: userRow } = await supabase.from('users').select('user_id, is_active').eq('auth_id', session.user.id).maybeSingle();
       if (!isMounted || !userRow) return;
 
-      if (userRow.is_active === false) {
-        await forceDeactivatedLogout();
-        return;
-      }
+      if (userRow.is_active === false) { await forceDeactivatedLogout(); return; }
 
       cleanupChannel();
       channelRef.current = supabase
         .channel(`user-active-guard-${userRow.user_id}-${Date.now()}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'users',
-            filter: `user_id=eq.${userRow.user_id}`,
-          },
-          async (payload) => {
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `user_id=eq.${userRow.user_id}` }, async (payload) => {
             const updated = payload.new as { is_active?: boolean };
-            if (updated && updated.is_active === false) {
-              await forceDeactivatedLogout();
-            }
+            if (updated && updated.is_active === false) { await forceDeactivatedLogout(); }
           }
         )
         .subscribe();
@@ -700,23 +594,12 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
     checkAndSubscribe();
 
     const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || !session?.user) {
-        cleanupChannel();
-        return;
-      }
-      if (
-        event === 'SIGNED_IN' ||
-        event === 'TOKEN_REFRESHED' ||
-        event === 'INITIAL_SESSION'
-      ) {
-        checkAndSubscribe();
-      }
+      if (event === 'SIGNED_OUT' || !session?.user) { cleanupChannel(); return; }
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION') { checkAndSubscribe(); }
     });
 
     const appStateSub = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        checkAndSubscribe();
-      }
+      if (nextState === 'active') checkAndSubscribe();
     });
 
     return () => {
@@ -743,67 +626,28 @@ function AppInner() {
 
     const bootMatcher = async () => {
       if (cancelled) return;
-
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) {
-        if (matcherStartedRef.current) {
-          stopBackgroundMatcher();
-          matcherStartedRef.current = false;
-        }
+        if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
         return;
       }
 
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('user_id, is_active')
-        .eq('auth_id', session.user.id)
-        .maybeSingle();
-
+      const { data: userRow } = await supabase.from('users').select('user_id, is_active').eq('auth_id', session.user.id).maybeSingle();
       if (!userRow?.user_id || userRow.is_active === false) {
-        if (matcherStartedRef.current) {
-          stopBackgroundMatcher();
-          matcherStartedRef.current = false;
-        }
+        if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
         return;
       }
 
-      const { data: providerRole } = await supabase
-        .from('roles')
-        .select('role_id')
-        .eq('role_name', 'Provider')
-        .maybeSingle();
-
-      const { data: userRole } = providerRole?.role_id
-        ? await supabase
-            .from('user_roles')
-            .select('user_id')
-            .eq('user_id', userRow.user_id)
-            .eq('role_id', providerRole.role_id)
-            .maybeSingle()
-        : { data: null };
-
-      const { data: verif } = await supabase
-        .from('provider_verifications')
-        .select('verification_status')
-        .eq('provider_id', userRow.user_id)
-        .maybeSingle();
+      const { data: providerRole } = await supabase.from('roles').select('role_id').eq('role_name', 'Provider').maybeSingle();
+      const { data: userRole } = providerRole?.role_id ? await supabase.from('user_roles').select('user_id').eq('user_id', userRow.user_id).eq('role_id', providerRole.role_id).maybeSingle() : { data: null };
+      const { data: verif } = await supabase.from('provider_verifications').select('verification_status').eq('provider_id', userRow.user_id).maybeSingle();
 
       if (!userRole || verif?.verification_status !== 'Approved') {
-        if (matcherStartedRef.current) {
-          stopBackgroundMatcher();
-          matcherStartedRef.current = false;
-        }
+        if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
         return;
       }
 
-      const { data: routeRow } = await supabase
-        .from('provider_routes')
-        .select('route_id')
-        .eq('provider_id', userRow.user_id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
+      const { data: routeRow } = await supabase.from('provider_routes').select('route_id').eq('provider_id', userRow.user_id).order('created_at', { ascending: false }).limit(1).maybeSingle();
       if (!routeRow?.route_id) return;
 
       await setActiveRouteId(routeRow.route_id);
@@ -823,25 +667,15 @@ function AppInner() {
 
     const { data: authSub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (cancelled) return;
-
       if (!session?.user) {
-        if (matcherStartedRef.current) {
-          stopBackgroundMatcher();
-          matcherStartedRef.current = false;
-        }
+        if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
         return;
       }
-
       await bootMatcher();
     });
 
     const appStateSub = AppState.addEventListener('change', (next) => {
-      if (
-        appStateRef.current.match(/inactive|background/) &&
-        next === 'active'
-      ) {
-        bootMatcher();
-      }
+      if (appStateRef.current.match(/inactive|background/) && next === 'active') bootMatcher();
       appStateRef.current = next;
     });
 
@@ -849,10 +683,7 @@ function AppInner() {
       cancelled = true;
       authSub.subscription.unsubscribe();
       appStateSub.remove();
-      if (matcherStartedRef.current) {
-        stopBackgroundMatcher();
-        matcherStartedRef.current = false;
-      }
+      if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
     };
   }, []);
 
@@ -863,14 +694,8 @@ function AppInner() {
     const bootstrap = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) return;
-
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('user_id, is_active')
-        .eq('auth_id', session.user.id)
-        .maybeSingle();
+      const { data: userRow } = await supabase.from('users').select('user_id, is_active').eq('auth_id', session.user.id).maybeSingle();
       if (!userRow?.user_id || userRow.is_active === false) return;
-
       await registerPushToken(userRow.user_id);
     };
 
@@ -878,43 +703,26 @@ function AppInner() {
 
     notifSub = Notifications.addNotificationResponseReceivedListener((response) => {
       const payload = response.notification.request.content.data as any;
-
-      if (
-        payload?.type === 'chat' &&
-        payload.roomId &&
-        navigationRef.isReady?.()
-      ) {
-        navigationRef.navigate('MainTabs', {
-          screen: 'Messages',
-          params: { openRoomId: payload.roomId },
-        });
+      if (payload?.type === 'chat' && payload.roomId && navigationRef.isReady?.()) {
+        navigationRef.navigate('MainTabs', { screen: 'Messages', params: { openRoomId: payload.roomId } });
         return;
       }
-
       if (payload?.type === 'ticket' && payload.ticketId && navigationRef.isReady?.()) {
         navigationRef.navigate('TicketDetail', { ticketId: Number(payload.ticketId) });
         return;
       }
 
       if (payload?.deliveryId && navigationRef.isReady?.()) {
-        navigationRef.navigate('LiveTracking', {
-          deliveryId: Number(payload.deliveryId),
-        });
+        navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
       }
     });
 
-    return () => {
-      cancelled = true;
-      if (notifSub) notifSub.remove();
-    };
+    return () => { cancelled = true; if (notifSub) notifSub.remove(); };
   }, []);
 
   return (
     <NavigationContainer ref={navigationRef}>
-      <Stack.Navigator
-        initialRouteName="Loading"
-        screenOptions={{ headerShown: false }}
-      >
+      <Stack.Navigator initialRouteName="Loading" screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Loading" component={LoadingScreen} />
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Register" component={RegisterScreen} />
@@ -936,6 +744,8 @@ function AppInner() {
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
         <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+        <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
+        <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
         <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
         <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
         <Stack.Screen name="AddItem" component={AddItemScreen} />
@@ -943,60 +753,35 @@ function AppInner() {
         <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
         <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
         <Stack.Screen name="Booking" component={BookingScreen} />
-        <Stack.Screen
-          name="DeliveryPayment"
-          component={DeliveryPaymentScreen}
-          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-        />
-        <Stack.Screen
-          name="Cashout"
-          component={CashoutScreen}
-          options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
-        />
-        <Stack.Screen
-          name="LiveTracking"
-          component={LiveTrackingScreen}
-          options={{ animation: 'slide_from_right' }}
-        />
+        <Stack.Screen name="DeliveryPayment" component={DeliveryPaymentScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="Cashout" component={CashoutScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
         <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
         <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-        <Stack.Screen
-          name="ReceiverPicker"
-          component={ReceiverPickerScreen}
-          options={{
-            presentation: 'modal',
-            animation: 'slide_from_bottom',
-          }}
-        />
-        <Stack.Screen 
-          name="VerifyEmail" 
-          component={VerifyEmailScreen} 
-          options={{ headerShown: false }} 
-        />
+        <Stack.Screen name="ReceiverPicker" component={ReceiverPickerScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} options={{ headerShown: false }} />
         <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
         <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
-
-        {/* Provider Navigation Screen */}
-        <Stack.Screen
-          name="ProviderNavigation"
-          component={ProviderNavigationScreen}
-          options={{
-            headerShown: false,
-            presentation: 'fullScreenModal',
-            animation: 'slide_from_bottom',
-          }}
-        />
+        <Stack.Screen name="ProviderNavigation" component={ProviderNavigationScreen} options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
       </Stack.Navigator>
-
-      {/* Global In-App Voice Call Modal for both Sender and Provider */}
     </NavigationContainer>
   );
 }
 
 // ---------- App ----------
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Poppins_400Regular,
+    Poppins_500Medium,
+    Poppins_600SemiBold,
+    Poppins_700Bold,
+    Poppins_800ExtraBold,
+  });
+
+  if (!fontsLoaded) return null;
+
   return (
     <SafeAreaProvider>
       <ThemeProvider>

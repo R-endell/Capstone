@@ -17,6 +17,7 @@ import {
   trackingIdFor, uploadPhotos,
 } from '../../services/ticketService';
 import { ScreenHeader, StatusPill, ORANGE } from './helpUi';
+import { APPEAL_MIN_CHARS, APPEAL_WINDOW_DAYS, AppealState, loadAppealState, submitAppeal } from '../../services/appealService';
 
 export default function TicketDetailScreen() {
   const navigation = useNavigation<any>();
@@ -41,6 +42,10 @@ export default function TicketDetailScreen() {
   const [sending, setSending] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
   const [respondOpen, setRespondOpen] = useState(false);
+  const [appeal, setAppeal] = useState<{ state: AppealState; appealTicketId?: number }>({ state: 'na' });
+  const [appealOpen, setAppealOpen] = useState(false);
+  const [appealText, setAppealText] = useState('');
+  const [appealing, setAppealing] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
   // Legacy deep link: { disputeId } -> the ticket that mirrors it
@@ -73,6 +78,12 @@ export default function TicketDetailScreen() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => (ticketId ? subscribeTickets(load, ticketId) : undefined), [ticketId, load]);
+
+  // Can this person appeal the decision? (one appeal, within the allowed days)
+  useEffect(() => {
+    if (!ticket || !me || !isClosed(ticket.status)) { setAppeal({ state: 'na' }); return; }
+    loadAppealState(ticket, me).then(setAppeal).catch(() => setAppeal({ state: 'na' }));
+  }, [ticket, me]);
 
   const view = ticket ? statusView(ticket, me) : null;
   const closed = ticket ? isClosed(ticket.status) : false;
@@ -124,6 +135,20 @@ export default function TicketDetailScreen() {
       Alert.alert('Could not send', e?.message || 'Please try again.');
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendAppeal = async () => {
+    if (!ticket || !me || appealing) return;
+    try {
+      setAppealing(true);
+      const t = await submitAppeal(ticket, me, appealText, pending);
+      setAppealOpen(false); setAppealText(''); setPending([]);
+      navigation.replace('TicketDetail', { ticketId: t.ticket_id });
+    } catch (e: any) {
+      Alert.alert('Could not send appeal', e?.message || 'Please try again.');
+    } finally {
+      setAppealing(false);
     }
   };
 
@@ -257,7 +282,32 @@ export default function TicketDetailScreen() {
         {/* composer */}
         {closed ? (
           <View style={[styles.closedBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-            <Text style={styles.closedText}>This ticket is closed. Need more help? Start a new report from Help.</Text>
+            {appeal.state === 'available' ? (
+              <>
+                <Text style={styles.closedText}>
+                  Not happy with the decision? You can appeal once within {APPEAL_WINDOW_DAYS} days. The result of an appeal is final.
+                </Text>
+                <TouchableOpacity style={[styles.respondBtn, { marginTop: 10 }]} onPress={() => setAppealOpen(true)} activeOpacity={0.9}>
+                  <Ionicons name="repeat-outline" size={18} color="#FFF" />
+                  <Text style={styles.respondBtnText}>Appeal this decision</Text>
+                </TouchableOpacity>
+              </>
+            ) : appeal.state === 'filed' && appeal.appealTicketId ? (
+              <>
+                <Text style={styles.closedText}>You already appealed this decision.</Text>
+                <TouchableOpacity
+                  style={[styles.respondBtn, { marginTop: 10 }]} activeOpacity={0.9}
+                  onPress={() => navigation.navigate('TicketDetail', { ticketId: appeal.appealTicketId })}>
+                  <Text style={styles.respondBtnText}>View my appeal</Text>
+                </TouchableOpacity>
+              </>
+            ) : appeal.state === 'expired' ? (
+              <Text style={styles.closedText}>
+                The {APPEAL_WINDOW_DAYS}-day appeal period has ended. Need more help? Chat with support from Help.
+              </Text>
+            ) : (
+              <Text style={styles.closedText}>This ticket is closed. Need more help? Start a new report from Help.</Text>
+            )}
           </View>
         ) : iAmCounterparty ? (
           <View style={[styles.respondBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
@@ -348,6 +398,48 @@ export default function TicketDetailScreen() {
               style={[styles.respondBtn, (text.trim().length < 10 || sending) && styles.respondBtnOff]}
               disabled={text.trim().length < 10 || sending} onPress={send} activeOpacity={0.9}>
               {sending ? <ActivityIndicator color="#FFF" /> : <Text style={styles.respondBtnText}>Submit my response</Text>}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={appealOpen} transparent animationType="slide" onRequestClose={() => !appealing && setAppealOpen(false)}>
+        <KeyboardAvoidingView style={styles.sheetRoot} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => !appealing && setAppealOpen(false)} />
+          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>Appeal this decision</Text>
+            <Text style={styles.sheetSub}>
+              Tell us what you think was missed. Add new details or photos if you have them. You can appeal once, and the result is final.
+            </Text>
+            <TextInput
+              style={styles.sheetInput} value={appealText} multiline textAlignVertical="top"
+              onChangeText={t => setAppealText(t.slice(0, 1000))}
+              placeholder="Why should this decision be reviewed again?"
+              placeholderTextColor={colors.textMuted}
+            />
+            <Text style={styles.sheetCount}>
+              {appealText.trim().length < APPEAL_MIN_CHARS ? `At least ${APPEAL_MIN_CHARS} characters   ` : ''}{appealText.length}/1000
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 8 }}>
+              {pending.map((uri, i) => (
+                <View key={uri + i} style={styles.pendBox}>
+                  <Image source={{ uri }} style={styles.pendImg} />
+                  <TouchableOpacity style={styles.pendX} onPress={() => setPending(p => p.filter((_, j) => j !== i))} hitSlop={8}>
+                    <Ionicons name="close" size={12} color="#FFF" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              {pending.length < MAX_PHOTOS && (
+                <TouchableOpacity style={styles.sheetAdd} onPress={addPhotos} activeOpacity={0.8}>
+                  <Ionicons name="image-outline" size={20} color={ORANGE} />
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+            <TouchableOpacity
+              style={[styles.respondBtn, (appealText.trim().length < APPEAL_MIN_CHARS || appealing) && styles.respondBtnOff]}
+              disabled={appealText.trim().length < APPEAL_MIN_CHARS || appealing} onPress={sendAppeal} activeOpacity={0.9}>
+              {appealing ? <ActivityIndicator color="#FFF" /> : <Text style={styles.respondBtnText}>Submit appeal</Text>}
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -448,7 +540,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   respondedText: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', lineHeight: 18, fontWeight: '500', paddingBottom: 4 },
 
   sheetRoot: { flex: 1, justifyContent: 'flex-end' },
-  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(17,24,39,0.5)' },
+  sheetBackdrop: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(17,24,39,0.5)' },
   sheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 10 },
   sheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.border, marginBottom: 14 },
   sheetTitle: { fontSize: 19, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },

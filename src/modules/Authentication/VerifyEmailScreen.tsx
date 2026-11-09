@@ -1,19 +1,9 @@
 // src/modules/Authentication/VerifyEmailScreen.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  Text,
-  StyleSheet,
-  ActivityIndicator,
-  TouchableOpacity,
-  Animated,
-  Easing,
-  Alert,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
-  TouchableWithoutFeedback,
-  Keyboard,
+  View, Text, StyleSheet, ActivityIndicator, TouchableOpacity,
+  Animated, Easing, Alert, ScrollView, KeyboardAvoidingView,
+  Platform, TouchableWithoutFeedback, Keyboard,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
@@ -51,8 +41,7 @@ export default function VerifyEmailScreen() {
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 500,
+      toValue: 1, duration: 500,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
@@ -78,10 +67,7 @@ export default function VerifyEmailScreen() {
           const res = await supabase.auth.exchangeCodeForSession(code);
           error = res.error;
         } else if (access_token && refresh_token) {
-          const res = await supabase.auth.setSession({
-            access_token,
-            refresh_token,
-          });
+          const res = await supabase.auth.setSession({ access_token, refresh_token });
           error = res.error;
         } else {
           throw new Error('Missing session tokens in the verification link.');
@@ -101,13 +87,10 @@ export default function VerifyEmailScreen() {
           return;
         }
 
-        // Successfully verified!
         setPhase('success');
 
-        // Sign out so they have to log in manually
         await supabase.auth.signOut();
 
-        // Show success, then route to Login
         setTimeout(() => {
           Alert.alert(
             'Email Verified!',
@@ -156,7 +139,7 @@ export default function VerifyEmailScreen() {
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
-              
+
               {phase === 'verifying' && (
                 <View style={{ alignItems: 'center', justifyContent: 'center' }}>
                   <ActivityIndicator size="large" color={ORANGE} />
@@ -171,7 +154,7 @@ export default function VerifyEmailScreen() {
                   </View>
                   <Text style={styles.header}>Verification Failed</Text>
                   <Text style={styles.subHeader}>{errorMsg}</Text>
-                  
+
                   <TouchableOpacity
                     style={styles.primaryButton}
                     onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Login' }] })}
@@ -231,8 +214,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   innerContainer: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' },
   contentWrapper: { flex: 1, justifyContent: 'center' },
 
-  header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
-  subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
+  header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
+  subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
 
   successIconWrap: { alignItems: 'center', marginBottom: 24 },
 
@@ -240,5 +223,5 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: ORANGE, height: 54, borderRadius: 12,
     alignItems: 'center', justifyContent: 'center', width: '100%', marginTop: 20, marginBottom: 20,
   },
-  primaryButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+  primaryButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
 });

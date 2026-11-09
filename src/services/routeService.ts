@@ -540,6 +540,7 @@ export async function softDeleteProviderRoute(routeId: number) {
     .update({
       is_deleted: true,
       is_active: false,
+      is_selected: false,
       deleted_at: new Date().toISOString(),
     })
     .eq('route_id', routeId);

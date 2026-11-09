@@ -6,14 +6,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../utils/supabase';
 import {
   Dispute, fetchMyDisputes, getMyUserId, trackingIdFor, displayName, STATUS_STYLE,
 } from '../../services/disputeService';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-
-const ORANGE = '#F27024';
+import { SolarIcon } from '../../components/ui/SolarIcon';
 
 type Filter = 'all' | 'action' | 'review' | 'closed';
 
@@ -94,11 +92,11 @@ export default function DisputeCenterScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} hitSlop={10} activeOpacity={0.8}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} hitSlop={10} activeOpacity={0.85}>
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Dispute Center</Text>
@@ -106,7 +104,7 @@ export default function DisputeCenterScreen() {
             {providerMode ? 'Reports filed against your deliveries' : 'Report and track delivery issues'}
           </Text>
         </View>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 42 }} />
       </View>
 
       <ScrollView
@@ -116,7 +114,7 @@ export default function DisputeCenterScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => { setRefreshing(true); load(); }}
-            tintColor={ORANGE}
+            tintColor={colors.accent}
           />
         }
       >
@@ -126,7 +124,7 @@ export default function DisputeCenterScreen() {
             activeOpacity={0.85}
             onPress={() => navigation.navigate('ReportIssue')}
           >
-            <Ionicons name="add-circle-outline" size={20} color="#FFF" />
+            <SolarIcon name="AddCircle" variant="linear" size={20} color="#FFF" />
             <Text style={styles.fileButtonText}>Report an Issue</Text>
           </TouchableOpacity>
         )}
@@ -134,7 +132,7 @@ export default function DisputeCenterScreen() {
         {stats.action > 0 && (
           <View style={styles.actionBanner}>
             <View style={styles.actionBannerIcon}>
-              <Ionicons name="alert-circle" size={20} color={colors.warning} />
+              <SolarIcon name="DangerCircle" variant="duotone" size={20} color={colors.warning} />
             </View>
             <Text style={styles.actionBannerText}>
               {stats.action} report{stats.action > 1 ? 's' : ''} waiting for your response
@@ -145,23 +143,23 @@ export default function DisputeCenterScreen() {
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
             <View style={[styles.statIconWrap, { backgroundColor: colors.warningBg, borderColor: colors.warning }]}>
-              <Ionicons name="alert-circle-outline" size={18} color={colors.warning} />
+              <SolarIcon name="DangerCircle" variant="linear" size={18} color={colors.warning} />
             </View>
             <Text style={[styles.statNumber, { color: colors.warning }]}>{stats.action}</Text>
             <Text style={styles.statLabel}>Needs response</Text>
           </View>
 
           <View style={styles.statCard}>
-            <View style={[styles.statIconWrap, { backgroundColor: isDark ? '#0F2744' : '#EFF6FF', borderColor: isDark ? '#1E3A5F' : '#DBEAFE' }]}>
-              <Ionicons name="time-outline" size={18} color="#3B82F6" />
+            <View style={[styles.statIconWrap, { backgroundColor: colors.infoSoft, borderColor: colors.info }]}>
+              <SolarIcon name="Clock" variant="linear" size={18} color={colors.info} />
             </View>
-            <Text style={[styles.statNumber, { color: '#3B82F6' }]}>{stats.review}</Text>
+            <Text style={[styles.statNumber, { color: colors.info }]}>{stats.review}</Text>
             <Text style={styles.statLabel}>In review</Text>
           </View>
 
           <View style={styles.statCard}>
             <View style={[styles.statIconWrap, { backgroundColor: colors.successBg, borderColor: colors.success }]}>
-              <Ionicons name="checkmark-done-outline" size={18} color={colors.success} />
+              <SolarIcon name="CheckCircle" variant="linear" size={18} color={colors.success} />
             </View>
             <Text style={[styles.statNumber, { color: colors.success }]}>{stats.closed}</Text>
             <Text style={styles.statLabel}>Closed</Text>
@@ -190,11 +188,11 @@ export default function DisputeCenterScreen() {
         </ScrollView>
 
         {loading ? (
-          <ActivityIndicator color={ORANGE} style={{ marginTop: 40 }} />
+          <ActivityIndicator color={colors.accent} style={{ marginTop: 40 }} />
         ) : visible.length === 0 ? (
           <View style={styles.empty}>
             <View style={styles.emptyIcon}>
-              <Ionicons name="shield-checkmark-outline" size={32} color={ORANGE} />
+              <SolarIcon name="ShieldCheck" variant="duotone" size={32} color={colors.accent} />
             </View>
             <Text style={styles.emptyTitle}>No reports here</Text>
             <Text style={styles.emptySub}>
@@ -218,21 +216,21 @@ export default function DisputeCenterScreen() {
               >
                 <View style={styles.cardTop}>
                   <View style={styles.boxIcon}>
-                    <Ionicons name="cube" size={22} color={ORANGE} />
+                    <SolarIcon name="Package" variant="boldDuotone" size={22} color={colors.accent} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.cardTitle}>{item.issue_type}</Text>
 
                     <View style={styles.metaRow}>
-                      <Ionicons name="barcode-outline" size={12} color={colors.textSecondary} />
+                      <SolarIcon name="QrCode" variant="linear" size={12} color={colors.textSecondary} />
                       <Text style={styles.meta}>Tracking ID: {trackingIdFor(item.request_id)}</Text>
                     </View>
                     <View style={styles.metaRow}>
-                      <Ionicons name="document-text-outline" size={12} color={colors.textSecondary} />
+                      <SolarIcon name="DocumentText" variant="linear" size={12} color={colors.textSecondary} />
                       <Text style={styles.meta}>Case: {item.dispute_ref || `#${item.dispute_id}`}</Text>
                     </View>
                     <View style={styles.metaRow}>
-                      <Ionicons name="calendar-outline" size={12} color={colors.textSecondary} />
+                      <SolarIcon name="Calendar" variant="linear" size={12} color={colors.textSecondary} />
                       <Text style={styles.dateText}>{fmt(item.created_at)}</Text>
                     </View>
                   </View>
@@ -240,7 +238,7 @@ export default function DisputeCenterScreen() {
                     <View style={[styles.badge, { backgroundColor: st.bg }]}>
                       <Text style={[styles.badgeText, { color: st.fg }]}>{st.label}</Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                    <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
                   </View>
                 </View>
 
@@ -248,14 +246,14 @@ export default function DisputeCenterScreen() {
 
                 <View style={styles.bottomRow}>
                   <View style={styles.avatar}>
-                    <Ionicons name="person" size={11} color="#FFF" />
+                    <SolarIcon name="User" variant="bold" size={11} color="#FFF" />
                   </View>
                   <Text style={styles.bottomText}>
                     {mine ? 'Provider' : 'Reported by'}: <Text style={styles.bottomName}>{other}</Text>
                   </Text>
                   {action && (
                     <View style={styles.actionTag}>
-                      <Ionicons name="flash" size={11} color={colors.warning} />
+                      <SolarIcon name="Lightning" variant="bold" size={11} color={colors.warning} />
                       <Text style={styles.actionTagText}>Respond now</Text>
                     </View>
                   )}
@@ -277,29 +275,29 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20, paddingBottom: 12, gap: 12,
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20,
+    width: 42, height: 42, borderRadius: 21,
     backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.06, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
-  headerTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
-  headerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
+  headerTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  headerSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
   content: { padding: 20, paddingBottom: 100 },
 
   fileButton: {
-    flexDirection: 'row', backgroundColor: ORANGE,
-    paddingVertical: 15, borderRadius: 16,
+    flexDirection: 'row', backgroundColor: c.accent,
+    paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 16,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28, shadowRadius: 12, elevation: 6,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2, shadowRadius: 8, elevation: 3,
   },
-  fileButtonText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
+  fileButtonText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 
   actionBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: c.warningBg, padding: 14, borderRadius: 16, marginBottom: 16,
+    backgroundColor: c.warningBg, padding: 14, borderRadius: 12, marginBottom: 16,
     borderWidth: 1, borderColor: c.warning,
   },
   actionBannerIcon: {
@@ -307,24 +305,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: isDark ? '#3A2411' : '#FDE68A',
     alignItems: 'center', justifyContent: 'center',
   },
-  actionBannerText: { color: c.warning, fontWeight: '700', fontSize: 13, flex: 1 },
+  actionBannerText: { color: c.warning, fontFamily: 'Poppins_600SemiBold', fontSize: 13, flex: 1 },
 
   statsRow: { flexDirection: 'row', gap: 10, marginBottom: 18 },
   statCard: {
-    flex: 1, backgroundColor: c.card, borderRadius: 16,
+    flex: 1, backgroundColor: c.card, borderRadius: 12,
     paddingVertical: 14, paddingHorizontal: 10, alignItems: 'center',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   statIconWrap: {
-    width: 32, height: 32, borderRadius: 10,
+    width: 32, height: 32, borderRadius: 12,
     alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, marginBottom: 6,
   },
-  statNumber: { fontSize: 22, fontWeight: '800', letterSpacing: -0.4 },
+  statNumber: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4 },
   statLabel: {
-    fontSize: 10.5, color: c.textSecondary, fontWeight: '700',
+    fontSize: 10.5, color: c.textSecondary, fontFamily: 'Poppins_700Bold',
     marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.3,
   },
 
@@ -332,76 +330,76 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 14, paddingVertical: 9, borderRadius: 999,
-    backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   chipActive: {
-    backgroundColor: ORANGE, borderColor: ORANGE,
-    shadowColor: ORANGE, shadowOpacity: 0.28, shadowRadius: 8, elevation: 4,
+    backgroundColor: c.accent, borderColor: c.accent,
+    shadowColor: c.accent, shadowOpacity: 0.28, shadowRadius: 8, elevation: 4,
   },
-  chipText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
+  chipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   chipTextActive: { color: '#FFF' },
   chipCount: {
     minWidth: 20, height: 20, paddingHorizontal: 6, borderRadius: 10,
     backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center',
   },
   chipCountActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
-  chipCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  chipCountText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   chipCountTextActive: { color: '#FFF' },
 
   empty: { alignItems: 'center', paddingVertical: 48, paddingHorizontal: 24 },
   emptyIcon: {
     width: 72, height: 72, borderRadius: 36,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: c.accent,
     alignItems: 'center', justifyContent: 'center', marginBottom: 14,
   },
-  emptyTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
+  emptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   emptySub: {
     fontSize: 13, color: c.textSecondary, textAlign: 'center',
-    marginTop: 6, lineHeight: 19, fontWeight: '500',
+    marginTop: 6, lineHeight: 19, fontFamily: 'Poppins_400Regular',
   },
 
   card: {
-    backgroundColor: c.card, borderRadius: 18, padding: 16, marginBottom: 14,
-    borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 8, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 8, elevation: 0,
   },
   cardAction: {
-    borderColor: c.warning, borderWidth: 1.5,
+    borderColor: c.warning, borderWidth: 1,
     backgroundColor: isDark ? '#2A1F0A' : '#FFFDF7',
   },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   boxIcon: {
-    width: 44, height: 44, borderRadius: 14,
+    width: 44, height: 44, borderRadius: 12,
     backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: ORANGE,
+    borderWidth: 1, borderColor: c.accent,
   },
   cardTitle: {
-    fontSize: 15.5, fontWeight: '800', color: c.textPrimary,
+    fontSize: 15.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary,
     marginBottom: 6, letterSpacing: -0.2,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
-  meta: { fontSize: 11.5, color: c.textSecondary, fontWeight: '500' },
-  dateText: { fontSize: 11, color: c.textSecondary, fontWeight: '500' },
+  meta: { fontSize: 11.5, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
+  dateText: { fontSize: 11, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
 
   badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
-  badgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3, textTransform: 'uppercase' },
+  badgeText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.3, textTransform: 'uppercase' },
 
-  divider: { height: 1, backgroundColor: c.divider, marginVertical: 12 },
+  divider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 12 },
 
   bottomRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   avatar: {
     width: 22, height: 22, borderRadius: 11,
-    backgroundColor: ORANGE, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center',
   },
-  bottomText: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
-  bottomName: { color: c.textPrimary, fontWeight: '800' },
+  bottomText: { fontSize: 12, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
+  bottomName: { color: c.textPrimary, fontFamily: 'Poppins_700Bold' },
 
   actionTag: {
     marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999,
     backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
   },
-  actionTagText: { color: c.warning, fontWeight: '800', fontSize: 10.5, letterSpacing: 0.2 },
+  actionTagText: { color: c.warning, fontFamily: 'Poppins_800ExtraBold', fontSize: 10.5, letterSpacing: 0.2 },
 });

@@ -1,0 +1,184 @@
+┣ 📂.claude
+┃ ┗ 📜settings.json
+┣ 📂.expo
+┃ ┣ 📂dev
+┃ ┃ ┗ 📂logs
+┃ ┃   ┗ 📜start.log
+┃ ┣ 📂web
+┃ ┃ ┗ 📂cache
+┃ ┃   ┗ 📂production
+┃ ┃     ┗ 📂images
+┃ ┃       ┗ 📂favicon
+┃ ┃         ┗ 📂favicon-24272cdaeff82cc5facdaccd982a6f05b60c4504704bbf94c19a6388659880bb-contain-transparent
+┃ ┃           ┗ 📜favicon-48.png
+┃ ┣ 📜devices.json
+┃ ┗ 📜README.md
+┣ 📂.vscode
+┃ ┗ 📜settings.json
+┣ 📂assets
+┃ ┣ 📜adaptive-icon.png
+┃ ┣ 📜AllowAccess.png
+┃ ┣ 📜AllowLocation.png
+┃ ┣ 📜android-icon-background.png
+┃ ┣ 📜android-icon-foreground.png
+┃ ┣ 📜android-icon-monochrome.png
+┃ ┣ 📜applogo.jpeg
+┃ ┣ 📜applogo.png
+┃ ┣ 📜banner1.png
+┃ ┣ 📜banner2.png
+┃ ┣ 📜banner3.png
+┃ ┣ 📜banner4.png
+┃ ┣ 📜banner5.png
+┃ ┣ 📜banner6.png
+┃ ┣ 📜Car-Grey.png
+┃ ┣ 📜CellphoneNotification.png
+┃ ┣ 📜curb-side-drop-off.png
+┃ ┣ 📜door-to-door.png
+┃ ┣ 📜drop-off-method.png
+┃ ┣ 📜favicon.png
+┃ ┣ 📜gcash.png
+┃ ┣ 📜google.png
+┃ ┣ 📜icon.png
+┃ ┣ 📜maya.jpeg
+┃ ┣ 📜Pack-N-Ship-Logo2.png
+┃ ┣ 📜Pack-N-Ship-Packages.png
+┃ ┣ 📜package-size.png
+┃ ┣ 📜schedule-delivery-calendar.png
+┃ ┣ 📜send-package-now.png
+┃ ┗ 📜splash-icon.png
+┣ 📂patches
+┃ ┣ 📜react-native-reanimated+4.5.1.patch
+┃ ┣ 📜react-native-screens+4.26.2.patch
+┃ ┣ 📜react-native-worklets+0.10.1.patch
+┃ ┗ 📜react-native+0.86.3.patch
+┣ 📂scripts
+┃ ┗ 📜patch-react-native.js
+┣ 📂src
+┃ ┣ 📂components
+┃ ┃ ┣ 📜StatusBadge.tsx
+┃ ┃ ┗ 📜SupportFab.tsx
+┃ ┣ 📂modules
+┃ ┃ ┣ 📂Authentication
+┃ ┃ ┃ ┣ 📜ForgotPasswordScreen.tsx
+┃ ┃ ┃ ┣ 📜LoadingScreen.tsx
+┃ ┃ ┃ ┣ 📜LoginScreen.tsx
+┃ ┃ ┃ ┣ 📜PermissionsPromptScreen.tsx
+┃ ┃ ┃ ┣ 📜RegisterScreen.tsx
+┃ ┃ ┃ ┣ 📜ResetPasswordScreen.tsx
+┃ ┃ ┃ ┗ 📜VerifyEmailScreen.tsx
+┃ ┃ ┣ 📂Dashboard
+┃ ┃ ┃ ┣ 📂Disputes
+┃ ┃ ┃ ┃ ┣ 📜DisputeDetailScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜NotificationsList.tsx
+┃ ┃ ┃ ┃ ┗ 📜ReportIssueScreen.tsx
+┃ ┃ ┃ ┣ 📂Provider
+┃ ┃ ┃ ┃ ┣ 📂Manage
+┃ ┃ ┃ ┃ ┃ ┣ 📜ManageRoutesScreen.tsx
+┃ ┃ ┃ ┃ ┃ ┗ 📜ManageVehicleScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜AccountScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜EarningsScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜EditProfileScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜JobsScreen.tsx
+┃ ┃ ┃ ┃ ┣ 📜MessagesScreen.tsx
+┃ ┃ ┃ ┃ ┗ 📜TaskScreen.tsx
+┃ ┃ ┃ ┗ 📂Sender
+┃ ┃ ┃   ┣ 📂Delivery
+┃ ┃ ┃   ┃ ┣ 📜AddItemScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜BookingScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜DeliveryListScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜DeliveryPaymentScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜DropoffTypeScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜LiveTrackingScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜LocationSelectScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜ReceiverPickerScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜ScheduleCalendarScreen.tsx
+┃ ┃ ┃   ┃ ┣ 📜ScheduleContext.tsx
+┃ ┃ ┃   ┃ ┣ 📜scheduleService.ts
+┃ ┃ ┃   ┃ ┗ 📜ShipmentSizeScreen.tsx
+┃ ┃ ┃   ┣ 📜┣ 📂.claude
+┃ ┃ ┃   ┣ 📜AccountScreen.tsx
+┃ ┃ ┃   ┣ 📜ActivityScreen.tsx
+┃ ┃ ┃   ┣ 📜EditProfileScreen.tsx
+┃ ┃ ┃   ┣ 📜ExploreScreen.tsx
+┃ ┃ ┃   ┣ 📜HomeScreen.tsx
+┃ ┃ ┃   ┣ 📜MessagesScreen.tsx
+┃ ┃ ┃   ┣ 📜ProviderTrackModal.tsx
+┃ ┃ ┃   ┗ 📜RegisterProviderScreen.tsx
+┃ ┃ ┗ 📂Settings
+┃ ┃   ┣ 📜AddPaymentMethodScreen.tsx
+┃ ┃   ┣ 📜DisputeCenterScreen.tsx
+┃ ┃   ┣ 📜IdentityVerificationScreen.tsx
+┃ ┃   ┣ 📜LegalPoliciesScreen.tsx
+┃ ┃   ┣ 📜PaymentMethodCard.tsx
+┃ ┃   ┣ 📜PaymentMethodsScreen.tsx
+┃ ┃   ┣ 📜policyContent.ts
+┃ ┃   ┣ 📜PolicyDetailScreen.tsx
+┃ ┃   ┣ 📜SettingsScreen.tsx
+┃ ┃   ┣ 📜SupportScreen.tsx
+┃ ┃   ┗ 📜TwoFactorAuthScreen.tsx
+┃ ┣ 📂services
+┃ ┃ ┣ 📜activeRouteStore.ts
+┃ ┃ ┣ 📜backgroundLocationTask.ts
+┃ ┃ ┣ 📜backgroundMatcher.ts
+┃ ┃ ┣ 📜disputeService.ts
+┃ ┃ ┣ 📜locationBroadcastStore.ts
+┃ ┃ ┣ 📜locationService.ts
+┃ ┃ ┣ 📜matchingService.ts
+┃ ┃ ┣ 📜notificationService.ts
+┃ ┃ ┣ 📜paymentService.ts
+┃ ┃ ┣ 📜providerLiveService.ts
+┃ ┃ ┣ 📜pushService.ts
+┃ ┃ ┣ 📜routeService.ts
+┃ ┃ ┗ 📜useProviderLocationBroadcast.ts
+┃ ┣ 📂types
+┃ ┃ ┗ 📜payment.ts
+┃ ┗ 📂utils
+┃   ┣ 📜chatHelpers.ts
+┃   ┣ 📜dateUtils.ts
+┃   ┣ 📜deepLinking.ts
+┃   ┣ 📜navigationRef.ts
+┃   ┣ 📜notifRouter.ts
+┃   ┣ 📜passwordValidation.ts
+┃   ┣ 📜resolveHomeRoute.ts
+┃   ┣ 📜supabase.ts
+┃   ┣ 📜themeContext.tsx
+┃   ┗ 📜userContext.tsx
+┣ 📂supabase
+┃ ┣ 📂functions
+┃ ┃ ┣ 📂generate-delivery-otp
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂redirect-bridge
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂send-push
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂xendit-charge-delivery
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂xendit-create-session
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂xendit-refund
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂xendit-set-default
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┣ 📂xendit-unlink
+┃ ┃ ┃ ┗ 📜index.ts
+┃ ┃ ┗ 📂xendit-webhook
+┃ ┃   ┗ 📜index.ts
+┃ ┣ 📜.gitignore
+┃ ┗ 📜config.toml
+┣ 📜.easignore
+┣ 📜.gitignore
+┣ 📜AGENTS.md
+┣ 📜app.json
+┣ 📜App.tsx
+┣ 📜autolink.json
+┣ 📜CLAUDE.md
+┣ 📜eas.json
+┣ 📜FRONTEND_ROADMAP.md
+┣ 📜google-services.json
+┣ 📜index.ts
+┣ 📜LICENSE
+┣ 📜package.json
+┣ 📜Provider_Account_theirs.tsx
+┣ 📜Sender_Account_theirs.tsx
+┣ 📜skills-lock.json
+┗ 📜tsconfig.json

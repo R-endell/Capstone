@@ -6,14 +6,18 @@ import {
   Dimensions, Image, Linking, Share, BackHandler, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { formatDate, formatDateTime } from '../../../utils/dateUtils';
-import { getProviderDeliveries } from '../../../services/matchingService';
+import { formatDateTime } from '../../../utils/dateUtils';
+import {
+  getProviderDeliveries,
+  fetchPendingRequestsForProvider,
+  computeCargoVolumeLiters,
+  SHIPMENT_SIZE_SPECS,
+} from '../../../services/matchingService';
 import { getActiveRouteId } from '../../../services/activeRouteStore';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
@@ -22,15 +26,22 @@ import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
+import { Ionicons } from '@expo/vector-icons';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+const MAYA_LOGO = require('../../../../assets/maya.png');
+const EMPTY_BOX_ICON = require('../../../../assets/empty-box-icon.png');
 
 const ORANGE = '#FF751F';
+const BLUE = '#3B82F6';
+const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
@@ -101,9 +112,6 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
   return detail;
 };
 
-/* ==================================================================== */
-/* Helpers                                                              */
-/* ==================================================================== */
 const hydrateQr = async (deliveries: any[]) => {
   if (!deliveries || deliveries.length === 0) return deliveries;
   const ids = deliveries.map(d => d.delivery_id).filter(Boolean);
@@ -162,7 +170,6 @@ const buildCargoItems = (cargo: any) => {
   }];
 };
 
-/** Count packages per size across ALL items (not just the first one). */
 const summarizeSizes = (items: any[], cargo: any): { full: string; short: string } => {
   const counts: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
   items.forEach(it => { if (it?.size && counts[it.size] != null) counts[it.size] += 1; });
@@ -244,9 +251,6 @@ const enrichDeliveries = async (list: any[]) => {
   });
 };
 
-/* ==================================================================== */
-/* Cancellation detection                                               */
-/* ==================================================================== */
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -265,9 +269,6 @@ const isCancelledDelivery = (d: any): boolean => {
   return false;
 };
 
-/* ==================================================================== */
-/* Payment method badge                                                 */
-/* ==================================================================== */
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
   if (!provider) return null;
   const p = String(provider).toLowerCase();
@@ -292,39 +293,34 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
       }}>
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
-      <Text style={{ fontSize: 12, fontWeight: '800', color: tint }}>{label}</Text>
+      <Text style={{ fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: tint }}>{label}</Text>
     </View>
   );
 };
 
-/* ==================================================================== */
-/* TaskScreen                                                           */
-/* ==================================================================== */
-const BLUE = '#3B82F6';
-const RED = '#EF4444';
-const PURPLE = '#8B5CF6';
-const BLACK = '#111827';
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
-type TabType = 'active' | 'completed' | 'cancelled' | 'all';
+type TabType = 'active' | 'pending' | 'completed' | 'cancelled' | 'all';
 
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { colors } = useTheme();
-  const styles = makeStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const hasLoadedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [providerId, setProviderId] = useState<number | null>(null);
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
+  const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -340,7 +336,7 @@ export default function TaskScreen() {
   const [mapModalVisible, setMapModalVisible] = useState(false);
   const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [pkgInfo, setPkgInfo] = useState<any | null>(null);   // package breakdown pop-up
+  const [pkgInfo, setPkgInfo] = useState<any | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
 
@@ -350,7 +346,6 @@ export default function TaskScreen() {
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
   const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
-  // --- Proof of Delivery (POD) Camera States ---
   const podCameraRef = useRef<any>(null);
   const [podCameraOpen, setPodCameraOpen] = useState(false);
   const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
@@ -450,12 +445,210 @@ export default function TaskScreen() {
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
       const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
 
+      let pending: any[] = [];
+      try {
+        const selectedRouteId = await getActiveRouteId();
+        const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
+        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
+        const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
+
+        const senderIds = Array.from(new Set(filteredRows.map(m => m.request?.sender_id).filter(Boolean)));
+        const senders: Record<number, any> = {};
+        if (senderIds.length > 0) {
+          const { data: uRows } = await supabase
+            .from('users')
+            .select('user_id, first_name, last_name, phone_number')
+            .in('user_id', senderIds as number[]);
+          (uRows || []).forEach((u: any) => { senders[u.user_id] = u; });
+        }
+
+        pending = filteredRows.map(m => ({
+          ...m,
+          sender: senders[m.request?.sender_id] || null,
+        }));
+      } catch (e) {
+        console.warn('[Task] pending load failed:', e);
+      }
+
       setActiveDeliveries(acceptedActive);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
+      setPendingDeliveries(pending);
     } catch (error) {
       console.error('Error fetching deliveries:', error);
     }
+  };
+const handleAcceptPendingMatch = async (m: any) => {
+    if (!providerId || acceptingReqId != null) return;
+    const req = m.request;
+    if (!req?.request_id) return;
+
+    Alert.alert(
+      'Accept this delivery request?',
+      `You will earn ${money(req.estimated_cost)} for delivering this package along your route.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Accept Request',
+          onPress: async () => {
+            setAcceptingReqId(req.request_id);
+            try {
+              let vehicleId: number | null = null;
+              const { data: v } = await supabase
+                .from('vehicles')
+                .select('vehicle_id')
+                .eq('provider_id', providerId)
+                .eq('verification_status', 'Verified')
+                .limit(1)
+                .maybeSingle();
+              vehicleId = v?.vehicle_id ?? null;
+
+              if (!vehicleId) {
+                const { data: anyVeh } = await supabase
+                  .from('vehicles')
+                  .select('vehicle_id')
+                  .eq('provider_id', providerId)
+                  .limit(1)
+                  .maybeSingle();
+                vehicleId = anyVeh?.vehicle_id ?? null;
+              }
+              if (!vehicleId) {
+                Alert.alert('Vehicle required', 'You need a registered vehicle before accepting deliveries.');
+                return;
+              }
+
+              let resolvedRouteId: number | null =
+                req.preferred_route_id ?? m.route_id ?? (await getActiveRouteId()) ?? null;
+              if (!resolvedRouteId) {
+                const { data: rRow } = await supabase
+                  .from('provider_routes')
+                  .select('route_id')
+                  .eq('provider_id', providerId)
+                  .eq('is_deleted', false)
+                  .order('created_at', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                resolvedRouteId = rRow?.route_id ?? null;
+              }
+
+              const { data: claimed, error: claimErr } = await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Accepted' })
+                .eq('request_id', req.request_id)
+                .eq('delivery_status', 'Pending')
+                .select('request_id, sender_id, estimated_cost')
+                .maybeSingle();
+
+              if (claimErr || !claimed) {
+                Alert.alert('Request unavailable', 'This request was already accepted or cancelled.');
+                await fetchDeliveries(providerId);
+                return;
+              }
+
+              const { data: delivery, error: deliveryError } = await supabase
+                .from('deliveries')
+                .insert({
+                  request_id: req.request_id,
+                  provider_id: providerId,
+                  vehicle_id: vehicleId,
+                  route_id: resolvedRouteId,
+                  accepted_at: new Date().toISOString(),
+                  estimated_eta: new Date(Date.now() + 3600000).toISOString(),
+                })
+                .select('*')
+                .single();
+
+              if (deliveryError) {
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw deliveryError;
+              }
+
+              const { error: qrError } = await supabase.from('qr_verifications').insert({
+                delivery_id: delivery.delivery_id,
+                pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
+                dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
+                pickup_pin: randPin(),
+                dropoff_pin: randPin(),
+              });
+              if (qrError) {
+                await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw qrError;
+              }
+
+              try {
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'accepted' })
+                  .eq('request_id', req.request_id)
+                  .eq('provider_id', providerId);
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'expired' })
+                  .eq('request_id', req.request_id)
+                  .neq('provider_id', providerId)
+                  .eq('status', 'matched');
+              } catch {}
+
+              if (resolvedRouteId) {
+                const { data: rCap } = await supabase
+                  .from('provider_routes')
+                  .select('remaining_weight_kg, remaining_volume_liters')
+                  .eq('route_id', resolvedRouteId)
+                  .maybeSingle();
+                if (rCap) {
+                  const cargo = Array.isArray(req.cargo) ? req.cargo[0] : req.cargo;
+                  const cargoWeight = Number(cargo?.total_weight_kg) || 5;
+                  const cargoVol = computeCargoVolumeLiters(cargo);
+                  await supabase
+                    .from('provider_routes')
+                    .update({
+                      remaining_weight_kg: Math.max(0, Number(rCap.remaining_weight_kg ?? 100) - cargoWeight),
+                      remaining_volume_liters: Math.max(0, Number(rCap.remaining_volume_liters ?? 300) - cargoVol),
+                    })
+                    .eq('route_id', resolvedRouteId);
+                }
+              }
+
+              await supabase.from('escrow_payments').insert({
+                amount: claimed.estimated_cost,
+                delivery_id: delivery.delivery_id,
+                sender_id: claimed.sender_id,
+                provider_id: providerId,
+                escrow_status: 'On hold',
+                emergency_frozen: false,
+                created_at: new Date().toISOString(),
+              });
+
+              if (claimed.sender_id) {
+                const code = trackingCode(req.request_id);
+                try {
+                  await notifyUser(
+                    claimed.sender_id,
+                    'Route-Matched Courier Accepted! 🚚',
+                    `Your courier accepted parcel #${code} along the declared route.`,
+                    { deliveryId: delivery.delivery_id },
+                  );
+                } catch {}
+              }
+
+              await fetchDeliveries(providerId);
+              setActiveTab('active');
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to accept request.');
+            } finally {
+              setAcceptingReqId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const handlePingSender = (delivery: any) => {
@@ -532,7 +725,7 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
-    const markPickupVerified = async (deliveryId: number, requestId: number) => {
+  const markPickupVerified = async (deliveryId: number, requestId: number) => {
     if (!requestId) {
       Alert.alert('Error', 'Request ID is missing. Cannot update delivery status.');
       return;
@@ -624,7 +817,7 @@ export default function TaskScreen() {
     }
   };
 
-    const handleBarcodeScanned = async ({ data }: { data: string }) => {
+  const handleBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanned || !verifyTarget) return;
     setScanned(true);
     try {
@@ -1051,6 +1244,7 @@ export default function TaskScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [providerId]);
@@ -1095,14 +1289,14 @@ export default function TaskScreen() {
   const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
     switch (stage) {
       case 'done':
-        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
+        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
-        return { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' };
+        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'NavigationArrow' };
       case 'cancelled':
-        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'XCircle' };
       case 'pickup':
       default:
-        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
     }
   };
 
@@ -1161,20 +1355,21 @@ export default function TaskScreen() {
 
   const tabCount = (t: TabType) =>
     t === 'active' ? activeDeliveries.length
+      : t === 'pending' ? pendingDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
 
   const filteredTasks =
     activeTab === 'active' ? activeDeliveries
+      : activeTab === 'pending' ? pendingDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
 
-  /* --------------------------- shared pieces --------------------------- */
   const renderServicePill = (info: any) => (
     <View style={styles.svcPill}>
-      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <SolarIcon name="Package" variant="duotone" size={14} color={colors.info} />
       <Text style={styles.svcPillText}>{serviceLabel(info.request?.pickup_type)}</Text>
     </View>
   );
@@ -1189,8 +1384,8 @@ export default function TaskScreen() {
   const renderRoute = (info: any, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', pt: info.pickup, color: ORANGE, note: info.pickupNote },
-        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: BLACK, note: info.dropoffNote },
+        { key: 'p', label: 'PICKUP', pt: info.pickup, color: colors.accent, note: info.pickupNote },
+        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: colors.textPrimary, note: info.dropoffNote },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
@@ -1201,20 +1396,17 @@ export default function TaskScreen() {
               </View>
             )}
           </View>
-          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 16 }]}>
             <Text style={styles.rtLabel}>{r.label}</Text>
             <Text style={styles.rtMain} numberOfLines={1}>{r.pt.main}</Text>
 
-            {!!r.pt.road && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                <Ionicons name="map-outline" size={12} color={colors.textMuted} />
-                <Text style={styles.rtSub} numberOfLines={1}>{r.pt.road}</Text>
-              </View>
+            {!!r.pt.sub && (
+              <Text style={styles.rtSub} numberOfLines={1}>{r.pt.sub}</Text>
             )}
 
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <SolarIcon name="ChatCircleText" variant="duotone" size={14} color={colors.accent} />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -1231,24 +1423,46 @@ export default function TaskScreen() {
     phone: string | null;
     color: string;
     hideCall?: boolean;
+    userId?: number | null;
+    deliveryId?: number | null;
   }) => {
+    const canCall = !o.hideCall && !!o.phone;
+
     const handlePress = () => {
       Alert.alert(
         o.role,
         `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'N/A')}`,
-        [{ text: 'OK' }],
+        canCall
+          ? [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
+            ]
+          : [{ text: 'OK' }],
       );
     };
 
     return (
-      <TouchableOpacity style={styles.mcCard} onPress={handlePress} activeOpacity={0.7}>
-        <View style={[styles.mcAvatar, { backgroundColor: o.color }]}>
-          <Text style={styles.mcAvatarText}>{initials(o.name)}</Text>
+      <TouchableOpacity style={styles.mcRow} onPress={handlePress} activeOpacity={0.7}>
+        <View style={[styles.mcAvatarSmall, { backgroundColor: o.color }]}>
+          <Text style={styles.mcAvatarTextSmall}>{initials(o.name)}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.mcRole}>{o.role}</Text>
-          <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+          <Text style={styles.mcRoleSmall}>{o.role}</Text>
+          <Text style={styles.mcNameSmall} numberOfLines={1}>{o.name || 'N/A'}</Text>
         </View>
+        {canCall && (
+          <TouchableOpacity
+            style={styles.mcCallSmall}
+            onPress={(e) => {
+              e.stopPropagation();
+              if (o.phone) Linking.openURL(`tel:${o.phone}`);
+            }}
+            activeOpacity={0.8}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <SolarIcon name="Phone" variant="bold" size={13} color={colors.accent} />
+          </TouchableOpacity>
+        )}
       </TouchableOpacity>
     );
   };
@@ -1262,12 +1476,11 @@ export default function TaskScreen() {
   const cargoLabelFull = (info: any) => info.sizeSummary?.full || cargoLabel(info);
   const pkgCount = (info: any) => `${info.totalItems} ${info.totalItems === 1 ? 'pkg' : 'pkgs'}`;
   const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
-    Small:  { letter: 'S', kg: '~5 kg',  color: '#0284C7', bg: 'rgba(2,132,199,0.12)' },
-    Medium: { letter: 'M', kg: '~15 kg', color: '#D97706', bg: 'rgba(217,119,6,0.14)' },
-    Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
+    Small:  { letter: 'S', kg: `${SHIPMENT_SIZE_SPECS.Small.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Small.inchesLabel}`,  color: colors.info, bg: colors.infoSoft },
+    Medium: { letter: 'M', kg: `${SHIPMENT_SIZE_SPECS.Medium.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Medium.inchesLabel}`, color: colors.warning, bg: colors.warningBg },
+    Large:  { letter: 'L', kg: `${SHIPMENT_SIZE_SPECS.Large.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Large.inchesLabel}`, color: colors.secondary, bg: colors.secondarySoft },
   };
 
-  /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
@@ -1294,19 +1507,22 @@ export default function TaskScreen() {
 
           {renderRoute(info)}
 
-          <View style={styles.oContacts}>
+          <View style={styles.oContactsRow}>
             {renderMiniContact({
               role: 'SENDER',
               name: info.senderName,
               phone: info.senderPhone,
-              color: BLUE,
+              userId: info.senderId,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: colors.info,
               hideCall: false,
             })}
             {renderMiniContact({
               role: 'RECEIVER',
               name: info.receiverName,
               phone: info.receiverPhone,
-              color: PURPLE,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: colors.secondary,
               hideCall: false,
             })}
           </View>
@@ -1315,13 +1531,12 @@ export default function TaskScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
-            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
           </TouchableOpacity>
           {info.fragile && (
             <View style={styles.oChip}>
-              <Ionicons name="star-outline" size={14} color={ORANGE} />
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
@@ -1334,15 +1549,15 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.oActions}>
             <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : (
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.oRouteBtn} onPress={() => openRoute(d)} activeOpacity={0.9}>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
               <Text style={styles.oRouteText}>Start Route</Text>
             </TouchableOpacity>
           </View>
@@ -1351,13 +1566,95 @@ export default function TaskScreen() {
     );
   };
 
-  /* ---------------------------- list view ---------------------------- */
+  const renderPendingCard = (m: any) => {
+    const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
+    const isDirect = m.request?.preferred_provider_id != null;
+    const isBusy = acceptingReqId === m.request_id;
+
+    return (
+      <View key={`pending-${m.request_id}`} style={styles.oCard}>
+        <View style={styles.oPad}>
+          <View style={styles.oTopRow}>
+            {renderServicePill(info)}
+            <View style={[styles.stPill, { backgroundColor: colors.warningBg }]}>
+              <View style={[styles.stDot, { backgroundColor: colors.warning }]} />
+              <Text style={[styles.stPillText, { color: colors.warning }]}>
+                {isDirect ? 'DIRECT ROUTE REQUEST' : `${Math.round(Number(m.match_score) || 90)}% ROUTE MATCH`}
+              </Text>
+            </View>
+          </View>
+
+          {renderRoute(info, { notes: true })}
+
+          <View style={styles.oContactsRow}>
+            {renderMiniContact({
+              role: 'SENDER',
+              name: info.senderName || 'Sender',
+              phone: null,
+              color: colors.info,
+              hideCall: true,
+            })}
+            {renderMiniContact({
+              role: 'RECEIVER',
+              name: info.receiverName || 'Receiver',
+              phone: null,
+              color: colors.secondary,
+              hideCall: true,
+            })}
+          </View>
+        </View>
+
+        <View style={styles.oFooter}>
+          <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
+            <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
+          </TouchableOpacity>
+          {info.fragile && (
+            <View style={styles.oChip}>
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
+              <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
+            </View>
+          )}
+          <View style={{ flex: 1 }} />
+          <Text style={styles.oPrice}>{money(info.earnings)}</Text>
+        </View>
+
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oChatBtn}
+            onPress={() => navigation.navigate('MainTabs', { screen: 'Jobs' })}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="MapPoint" variant="linear" size={16} color={colors.accent} />
+            <Text style={styles.oChatText}>View on Map</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.oRouteBtn, isBusy && { opacity: 0.7 }]}
+            onPress={() => handleAcceptPendingMatch(m)}
+            disabled={isBusy}
+            activeOpacity={0.9}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <SolarIcon name="CheckCircle" variant="bold" size={16} color="#FFFFFF" />
+                <Text style={styles.oRouteText}>Accept Request</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['active', 'pending', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             const label = t.charAt(0).toUpperCase() + t.slice(1);
@@ -1381,43 +1678,40 @@ export default function TaskScreen() {
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons
-                  name={
-                    activeTab === 'cancelled' ? 'close-circle-outline'
-                      : allTasks.length === 0 ? 'briefcase-outline'
-                      : 'search-outline'
-                  }
-                  size={30}
-                  color={ORANGE}
-                />
-              </View>
+              <Image
+                source={EMPTY_BOX_ICON}
+                style={{ width: 140, height: 140, marginBottom: 20 }}
+                resizeMode="contain"
+              />
               <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
-                  : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
+                  : activeTab === 'pending'
+                    ? 'No pending requests'
+                    : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
-                  : allTasks.length === 0
-                    ? 'Deliveries you accept appear here.'
-                    : 'Try another tab to view history.'}
+                  : activeTab === 'pending'
+                    ? 'Requests waiting for your acceptance along your route will appear here.'
+                    : allTasks.length === 0
+                      ? 'Deliveries you accept appear here.'
+                      : 'Try another tab to view history.'}
               </Text>
             </View>
-          ) : filteredTasks.map(renderTaskCard)}
+          ) : filteredTasks.map(d => activeTab === 'pending' ? renderPendingCard(d) : renderTaskCard(d))}
           <View style={styles.bottomSpacer} />
         </Animated.View>
       </ScrollView>
     </View>
   );
 
-  /* --------------------------- detail view --------------------------- */
   const renderDetailView = (d: any) => {
     const info = buildTaskInfo(d);
     const stage = stageOf(d);
@@ -1445,10 +1739,10 @@ export default function TaskScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]} onPress={() => setSelectedId(null)} activeOpacity={0.85}>
-          <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]} onPress={() => setMapModalVisible(true)} activeOpacity={0.85}>
-          <Ionicons name="expand-outline" size={20} color={colors.textPrimary} />
+          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <ScrollView
@@ -1477,7 +1771,7 @@ export default function TaskScreen() {
             <View style={styles.dCodeRow}>
               <Text style={styles.dCode} selectable numberOfLines={1}>#{code}</Text>
               <TouchableOpacity onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.trackTextCopy}>
-                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <SolarIcon name={copied ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1494,12 +1788,12 @@ export default function TaskScreen() {
                   return (
                     <View key={label} style={styles.stepCol}>
                       <View style={styles.stepLineRow}>
-                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                          {done ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
-                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
                       </View>
                       <Text style={[styles.stepLabel, reached && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
                     </View>
@@ -1511,7 +1805,7 @@ export default function TaskScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.error} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1522,7 +1816,7 @@ export default function TaskScreen() {
               </View>
             ) : stage === 'done' ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
+                <View style={styles.doneIcon}><SolarIcon name="Check" variant="bold" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1533,26 +1827,29 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={'information-circle'} size={18} color={ORANGE} />
+                <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.accent} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
 
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
-            <View style={styles.oContacts}>
+            <View style={styles.oContactsRow}>
               {renderMiniContact({
                 role: 'SENDER',
                 name: info.senderName,
                 phone: info.senderPhone,
-                color: BLUE,
+                userId: info.senderId,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: colors.info,
                 hideCall: false,
               })}
               {renderMiniContact({
                 role: 'RECEIVER',
                 name: info.receiverName,
                 phone: info.receiverPhone,
-                color: PURPLE,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: colors.secondary,
                 hideCall: false,
               })}
             </View>
@@ -1602,13 +1899,13 @@ export default function TaskScreen() {
             {!!d.pod_photo_url && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="shield-checkmark-outline" size={17} color={colors.success} />
+                  <SolarIcon name="ShieldCheck" variant="duotone" size={17} color={colors.success} />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                 </View>
                 <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pod_photo_url)}>
                   <Image
                     source={{ uri: d.pod_photo_url }}
-                    style={{ width: '100%', height: 190, borderRadius: 16, borderWidth: 1, borderColor: colors.border }}
+                    style={{ width: '100%', height: 190, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
                     resizeMode="cover"
                   />
                 </TouchableOpacity>
@@ -1618,7 +1915,7 @@ export default function TaskScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="images-outline" size={17} color={ORANGE} />
+                  <SolarIcon name="Gallery" variant="duotone" size={17} color={colors.accent} />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1637,7 +1934,7 @@ export default function TaskScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <Ionicons name="cube-outline" size={17} color={ORANGE} />
+              <SolarIcon name="Package" variant="duotone" size={17} color={colors.accent} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {items.some((it: any) => !!it.description) && (
@@ -1665,7 +1962,7 @@ export default function TaskScreen() {
               <View style={styles.tile}><Text style={styles.tileLabel}>WEIGHT</Text><Text style={styles.tileValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text></View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
-                <Text style={[styles.tileValue, info.fragile && { color: ORANGE }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
+                <Text style={[styles.tileValue, info.fragile && { color: colors.accent }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>{isCancelled ? 'EARNINGS' : 'YOU EARN'}</Text>
@@ -1689,10 +1986,10 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <SolarIcon name="ChatCircleText" variant="linear" size={20} color={colors.accent} />}
             </TouchableOpacity>
             <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+              <SolarIcon name="Routing" variant="bold" size={16} color={colors.accent} />
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1755,7 +2052,7 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
           <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
-            <Ionicons name="close" size={24} color="#FFF" />
+            <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
           </TouchableOpacity>
         </View>
 
@@ -1822,7 +2119,7 @@ export default function TaskScreen() {
             );
           })()}
           <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+            <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -1835,7 +2132,7 @@ export default function TaskScreen() {
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinDropoff}><Ionicons name="person" size={14} color="#000000" /></View>
+              <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
@@ -1850,7 +2147,7 @@ export default function TaskScreen() {
                   onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
                   activeOpacity={0.9}
                 >
-                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
                   <Text style={styles.actionBtnText}>Open Route</Text>
                 </TouchableOpacity>
               );
@@ -1866,7 +2163,7 @@ export default function TaskScreen() {
       <View style={styles.previewOverlay}>
         {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
         <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
-          <Ionicons name="close" size={22} color="#FFFFFF" />
+          <SolarIcon name="CloseCircle" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1889,7 +2186,7 @@ export default function TaskScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{info ? pkgCount(info) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgInfo(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -1900,7 +2197,7 @@ export default function TaskScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.pkgName}>{k}</Text>
-                  <Text style={styles.pkgSub}>{SIZE_META[k].kg} each</Text>
+                  <Text style={styles.pkgSub}>{SIZE_META[k].kg}</Text>
                 </View>
                 <Text style={styles.pkgQty}>×{counts[k]}</Text>
               </View>
@@ -1919,7 +2216,7 @@ export default function TaskScreen() {
           <CameraView ref={podCameraRef} style={StyleSheet.absoluteFill} facing="back" />
           <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
             <TouchableOpacity style={styles.scannerCloseBtn} onPress={() => setPodCameraOpen(false)}>
-              <Ionicons name="close" size={24} color="#FFF" />
+              <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
             </TouchableOpacity>
           </View>
           <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
@@ -1938,7 +2235,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="camera" size={20} color="#FFF" />
+                  <SolarIcon name="Camera" variant="linear" size={20} color="#FFF" />
                   <Text style={styles.mPrimaryText}>Capture Photo</Text>
                 </>
               )}
@@ -1950,10 +2247,10 @@ export default function TaskScreen() {
           <View style={styles.otpModalCard}>
             <View style={styles.otpModalHeader}>
               <View style={styles.otpModalIconBox}>
-                <Ionicons name="shield-checkmark" size={24} color={colors.success} />
+                <SolarIcon name="ShieldCheck" variant="duotone" size={24} color={colors.success} />
               </View>
               <TouchableOpacity onPress={closeDeliveryOTPModal}>
-                <Ionicons name="close" size={24} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1962,9 +2259,8 @@ export default function TaskScreen() {
               Take a Proof of Delivery photo and enter the receiver's 6-digit OTP to release payment.
             </Text>
 
-            {/* POD Photo Capture Slot */}
             {podPhotoUri ? (
-              <View style={{ marginBottom: 14, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: colors.border }}>
+              <View style={{ marginBottom: 14, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>
                 <Image source={{ uri: podPhotoUri }} style={{ width: '100%', height: 150 }} resizeMode="cover" />
                 <TouchableOpacity
                   style={{
@@ -1974,22 +2270,22 @@ export default function TaskScreen() {
                   }}
                   onPress={openPodCamera}
                 >
-                  <Ionicons name="camera-reverse-outline" size={14} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>Retake</Text>
+                  <SolarIcon name="Camera" variant="linear" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontFamily: 'Poppins_700Bold' }}>Retake</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <TouchableOpacity
                 style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
-                  backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 14, marginBottom: 14,
+                  borderWidth: 1, borderStyle: 'dashed', borderColor: colors.accent,
+                  backgroundColor: colors.accentSoft, borderRadius: 12, paddingVertical: 14, marginBottom: 14,
                 }}
                 onPress={openPodCamera}
                 activeOpacity={0.85}
               >
-                <Ionicons name="camera-outline" size={20} color={ORANGE} />
-                <Text style={{ color: ORANGE, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
+                <SolarIcon name="Camera" variant="linear" size={20} color={colors.accent} />
+                <Text style={{ color: colors.accent, fontSize: 13, fontFamily: 'Poppins_700Bold' }}>Take Proof of Delivery Photo (Required)</Text>
               </TouchableOpacity>
             )}
 
@@ -2006,7 +2302,7 @@ export default function TaskScreen() {
             </View>
 
             <View style={styles.otpInfoBox}>
-              <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
+              <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.textSecondary} />
               <Text style={styles.otpInfoText} numberOfLines={2}>
                 Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
                 {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
@@ -2035,7 +2331,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFF" />
                   <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
                 </>
               )}
@@ -2268,7 +2564,7 @@ export default function TaskScreen() {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading tasks...</Text>
       </View>
     );
@@ -2289,80 +2585,84 @@ export default function TaskScreen() {
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
 
   headerSection: {
     paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    backgroundColor: c.background,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  tabBarScroll: { gap: 8, paddingTop: 14 },
+  pageTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  tabBarScroll: { gap: 8, paddingTop: 16 },
   tabItem: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
   },
-  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1.5 },
-  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: ORANGE },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1 },
+  tabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
-  tabCountTextActive: { color: ORANGE },
+  tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
+  tabCountText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
+  tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 20 },
 
   actionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,
     paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
-  actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  actionBtnText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 13 },
 
-  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
 
   cancelBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
-    borderRadius: 20, padding: 16, marginBottom: 14,
+    borderRadius: 12, padding: 16, marginBottom: 14,
   },
   cancelBannerIcon: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  cancelBannerTitle: { fontSize: 15, fontWeight: '800', color: c.error },
-  cancelBannerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  cancelBannerTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.error },
+  cancelBannerSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
+  stepper: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
   stepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  stepDotCurrent: { borderColor: ORANGE },
-  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
-  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  stepDotCurrent: { borderColor: c.accent },
+  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
+  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
-  mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
-  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
-  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
-  mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  mCancelledText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.error, marginTop: 8 },
+  mPrimaryBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: c.accent, paddingVertical: 14, borderRadius: 14,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1
+  },
+  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 14 },
+  mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
 
-  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.info },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
+
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
   rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
@@ -2370,118 +2670,124 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
+  rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 2 },
+  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+
+  oCard: {
+    backgroundColor: c.card,
+    borderRadius: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
-  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
-  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
-  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+
+  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
+  mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_700Bold' },
+  mcRoleSmall: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  mcNameSmall: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  oPrice: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
-  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14 },
-  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+
   dMap: { overflow: 'hidden' },
-  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
-  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
+  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 5, elevation: 1, zIndex: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
-  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 10 },
-  dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
-  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
-  dSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
-  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
-  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  dCode: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+  dWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
+  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 14, marginTop: 4 },
+  dHintText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, color: c.textPrimary },
+  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
+  dSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
-  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
-  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
-  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
-  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
-  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
-  dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  pkgCard: { backgroundColor: c.card, borderRadius: 24, padding: 24 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  pkgTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  pkgSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
+  tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 6 },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dBarIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
-  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  trackTextCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   doneCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: c.successBg,
-    borderWidth: 1, borderColor: c.success, borderRadius: 20, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success, borderRadius: 12, padding: 16, marginBottom: 16,
   },
   doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
-  doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  doneTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.success },
+  doneSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  sdMap: { width: '100%', height: 120, backgroundColor: '#F3F4F6' },
-  mapTapHint: {
-    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
-  },
-  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
-  sdRoutePad: { padding: 18 },
-  sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
-  sdRouteText: { flex: 1, paddingBottom: 16 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
-  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
-  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
+  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  sdRouteMain: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 3 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
-  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+  contactDivider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 16 },
 
   mapCloseBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
-    shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.04,
+    shadowRadius: 6, elevation: 1,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
-    shadowRadius: 12, elevation: 12,
-    borderTopWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.04,
+    shadowRadius: 12, elevation: 1,
+    borderTopWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
   },
 
   scannerRoot: { flex: 1, backgroundColor: '#000' },
-  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 1, shadowRadius: 8 },
+  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: c.accent, shadowColor: c.accent, shadowOpacity: 1, shadowRadius: 8 },
   corner: { position: 'absolute', width: 40, height: 40, borderColor: '#FFFFFF' },
   cornerTL: { top: 0, left: 0, borderTopWidth: 5, borderLeftWidth: 5, borderTopLeftRadius: 16 },
   cornerTR: { top: 0, right: 0, borderTopWidth: 5, borderRightWidth: 5, borderTopRightRadius: 16 },
@@ -2500,30 +2806,30 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   scannerBottomSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: c.card,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12,
   },
   sheetHandle: {
     alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
     backgroundColor: c.border, marginBottom: 18,
   },
-  sheetHeading: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sheetSubheading: { fontSize: 13, color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
+  sheetHeading: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
+  sheetSubheading: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
   orLine: { flex: 1, height: 1, backgroundColor: c.border },
-  orText: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1.2 },
+  orText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1.2 },
   pinRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinInput: {
-    flex: 1, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    flex: 1, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 16, paddingVertical: 14, fontSize: 18, letterSpacing: 6,
-    color: c.textPrimary, fontWeight: '700', textAlign: 'center', backgroundColor: c.background,
+    color: c.textPrimary, fontFamily: 'Poppins_700Bold', textAlign: 'center', backgroundColor: c.background,
   },
   pinBtn: {
-    backgroundColor: ORANGE, paddingHorizontal: 24, justifyContent: 'center',
-    borderRadius: 14, alignItems: 'center', minWidth: 100,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
+    backgroundColor: c.accent, paddingHorizontal: 24, justifyContent: 'center',
+    borderRadius: 12, alignItems: 'center', minWidth: 100,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
-  pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+  pinBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   otpModalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
@@ -2532,44 +2838,44 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   otpModalCard: {
     width: '100%', maxWidth: 380,
     backgroundColor: c.card, borderRadius: 24, padding: 24,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   otpModalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', marginBottom: 16,
   },
   otpModalIconBox: {
-    width: 48, height: 48, borderRadius: 14, backgroundColor: c.successBg,
+    width: 48, height: 48, borderRadius: 12, backgroundColor: c.successBg,
     justifyContent: 'center', alignItems: 'center',
   },
-  otpModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
-  otpModalSubtitle: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
+  otpModalTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
+  otpModalSubtitle: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
   otpInputContainer: { marginBottom: 16 },
   otpInput: {
-    borderWidth: 2, borderColor: c.border, borderRadius: 16,
+    borderWidth: 1, borderColor: c.border, borderRadius: 12,
     paddingHorizontal: 20, paddingVertical: 18,
     fontSize: 28, letterSpacing: 12, color: c.textPrimary,
-    fontWeight: '800', textAlign: 'center', backgroundColor: c.background,
+    fontFamily: 'Poppins_800ExtraBold', textAlign: 'center', backgroundColor: c.background,
   },
   otpInfoBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: c.divider, paddingHorizontal: 12,
-    paddingVertical: 10, borderRadius: 10, marginBottom: 20,
+    paddingVertical: 10, borderRadius: 12, marginBottom: 20,
   },
-  otpInfoText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '500' },
+  otpInfoText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   otpPayoutRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
   },
-  otpPayoutLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  otpPayoutLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.success, borderRadius: 16,
+    backgroundColor: c.accent, borderRadius: 14,
     paddingVertical: 16, gap: 8, marginBottom: 12,
-    shadowColor: c.success, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   otpVerifyButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 });

@@ -21,7 +21,6 @@ import {
 
 const ORANGE = '#F27024';
 
-// 1. Make the params optional to prevent crashes if navigated without them
 type ResetRouteParamList = {
   ResetPassword: {
     token_hash?: string;
@@ -41,10 +40,8 @@ export default function ResetPasswordScreen() {
   const { colors, isDark, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // 2. Safely destructure params with a fallback empty object
   const { token_hash, type, skipVerify } = route.params || {};
 
-  // 'verifying' | 'error' | 'form' | 'success'
   const [phase, setPhase] = useState<'verifying' | 'error' | 'form' | 'success'>(
     skipVerify ? 'form' : 'verifying'
   );
@@ -78,10 +75,8 @@ export default function ResetPasswordScreen() {
   }, [fadeAnim, glowAnim]);
 
   useEffect(() => {
-    // If we skipped verification (came from OTP flow), don't verify again.
     if (skipVerify) return;
 
-    // 3. Safety check: if somehow a user lands here without a token and without skipVerify
     if (!token_hash) {
       setVerifyErrorMsg('This password reset link is invalid. Please request a new one.');
       setPhase('error');
@@ -214,7 +209,6 @@ export default function ResetPasswordScreen() {
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
-              {/* VERIFYING */}
               {phase === 'verifying' && (
                 <View style={styles.centerBlock}>
                   <ActivityIndicator size="large" color={ORANGE} />
@@ -222,7 +216,6 @@ export default function ResetPasswordScreen() {
                 </View>
               )}
 
-              {/* ERROR */}
               {phase === 'error' && (
                 <>
                   <View style={styles.errorIconWrap}>
@@ -241,7 +234,6 @@ export default function ResetPasswordScreen() {
                 </>
               )}
 
-              {/* SUCCESS */}
               {phase === 'success' && (
                 <View style={styles.centerBlock}>
                   <Ionicons name="checkmark-circle" size={72} color={ORANGE} />
@@ -250,7 +242,6 @@ export default function ResetPasswordScreen() {
                 </View>
               )}
 
-              {/* FORM */}
               {phase === 'form' && (
                 <>
                   <View style={styles.headerContainer}>
@@ -339,7 +330,7 @@ function StrengthRow({ label, ok, c }: { label: string; ok: boolean; c: ThemeCol
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
       <Ionicons name={ok ? 'checkmark-circle' : 'ellipse-outline'} size={14} color={ok ? '#10B981' : c.textMuted} />
-      <Text style={{ marginLeft: 6, fontSize: 12, color: ok ? c.textPrimary : c.textMuted }}>
+      <Text style={{ marginLeft: 6, fontSize: 12, fontFamily: 'Poppins_400Regular', color: ok ? c.textPrimary : c.textMuted }}>
         {label}
       </Text>
     </View>
@@ -357,25 +348,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   innerContainer: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' },
   contentWrapper: { flex: 1, justifyContent: 'center' },
   centerBlock: { alignItems: 'center', justifyContent: 'center' },
-  verifyText: { marginTop: 16, fontSize: 15, color: c.textSecondary, fontWeight: '500' },
+  verifyText: { marginTop: 16, fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { marginBottom: 16 },
-  header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
-  subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
+  header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
+  subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
   errorIconWrap: { alignItems: 'center', marginBottom: 24 },
   formContainer: { marginBottom: 16 },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12, marginBottom: 12, height: 52 },
   inputIcon: { paddingLeft: 16, paddingRight: 8 },
-  input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary },
+  input: { flex: 1, height: '100%', fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary },
   inputFocused: { borderColor: ORANGE },
   inputError: { borderColor: c.error, backgroundColor: c.errorBg },
   eyeButton: { paddingHorizontal: 16, height: '100%', justifyContent: 'center' },
-  errorText: { color: c.error, fontSize: 12, fontWeight: '500', marginTop: -8, marginBottom: 10, marginLeft: 4 },
+  errorText: { color: c.error, fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: -8, marginBottom: 10, marginLeft: 4 },
   strengthList: { marginTop: -4, marginBottom: 12, paddingLeft: 4 },
   primaryButton: { backgroundColor: ORANGE, height: 54, borderRadius: 12, alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20 },
   buttonDisabled: { opacity: 0.6 },
-  primaryButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+  primaryButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
   linkContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
-  link: { color: c.textSecondary, fontSize: 14 },
-  linkBold: { color: ORANGE, fontWeight: '600' },
+  link: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_400Regular' },
+  linkBold: { color: ORANGE, fontFamily: 'Poppins_600SemiBold' },
 });

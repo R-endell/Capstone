@@ -6,13 +6,9 @@ import {
   StatusBar,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-
-// Same palette as LocationSelectScreen / BookingScreen
-const ORANGE = '#F27024';
-const ORANGE_TINT = 'rgba(242,112,36,0.09)';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 
 /** Normalize PH phone number to E.164 (+63XXXXXXXXXX) */
 const toE164 = (raw: string): string => {
@@ -176,7 +172,6 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     );
   }, [receivers, search]);
 
-  // Flat list with small section labels (same look as the RECENT label in LocationSelect)
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
     if (search.trim()) {
@@ -229,11 +224,15 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           <View style={styles.rowText}>
             <View style={styles.nameRow}>
               <Text style={styles.rowTitle} numberOfLines={1}>{item.receiver_name}</Text>
-              {item.is_favorite && <Ionicons name="star" size={13} color={colors.warning} style={{ marginLeft: 6 }} />}
+              {item.is_favorite && (
+                <SolarIcon name="Star" variant="boldDuotone" size={13} color={colors.warning} style={{ marginLeft: 6 }} />
+              )}
             </View>
             <Text style={styles.rowSub} numberOfLines={1}>{subLine || '—'}</Text>
           </View>
-          {isSelected && <Ionicons name="checkmark-circle" size={22} color={ORANGE} style={{ marginRight: 4 }} />}
+          {isSelected && (
+            <SolarIcon name="CheckCircle" variant="duotone" size={22} color={colors.accent} style={{ marginRight: 4 }} />
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -242,7 +241,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           activeOpacity={0.7}
           hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
         >
-          <Ionicons name="trash-outline" size={18} color={colors.error} />
+          <SolarIcon name="Trash" variant="linear" size={18} color={colors.error} />
         </TouchableOpacity>
       </View>
     );
@@ -252,15 +251,15 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     <TouchableOpacity style={[styles.row, styles.addRow]} activeOpacity={0.85} onPress={() => setShowAddModal(true)}>
       <View style={styles.rowMain}>
         <View style={styles.rowIconCol}>
-          <View style={[styles.avatar, { backgroundColor: ORANGE, borderColor: ORANGE }]}>
-            <Ionicons name="person-add" size={18} color="#FFFFFF" />
+          <View style={[styles.avatar, { backgroundColor: colors.accent, borderColor: colors.accent }]}>
+            <SolarIcon name="Plus" variant="bold" size={18} color="#FFFFFF" />
           </View>
         </View>
         <View style={styles.rowText}>
           <Text style={styles.rowTitle}>Add new receiver</Text>
           <Text style={styles.rowSub} numberOfLines={1}>Save someone you send parcels to</Text>
         </View>
-        <Ionicons name="add" size={22} color={ORANGE} style={{ marginRight: 14 }} />
+        <SolarIcon name="Plus" variant="bold" size={22} color={colors.accent} style={{ marginRight: 14 }} />
       </View>
     </TouchableOpacity>
   );
@@ -269,13 +268,12 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
     <View style={[styles.container, { paddingTop: insets.top + 10 }]}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      {/* header: back + search, same as the LocationSelect search bar */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={styles.searchWrap}>
-          <Ionicons name="search" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+          <SolarIcon name="Magnifier" variant="linear" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
           <TextInput
             style={styles.searchInput}
             placeholder="Search receiver name or phone"
@@ -286,7 +284,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
           />
           {search.length > 0 && (
             <TouchableOpacity onPress={() => setSearch('')} hitSlop={10}>
-              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+              <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           )}
         </View>
@@ -296,13 +294,18 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
       {loading ? (
         <View style={styles.loadingBox}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Loading receivers...</Text>
         </View>
       ) : filtered.length === 0 ? (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIconBox}>
-            <Ionicons name={receivers.length === 0 ? 'people-outline' : 'search-outline'} size={36} color={ORANGE} />
+            <SolarIcon 
+              name={receivers.length === 0 ? 'UsersGroup' : 'Magnifier'} 
+              variant="duotone" 
+              size={36} 
+              color={colors.accent} 
+            />
           </View>
           <Text style={styles.emptyTitle}>
             {receivers.length === 0 ? 'No receivers yet' : 'No matches'}
@@ -348,13 +351,13 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Add new receiver</Text>
               <TouchableOpacity onPress={() => setShowAddModal(false)} hitSlop={10}>
-                <Ionicons name="close" size={24} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               <View style={styles.fieldRow}>
-                <Ionicons name="person-outline" size={22} color={ORANGE} />
+                <SolarIcon name="User" variant="linear" size={22} color={colors.accent} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.fieldLabel}>RECEIVER NAME</Text>
                   <TextInput
@@ -368,7 +371,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
               </View>
 
               <View style={styles.fieldRow}>
-                <Ionicons name="call-outline" size={22} color={ORANGE} />
+                <SolarIcon name="Phone" variant="linear" size={22} color={colors.accent} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.fieldLabel}>PHONE NUMBER</Text>
                   <TextInput
@@ -384,7 +387,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
               </View>
 
               <View style={[styles.fieldRow, { borderBottomWidth: 0 }]}>
-                <Ionicons name="mail-outline" size={22} color={ORANGE} />
+                <SolarIcon name="Letter" variant="linear" size={22} color={colors.accent} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.fieldLabel}>EMAIL (OPTIONAL)</Text>
                   <TextInput
@@ -432,20 +435,20 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  /* header (mirrors LocationSelect search header) */
+  /* header */
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12 },
   backBtn: {
     width: 46, height: 46, borderRadius: 23, backgroundColor: c.card, justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, borderWidth: 1, borderColor: c.border,
+    marginRight: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   searchWrap: {
-    flex: 1, height: 48, backgroundColor: c.card, borderRadius: 14, flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 14, borderWidth: 1, borderColor: c.border,
+    flex: 1, height: 48, backgroundColor: c.card, borderRadius: 12, flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  searchInput: { flex: 1, fontSize: 15, color: c.textPrimary, fontWeight: '500', padding: 0 },
+  searchInput: { flex: 1, fontSize: 15, color: c.textPrimary, fontFamily: 'Poppins_500Medium', padding: 0 },
 
   screenTitle: {
-    fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
+    fontSize: 22, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4,
     paddingHorizontal: 20, paddingTop: 6, paddingBottom: 10,
   },
 
@@ -454,17 +457,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 20, paddingTop: 18, paddingBottom: 6,
   },
-  sectionLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
-  sectionCount: { fontSize: 12, fontWeight: '700', color: ORANGE },
+  sectionLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
+  sectionCount: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.accent },
 
-  /* rows (mirrors LocationSelect rows) */
+  /* rows */
   row: {
     flexDirection: 'row', alignItems: 'center',
     borderBottomWidth: 1, borderBottomColor: c.divider,
     backgroundColor: c.card,
   },
-  rowSelected: { backgroundColor: ORANGE_TINT },
-  addRow: { backgroundColor: ORANGE_TINT, marginHorizontal: 0 },
+  rowSelected: { backgroundColor: c.accentSoft },
+  addRow: { backgroundColor: c.accentSoft, marginHorizontal: 0 },
   rowMain: {
     flex: 1, flexDirection: 'row', alignItems: 'center',
     paddingVertical: 12, paddingLeft: 16, gap: 14,
@@ -472,36 +475,36 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rowIconCol: { width: 56, alignItems: 'center' },
   avatar: {
     width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.background, borderWidth: 1.5, borderColor: ORANGE,
+    backgroundColor: c.background, borderWidth: 1.5, borderColor: c.accent,
   },
-  avatarSelected: { backgroundColor: ORANGE },
-  avatarText: { fontSize: 16, fontWeight: '800', color: ORANGE },
+  avatarSelected: { backgroundColor: c.accent },
+  avatarText: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.accent },
   rowText: { flex: 1 },
   nameRow: { flexDirection: 'row', alignItems: 'center' },
-  rowTitle: { fontSize: 16, fontWeight: '700', color: c.textPrimary, flexShrink: 1 },
-  rowSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  rowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, flexShrink: 1 },
+  rowSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   deleteBtn: { paddingHorizontal: 16, paddingVertical: 12 },
 
   /* loading / empty */
   loadingBox: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { color: c.textSecondary, fontWeight: '500', fontSize: 13 },
+  loadingText: { color: c.textSecondary, fontFamily: 'Poppins_500Medium', fontSize: 13 },
   emptyBox: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40, paddingBottom: 80 },
   emptyIconBox: {
-    width: 80, height: 80, borderRadius: 40, backgroundColor: ORANGE_TINT,
+    width: 80, height: 80, borderRadius: 40, backgroundColor: c.accentSoft,
     justifyContent: 'center', alignItems: 'center', marginBottom: 16,
   },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 6, textAlign: 'center' },
-  emptySubtitle: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19, marginBottom: 22 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6, textAlign: 'center' },
+  emptySubtitle: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 19, marginBottom: 22 },
   emptyCta: {
-    backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 14, paddingHorizontal: 28,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 28,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  emptyCtaText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
+  emptyCtaText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 
-  /* add sheet (mirrors LocationSelect bottom sheet) */
+  /* add sheet */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, maxHeight: '88%',
+    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '88%',
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 12, elevation: 12,
   },
   dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
@@ -509,23 +512,23 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12,
   },
-  sheetTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  sheetTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
 
   fieldRow: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 14,
     paddingHorizontal: 20, paddingVertical: 14,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
-  fieldLabel: { fontSize: 11, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
-  fieldInput: { fontSize: 16, fontWeight: '700', color: c.textPrimary, paddingVertical: 4, paddingHorizontal: 0 },
-  fieldHint: { fontSize: 11, color: c.textMuted, marginTop: 2, fontWeight: '500' },
+  fieldLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
+  fieldInput: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, paddingVertical: 4, paddingHorizontal: 0 },
+  fieldHint: { fontSize: 11, color: c.textMuted, marginTop: 2, fontFamily: 'Poppins_500Medium' },
 
   confirmBtn: {
-    marginHorizontal: 20, marginTop: 16, backgroundColor: ORANGE, borderRadius: 30, paddingVertical: 16,
+    marginHorizontal: 20, marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 16,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
   confirmBtnDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
-  confirmHint: { fontSize: 11, color: c.textMuted, textAlign: 'center', marginTop: 10, fontWeight: '500' },
+  confirmBtnText: { color: '#FFF', fontSize: 17, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
+  confirmHint: { fontSize: 11, color: c.textMuted, textAlign: 'center', marginTop: 10, fontFamily: 'Poppins_500Medium' },
 });

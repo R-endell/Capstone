@@ -198,7 +198,7 @@ export default function ForgotPasswordScreen() {
                     <View style={[styles.inputWrapper, { height: 64, marginBottom: 20 }, focusedInput === 'otp' && styles.inputFocused]}>
                       <Ionicons name="keypad-outline" size={24} color={focusedInput === 'otp' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
                       <TextInput
-                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontWeight: '700' }]}
+                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontFamily: 'Poppins_700Bold' }]}
                         placeholder="000000"
                         placeholderTextColor={colors.textMuted}
                         keyboardType="number-pad"
@@ -230,7 +230,7 @@ export default function ForgotPasswordScreen() {
                   </View>
 
                   <TouchableOpacity onPress={() => setStep('email')} style={{ marginTop: 24, alignItems: 'center' }}>
-                    <Text style={{ color: colors.textSecondary, fontSize: 13, textDecorationLine: 'underline' }}>
+                    <Text style={{ color: colors.textSecondary, fontSize: 13, fontFamily: 'Poppins_400Regular', textDecorationLine: 'underline' }}>
                       Entered the wrong email? Go back
                     </Text>
                   </TouchableOpacity>
@@ -256,20 +256,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   contentWrapper: { flex: 1, justifyContent: 'center' },
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { marginBottom: 16 },
-  header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
-  subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
-  emailHighlight: { color: c.textPrimary, fontWeight: '600' },
+  header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
+  subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
+  emailHighlight: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
   formContainer: { marginBottom: 16 },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, borderWidth: 1, borderColor: c.border, borderRadius: 12, marginBottom: 12, height: 52 },
   inputIcon: { paddingLeft: 16, paddingRight: 8 },
-  input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary },
+  input: { flex: 1, height: '100%', fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary },
   inputFocused: { borderColor: ORANGE },
   inputError: { borderColor: c.error, backgroundColor: c.errorBg },
-  errorText: { color: c.error, fontSize: 12, fontWeight: '500', marginTop: -8, marginBottom: 10, marginLeft: 4 },
+  errorText: { color: c.error, fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: -8, marginBottom: 10, marginLeft: 4 },
   primaryButton: { backgroundColor: ORANGE, height: 54, borderRadius: 12, alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20 },
   buttonDisabled: { opacity: 0.6 },
-  primaryButtonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+  primaryButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
   linkContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
-  link: { color: c.textSecondary, fontSize: 14 },
-  linkBold: { color: ORANGE, fontWeight: '600' },
+  link: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_400Regular' },
+  linkBold: { color: ORANGE, fontFamily: 'Poppins_600SemiBold' },
 });

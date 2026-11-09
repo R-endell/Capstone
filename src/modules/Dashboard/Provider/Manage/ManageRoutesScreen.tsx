@@ -3,10 +3,9 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, Modal, StatusBar,
   Alert, ActivityIndicator, ScrollView, Platform, Animated, Easing,
-  TextInput, Keyboard, Switch,
+  TextInput, Keyboard, Switch, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -16,6 +15,7 @@ import Constants from 'expo-constants';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
+import { SolarIcon } from '../../../../components/ui/SolarIcon';
 import {
   getTodayRouteStats,
   createProviderRouteWithGuardrails,
@@ -26,11 +26,8 @@ import {
 } from '../../../../services/routeService';
 import { getDemoMode, setDemoMode, subscribeDemoMode } from '../../../../services/activeRouteStore';
 
-const ORANGE = '#FF751F';
-const BLUE = '#3B82F6';
-const RED = '#EF4444';
-const PURPLE = '#8B5CF6';
-const BLACK = '#111827';
+const EMPTY_COMPASS_ICON = require('../../../../../assets/empty-state-compass-icon.png');
+
 const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 const ZOOM_DELTA = 0.003;
@@ -143,7 +140,7 @@ const nextWeekday = (weekday: number, from = new Date()): Date => {
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
-const DURATION_OPTIONS = [1, 2, 3, 4] as const; // Rule: Max 4 hours per route
+const DURATION_OPTIONS = [1, 2, 3, 4] as const;
 type Frequency = typeof FREQUENCIES[number];
 type RouteTab = 'active' | 'expired';
 
@@ -247,16 +244,114 @@ const previewMapStyles = StyleSheet.create({
     borderWidth: 3, borderColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3, shadowRadius: 4, elevation: 3,
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
-  mkDotText: { fontSize: 11, fontWeight: '800', color: '#FFFFFF' },
+  mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
 });
 
 /* ==================================================================== */
 /* Location Picker Modal                                                */
 /* ==================================================================== */
+const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: c.background },
+  mapArea: { flex: 1, backgroundColor: isDark ? '#0B0F17' : '#F5F5F5', overflow: 'hidden' },
+  loadingOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: c.background, justifyContent: 'center', alignItems: 'center', zIndex: 10,
+  },
+  centerStack: {
+    position: 'absolute', left: 0, right: 0, top: '50%',
+    marginTop: -(32 + 8 + 42), height: 42 + 8 + 32,
+    alignItems: 'center', zIndex: 4,
+  },
+  bubble: {
+    height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
+    borderRadius: 21, paddingHorizontal: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+    borderWidth: 1, backgroundColor: c.card,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  bubbleText: { flexShrink: 1, fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  pinContainer: { marginTop: 8, alignItems: 'center' },
+  pinWrapper: { alignItems: 'center' },
+  pinHalo: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, opacity: 0.3 },
+  pinDot: {
+    width: 24, height: 24, borderRadius: 12, borderWidth: 3, borderColor: '#FFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1, zIndex: 2,
+  },
+  pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
+  pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
+  pinShadow: { position: 'absolute', bottom: -2, width: 8, height: 3, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.25)' },
+  iconBtn: {
+    position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21,
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+    borderWidth: 1, backgroundColor: c.card,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  locateMeBtn: {
+    position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14,
+    justifyContent: 'center', alignItems: 'center', zIndex: 5,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+    borderWidth: 1, backgroundColor: c.card,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  sheet: {
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.04, shadowRadius: 12, elevation: 1,
+    zIndex: 6, backgroundColor: c.card,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  dragHandle: { width: 44, height: 5, borderRadius: 3, alignSelf: 'center', marginTop: 8, marginBottom: 6, backgroundColor: c.border },
+  list: { maxHeight: 232 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 14 },
+  rowHighlight: { backgroundColor: c.accentSoft },
+  rowIconCol: { width: 56, alignItems: 'center' },
+  rowIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  rowIconMuted: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
+  rowDist: { fontSize: 11, marginTop: 4, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  rowText: { flex: 1 },
+  rowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  rowSub: { fontSize: 13, marginTop: 2, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
+  emptyNearby: { textAlign: 'center', fontSize: 12, paddingVertical: 14, paddingHorizontal: 20, fontFamily: 'Poppins_400Regular', color: c.textMuted },
+  confirmBtn: {
+    marginHorizontal: 20, marginTop: 6, borderRadius: 14, paddingVertical: 16,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+  },
+  confirmBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
+  searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20, backgroundColor: c.background },
+  searchModalHeader: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  searchBackBtn: {
+    width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center',
+    marginRight: 12, borderWidth: 1, backgroundColor: c.card,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  searchInputWrapper: {
+    flex: 1, height: 48, borderRadius: 12, flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, borderWidth: 1, backgroundColor: c.card,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: 'Poppins_500Medium', color: c.textPrimary },
+  searchErrorText: { textAlign: 'center', marginTop: 24, fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textMuted },
+  searchResultItem: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 14,
+  },
+  searchResultIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', backgroundColor: c.background },
+  searchResultTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 3 },
+  searchResultSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 16 },
+  recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
+  recentsLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
+  clearText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.accent },
+});
+
 const LocationPickerModal = ({
-  visible, onClose, onSelect, initialCoords, title, pinColor,
+  visible, onClose, onSelect, initialCoords, title, pinColor, colors, isDark,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -264,8 +359,11 @@ const LocationPickerModal = ({
   initialCoords?: Coord | null;
   title: string;
   pinColor: string;
+  colors: ThemeColors;
+  isDark: boolean;
 }) => {
   const insets = useSafeAreaInsets();
+  const pickerStyles = useMemo(() => makePickerStyles(colors, isDark), [colors, isDark]);
   const mapRef = useRef<MapView>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -572,6 +670,7 @@ const LocationPickerModal = ({
             ref={mapRef}
             provider={PROVIDER_GOOGLE}
             googleMapId={GOOGLE_MAP_ID}
+            userInterfaceStyle="light"
             style={StyleSheet.absoluteFill}
             initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
             onMapReady={() => setMapLoaded(true)}
@@ -589,7 +688,7 @@ const LocationPickerModal = ({
 
           {!mapLoaded && (
             <View style={pickerStyles.loadingOverlay}>
-              <ActivityIndicator size="large" color={ORANGE} />
+              <ActivityIndicator size="large" color={colors.accent} />
             </View>
           )}
 
@@ -598,8 +697,8 @@ const LocationPickerModal = ({
               <TouchableOpacity style={pickerStyles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
                 <Text style={pickerStyles.bubbleText} numberOfLines={1}>{addressName}</Text>
                 {busy
-                  ? <ActivityIndicator size="small" color="#9CA3AF" style={{ marginLeft: 8 }} />
-                  : <Ionicons name="chevron-forward" size={16} color="#9CA3AF" style={{ marginLeft: 6 }} />}
+                  ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
+                  : <SolarIcon name="AltArrowRight" variant="bold" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
               </TouchableOpacity>
             </Animated.View>
 
@@ -622,7 +721,7 @@ const LocationPickerModal = ({
             onPress={onClose}
             activeOpacity={0.85}
           >
-            <Ionicons name="arrow-back" size={22} color="#111827" />
+            <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -632,8 +731,8 @@ const LocationPickerModal = ({
             activeOpacity={0.85}
           >
             {locating
-              ? <ActivityIndicator size="small" color="#111827" />
-              : <Ionicons name="locate" size={24} color="#111827" />}
+              ? <ActivityIndicator size="small" color={colors.textPrimary} />
+              : <SolarIcon name="Compass" variant="linear" size={24} color={colors.textPrimary} />}
           </TouchableOpacity>
         </View>
 
@@ -647,13 +746,13 @@ const LocationPickerModal = ({
             showsVerticalScrollIndicator={false}
           >
             <TouchableOpacity
-              style={[pickerStyles.row, { backgroundColor: 'rgba(242,112,36,0.09)' }]}
+              style={[pickerStyles.row, pickerStyles.rowHighlight]}
               activeOpacity={0.85}
               onPress={() => setIsSearching(true)}
             >
               <View style={pickerStyles.rowIconCol}>
                 <View style={[pickerStyles.rowIcon, { backgroundColor: pinColor }]}>
-                  <Ionicons name="location" size={18} color="#FFFFFF" />
+                  <SolarIcon name="MapPoint" variant="duotone" size={18} secondaryColor="#FFFFFF" />
                 </View>
               </View>
               <View style={pickerStyles.rowText}>
@@ -662,14 +761,14 @@ const LocationPickerModal = ({
                   {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
                 </Text>
               </View>
-              <Ionicons name="pencil" size={18} color="#6B7280" />
+              <SolarIcon name="Pen" variant="linear" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
 
             {nearby.map(p => (
               <TouchableOpacity key={p.id} style={pickerStyles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
                 <View style={pickerStyles.rowIconCol}>
                   <View style={pickerStyles.rowIconMuted}>
-                    <Ionicons name="location-outline" size={18} color="#6B7280" />
+                    <SolarIcon name="MapPoint" variant="linear" size={18} secondaryColor={colors.textSecondary} />
                   </View>
                   <Text style={pickerStyles.rowDist}>{fmtDist(p.dist)}</Text>
                 </View>
@@ -703,14 +802,14 @@ const LocationPickerModal = ({
           <View style={[pickerStyles.searchOverlay, { paddingTop: insets.top + 10 }]}>
             <View style={pickerStyles.searchModalHeader}>
               <TouchableOpacity style={pickerStyles.searchBackBtn} onPress={closeSearch}>
-                <Ionicons name="arrow-back" size={22} color="#111827" />
+                <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
               <View style={pickerStyles.searchInputWrapper}>
-                <Ionicons name="search" size={18} color="#9CA3AF" style={{ marginRight: 8 }} />
+                <SolarIcon name="Magnifier" variant="linear" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
                 <TextInput
                   style={pickerStyles.searchInput}
                   placeholder="Search mall, school, landmark..."
-                  placeholderTextColor="#9CA3AF"
+                  placeholderTextColor={colors.textMuted}
                   value={searchQuery}
                   onChangeText={handleSearchChange}
                   autoFocus
@@ -718,13 +817,13 @@ const LocationPickerModal = ({
                 />
                 {searchQuery.length > 0 && (
                   <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
-                    <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+                    <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textMuted} />
                   </TouchableOpacity>
                 )}
               </View>
             </View>
 
-            {searchLoading && <ActivityIndicator size="small" color={ORANGE} style={{ marginTop: 20 }} />}
+            {searchLoading && <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 20 }} />}
             {!!searchError && !searchLoading && <Text style={pickerStyles.searchErrorText}>{searchError}</Text>}
 
             {searchQuery.trim().length === 0 && recents.length > 0 && (
@@ -751,7 +850,11 @@ const LocationPickerModal = ({
                     onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
                   >
                     <View style={pickerStyles.searchResultIconBox}>
-                      <Ionicons name={isRecent ? 'time-outline' : 'location-outline'} size={18} color={pinColor} />
+                      {isRecent ? (
+                        <SolarIcon name="Clock" variant="linear" size={18} color={pinColor} />
+                      ) : (
+                        <SolarIcon name="MapPoint" variant="linear" size={18} secondaryColor={pinColor} />
+                      )}
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={pickerStyles.searchResultTitle} numberOfLines={1}>{item.name}</Text>
@@ -769,84 +872,6 @@ const LocationPickerModal = ({
     </Modal>
   );
 };
-
-const pickerStyles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  mapArea: { flex: 1, backgroundColor: '#F5F5F5', overflow: 'hidden' },
-  loadingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#F5F5F5', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
-  centerStack: {
-    position: 'absolute', left: 0, right: 0, top: '50%',
-    marginTop: -(32 + 8 + 42), height: 42 + 8 + 32,
-    alignItems: 'center', zIndex: 4,
-  },
-  bubble: {
-    height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#FFFFFF', borderRadius: 21, paddingHorizontal: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: 'rgba(0,0,0,0.05)',
-  },
-  bubbleText: { flexShrink: 1, fontSize: 15, fontWeight: '800', color: '#111827' },
-  pinContainer: { marginTop: 8, alignItems: 'center' },
-  pinWrapper: { alignItems: 'center' },
-  pinHalo: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, opacity: 0.3 },
-  pinDot: {
-    width: 24, height: 24, borderRadius: 12, borderWidth: 3, borderColor: '#FFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6, zIndex: 2,
-  },
-  pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
-  pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
-  pinShadow: { position: 'absolute', bottom: -2, width: 8, height: 3, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.25)' },
-  iconBtn: {
-    position: 'absolute', left: 16, width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.15, shadowRadius: 8, elevation: 5,
-  },
-  locateMeBtn: {
-    position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, backgroundColor: '#FFFFFF',
-    justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.18, shadowRadius: 8, elevation: 5,
-  },
-  sheet: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 22, borderTopRightRadius: 22, marginTop: -22,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 12,
-    zIndex: 6,
-  },
-  dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: '#E5E7EB', alignSelf: 'center', marginTop: 8, marginBottom: 6 },
-  list: { maxHeight: 232 },
-  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 14 },
-  rowIconCol: { width: 56, alignItems: 'center' },
-  rowIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  rowIconMuted: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' },
-  rowDist: { fontSize: 11, color: '#6B7280', marginTop: 4, fontWeight: '500' },
-  rowText: { flex: 1 },
-  rowTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
-  rowSub: { fontSize: 13, color: '#6B7280', marginTop: 2 },
-  emptyNearby: { textAlign: 'center', fontSize: 12, color: '#9CA3AF', paddingVertical: 14, paddingHorizontal: 20 },
-  confirmBtn: {
-    marginHorizontal: 20, marginTop: 6, borderRadius: 30, paddingVertical: 16,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 5,
-  },
-  confirmBtnText: { color: '#FFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.2 },
-  searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#fff', zIndex: 20 },
-  searchModalHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-  searchBackBtn: {
-    width: 46, height: 46, borderRadius: 23, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center',
-    marginRight: 12, borderWidth: 1, borderColor: '#E5E7EB',
-  },
-  searchInputWrapper: { flex: 1, height: 48, backgroundColor: '#F3F4F6', borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: '#E5E7EB' },
-  searchInput: { flex: 1, fontSize: 15, color: '#111827', fontWeight: '500' },
-  searchErrorText: { textAlign: 'center', marginTop: 24, fontSize: 13, color: '#9CA3AF' },
-  searchResultItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#F3F4F6', gap: 14 },
-  searchResultIconBox: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center' },
-  searchResultTitle: { fontSize: 15, fontWeight: '700', color: '#111827', marginBottom: 3 },
-  searchResultSub: { fontSize: 12, color: '#6B7280', fontWeight: '400', lineHeight: 16 },
-  recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
-  recentsLabel: { fontSize: 11, fontWeight: '800', color: '#9CA3AF', letterSpacing: 1 },
-  clearText: { fontSize: 12, fontWeight: '700', color: ORANGE },
-});
 
 /* ==================================================================== */
 /* Main Component                                                       */
@@ -871,7 +896,7 @@ export default function ManageRoutesScreen() {
   const [selectedFrequency, setSelectedFrequency] = useState<Frequency>('Daily');
   const [departureDate, setDepartureDate] = useState(new Date());
   const [departureTime, setDepartureTime] = useState(new Date());
-  const [routeDurationHours, setRouteDurationHours] = useState<number>(2); // Max 4 hours cap
+  const [routeDurationHours, setRouteDurationHours] = useState<number>(2);
   const [selectedWeekday, setSelectedWeekday] = useState<number>(new Date().getDay());
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
 
@@ -940,7 +965,6 @@ export default function ManageRoutesScreen() {
       .eq('provider_id', id)
       .order('route_id', { ascending: false });
 
-    // Hide soft-deleted routes from UI list while keeping them counted in usedTodayCount
     const nonDeleted = (data || []).filter((r: Route) => r.is_deleted !== true);
     setRoutes(nonDeleted);
     setVehicles(await fetchVehicles(id));
@@ -1097,6 +1121,26 @@ export default function ManageRoutesScreen() {
             ? `Route saved (${res.distanceKm} km). Note: Routes over 25 km are flagged for Admin coverage review.`
             : 'Your route corridor is active and scanning for forward matches!',
         );
+
+        // Optimistic insert: the route row itself (is_active / is_deleted) is already
+        // correct the moment the insert returns, BEFORE the background
+        // `evaluate_route_matches` RPC runs. Add it to local state right away so the
+        // "Active" tab/badge reflects it instantly instead of waiting on a re-fetch
+        // that happens after that RPC — and isn't left stuck at 0 if that RPC is slow
+        // or (depending on backend config) touches the row.
+        if (res.route) {
+          const vehicleObj = vehicles.find(v => v.vehicle_id === selectedVehicleId) || null;
+          const optimisticRoute: Route = {
+            ...res.route,
+            start_location: startLocation,
+            end_location: endLocation,
+            vehicle: vehicleObj as any,
+          };
+          setRoutes(prev => {
+            if (prev.some(r => r.route_id === optimisticRoute.route_id)) return prev;
+            return [optimisticRoute, ...prev];
+          });
+        }
       }
 
       resetForm();
@@ -1181,7 +1225,6 @@ export default function ManageRoutesScreen() {
   };
 
   const resetForm = () => {
-    // Default 2h 15m ahead so Condition B (>= 2 hours before departure) is naturally satisfied
     const initial = new Date(Date.now() + 135 * 60 * 1000);
     setSelectedFrequency('Daily');
     setDepartureDate(initial);
@@ -1234,9 +1277,9 @@ export default function ManageRoutesScreen() {
     if (expired) return { label: 'Expired', bg: colors.errorBg, fg: colors.error };
     switch (freq) {
       case 'Daily': return { label: 'Daily', bg: colors.successBg, fg: colors.success };
-      case 'Weekly': return { label: 'Weekly', bg: colors.accentSoft, fg: ORANGE };
+      case 'Weekly': return { label: 'Weekly', bg: colors.accentSoft, fg: colors.accent };
       case 'One-time': return { label: 'One-Time', bg: colors.warningBg, fg: colors.warning };
-      default: return { label: freq || 'Custom', bg: 'rgba(59,130,246,0.14)', fg: BLUE };
+      default: return { label: freq || 'Custom', bg: colors.infoSoft, fg: colors.info };
     }
   };
 
@@ -1267,14 +1310,14 @@ export default function ManageRoutesScreen() {
           <View style={styles.oTopRow}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
               <View style={styles.svcPill}>
-                <Ionicons name="car-sport-outline" size={14} color={BLUE} />
+                <SolarIcon name="Package" variant="linear" size={14} color={colors.info} />
                 <Text style={styles.svcPillText}>
                   {item.vehicle ? item.vehicle.vehicle_type : 'Vehicle'}
                 </Text>
               </View>
               {item.route_distance_km != null && Number(item.route_distance_km) > 0 && (
                 <View style={styles.distPill}>
-                  <Ionicons name="git-branch-outline" size={12} color={ORANGE} />
+                  <SolarIcon name="Routing" variant="linear" size={12} secondaryColor={colors.accent} />
                   <Text style={styles.distPillText}>{Number(item.route_distance_km).toFixed(1)} km</Text>
                 </View>
               )}
@@ -1287,7 +1330,7 @@ export default function ManageRoutesScreen() {
 
           {item.admin_review_flag && (
             <View style={styles.flagBanner}>
-              <Ionicons name="warning-outline" size={14} color={ORANGE} />
+              <SolarIcon name="Warning" variant="linear" size={14} secondaryColor={colors.warning} />
               <Text style={styles.flagBannerText}>
                 Coverage Flag (&gt;25 km): Queued for Admin coverage review
               </Text>
@@ -1296,8 +1339,8 @@ export default function ManageRoutesScreen() {
 
           <View>
             {[
-              { key: 'p', label: 'STARTING POINT', main: startSplit.main, road: startRoad, color: ORANGE },
-              { key: 'd', label: 'DESTINATION', main: endSplit.main, road: endRoad, color: BLACK },
+              { key: 'p', label: 'STARTING POINT', main: startSplit.main, road: startRoad, color: colors.accent },
+              { key: 'd', label: 'DESTINATION', main: endSplit.main, road: endRoad, color: colors.textPrimary },
             ].map((r, i) => (
               <View key={r.key} style={styles.rtRow}>
                 <View style={styles.rtRail}>
@@ -1315,7 +1358,7 @@ export default function ManageRoutesScreen() {
                   <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
                   {!!r.road && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                      <Ionicons name="map-outline" size={12} color={colors.textMuted} />
+                      <SolarIcon name="Map" variant="bold" size={12} color={colors.textMuted} />
                       <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
                     </View>
                   )}
@@ -1327,24 +1370,26 @@ export default function ManageRoutesScreen() {
 
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
-            <Ionicons name="time-outline" size={14} color={expired ? colors.error : ORANGE} />
+            <SolarIcon name="Clock" variant="bold" size={14} color={expired ? colors.error : colors.accent} />
             <Text style={styles.oChipText}>{scheduleText}</Text>
           </View>
           {item.remaining_weight_kg != null && Number(item.remaining_weight_kg) > 0 && (
             <View style={styles.oChip}>
-              <Ionicons name="cube-outline" size={14} color={BLUE} />
+              <SolarIcon name="Package" variant="bold" size={14} color={colors.info} />
               <Text style={styles.oChipText}>
                 {Number(item.remaining_weight_kg).toFixed(0)} kg · {Number(item.remaining_volume_liters || 0).toFixed(0)} L left
               </Text>
             </View>
           )}
-          <View style={[styles.oChip, item.fallback_unlocked && { borderColor: PURPLE }]}>
-            <Ionicons
-              name={item.fallback_used ? 'checkmark-done' : item.fallback_unlocked ? 'Locate' : 'lock-closed-outline'}
-              size={13}
-              color={item.fallback_unlocked ? PURPLE : colors.textMuted}
-            />
-            <Text style={[styles.oChipText, item.fallback_unlocked && { color: PURPLE }]}>
+          <View style={[styles.oChip, item.fallback_unlocked && { borderColor: colors.secondary }]}>
+            {item.fallback_used ? (
+              <SolarIcon name="CheckCircle" variant="linear" size={13} color={colors.secondary} />
+            ) : item.fallback_unlocked ? (
+              <SolarIcon name="ShieldCheck" variant="linear" size={13} secondaryColor={colors.secondary} />
+            ) : (
+              <SolarIcon name="Lock" variant="linear" size={13} color={colors.textMuted} />
+            )}
+            <Text style={[styles.oChipText, item.fallback_unlocked && { color: colors.secondary }]}>
               Fallback: {item.fallback_used ? 'Used (1/1)' : item.fallback_unlocked ? 'Unlocked (1/1)' : '0/1'}
             </Text>
           </View>
@@ -1356,7 +1401,7 @@ export default function ManageRoutesScreen() {
             onPress={() => handleDelete(item)}
             activeOpacity={0.85}
           >
-            <Ionicons name="trash-outline" size={16} color={colors.error} />
+            <SolarIcon name="Trash" variant="bold" size={16} color={colors.error} />
             <Text style={styles.oDeleteText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -1364,11 +1409,13 @@ export default function ManageRoutesScreen() {
             onPress={() => handleEdit(item)}
             activeOpacity={0.9}
           >
-            <Ionicons
-              name={expired ? 'calendar-outline' : editLock.allowed ? 'create-outline' : 'lock-closed'}
-              size={16}
-              color="#FFFFFF"
-            />
+            {expired ? (
+              <SolarIcon name="Calendar" variant="bold" size={16} color="#FFFFFF" />
+            ) : editLock.allowed ? (
+              <SolarIcon name="Pen" variant="bold" size={16} color="#FFFFFF" />
+            ) : (
+              <SolarIcon name="Lock" variant="bold" size={16} color="#FFFFFF" />
+            )}
             <Text style={styles.oRouteText}>
               {expired ? 'Reschedule' : editLock.allowed ? 'Edit Route' : 'Locked (24h)'}
             </Text>
@@ -1384,7 +1431,7 @@ export default function ManageRoutesScreen() {
 
       <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <View style={{ flex: 1, paddingLeft: 14 }}>
           <Text style={styles.headerTitle}>Manage Routes</Text>
@@ -1397,14 +1444,14 @@ export default function ManageRoutesScreen() {
           onPress={handleAdd}
           activeOpacity={0.9}
         >
-          <Ionicons name="add" size={22} color="#FFFFFF" />
+          <SolarIcon name="Plus" variant="bold" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
 
       {/* Defense DEMO_MODE banner */}
       <View style={styles.demoStrip}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-          <Ionicons name="flask-outline" size={16} color={ORANGE} />
+          <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.accent} />
           <Text style={styles.demoStripText}>
             Defense DEMO_MODE (1-min fallback & edit lock)
           </Text>
@@ -1412,7 +1459,7 @@ export default function ManageRoutesScreen() {
         <Switch
           value={demoMode}
           onValueChange={handleToggleDemo}
-          trackColor={{ false: colors.border, true: ORANGE }}
+          trackColor={{ false: colors.border, true: colors.accent }}
         />
       </View>
 
@@ -1422,10 +1469,12 @@ export default function ManageRoutesScreen() {
           onPress={() => setActiveTab('active')}
           activeOpacity={0.85}
         >
-          <Ionicons
-            name="navigate-circle-outline"
+          <SolarIcon
+            name="Routing"
+            variant="linear"
             size={16}
-            color={activeTab === 'active' ? '#FFFFFF' : colors.textSecondary}
+            color={activeTab === 'active' ? colors.accent : colors.textSecondary}
+            secondaryColor={activeTab === 'active' ? colors.accent : colors.textSecondary}
           />
           <Text style={[styles.tabButtonText, activeTab === 'active' && styles.tabButtonTextActive]}>
             Active ({activeRoutes.length})
@@ -1437,10 +1486,11 @@ export default function ManageRoutesScreen() {
           onPress={() => setActiveTab('expired')}
           activeOpacity={0.85}
         >
-          <Ionicons
-            name="time-outline"
+          <SolarIcon
+            name="Clock"
+            variant="linear"
             size={16}
-            color={activeTab === 'expired' ? '#FFFFFF' : colors.textSecondary}
+            color={activeTab === 'expired' ? colors.accent : colors.textSecondary}
           />
           <Text style={[styles.tabButtonText, activeTab === 'expired' && styles.tabButtonTextActive]}>
             Expired ({expiredRoutes.length})
@@ -1450,18 +1500,16 @@ export default function ManageRoutesScreen() {
 
       {loading ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
           <Text style={styles.loadingText}>Loading routes...</Text>
         </View>
       ) : displayedRoutes.length === 0 ? (
         <Animated.View style={[styles.emptyContainer, fadeUp(contentAnim, 20)]}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons
-              name={activeTab === 'active' ? 'map-outline' : 'time-outline'}
-              size={32}
-              color={ORANGE}
-            />
-          </View>
+          <Image 
+            source={EMPTY_COMPASS_ICON} 
+            style={{ width: 140, height: 140, marginBottom: 20 }} 
+            resizeMode="contain" 
+          />
           <Text style={styles.emptyTitle}>
             {activeTab === 'active' ? 'Post a route to see matched deliveries.' : 'No expired routes'}
           </Text>
@@ -1472,7 +1520,7 @@ export default function ManageRoutesScreen() {
           </Text>
           {activeTab === 'active' && (
             <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-              <Ionicons name="add-circle" size={18} color="#FFFFFF" />
+              <SolarIcon name="AddCircle" variant="duotone" size={18} />
               <Text style={styles.emptyAddBtnText}>
                 Post Route ({Math.max(0, MAX_DAILY_ROUTES - usedTodayCount)} left today)
               </Text>
@@ -1498,17 +1546,17 @@ export default function ManageRoutesScreen() {
             <View style={styles.modalHandle} />
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalCloseBtn}>
-                <Ionicons name="close" size={20} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
                 {editingRoute ? 'Edit Route' : `Post Route (${usedTodayCount}/${MAX_DAILY_ROUTES} today)`}
               </Text>
-              <View style={{ width: 40 }} />
+              <View style={{ width: 42 }} />
             </View>
 
             <ScrollView contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
               <View style={styles.guardrailNotice}>
-                <Ionicons name="shield-checkmark-outline" size={16} color={ORANGE} />
+                <SolarIcon name="ShieldCheck" variant="duotone" size={16} />
                 <Text style={styles.guardrailNoticeText}>
                   Guardrails: Post ≥2 hrs early to qualify for Condition B fallback · Destinations must be ≥3 km apart · Max 4-hr window · Locked 24h before departure.
                 </Text>
@@ -1517,8 +1565,8 @@ export default function ManageRoutesScreen() {
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Route Locations</Text>
                 <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('start'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: ORANGE }]}>
-                    <Ionicons name="radio-button-on" size={14} color="#FFF" />
+                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: colors.accent }]}>
+                    <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
                   </View>
                   <Text style={styles.locationSelectorText} numberOfLines={1}>
                     {startLocation ? startLocation.street_address : 'Set Starting Point'}
@@ -1526,8 +1574,8 @@ export default function ManageRoutesScreen() {
                 </TouchableOpacity>
                 <View style={{ height: 10 }} />
                 <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('end'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: BLACK }]}>
-                    <Ionicons name="location" size={14} color="#FFF" />
+                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: colors.textPrimary }]}>
+                    <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
                   </View>
                   <Text style={styles.locationSelectorText} numberOfLines={1}>
                     {endLocation ? endLocation.street_address : 'Set Destination (≥3 km from other routes)'}
@@ -1542,6 +1590,7 @@ export default function ManageRoutesScreen() {
                     style={StyleSheet.absoluteFill}
                     provider={PROVIDER_GOOGLE}
                     googleMapId={GOOGLE_MAP_ID}
+                    userInterfaceStyle="light"
                     initialRegion={{
                       latitude: startLocation.latitude,
                       longitude: startLocation.longitude,
@@ -1556,7 +1605,7 @@ export default function ManageRoutesScreen() {
                       anchor={{ x: 0.5, y: 0.5 }}
                       tracksViewChanges={false}
                     >
-                      <View style={[previewMapStyles.mkDot, { backgroundColor: BLUE }]}>
+                      <View style={[previewMapStyles.mkDot, { backgroundColor: colors.info }]}>
                         <Text style={previewMapStyles.mkDotText}>S</Text>
                       </View>
                     </Marker>
@@ -1565,12 +1614,12 @@ export default function ManageRoutesScreen() {
                       anchor={{ x: 0.5, y: 0.5 }}
                       tracksViewChanges={false}
                     >
-                      <View style={[previewMapStyles.mkDot, { backgroundColor: RED }]}>
+                      <View style={[previewMapStyles.mkDot, { backgroundColor: colors.error }]}>
                         <Text style={previewMapStyles.mkDotText}>E</Text>
                       </View>
                     </Marker>
                     {previewCoords.length > 0 && (
-                      <Polyline coordinates={previewCoords} strokeColor={BLUE} strokeWidth={4} />
+                      <Polyline coordinates={previewCoords} strokeColor={colors.info} strokeWidth={4} />
                     )}
                   </MapView>
                 </View>
@@ -1593,7 +1642,6 @@ export default function ManageRoutesScreen() {
                 </View>
               </View>
 
-              {/* Time Window Cap (Max 4 Hours) */}
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Active Time Window (Max 4 Hours)</Text>
                 <View style={styles.frequencyOptions}>
@@ -1615,7 +1663,7 @@ export default function ManageRoutesScreen() {
                 <View style={styles.formGroup}>
                   <Text style={styles.inputLabel}>Departure Time (Today)</Text>
                   <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
-                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
                     <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </TouchableOpacity>
                   {showTimePicker && (
@@ -1655,7 +1703,7 @@ export default function ManageRoutesScreen() {
                   </View>
                   <View style={{ height: 14 }} />
                   <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
-                    <Ionicons name="time-outline" size={16} color={ORANGE} />
+                    <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
                     <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                   </TouchableOpacity>
                   {showTimePicker && (
@@ -1674,7 +1722,7 @@ export default function ManageRoutesScreen() {
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Date</Text>
                     <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowDatePicker(true)}>
-                      <Ionicons name="calendar-outline" size={16} color={ORANGE} />
+                      <SolarIcon name="Calendar" variant="linear" size={16} color={colors.accent} />
                       <Text style={styles.dateTimeValue}>{departureDate.toLocaleDateString()}</Text>
                     </TouchableOpacity>
                     {showDatePicker && (
@@ -1692,7 +1740,7 @@ export default function ManageRoutesScreen() {
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>Time</Text>
                     <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
-                      <Ionicons name="time-outline" size={16} color={ORANGE} />
+                      <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
                       <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
                     </TouchableOpacity>
                     {showTimePicker && (
@@ -1718,7 +1766,12 @@ export default function ManageRoutesScreen() {
                       style={[styles.vehicleOption, selectedVehicleId === v.vehicle_id && styles.vehicleOptionActive]}
                       onPress={() => setSelectedVehicleId(v.vehicle_id)}
                     >
-                      <Ionicons name="car-sport" size={14} color={selectedVehicleId === v.vehicle_id ? '#FFF' : colors.textSecondary} />
+                      <SolarIcon
+                        name="Package"
+                        variant="linear"
+                        size={14}
+                        color={selectedVehicleId === v.vehicle_id ? '#FFF' : colors.textSecondary}
+                      />
                       <Text style={[styles.vehicleOptionText, selectedVehicleId === v.vehicle_id && styles.vehicleOptionTextActive]}>
                         {v.plate_number}
                       </Text>
@@ -1745,7 +1798,9 @@ export default function ManageRoutesScreen() {
             : (endLocation ? { latitude: endLocation.latitude, longitude: endLocation.longitude } : undefined)
         }
         title={pickerType === 'start' ? 'Starting Point' : 'Destination'}
-        pinColor={pickerType === 'start' ? ORANGE : BLACK}
+        pinColor={pickerType === 'start' ? colors.accent : colors.textPrimary}
+        colors={colors}
+        isDark={isDark}
       />
     </View>
   );
@@ -1756,94 +1811,94 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border,
+    backgroundColor: c.card, borderBottomWidth: 1,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
-  headerSubtitle: { fontSize: 13, color: c.textSecondary, fontWeight: '600', marginTop: 1 },
+  headerTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  headerSubtitle: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
   headerAddBtn: {
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center',
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
 
   demoStrip: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     marginHorizontal: 20, marginTop: 12, paddingHorizontal: 14, paddingVertical: 8,
-    backgroundColor: c.accentSoft, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)',
+    backgroundColor: c.accentSoft, borderRadius: 12, borderWidth: 1, borderColor: c.accent,
   },
-  demoStripText: { fontSize: 12, fontWeight: '700', color: c.textPrimary },
+  demoStripText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
   tabContainer: {
     flexDirection: 'row',
     marginHorizontal: 20, marginTop: 10, marginBottom: 4,
-    padding: 4, backgroundColor: c.card, borderRadius: 14,
-    borderWidth: 1, borderColor: c.border, gap: 6,
+    padding: 4, backgroundColor: c.divider, borderRadius: 12,
+    gap: 6,
   },
   tabButton: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     paddingVertical: 10, borderRadius: 10, gap: 6,
   },
   tabButtonActive: {
-    backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25, shadowRadius: 4, elevation: 2,
+    backgroundColor: c.card,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
   },
-  tabButtonText: { fontSize: 13, fontWeight: '800', color: c.textSecondary },
-  tabButtonTextActive: { color: '#FFFFFF' },
+  tabButtonText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  tabButtonTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
 
   listContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 60 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
-  emptyIconCircle: {
-    width: 68, height: 68, borderRadius: 34,
-    backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
-    marginBottom: 14, borderWidth: 1, borderColor: c.border,
-  },
-  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, textAlign: 'center' },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19, marginBottom: 20 },
+  emptyContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 32 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, textAlign: 'center', marginBottom: 6 },
+  emptySubtext: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19, marginBottom: 20 },
   emptyAddBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: ORANGE, paddingHorizontal: 22, paddingVertical: 13, borderRadius: 14,
+    backgroundColor: c.accent, paddingHorizontal: 22, paddingVertical: 13, borderRadius: 14,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
-  emptyAddBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+  emptyAddBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   oCard: {
-    backgroundColor: c.card, borderRadius: 22, marginBottom: 14,
-    borderWidth: 1, borderColor: c.border, overflow: 'hidden',
+    backgroundColor: c.card, borderRadius: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   oCardExpired: { opacity: 0.88 },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 8 },
   svcPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
+    backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info,
     paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
   },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.info },
   distPill: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: c.accentSoft, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 8,
   },
-  distPillText: { fontSize: 11.5, fontWeight: '800', color: ORANGE },
+  distPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.accent },
   stPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
   },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
 
   flagBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(255,117,31,0.12)', paddingHorizontal: 10, paddingVertical: 7,
+    backgroundColor: c.warningBg, paddingHorizontal: 10, paddingVertical: 7,
     borderRadius: 10, marginBottom: 12,
   },
-  flagBannerText: { flex: 1, fontSize: 11.5, fontWeight: '700', color: ORANGE },
+  flagBannerText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.warning },
 
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
@@ -1855,80 +1910,124 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
+  rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 1 },
+  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
   oFooter: {
     flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8,
     backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14,
-    borderTopWidth: 1, borderTopColor: c.divider,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   oChip: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10,
   },
-  oChipText: { fontSize: 12.5, fontWeight: '700', color: c.textPrimary },
+  oChipText: { fontSize: 12.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
-  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   oDeleteBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     backgroundColor: c.errorBg, borderRadius: 14, paddingVertical: 14,
   },
-  oDeleteText: { color: c.error, fontSize: 14, fontWeight: '800' },
+  oDeleteText: { color: c.error, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oRouteBtn: {
     flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14,
+    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14,
   },
-  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  modalContainer: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingTop: 8, maxHeight: '94%', flex: 1 },
-  modalHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 6, marginBottom: 6 },
-  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: c.divider },
-  modalCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  modalTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
+  modalContainer: {
+    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingTop: 8, maxHeight: '94%', flex: 1,
+  },
+  modalHandle: {
+    alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
+    backgroundColor: c.border, marginTop: 6, marginBottom: 6,
+  },
+  modalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  modalCloseBtn: {
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center',
+  },
+  modalTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   modalScrollContent: { padding: 20, paddingBottom: 40 },
 
   guardrailNotice: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
-    borderWidth: 1, borderColor: 'rgba(255,117,31,0.3)', marginBottom: 16,
+    borderWidth: 1, borderColor: c.accent, marginBottom: 16,
   },
-  guardrailNoticeText: { flex: 1, fontSize: 11.5, fontWeight: '600', color: c.textPrimary, lineHeight: 17 },
+  guardrailNoticeText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textPrimary, lineHeight: 17 },
 
-  modalMapContainer: { height: 180, borderRadius: 16, overflow: 'hidden', marginBottom: 20, borderWidth: 1, borderColor: c.border },
+  modalMapContainer: {
+    height: 180, borderRadius: 12, overflow: 'hidden', marginBottom: 20,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
 
-  locationSelectorBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: c.border, gap: 12 },
-  locSelectorIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  locationSelectorText: { flex: 1, fontWeight: '700', color: c.textPrimary, fontSize: 14 },
+  locationSelectorBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
+    padding: 14, borderRadius: 12, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 12,
+  },
+  locSelectorIcon: {
+    width: 26, height: 26, borderRadius: 13,
+    backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center',
+  },
+  locationSelectorText: { flex: 1, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, fontSize: 14 },
 
   formGroup: { marginBottom: 20 },
-  inputLabel: { marginBottom: 8, fontWeight: '800', color: c.textPrimary, fontSize: 12, letterSpacing: 0.3 },
+  inputLabel: { marginBottom: 8, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontSize: 12, letterSpacing: 0.3 },
   frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  frequencyOption: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card },
-  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: ORANGE },
-  frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
-  frequencyOptionTextSelected: { color: ORANGE, fontWeight: '800' },
+  frequencyOption: {
+    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    backgroundColor: c.card,
+  },
+  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
+  frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
+  frequencyOptionTextSelected: { color: c.accent, fontFamily: 'Poppins_700Bold' },
 
   weekdayRow: { flexDirection: 'row', gap: 6 },
-  weekdayChip: { flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1.5, borderColor: c.border, alignItems: 'center', backgroundColor: c.card },
-  weekdayChipActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  weekdayChipText: { fontSize: 12, fontWeight: '800', color: c.textSecondary },
+  weekdayChip: {
+    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    alignItems: 'center', backgroundColor: c.card,
+  },
+  weekdayChipActive: { backgroundColor: c.accent, borderColor: c.accent },
+  weekdayChipText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   weekdayChipTextActive: { color: '#FFF' },
 
   dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 20 },
   inputGroup: { flex: 1 },
-  dateTimeButton: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderWidth: 1, borderColor: c.border, borderRadius: 14, padding: 14 },
-  dateTimeValue: { fontSize: 14, color: c.textPrimary, fontWeight: '700' },
+  dateTimeButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: c.background, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    borderRadius: 12, padding: 14,
+  },
+  dateTimeValue: { fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
   vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  vehicleOption: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, borderWidth: 1.5, borderColor: c.border },
-  vehicleOptionActive: { backgroundColor: ORANGE, borderColor: ORANGE },
-  vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontWeight: '700' },
+  vehicleOption: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
+    borderRadius: 20, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  vehicleOptionActive: { backgroundColor: c.accent, borderColor: c.accent },
+  vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
   vehicleOptionTextActive: { color: '#FFF' },
 
-  submitBtn: { backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 14, alignItems: 'center', marginTop: 6 },
-  submitBtnText: { color: '#FFF', fontSize: 15, fontWeight: '900' },
+  submitBtn: {
+    backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14, alignItems: 'center', marginTop: 6,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
+  },
+  submitBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 });
