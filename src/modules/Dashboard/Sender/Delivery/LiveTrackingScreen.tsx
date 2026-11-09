@@ -39,6 +39,11 @@ type RouteData = {
   dropoffVerified: boolean;
   deliveryStatus: string;
   items: PkgItem[];
+  providerOnWayAt?: string | null;
+  providerEtaMins?: number | null;
+  receiverNotified?: boolean;
+  dropoffArrivedAt?: string | null;
+  receiverPhone?: string | null;
 };
 
 const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
@@ -341,6 +346,7 @@ export default function LiveTrackingScreen() {
       .from('deliveries')
       .select(`
         delivery_id, request_id, provider_id, accepted_at, completed_at, estimated_eta,
+        provider_on_way_at, provider_eta_mins, receiver_notified, dropoff_arrived_at,
         vehicle:vehicles(vehicle_id, vehicle_type, plate_number, max_weight_kg),
         request:delivery_requests(
           request_id, delivery_status, receiver_phone,
@@ -386,6 +392,11 @@ export default function LiveTrackingScreen() {
         longitude: dropoffLoc?.longitude ?? 123.8854,
         address: dropoffLoc?.street_address ?? 'Drop-off',
       },
+      providerOnWayAt: (d as any).provider_on_way_at ?? null,
+      providerEtaMins: (d as any).provider_eta_mins ?? null,
+      receiverNotified: !!(d as any).receiver_notified,
+      dropoffArrivedAt: (d as any).dropoff_arrived_at ?? null,
+      receiverPhone: req?.receiver_phone ?? null,
     });
     setVehicle((d as any).vehicle ?? null);
 
@@ -709,6 +720,71 @@ export default function LiveTrackingScreen() {
                   </View>
                 );
               })}
+            </View>
+          )}
+
+          {/* PHASE 2: SENDER PROMPT TO NOTIFY RECEIVER */}
+          {!isProviderMode && !data.completedAt && !data.receiverNotified && (
+            <View style={{
+              backgroundColor: colors.accentSoft, borderColor: ORANGE, borderWidth: 1,
+              borderRadius: 14, padding: 12, marginBottom: 12,
+            }}>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                🚚 Courier is on the way{data.providerEtaMins ? ` (~${data.providerEtaMins} mins)` : ''}!
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                Have you notified the receiver? Please call or message them now so they are ready.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1, backgroundColor: ORANGE, paddingVertical: 9, borderRadius: 10,
+                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  }}
+                  onPress={async () => {
+                    await supabase
+                      .from('deliveries')
+                      .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
+                      .eq('delivery_id', data.deliveryId);
+                    if (data.receiverPhone) Linking.openURL(`tel:${data.receiverPhone}`);
+                    loadStatic();
+                  }}
+                >
+                  <Ionicons name="call" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '800' }}>Call Receiver</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1, backgroundColor: colors.card, borderColor: ORANGE, borderWidth: 1,
+                    paddingVertical: 9, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+                  }}
+                  onPress={async () => {
+                    await supabase
+                      .from('deliveries')
+                      .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
+                      .eq('delivery_id', data.deliveryId);
+                    loadStatic();
+                  }}
+                >
+                  <Text style={{ color: ORANGE, fontSize: 12, fontWeight: '800' }}>I've Notified Them ✓</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* PHASE 3: 10-MINUTE DROP-OFF GRACE PERIOD WARNING */}
+          {!isProviderMode && !data.completedAt && !!data.dropoffArrivedAt && data.deliveryStatus !== 'Returning' && (
+            <View style={{
+              backgroundColor: colors.errorBg, borderColor: colors.error, borderWidth: 1,
+              borderRadius: 14, padding: 12, marginBottom: 12,
+            }}>
+              <Text style={{ fontSize: 13, fontWeight: '800', color: colors.error }}>
+                ⚠️ Courier is waiting at Drop-off (10-Min Grace Period)
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                Please contact your receiver immediately so they can receive the package before the 10-minute timer expires.
+              </Text>
             </View>
           )}
 

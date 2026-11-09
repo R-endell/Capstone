@@ -258,18 +258,30 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     stateReceiver?.phone_number ||
     '';
 
-  const { data: request } = await supabase
+  const baseFare = Number(state.baseFare ?? state.estimatedCost ?? 0);
+  const returnDeposit =
+    state.fallbackAction === 'return_to_sender'
+      ? Number((baseFare * 0.5).toFixed(2))
+      : 0;
+  const totalEscrowHold = Number((baseFare + returnDeposit).toFixed(2));
+
+  const { data: request, error: reqInsertErr } = await supabase
     .from('delivery_requests')
     .insert({
       pickup_type: state.dropoffType,
       scheduled_time: mode === 'schedule' ? formatScheduledTimeForDB(state.scheduledDate) : null,
       delivery_status: deliveryStatus,
-
       receiver_id: receiverId,
       receiver_phone: receiverPhone,
-
       total_distance: Number(distanceKm.toFixed(2)),
-      estimated_cost: state.estimatedCost,
+      base_fare: baseFare,
+      return_deposit: returnDeposit,
+      estimated_cost: totalEscrowHold,
+      fallback_action: state.fallbackAction || 'return_to_sender',
+      fallback_recipient_name:
+        state.fallbackAction === 'leave_with_guard'
+          ? cleanNote(state.fallbackRecipientName)
+          : null,
       dropoff_location_id: dropoffLoc!.location_id,
       pickup_location_id: pickupLoc!.location_id,
       rate_id: resolvedRateId,
@@ -283,6 +295,7 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .select()
     .single();
 
+  if (reqInsertErr) throw reqInsertErr;
   return request;
 }
 
@@ -374,6 +387,13 @@ export async function updateScheduleInDB(
     '';
 
   // Update request
+  const baseFare = Number(state.baseFare ?? state.estimatedCost ?? 0);
+  const returnDeposit =
+    state.fallbackAction === 'return_to_sender'
+      ? Number((baseFare * 0.5).toFixed(2))
+      : 0;
+  const totalEscrowHold = Number((baseFare + returnDeposit).toFixed(2));
+
   await supabase
     .from('delivery_requests')
     .update({
@@ -381,8 +401,14 @@ export async function updateScheduleInDB(
       rate_id: resolvedRateId,
       total_distance: Number(distanceKm.toFixed(2)),
       scheduled_time: formatScheduledTimeForDB(state.scheduledDate),
-      estimated_cost: state.estimatedCost,
-
+      base_fare: baseFare,
+      return_deposit: returnDeposit,
+      estimated_cost: totalEscrowHold,
+      fallback_action: state.fallbackAction || 'return_to_sender',
+      fallback_recipient_name:
+        state.fallbackAction === 'leave_with_guard'
+          ? cleanNote(state.fallbackRecipientName)
+          : null,
       receiver_id: receiverId,
       receiver_phone: receiverPhone,
       pickup_note: cleanNote(pickup?.note),

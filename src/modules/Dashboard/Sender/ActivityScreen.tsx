@@ -644,6 +644,8 @@ export default function ActivityScreen() {
           /succeed|complet|refund/i.test(String(item.refund_status || ''));
 
         if (isCancelledReq) statusDisplay = 'Cancelled';
+        else if (status === 'Returned') statusDisplay = 'Returned';
+        else if (status === 'Returning') statusDisplay = 'Returning';
         else if (delivery?.completed_at || status === 'Completed') statusDisplay = 'Completed';
         else if (qrRow?.pickup_verified || status === 'In Transit') statusDisplay = 'In Transit';
         else if (status === 'Accepted') statusDisplay = 'In Progress';
@@ -1154,11 +1156,77 @@ export default function ActivityScreen() {
     }
   };
 
+  const handleDisputePackageMissing = async (item: MappedDelivery) => {
+    const deliveryId = item.deliveryData?.delivery_id;
+    if (!deliveryId || !userId) return;
+
+    Alert.alert(
+      'Dispute: Package Missing',
+      'This will immediately freeze the Escrow payment and submit the courier’s GPS logs, Call/SMS timestamps, and Proof Photo to Admin Support for review. Proceed?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Freeze Escrow & File Dispute',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await supabase.rpc('settle_delivery_escrow', {
+                p_delivery_id: deliveryId,
+                p_outcome: 'freeze_dispute',
+              });
+
+              const del: any = item.deliveryData || {};
+              const raw: any = item.rawData || {};
+              const telemetrySummary = [
+                `Dispute: Package Missing (#PNS-${String(item.request_id).padStart(4, '0')})`,
+                `Fallback Chosen: ${raw.fallback_action || 'return_to_sender'} (${raw.fallback_recipient_name || 'N/A'})`,
+                `Drop-off Arrived At: ${del.dropoff_arrived_at || 'N/A'}`,
+                `Call Attempted At: ${del.call_receiver_at || 'None'}`,
+                `SMS Attempted At: ${del.sms_receiver_at || 'None'}`,
+                `Chat Attempted At: ${del.chat_sender_at || 'None'}`,
+                `Proof Photo GPS: ${del.failure_photo_lat ?? 'N/A'}, ${del.failure_photo_lng ?? 'N/A'}`,
+                `Proof Photo URL: ${del.failure_photo_url || del.pod_photo_url || 'None'}`,
+              ].join('\n');
+
+              const { data: ticket, error: tErr } = await supabase
+                .from('support_tickets')
+                .insert({
+                  type: 'dispute',
+                  category: 'Delivery Issue',
+                  sub_issue: 'Package Missing / Fallback Dispute',
+                  description: telemetrySummary,
+                  requested_resolution: 'Full Refund (Escrow Frozen)',
+                  status: 'Open',
+                  reporter_id: userId,
+                  reporter_role: 'sender',
+                  counterparty_id: item.provider_id ?? null,
+                  delivery_id: deliveryId,
+                  request_id: item.request_id,
+                })
+                .select('ticket_id')
+                .single();
+
+              if (tErr) throw tErr;
+
+              Alert.alert(
+                '🔒 Escrow Frozen & Dispute Filed',
+                `Support Ticket #${ticket.ticket_id} has been created. Admin will review the courier's 10-minute GPS logs, contact logs, and stamped photo.`
+              );
+              fetchData();
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Could not file dispute.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   /* --------------------------- Stage & Status --------------------------- */
   const stageOf = (item: MappedDelivery): 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (item.status === 'Cancelled') return 'cancelled';
-    if (item.status === 'Completed' || !!item.deliveryData?.completed_at) return 'done';
-    if (item.qr?.pickup_verified || item.status === 'In Transit') return 'transit';
+    if (item.status === 'Completed' || item.status === 'Returned' || !!item.deliveryData?.completed_at) return 'done';
+    if (item.qr?.pickup_verified || item.status === 'In Transit' || item.status === 'Returning') return 'transit';
     if (item.isMatched || item.status === 'Matched' || item.status === 'In Progress') return 'pickup';
     return 'pending';
   };
@@ -1651,7 +1719,6 @@ export default function ActivityScreen() {
                 dropoffLng={d.coords.dropoff.longitude}
                 padTop={insets.top + 70}
                 padBottom={60}
-                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -2009,6 +2076,18 @@ export default function ActivityScreen() {
                 </TouchableOpacity>
               </View>
             )}
+
+            {/* PHASE 5: Dispute Package Missing & Freeze Escrow Button */}
+            {(isCompleted || d.status === 'Returning') && d.deliveryData?.delivery_id && (
+              <TouchableOpacity
+                style={[styles.sdCancelBtn, { marginTop: 18, flex: 0 }]}
+                onPress={() => handleDisputePackageMissing(d)}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="shield-outline" size={16} color={colors.error} />
+                <Text style={styles.sdCancelBtnText}>Dispute: Package Missing (Freeze Escrow)</Text>
+              </TouchableOpacity>
+            )}
           </Animated.View>
         </ScrollView>
 
@@ -2033,11 +2112,25 @@ export default function ActivityScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
-              onPress={() => (stage === 'pickup' ? setShowPickupQR(true) : setShowDeliveryOTP(true))}
+              onPress={() =>
+                stage === 'pickup' || d.status === 'Returning'
+                  ? setShowPickupQR(true)
+                  : setShowDeliveryOTP(true)
+              }
               activeOpacity={0.9}
             >
-              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'key-outline'} size={18} color="#FFFFFF" />
-              <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Pickup QR' : 'Delivery OTP'}</Text>
+              <Ionicons
+                name={stage === 'pickup' || d.status === 'Returning' ? 'qr-code-outline' : 'key-outline'}
+                size={18}
+                color="#FFFFFF"
+              />
+              <Text style={styles.mPrimaryText}>
+                {stage === 'pickup'
+                  ? 'Pickup QR'
+                  : d.status === 'Returning'
+                    ? 'Return QR / PIN'
+                    : 'Delivery OTP'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2195,7 +2288,6 @@ export default function ActivityScreen() {
             dropoffLng={selectedDelivery.coords.dropoff.longitude}
             padTop={100}
             padBottom={260}
-            userInterfaceStyle="light"
           />
           <TouchableOpacity
             style={[styles.mapCloseBtn, { top: insets.top + 12 }]}

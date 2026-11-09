@@ -1,14 +1,9 @@
 // src/modules/Dashboard/Sender/Delivery/ScheduleContext.tsx
 import React, { createContext, useContext, useReducer } from 'react';
 
-// ---- Types ----
 type DropoffType = 'curb-side' | 'door-to-door' | null;
 type ShipmentSize = 'Small' | 'Medium' | 'Large';
-type PickedLocation = {
-  address: string;
-  latitude: number;
-  longitude: number;
-} | null;
+export type FallbackActionType = 'return_to_sender' | 'leave_with_guard';
 
 export interface ShipmentItem {
   id: string;
@@ -22,7 +17,6 @@ interface LocationInfo {
   address: string;
   latitude: number;
   longitude: number;
-  /** optional note for the driver (gate, floor, landmark...) */
   note?: string;
 }
 
@@ -34,13 +28,17 @@ export interface PreferredRouteInfo {
 }
 
 export interface ScheduleState {
-  receiver: null;
+  receiver: any | null;
   dropoffType: DropoffType;
   items: ShipmentItem[];
   scheduledDate: Date | null;
   pickupLocation: LocationInfo | null;
   dropoffLocation: LocationInfo | null;
   estimatedCost: number | null;
+  baseFare: number | null;
+  returnDeposit: number;
+  fallbackAction: FallbackActionType;
+  fallbackRecipientName: string;
   isEdit?: boolean;
   mode?: 'sendNow' | 'schedule';
   editIds?: {
@@ -51,7 +49,6 @@ export interface ScheduleState {
   };
   explorePickup: LocationInfo | null;
   exploreDropoff: LocationInfo | null;
-  // Set when the sender asks for a delivery along a specific provider's trip (Explore tab)
   preferredProviderId?: number | null;
   preferredRouteId?: number | null;
   preferredProviderName?: string | null;
@@ -63,11 +60,12 @@ type Action =
   | { type: 'SET_EDIT_DATA'; payload: ScheduleState['editIds'] }
   | { type: 'SET_DROPOFF_TYPE'; payload: DropoffType }
   | { type: 'ADD_ITEM'; payload: ShipmentItem }
-  | { type: 'REMOVE_ITEM'; payload: string } // id
+  | { type: 'REMOVE_ITEM'; payload: string }
   | { type: 'SET_SCHEDULED_DATE'; payload: Date }
   | { type: 'SET_PICKUP_LOCATION'; payload: LocationInfo }
   | { type: 'SET_DROPOFF_LOCATION'; payload: LocationInfo }
   | { type: 'SET_ESTIMATED_COST'; payload: number }
+  | { type: 'SET_FALLBACK_CONFIG'; payload: { fallbackAction: FallbackActionType; fallbackRecipientName?: string; baseFare?: number; returnDeposit?: number } }
   | { type: 'RESET' }
   | { type: 'SET_INITIAL_STATE'; payload: Partial<ScheduleState> }
   | { type: 'SET_EXPLORE_PICKUP'; payload: LocationInfo | null }
@@ -89,6 +87,10 @@ const initialState: ScheduleState = {
   pickupLocation: null,
   dropoffLocation: null,
   estimatedCost: null,
+  baseFare: null,
+  returnDeposit: 0,
+  fallbackAction: 'return_to_sender',
+  fallbackRecipientName: '',
   isEdit: false,
   mode: undefined,
   editIds: undefined,
@@ -119,6 +121,14 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
       return { ...state, dropoffLocation: action.payload };
     case 'SET_ESTIMATED_COST':
       return { ...state, estimatedCost: action.payload };
+    case 'SET_FALLBACK_CONFIG':
+      return {
+        ...state,
+        fallbackAction: action.payload.fallbackAction,
+        fallbackRecipientName: action.payload.fallbackRecipientName ?? state.fallbackRecipientName,
+        baseFare: action.payload.baseFare ?? state.baseFare,
+        returnDeposit: action.payload.returnDeposit ?? state.returnDeposit,
+      };
     case 'SET_INITIAL_STATE':
       return { ...state, ...action.payload };
     case 'SET_EDIT_DATA':
@@ -130,21 +140,22 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
     case 'SET_EXPLORE_DROPOFF':
       return { ...state, exploreDropoff: action.payload };
     case 'SET_PREFERRED_PROVIDER':
-      return action.payload
-        ? {
-            ...state,
-            preferredProviderId: action.payload.providerId,
-            preferredRouteId: action.payload.routeId,
-            preferredProviderName: action.payload.name ?? null,
-            preferredRoute: action.payload.route ?? null,
-          }
-        : {
-            ...state,
-            preferredProviderId: null,
-            preferredRouteId: null,
-            preferredProviderName: null,
-            preferredRoute: null,
-          };
+      if (!action.payload) {
+        return {
+          ...state,
+          preferredProviderId: null,
+          preferredRouteId: null,
+          preferredProviderName: null,
+          preferredRoute: null,
+        };
+      }
+      return {
+        ...state,
+        preferredProviderId: action.payload.providerId,
+        preferredRouteId: action.payload.routeId,
+        preferredProviderName: action.payload.name ?? null,
+        preferredRoute: action.payload.route ?? null,
+      };
     default:
       return state;
   }
@@ -153,7 +164,10 @@ function scheduleReducer(state: ScheduleState, action: Action): ScheduleState {
 const ScheduleContext = createContext<{
   state: ScheduleState;
   dispatch: React.Dispatch<Action>;
-}>({ state: initialState, dispatch: () => {} });
+}>({
+  state: initialState,
+  dispatch: () => null,
+});
 
 export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(scheduleReducer, initialState);

@@ -21,6 +21,7 @@ import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import * as Location from 'expo-location';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.jpeg');
@@ -32,6 +33,49 @@ let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
+
+const GEOFENCE_RADIUS_M = 150;
+
+const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const verifyProviderWithinGeofence = async (
+  targetLat: number | null,
+  targetLng: number | null,
+  label: 'pickup' | 'drop-off'
+): Promise<{ allowed: boolean; lat: number; lng: number; distanceM: number }> => {
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Location Required', 'Please enable GPS location permissions to verify arrival.');
+    return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
+  }
+  const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+  const { latitude, longitude } = pos.coords;
+
+  if (targetLat == null || targetLng == null) {
+    return { allowed: true, lat: latitude, lng: longitude, distanceM: 0 };
+  }
+
+  const dist = getDistanceMeters(latitude, longitude, Number(targetLat), Number(targetLng));
+  if (dist > GEOFENCE_RADIUS_M) {
+    Alert.alert(
+      'Too Far from Pin',
+      `You are ${Math.round(dist)}m away from the ${label} pin. Please move within ${GEOFENCE_RADIUS_M}m to unlock this action.`
+    );
+    return { allowed: false, lat: latitude, lng: longitude, distanceM: dist };
+  }
+  return { allowed: true, lat: latitude, lng: longitude, distanceM: dist };
+};
 
 const randToken = (len = 16) => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -312,6 +356,34 @@ export default function TaskScreen() {
   const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
   const [podTakingPhoto, setPodTakingPhoto] = useState(false);
 
+  // --- Phase 3 & 4: 10-Min Grace Period & Failure Resolution States ---
+  const [graceModalVisible, setGraceModalVisible] = useState(false);
+  const [graceDelivery, setGraceDelivery] = useState<any>(null);
+  const [graceRemainingSec, setGraceRemainingSec] = useState<number>(600);
+  const [contactLogs, setContactLogs] = useState<{ call: boolean; sms: boolean; chat: boolean }>({
+    call: false,
+    sms: false,
+    chat: false,
+  });
+  const [failureCameraOpen, setFailureCameraOpen] = useState(false);
+  const [failurePhotoUri, setFailurePhotoUri] = useState<string | null>(null);
+  const [failureCoords, setFailureCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [failureTimestamp, setFailureTimestamp] = useState<string>('');
+  const [submittingFailure, setSubmittingFailure] = useState(false);
+  const failureCameraRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!graceModalVisible || !graceDelivery?.dropoff_arrived_at) return;
+    const updateTimer = () => {
+      const startedMs = new Date(graceDelivery.dropoff_arrived_at).getTime();
+      const elapsedSec = Math.floor((Date.now() - startedMs) / 1000);
+      setGraceRemainingSec(Math.max(0, 600 - elapsedSec));
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [graceModalVisible, graceDelivery?.dropoff_arrived_at]);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const scanLineAnim = useRef(new Animated.Value(0)).current;
@@ -386,7 +458,21 @@ export default function TaskScreen() {
     }
   };
 
-  const handlePingSender = async (delivery: any) => {
+  const handlePingSender = (delivery: any) => {
+    Alert.alert(
+      'On My Way to Pickup',
+      'Select your estimated arrival time at the pickup point:',
+      [
+        { text: '5 mins', onPress: () => sendOnMyWayNotification(delivery, 5) },
+        { text: '10 mins', onPress: () => sendOnMyWayNotification(delivery, 10) },
+        { text: '15 mins', onPress: () => sendOnMyWayNotification(delivery, 15) },
+        { text: '20+ mins', onPress: () => sendOnMyWayNotification(delivery, 25) },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const sendOnMyWayNotification = async (delivery: any, etaMins: number) => {
     const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
 
@@ -397,16 +483,22 @@ export default function TaskScreen() {
 
     setPingingId(delivery.delivery_id);
     try {
-      const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('deliveries')
+        .update({ provider_on_way_at: nowIso, provider_eta_mins: etaMins })
+        .eq('delivery_id', delivery.delivery_id);
 
+      const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
       await notifyUser(
         senderId,
-        'Courier is on the way! 🚚',
-        `Your courier is heading to the pickup location for parcel #${code}. Please have the package ready.`,
-        { deliveryId: delivery.delivery_id },
+        `Courier is ~${etaMins} mins away! 🚚`,
+        `Your courier for #${code} is heading to pickup. Have you notified the receiver? Tap to call or message them now.`,
+        { deliveryId: delivery.delivery_id, etaMins },
       );
 
-      Alert.alert('Sender Pinged', 'The sender has been notified that you are on your way to pick up the package.');
+      Alert.alert('Sender Pinged', `Sender has been notified (ETA: ~${etaMins} mins) and prompted to contact the receiver.`);
+      if (providerId) await fetchDeliveries(providerId);
     } catch (error) {
       console.error('Failed to ping sender:', error);
       Alert.alert('Error', 'Could not send the notification. Please try again.');
@@ -416,6 +508,10 @@ export default function TaskScreen() {
   };
 
   const openVerifyModal = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.pickup.lat, info.pickup.lng, 'pickup');
+    if (!geo.allowed) return;
+
     if (!cameraPermission?.granted) {
       const res = await requestCameraPermission();
       if (!res?.granted) {
@@ -443,6 +539,42 @@ export default function TaskScreen() {
     }
 
     try {
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+
+      if (isReturning) {
+        // PHASE 4 (Option A): Verify Return back to Sender & Release Full Escrow (Base + Return Deposit)
+        const now = new Date().toISOString();
+        await supabase
+          .from('qr_verifications')
+          .update({ return_verified: true, return_verified_at: now })
+          .eq('delivery_id', deliveryId);
+
+        await supabase
+          .from('deliveries')
+          .update({ returned_at: now, completed_at: now })
+          .eq('delivery_id', deliveryId);
+
+        await supabase.rpc('settle_delivery_escrow', {
+          p_delivery_id: deliveryId,
+          p_outcome: 'returned_to_sender',
+        });
+
+        const senderId = (verifyTarget?.delivery_requests as any)?.sender_id;
+        if (senderId) {
+          await notifyUser(
+            senderId,
+            'Package Returned Safely 📦',
+            `Your package (#PNS-${String(requestId).padStart(4, '0')}) has been returned to you.`,
+            { deliveryId }
+          );
+        }
+
+        Alert.alert('✅ Return Complete', 'Package returned to Sender. Full escrow (Base Fare + 50% Return Deposit) has been released to your wallet!');
+        closeVerifyModal();
+        if (providerId) await fetchDeliveries(providerId);
+        return;
+      }
+
       const { error: qrErr } = await supabase
         .from('qr_verifications')
         .update({ pickup_verified: true })
@@ -455,34 +587,36 @@ export default function TaskScreen() {
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
-      const patchDelivery = (list: any[]) =>
-        list.map(d => {
-          if (d.delivery_id !== deliveryId) return d;
-          const currentQr = d.qr_verifications
-            ? (Array.isArray(d.qr_verifications) ? d.qr_verifications[0] : d.qr_verifications)
-            : {};
-          return {
-            ...d,
-            qr_verifications: { ...currentQr, pickup_verified: true },
-            delivery_requests: d.delivery_requests
-              ? { ...d.delivery_requests, delivery_status: 'In Transit' }
-              : d.delivery_requests,
-          };
-        });
+      // PHASE 2 System Action 1: Automated SMS to Receiver
+      const info = buildTaskInfo(verifyTarget);
+      const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
+      const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
+      const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
 
-      setActiveDeliveries(prev => patchDelivery(prev));
-      setCompletedDeliveries(prev => patchDelivery(prev));
+      if (info.receiverPhone) {
+        const smsMsg = `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`;
+        supabase.functions
+          .invoke('send-sms', {
+            body: { to: info.receiverPhone, message: smsMsg, type: 'pickup_verified_sms', delivery_id: deliveryId },
+          })
+          .catch(() => console.log('[SMS FALLBACK]:', smsMsg));
+      }
 
-      Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
-      const senderId = (verifyTarget?.delivery_requests as any)?.sender_id
-        ?? (verifyTarget?.delivery_requests as any)?.sender?.user_id;
-      if (senderId) {
+      // PHASE 2 System Action 2: Push Prompt to Sender
+      if (info.senderId) {
         try {
-          await notifyUser(senderId, 'Package picked up', 'Your courier picked up your parcel and is now in transit.', { deliveryId: verifyTarget?.delivery_id });
+          await notifyUser(
+            info.senderId,
+            'Your courier is on the way! 🚚',
+            `Package picked up. Have you notified ${info.receiverName || 'the receiver'}? Tap to call/message them.`,
+            { deliveryId: verifyTarget?.delivery_id }
+          );
         } catch (err) {
           console.warn('[Task] notify sender pickup failed', err);
         }
       }
+
+      Alert.alert('✅ Item Collected', 'Pickup verified and automated SMS sent to the receiver.');
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
     } catch (e: any) {
@@ -494,7 +628,7 @@ export default function TaskScreen() {
     if (scanned || !verifyTarget) return;
     setScanned(true);
     try {
-      const qrData = data.trim(); // ✅ FIX: Trim whitespace from QR
+      const qrData = data.trim();
       const { data: row, error } = await supabase
         .from('qr_verifications').select('*')
         .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single();
@@ -505,13 +639,13 @@ export default function TaskScreen() {
         ]);
         return;
       }
-      if (row.pickup_verified) {
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+      if (row.pickup_verified && !isReturning) {
         Alert.alert('Already Verified', 'This pickup has already been verified.', [
           { text: 'OK', onPress: () => closeVerifyModal() },
         ]);
         return;
       }
-      // ✅ FIX: Safely fallback to delivery_requests.request_id if request_id is undefined
       const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
       await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
@@ -520,6 +654,7 @@ export default function TaskScreen() {
       ]);
     }
   };
+  
 
   const handlePinVerify = async () => {
     if (!verifyTarget || pinInput.trim().length !== 4) return;
@@ -530,18 +665,27 @@ export default function TaskScreen() {
         .eq('delivery_id', verifyTarget.delivery_id).single();
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
-      if (row.pickup_verified) { Alert.alert('Already Verified', 'Pickup already verified.'); return; }
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+      if (row.pickup_verified && !isReturning) {
+        Alert.alert('Already Verified', 'Pickup already verified.');
+        return;
+      }
       if (String(row.pickup_pin) !== String(pinInput).trim()) {
         Alert.alert('Wrong PIN', 'Please ask the sender for the correct 4-digit PIN.');
         return;
       }
-      await markPickupVerified(row.delivery_id, verifyTarget.request_id);
+      const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
+      await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
       Alert.alert('Verification Failed', e.message || 'Could not verify PIN.');
     } finally { setPinVerifying(false); }
   };
 
-  const openDeliveryOTPModal = (delivery: any) => {
+  const openDeliveryOTPModal = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
+    if (!geo.allowed) return;
+
     setDeliveryOTPTarget(delivery);
     setDeliveryOTPInput('');
     setPodPhotoUri(null);
@@ -681,6 +825,22 @@ export default function TaskScreen() {
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
+      // Settle Escrow (Release Base Fare to Provider)
+      await supabase.rpc('settle_delivery_escrow', {
+        p_delivery_id: deliveryId,
+        p_outcome: 'completed_normal',
+      });
+
+      // Refund 50% Return Deposit to Sender if Option A was selected
+      const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
+      if (returnDep > 0 && requestId) {
+        supabase.functions
+          .invoke('xendit-refund', {
+            body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' },
+          })
+          .catch(e => console.warn('[Deposit refund warning]:', e));
+      }
+
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
       if (senderId) {
@@ -698,6 +858,178 @@ export default function TaskScreen() {
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
     } finally {
       setDeliveryOTPVerifying(false);
+    }
+  };
+
+  // --- PHASE 3 & 4: 10-Minute Drop-off Grace Period & Fallback Execution ---
+  const handleStartDropoffGracePeriod = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
+    if (!geo.allowed) return;
+
+    let updated = { ...delivery };
+    if (!delivery.dropoff_arrived_at) {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          dropoff_arrived_at: nowIso,
+          dropoff_wait_lat: geo.lat,
+          dropoff_wait_lng: geo.lng,
+        })
+        .eq('delivery_id', delivery.delivery_id);
+      if (error) {
+        Alert.alert('Error', error.message);
+        return;
+      }
+      updated.dropoff_arrived_at = nowIso;
+
+      if (info.senderId) {
+        await notifyUser(
+          info.senderId,
+          '⚠️ Courier at Drop-off (10-Min Timer Started)',
+          `Your courier has arrived at drop-off. Please ensure ${info.receiverName || 'the receiver'} meets them within 10 minutes!`,
+          { deliveryId: delivery.delivery_id }
+        );
+      }
+    }
+
+    setContactLogs({
+      call: !!updated.call_receiver_at,
+      sms: !!updated.sms_receiver_at,
+      chat: !!updated.chat_sender_at,
+    });
+    setFailurePhotoUri(null);
+    setGraceDelivery(updated);
+    setGraceModalVisible(true);
+  };
+
+  const logProviderContactAttempt = async (kind: 'call' | 'sms' | 'chat') => {
+    if (!graceDelivery) return;
+    const info = buildTaskInfo(graceDelivery);
+    const nowIso = new Date().toISOString();
+
+    if (kind === 'call') {
+      if (!info.receiverPhone) return Alert.alert('No Phone', 'Receiver phone number unavailable.');
+      await supabase.from('deliveries').update({ call_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, call: true }));
+      Linking.openURL(`tel:${info.receiverPhone}`);
+    } else if (kind === 'sms') {
+      if (!info.receiverPhone) return;
+      await supabase.from('deliveries').update({ sms_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, sms: true }));
+      const msg = encodeURIComponent(`Hi ${info.receiverName || ''}, I am your Pack-N-Ship courier waiting at the drop-off location. Please meet me within 10 minutes.`);
+      Linking.openURL(`sms:${info.receiverPhone}?body=${msg}`);
+    } else if (kind === 'chat') {
+      await supabase.from('deliveries').update({ chat_sender_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, chat: true }));
+      const roomId = await getOrCreateChatRoom(graceDelivery.delivery_id);
+      if (roomId && providerId) {
+        await supabase.from('chat_messages').insert({
+          room_id: roomId,
+          sender_id: providerId,
+          message: "I'm here at the drop-off location, but the receiver isn't answering. The 10-minute grace timer is running.",
+        });
+        Alert.alert('Sent to Sender', 'Message logged and sent to the Sender in chat.');
+      }
+    }
+  };
+
+  const captureFailureProofPhoto = async () => {
+    if (!failureCameraRef.current) return;
+    try {
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const photo = await failureCameraRef.current.takePictureAsync({ quality: 0.75 });
+      if (photo?.uri) {
+        setFailureCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setFailureTimestamp(new Date().toISOString());
+        setFailurePhotoUri(photo.uri);
+        setFailureCameraOpen(false);
+      }
+    } catch (e: any) {
+      Alert.alert('Camera Error', e?.message || 'Failed to take proof photo.');
+    }
+  };
+
+  const executeFallbackProtocol = async () => {
+    if (!graceDelivery || !failurePhotoUri) return;
+    setSubmittingFailure(true);
+    try {
+      const deliveryId = graceDelivery.delivery_id;
+      const req = graceDelivery.delivery_requests || {};
+      const requestId = req.request_id;
+      const fallbackAction = req.fallback_action || 'return_to_sender';
+      const fallbackRecipient = req.fallback_recipient_name || 'Guard / Authorized Person';
+      const nowIso = new Date().toISOString();
+
+      const proofUrl = await uploadPodPhoto(failurePhotoUri, deliveryId);
+
+      if (fallbackAction === 'leave_with_guard') {
+        await supabase
+          .from('deliveries')
+          .update({
+            completed_at: nowIso,
+            pod_photo_url: proofUrl,
+            failure_photo_url: proofUrl,
+            failure_reason: `Left with ${fallbackRecipient}`,
+            failure_photo_lat: failureCoords?.lat ?? null,
+            failure_photo_lng: failureCoords?.lng ?? null,
+            pod_seen_by_sender: false,
+          })
+          .eq('delivery_id', deliveryId);
+
+        await supabase.rpc('settle_delivery_escrow', {
+          p_delivery_id: deliveryId,
+          p_outcome: 'completed_safe_drop',
+        });
+
+        if (req.sender_id) {
+          await notifyUser(
+            req.sender_id,
+            'Delivery Left with Authorized Person 📦',
+            `Receiver was unreachable. Your courier has left the package with ${fallbackRecipient}. Tap for proof of delivery.`,
+            { deliveryId, requestId }
+          );
+        }
+        Alert.alert('✅ Left with Authorized Recipient', `Photo proof saved and your payout has been released.`);
+      } else {
+        await supabase
+          .from('deliveries')
+          .update({
+            failed_at: nowIso,
+            failure_reason: 'Receiver Unreachable (10m expired)',
+            failure_photo_url: proofUrl,
+            failure_photo_lat: failureCoords?.lat ?? null,
+            failure_photo_lng: failureCoords?.lng ?? null,
+          })
+          .eq('delivery_id', deliveryId);
+
+        await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Returning' })
+          .eq('request_id', requestId);
+
+        if (req.sender_id) {
+          await notifyUser(
+            req.sender_id,
+            'Delivery Failed — Returning Package 🔄',
+            `Receiver was unreachable after 10 mins. Your courier is returning the package to you. Show your Pickup QR/PIN upon arrival.`,
+            { deliveryId, requestId }
+          );
+        }
+        Alert.alert(
+          '🔄 Returning to Sender',
+          'Please drive back to the Pickup Address and scan the Sender’s QR/PIN to receive your full Escrow Payout (Base Fare + Return Deposit).'
+        );
+      }
+
+      setGraceModalVisible(false);
+      setGraceDelivery(null);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not complete fallback action.');
+    } finally {
+      setSubmittingFailure(false);
     }
   };
 
@@ -1130,7 +1462,6 @@ export default function TaskScreen() {
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={insets.top + 70} padBottom={60}
-                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1227,15 +1558,44 @@ export default function TaskScreen() {
             </View>
 
             {stage === 'pickup' && (
-              <TouchableOpacity style={[styles.mSoftBtn, { marginTop: 14, flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
-                {pingingId === d.delivery_id ? (
-                  <ActivityIndicator size="small" color={ORANGE} />
-                ) : (
-                  <>
-                    <Ionicons name="notifications" size={16} color={ORANGE} />
-                    <Text style={styles.mSoftText}>Let sender know I’m on my way</Text>
-                  </>
-                )}
+              <View style={{ marginTop: 14, gap: 8 }}>
+                <TouchableOpacity style={[styles.mSoftBtn, { flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
+                  {pingingId === d.delivery_id ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <>
+                      <Ionicons name="notifications" size={16} color={ORANGE} />
+                      <Text style={styles.mSoftText}>Let sender know I’m on my way (Set ETA)</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 6,
+                  paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+                  backgroundColor: d.receiver_notified ? colors.successBg : colors.warningBg,
+                }}>
+                  <Ionicons
+                    name={d.receiver_notified ? 'checkmark-circle' : 'time-outline'}
+                    size={16}
+                    color={d.receiver_notified ? colors.success : colors.warning}
+                  />
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: d.receiver_notified ? colors.success : colors.warning }}>
+                    {d.receiver_notified ? 'Sender notified the receiver ✓' : 'Sender has not confirmed receiver yet'}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {stage === 'transit' && d.delivery_requests?.delivery_status !== 'Returning' && (
+              <TouchableOpacity
+                style={[styles.mSoftBtn, { marginTop: 14, flex: 0, backgroundColor: colors.errorBg }]}
+                onPress={() => handleStartDropoffGracePeriod(d)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="timer-outline" size={17} color={colors.error} />
+                <Text style={[styles.mSoftText, { color: colors.error }]}>
+                  {d.dropoff_arrived_at ? 'Open 10-Min Drop-off Timer / Fallback' : "I'm at Drop-off (Start 10-Min Timer)"}
+                </Text>
               </TouchableOpacity>
             )}
 
@@ -1337,11 +1697,25 @@ export default function TaskScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
-              onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
+              onPress={() =>
+                stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
+                  ? openVerifyModal(d)
+                  : openDeliveryOTPModal(d)
+              }
               activeOpacity={0.9}
             >
-              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color="#FFFFFF" />
-              <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
+              <Ionicons
+                name={stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning' ? 'qr-code-outline' : 'checkmark-circle'}
+                size={18}
+                color="#FFFFFF"
+              />
+              <Text style={styles.mPrimaryText}>
+                {stage === 'pickup'
+                  ? 'Verify Pickup'
+                  : d.delivery_requests?.delivery_status === 'Returning'
+                    ? 'Verify Return QR'
+                    : 'Complete'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1438,14 +1812,12 @@ export default function TaskScreen() {
                 onInfo={setNavInfo}
                 style={{ bottom: 150 + insets.bottom }}
                 padTop={20} padBottom={30}
-                userInterfaceStyle="light"
               />
             ) : (
               <RoutePreviewMap
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={100} padBottom={260}
-                userInterfaceStyle="light"
               />
             );
           })()}
@@ -1703,6 +2075,195 @@ export default function TaskScreen() {
     active: !!broadcastingDelivery && !!providerId,
   });
 
+  const renderGracePeriodModal = () => {
+    if (!graceDelivery) return null;
+    const info = buildTaskInfo(graceDelivery);
+    const req = graceDelivery.delivery_requests || {};
+    const fallbackAction = req.fallback_action || 'return_to_sender';
+    const fallbackRecipient = req.fallback_recipient_name || 'Guard / Reception';
+    const mins = String(Math.floor(graceRemainingSec / 60)).padStart(2, '0');
+    const secs = String(graceRemainingSec % 60).padStart(2, '0');
+    const anyContacted = contactLogs.call || contactLogs.sms || contactLogs.chat;
+    const isLeaveWithGuard = fallbackAction === 'leave_with_guard';
+    // Option B (Leave with Guard/Neighbor) unlocks the live camera immediately without waiting 10 mins!
+    // Option A (Return to Sender) still requires the 10-minute timer + at least 1 contact attempt.
+    const canMarkUnavailable = isLeaveWithGuard ? true : (graceRemainingSec === 0 && anyContacted);
+
+    return (
+      <Modal visible={graceModalVisible} animationType="slide" transparent onRequestClose={() => setGraceModalVisible(false)}>
+        {failureCameraOpen ? (
+          <View style={styles.scannerRoot}>
+            <CameraView ref={failureCameraRef} style={StyleSheet.absoluteFill} facing="back" />
+            <View
+              style={{
+                position: 'absolute',
+                top: insets.top + 64,
+                left: 16,
+                right: 16,
+                backgroundColor: 'rgba(0,0,0,0.72)',
+                padding: 12,
+                borderRadius: 12,
+                borderLeftWidth: 4,
+                borderLeftColor: ORANGE,
+              }}
+            >
+              <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '900' }}>
+                PACK-N-SHIP LIVE PROOF • #{trackingCode(req.request_id ?? graceDelivery.delivery_id)}
+              </Text>
+              <Text style={{ color: '#D1D5DB', fontSize: 11, marginTop: 2 }}>
+                TIMESTAMP: {new Date().toLocaleString()}
+              </Text>
+              <Text style={{ color: '#D1D5DB', fontSize: 11 }}>
+                FALLBACK: {isLeaveWithGuard ? `Leave with ${fallbackRecipient}` : 'Return to Sender'}
+              </Text>
+            </View>
+
+            <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, alignItems: 'center' }]}>
+              <Text style={styles.sheetHeading}>Capture Live Location & Package Proof</Text>
+              <Text style={[styles.sheetSubheading, { textAlign: 'center' }]}>
+                Gallery uploads are disabled. Capture the package clearly at the drop-off location or with {fallbackRecipient}.
+              </Text>
+              <TouchableOpacity style={[styles.mPrimaryBtn, { width: '100%' }]} onPress={captureFailureProofPhoto}>
+                <Ionicons name="camera" size={20} color="#FFF" />
+                <Text style={styles.mPrimaryText}>Take Stamped Photo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.otpModalOverlay}>
+            <View style={[styles.otpModalCard, { maxWidth: 400 }]}>
+              <View style={styles.otpModalHeader}>
+                <View style={[styles.otpModalIconBox, { backgroundColor: isLeaveWithGuard ? colors.successBg : colors.warningBg }]}>
+                  <Ionicons
+                    name={isLeaveWithGuard ? 'shield-checkmark-outline' : 'timer-outline'}
+                    size={24}
+                    color={isLeaveWithGuard ? colors.success : ORANGE}
+                  />
+                </View>
+                <TouchableOpacity onPress={() => setGraceModalVisible(false)}>
+                  <Ionicons name="close" size={24} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.otpModalTitle}>
+                {isLeaveWithGuard ? 'Safe Drop-off Authorized' : '10-Minute Drop-off Grace Period'}
+              </Text>
+              <Text style={styles.otpModalSubtitle}>
+                {isLeaveWithGuard
+                  ? `The sender pre-authorized leaving this package with "${fallbackRecipient}" if the receiver is unavailable.`
+                  : 'Contact the receiver or sender below. If the receiver arrives, close this modal and tap "Complete".'}
+              </Text>
+
+              {/* Show immediate green banner for Option B, or 10-minute timer for Option A */}
+              {isLeaveWithGuard ? (
+                <View style={{ alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, backgroundColor: colors.successBg, borderRadius: 16, marginBottom: 14 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '900', color: colors.success, textAlign: 'center' }}>
+                    ✓ NO 10-MINUTE WAIT REQUIRED
+                  </Text>
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: colors.textSecondary, marginTop: 4, textAlign: 'center' }}>
+                    Hand the package to {fallbackRecipient} and take a live stamped photo below to complete the delivery.
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ alignItems: 'center', paddingVertical: 14, backgroundColor: colors.background, borderRadius: 16, marginBottom: 14 }}>
+                  <Text style={{ fontSize: 34, fontWeight: '900', color: graceRemainingSec === 0 ? colors.error : ORANGE }}>
+                    {mins}:{secs}
+                  </Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4 }}>
+                    {graceRemainingSec > 0 ? 'WAITING FOR RECEIVER AT DROP-OFF PIN' : 'GRACE PERIOD EXPIRED — FALLBACK UNLOCKED'}
+                  </Text>
+                </View>
+              )}
+
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.call && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('call')}
+                >
+                  <Ionicons name="call" size={15} color={contactLogs.call ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.call && { color: colors.success }]}>Call Rcvr</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.sms && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('sms')}
+                >
+                  <Ionicons name="chatbox-ellipses" size={15} color={contactLogs.sms ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.sms && { color: colors.success }]}>SMS Rcvr</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.chat && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('chat')}
+                >
+                  <Ionicons name="person" size={15} color={contactLogs.chat ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.chat && { color: colors.success }]}>Msg Sender</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.otpInfoBox}>
+                <Ionicons name="shield-checkmark-outline" size={18} color={ORANGE} />
+                <Text style={styles.otpInfoText}>
+                  {isLeaveWithGuard
+                    ? `Sender Pre-Authorized Option B: Leave package with "${fallbackRecipient}" and take a live photo.`
+                    : `Sender Pre-Authorized Option A: Return package to "${info.pickup.main}". You will earn the full fare + return deposit.`}
+                </Text>
+              </View>
+
+              {failurePhotoUri ? (
+                <View style={{ marginBottom: 12, borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
+                  <Image source={{ uri: failurePhotoUri }} style={{ width: '100%', height: 130 }} resizeMode="cover" />
+                  <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.65)', padding: 6 }}>
+                    <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '700' }}>
+                      GPS: {failureCoords?.lat.toFixed(5)}, {failureCoords?.lng.toFixed(5)} • {failureTimestamp}
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.mSoftBtn,
+                    { flex: 0, marginBottom: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: ORANGE },
+                    !canMarkUnavailable && { opacity: 0.45 },
+                  ]}
+                  disabled={!canMarkUnavailable}
+                  onPress={() => setFailureCameraOpen(true)}
+                >
+                  <Ionicons name="camera" size={18} color={ORANGE} />
+                  <Text style={styles.mSoftText}>
+                    {canMarkUnavailable ? 'Open Live Camera for Proof' : 'Wait 10m & Tap 1 Contact Button First'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.otpVerifyButton,
+                  { backgroundColor: isLeaveWithGuard ? colors.success : RED },
+                  (!canMarkUnavailable || !failurePhotoUri || submittingFailure) && styles.otpVerifyButtonDisabled,
+                ]}
+                disabled={!canMarkUnavailable || !failurePhotoUri || submittingFailure}
+                onPress={executeFallbackProtocol}
+              >
+                {submittingFailure ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name={isLeaveWithGuard ? 'checkmark-circle' : 'alert-circle'} size={18} color="#FFF" />
+                    <Text style={styles.otpVerifyButtonText}>
+                      {isLeaveWithGuard
+                        ? `Confirm Left with ${fallbackRecipient}`
+                        : 'Confirm Unavailable & Return to Sender'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </Modal>
+    );
+  };
   if (loading) {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
@@ -1723,6 +2284,7 @@ export default function TaskScreen() {
       {renderPhotoModal()}
       {renderPkgModal()}
       {renderDeliveryOTPModal()}
+      {renderGracePeriodModal()}
     </View>
   );
 }

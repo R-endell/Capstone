@@ -1,7 +1,7 @@
 // src/modules/Dashboard/Sender/Delivery/BookingScreen.tsx
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Animated, StatusBar,
+  View, Text, TextInput, TouchableOpacity, StyleSheet, Animated, StatusBar,
   Alert, Easing, ScrollView, Dimensions, ActivityIndicator, Platform, BackHandler,
 } from 'react-native';
 import RoutePreviewMap from '../../../../components/map/RoutePreviewMap';
@@ -22,7 +22,7 @@ const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
 // How long we search before offering "Try Again" / "Go Home". Change this one number to adjust.
-const SEARCH_DURATION_MS = 60000;
+const SEARCH_DURATION_MS = 10000; // 10 seconds
 
 const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
@@ -298,6 +298,42 @@ export default function BookingScreen({ route, navigation }: any) {
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
+  // --- PHASE 1: Pre-Authorization & Escrow Math ---
+  const [fallbackAction, setFallbackAction] = useState<'return_to_sender' | 'leave_with_guard'>(
+    state.fallbackAction || 'return_to_sender'
+  );
+  const [fallbackRecipientName, setFallbackRecipientName] = useState<string>(
+    state.fallbackRecipientName || ''
+  );
+
+  const displayCost: number | undefined = resumeInfo?.estimatedCost ?? state.estimatedCost;
+
+  const baseFareAmount = useMemo(() => {
+    return pricing ? pricing.total : Number(displayCost || 0);
+  }, [pricing, displayCost]);
+
+  const returnDepositAmount = useMemo(() => {
+    return fallbackAction === 'return_to_sender'
+      ? Number((baseFareAmount * 0.5).toFixed(2))
+      : 0;
+  }, [fallbackAction, baseFareAmount]);
+
+  const totalEscrowAmount = useMemo(() => {
+    return Number((baseFareAmount + returnDepositAmount).toFixed(2));
+  }, [baseFareAmount, returnDepositAmount]);
+
+  useEffect(() => {
+    dispatch({
+      type: 'SET_FALLBACK_CONFIG',
+      payload: {
+        fallbackAction,
+        fallbackRecipientName,
+        baseFare: baseFareAmount,
+        returnDeposit: returnDepositAmount,
+      },
+    });
+    dispatch({ type: 'SET_ESTIMATED_COST', payload: totalEscrowAmount });
+  }, [fallbackAction, fallbackRecipientName, baseFareAmount, returnDepositAmount, totalEscrowAmount]);
   const [refiningDistance, setRefiningDistance] = useState(false);
 
   useEffect(() => {
@@ -979,6 +1015,16 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
+      if (fallbackAction === 'leave_with_guard' && !fallbackRecipientName.trim()) {
+        Alert.alert(
+          'Fallback Recipient Required',
+          'Please enter the name of the person or place (e.g., "Building Guardhouse" or "Neighbor Maria") where the courier can leave the package.'
+        );
+        proceedingRef.current = false;
+        setSavingBooking(false);
+        return;
+      }
+
       if (mode === 'sendNow' && state.scheduledDate) {
         const scheduledMs = parseManilaNaive(String(state.scheduledDate));
         const nowMs = parseManilaNaive(nowManilaNaive());
@@ -1030,7 +1076,8 @@ export default function BookingScreen({ route, navigation }: any) {
 
       proceedReturnToRef.current = requestId;
       setSavedRequestId(requestId);
-      const amount = pricing?.total ?? state.estimatedCost ?? 0;
+      const amount = totalEscrowAmount;
+      navigation.navigate('DeliveryPayment', { requestId, amount });
 
       navigation.navigate('DeliveryPayment', { requestId, amount });
     } catch (error: any) {
@@ -1265,7 +1312,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const viewPickupLocation = resumeInfo?.pickupLocation ?? state.pickupLocation;
   const viewDropoffLocation = resumeInfo?.dropoffLocation ?? state.dropoffLocation;
-  const displayCost: number | undefined = resumeInfo?.estimatedCost ?? state.estimatedCost;
 
   const pickupLat = viewPickupLocation?.latitude ?? null;
   const pickupLng = viewPickupLocation?.longitude ?? null;
@@ -1388,6 +1434,81 @@ export default function BookingScreen({ route, navigation }: any) {
                 )}
               </View>
 
+              {/* PHASE 1: FALLBACK PRE-AUTHORIZATION CARD */}
+              <View style={[styles.rvCard, { padding: 14 }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                  <Ionicons name="shield-half-outline" size={16} color={ORANGE} />
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                    If Receiver is Unreachable (Required)
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={{
+                    flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
+                    borderRadius: 12, borderWidth: 1.5, marginBottom: 8,
+                    borderColor: fallbackAction === 'return_to_sender' ? ORANGE : colors.border,
+                    backgroundColor: fallbackAction === 'return_to_sender' ? colors.accentSoft : colors.background,
+                  }}
+                  onPress={() => setFallbackAction('return_to_sender')}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name={fallbackAction === 'return_to_sender' ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={fallbackAction === 'return_to_sender' ? ORANGE : colors.textMuted}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                      Option A: Return to me (Sender)
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                      Adds a 50% Return Deposit (₱{(baseFareAmount * 0.5).toFixed(2)}) held in escrow. 100% refunded if delivery succeeds.
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
+                    borderRadius: 12, borderWidth: 1.5,
+                    borderColor: fallbackAction === 'leave_with_guard' ? ORANGE : colors.border,
+                    backgroundColor: fallbackAction === 'leave_with_guard' ? colors.accentSoft : colors.background,
+                  }}
+                  onPress={() => setFallbackAction('leave_with_guard')}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name={fallbackAction === 'leave_with_guard' ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={fallbackAction === 'leave_with_guard' ? ORANGE : colors.textMuted}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                      Option B: Leave with Guard / Neighbor / Reception
+                    </Text>
+                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                      ₱0 extra deposit. Courier waits 10 mins, then leaves the package with your authorized recipient with photo proof.
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                {fallbackAction === 'leave_with_guard' && (
+                  <TextInput
+                    style={{
+                      marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 10,
+                      paddingHorizontal: 12, paddingVertical: 10, fontSize: 13,
+                      color: colors.textPrimary, backgroundColor: colors.card,
+                    }}
+                    placeholder="Enter person or place (e.g., Guardhouse / Neighbor Maria)"
+                    placeholderTextColor={colors.textMuted}
+                    value={fallbackRecipientName}
+                    onChangeText={setFallbackRecipientName}
+                    maxLength={100}
+                  />
+                )}
+              </View>
+
               <View style={styles.rvCard}>
                 {pricing ? (
                   <View style={styles.rvFareRows}>
@@ -1423,6 +1544,16 @@ export default function BookingScreen({ route, navigation }: any) {
                         <Text style={styles.rvFareValue}>₱{pricing.emergency.toFixed(2)}</Text>
                       </View>
                     )}
+                    {returnDepositAmount > 0 && (
+                      <View style={styles.rvFareRow}>
+                        <Text style={[styles.rvFareLabel, { color: ORANGE, fontWeight: '700' }]}>
+                          Return Deposit (Refunded on success)
+                        </Text>
+                        <Text style={[styles.rvFareValue, { color: ORANGE, fontWeight: '800' }]}>
+                          ₱{returnDepositAmount.toFixed(2)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 ) : (
                   <View style={styles.rvCalcRow}>
@@ -1444,7 +1575,7 @@ export default function BookingScreen({ route, navigation }: any) {
                   </View>
                 </View>
                 <Text style={styles.rvTotalValue}>
-                  ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+                  ₱{totalEscrowAmount.toFixed(2)}
                 </Text>
               </View>
 
@@ -1573,7 +1704,7 @@ export default function BookingScreen({ route, navigation }: any) {
                 <View style={[styles.searchCostOnlyBox, !receiver && { flex: 1 }]}>
                   <Text style={styles.searchCostLabel}>TOTAL FARE</Text>
                   <Text style={styles.searchCostValue}>
-                    ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+                    ₱{totalEscrowAmount.toFixed(2)}
                   </Text>
                 </View>
               </View>
@@ -1741,7 +1872,7 @@ export default function BookingScreen({ route, navigation }: any) {
                     <Text style={styles.totalPaidBadge}>Held in escrow</Text>
                   </View>
                   <Text style={styles.totalValue}>
-                    ₱{pricing ? pricing.total.toFixed(2) : (displayCost?.toFixed(2) || '0.00')}
+                    ₱{totalEscrowAmount.toFixed(2)}
                   </Text>
                 </View>
               </View>
@@ -1757,35 +1888,35 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- NO MATCH STATE --- */}
+        {/* --- NO MATCH STATE (10s elapsed -> Background Notification Mode) --- */}
         {bookingState === 'no_match' && (
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.noMatchIconCircle}>
-              <Ionicons name="cloud-offline-outline" size={36} color={ORANGE} />
+              <Ionicons name="notifications-outline" size={34} color={ORANGE} />
             </View>
-            <Text style={styles.noMatchTitle}>No Provider Available</Text>
+            <Text style={styles.noMatchTitle}>We'll Notify You When Matched!</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find an available provider on this route right now. Please try again or modify your request.
+              Your delivery request is live and broadcasted to couriers along your route. You don't need to wait here — we'll send you a notification as soon as a provider accepts!
             </Text>
 
             <View style={styles.noMatchActions}>
               <TouchableOpacity
                 style={[styles.noMatchBtn, styles.retryBtn]}
-                onPress={handleTryAgain}
+                onPress={handleGoHome}
                 activeOpacity={0.9}
               >
-                <Ionicons name="refresh" size={15} color="#FFFFFF" />
-                <Text style={styles.retryBtnText}>Try Again</Text>
+                <Ionicons name="checkmark-circle-outline" size={16} color="#FFFFFF" />
+                <Text style={styles.retryBtnText}>Got It, Go Home</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.noMatchBtn, styles.modifyBtn]}
-                onPress={handleGoHome}
+                onPress={handleTryAgain}
                 activeOpacity={0.9}
               >
-                <Ionicons name="home-outline" size={15} color={colors.textSecondary} />
-                <Text style={styles.modifyBtnText}>Go Home</Text>
+                <Ionicons name="refresh" size={15} color={colors.textSecondary} />
+                <Text style={styles.modifyBtnText}>Search 10s More</Text>
               </TouchableOpacity>
             </View>
           </Animated.View>
