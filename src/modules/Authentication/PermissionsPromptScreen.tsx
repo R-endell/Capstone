@@ -99,7 +99,6 @@ export default function PermissionsPromptScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Ambient Background Glows */}
       <View style={styles.backgroundLayer} pointerEvents="none">
         <Animated.View
           style={[
@@ -112,8 +111,7 @@ export default function PermissionsPromptScreen() {
       </View>
 
       <Animated.View style={[styles.content, { opacity: slideAnim }]}>
-        
-        {/* Header with Brand Identity */}
+
         <View style={styles.headerContainer}>
           <View style={styles.brandRow}>
             <Image
@@ -127,7 +125,6 @@ export default function PermissionsPromptScreen() {
           </View>
         </View>
 
-        {/* Illustration Container */}
         <View style={styles.illustrationContainer}>
           <Image
             source={currentStep.imageSource}
@@ -136,13 +133,11 @@ export default function PermissionsPromptScreen() {
           />
         </View>
 
-        {/* Text Details */}
         <View style={styles.textContainer}>
           <Text style={styles.title}>{currentStep.title}</Text>
           <Text style={styles.subtitle}>{currentStep.subtitle}</Text>
         </View>
 
-        {/* Pagination Indicators */}
         <View style={styles.paginationRow}>
           {PERMISSION_STEPS.map((step, index) => (
             <View
@@ -155,7 +150,6 @@ export default function PermissionsPromptScreen() {
           ))}
         </View>
 
-        {/* Action Buttons */}
         <View style={styles.footerContainer}>
           <TouchableOpacity
             style={styles.primaryButton}
@@ -180,77 +174,28 @@ export default function PermissionsPromptScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-  },
-  backgroundLayer: {
-    ...StyleSheet.absoluteFill,
-    overflow: 'hidden',
-  },
-  glow: {
-    position: 'absolute',
-    borderRadius: 999,
-    backgroundColor: ORANGE,
-  },
-  glowTop: {
-    width: 360,
-    height: 360,
-    top: -160,
-    right: -140,
-  },
-  glowBottom: {
-    width: 300,
-    height: 300,
-    bottom: -140,
-    left: -120,
-    opacity: 0.05,
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: 24,
-    justifyContent: 'space-between',
-    paddingVertical: 20,
-  },
-  headerContainer: {
-    alignItems: 'flex-start',
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  logoImage: {
-    width: 42,
-    height: 42,
-  },
+  container: { flex: 1, backgroundColor: '#FFFFFF' },
+  backgroundLayer: { ...StyleSheet.absoluteFill, overflow: 'hidden' },
+  glow: { position: 'absolute', borderRadius: 999, backgroundColor: ORANGE },
+  glowTop: { width: 360, height: 360, top: -160, right: -140 },
+  glowBottom: { width: 300, height: 300, bottom: -140, left: -120, opacity: 0.05 },
+  content: { flex: 1, paddingHorizontal: 24, justifyContent: 'space-between', paddingVertical: 20 },
+  headerContainer: { alignItems: 'flex-start' },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  logoImage: { width: 42, height: 42 },
   brandText: {
     fontSize: 20,
-    fontWeight: '800',
-    fontStyle: 'italic',
+    fontFamily: 'Poppins_700Bold',
     color: '#111827',
     letterSpacing: -0.3,
   },
-  brandTextOrange: {
-    color: ORANGE,
-  },
-  illustrationContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: width * 0.7,
-  },
-  illustrationImage: {
-    width: width * 0.65,
-    height: width * 0.65,
-  },
-  textContainer: {
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    marginBottom: 10,
-  },
+  brandTextOrange: { color: ORANGE },
+  illustrationContainer: { alignItems: 'center', justifyContent: 'center', height: width * 0.7 },
+  illustrationImage: { width: width * 0.65, height: width * 0.65 },
+  textContainer: { alignItems: 'center', paddingHorizontal: 10, marginBottom: 10 },
   title: {
     fontSize: 24,
-    fontWeight: '700',
+    fontFamily: 'Poppins_700Bold',
     color: '#111827',
     textAlign: 'center',
     marginBottom: 8,
@@ -258,32 +203,16 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
     color: '#6B7280',
     textAlign: 'center',
     lineHeight: 22,
   },
-  paginationRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-    marginVertical: 4,
-  },
-  paginationDot: {
-    height: 6,
-    borderRadius: 3,
-  },
-  dotActive: {
-    width: 24,
-    backgroundColor: ORANGE,
-  },
-  dotInactive: {
-    width: 6,
-    backgroundColor: '#E5E7EB',
-  },
-  footerContainer: {
-    gap: 8,
-  },
+  paginationRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, marginVertical: 4 },
+  paginationDot: { height: 6, borderRadius: 3 },
+  dotActive: { width: 24, backgroundColor: ORANGE },
+  dotInactive: { width: 6, backgroundColor: '#E5E7EB' },
+  footerContainer: { gap: 8 },
   primaryButton: {
     backgroundColor: ORANGE,
     height: 54,
@@ -292,20 +221,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     width: '100%',
   },
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  skipButton: {
-    height: 44,
-    justifyContent: 'center',
-    alignItems: 'center',
-    width: '100%',
-  },
-  skipButtonText: {
-    color: ORANGE,
-    fontWeight: '600',
-    fontSize: 15,
-  },
+  primaryButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
+  skipButton: { height: 44, justifyContent: 'center', alignItems: 'center', width: '100%' },
+  skipButtonText: { color: ORANGE, fontFamily: 'Poppins_600SemiBold', fontSize: 15 },
 });

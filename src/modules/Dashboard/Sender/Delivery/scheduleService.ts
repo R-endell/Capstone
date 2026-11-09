@@ -1,8 +1,8 @@
 // src/modules/Dashboard/Sender/Delivery/scheduleService.ts
-import { Alert } from 'react-native';
 import { supabase } from '../../../../utils/supabase';
 import { ScheduleState } from './ScheduleContext';
 import { getRoadDistanceKm } from '../../../../services/routeService';
+import { SHIPMENT_SIZE_SPECS, syncAllActiveRoutesTodayForRequest } from '../../../../services/matchingService';
 
 // Storage bucket for package photos (create it in Supabase -> Storage, mark it Public)
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
@@ -42,10 +42,8 @@ async function uploadCargoPhoto(uri: string | null | undefined): Promise<string 
     const folder = user?.id || 'anonymous';
     const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
-    // Random suffix: items are uploaded in parallel, so Date.now() alone could collide
     const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext === 'png' ? 'png' : 'jpg'}`;
 
-    // Read the picked file as base64 and upload the raw bytes (works on Android and iOS)
     const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
     const bytes = base64ToBytes(base64);
     if (bytes.length < 500) {
@@ -59,7 +57,6 @@ async function uploadCargoPhoto(uri: string | null | undefined): Promise<string 
 
     const publicUrl = supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(path).data.publicUrl;
 
-    // Make sure the public link really serves an image; if not (private bucket etc.), save a long-lived signed link
     try {
       const head = await fetch(publicUrl, { method: 'HEAD' });
       const type = head.headers.get('content-type') || '';
@@ -77,20 +74,26 @@ async function uploadCargoPhoto(uri: string | null | undefined): Promise<string 
   }
 }
 
-// Uploads every item's own photo and returns a per-item payload
+// Uploads every item's own photo and returns a per-item payload with box dimensions & trunk volume
 async function buildItemsPayload(items: ScheduleState['items']) {
   const payload = await Promise.all(
-    items.map(async (i: any) => ({
-      size: i.size,
-      description: i.description,
-      fragile: !!i.fragile,
-      photo: await uploadCargoPhoto(i.photoUri),
-      hadPhoto: !!i.photoUri,
-    }))
+    items.map(async (i: any) => {
+      const sizeKey = (i.size as 'Small' | 'Medium' | 'Large') || 'Small';
+      const spec = SHIPMENT_SIZE_SPECS[sizeKey] || SHIPMENT_SIZE_SPECS.Small;
+      return {
+        size: sizeKey,
+        description: i.description,
+        fragile: !!i.fragile,
+        dimensions_inches: spec.inchesLabel,
+        dimensions_cm: `${spec.lengthCm}×${spec.widthCm}×${spec.heightCm} cm`,
+        volume_liters: spec.liters,
+        max_weight_kg: spec.maxWeightKg,
+        photo: await uploadCargoPhoto(i.photoUri),
+        hadPhoto: !!i.photoUri,
+      };
+    })
   );
 
-  // Providers decide whether to accept a package from its photo. If a photo was picked but could not be
-  // uploaded, stop here (instead of silently booking without it) so the sender can retry.
   const failed = payload.find(p => p.hadPhoto && !p.photo);
   if (failed) {
     throw new Error(
@@ -169,14 +172,11 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
 
   const dbUserId = userRecord.user_id;
 
-  // Upload photos first: if this fails nothing has been written yet
   const itemsPayload = await buildItemsPayload(state.items);
 
-  // Read the structured location data from state
   const pickup = state.pickupLocation as any;
   const dropoff = state.dropoffLocation as any;
 
-  // Insert pickup location with all fields populated
   const { data: pickupLoc } = await supabase
     .from('locations')
     .insert({
@@ -191,7 +191,6 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .select()
     .single();
 
-  // Insert dropoff location with all fields populated
   const { data: dropoffLoc } = await supabase
     .from('locations')
     .insert({
@@ -206,12 +205,15 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .select()
     .single();
 
-  // Insert cargo
+  // Weight rules from screenshot: Small = 5 kg, Medium = 15 kg, Large = 25 kg
   const smallQty = state.items.filter(i => i.size === 'Small').length;
   const mediumQty = state.items.filter(i => i.size === 'Medium').length;
   const largeQty = state.items.filter(i => i.size === 'Large').length;
   const isFragile = state.items.some(i => i.fragile);
-  const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
+  const totalWeight =
+    smallQty * SHIPMENT_SIZE_SPECS.Small.maxWeightKg +
+    mediumQty * SHIPMENT_SIZE_SPECS.Medium.maxWeightKg +
+    largeQty * SHIPMENT_SIZE_SPECS.Large.maxWeightKg;
   const cargoPic = itemsPayload.find(i => i.photo)?.photo ?? null;
 
   const cargoBase = {
@@ -225,7 +227,6 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     sender_id: dbUserId,
   };
 
-  // items_json keeps each item's own photo/description. If the column hasn't been added yet, fall back.
   let { data: cargo, error: cargoErr } = await supabase
     .from('cargo_profiles')
     .insert({ ...cargoBase, items_json: itemsPayload })
@@ -238,19 +239,15 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     if (retry.error) throw retry.error;
   }
 
-  // Match rate_id to pickup_type (Curb-side = 1, Door-to-door = 2)
   const resolvedRateId = await resolveRateIdForDropoffType(state.dropoffType);
 
-  // Calculate real road distance instead of hardcoding 5.0
   const distanceKm = await getRoadDistanceKm(
     state.pickupLocation!,
     state.dropoffLocation!,
   );
 
-  // Status depends on mode
   const deliveryStatus = 'Pending';
 
-  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =
@@ -283,6 +280,10 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
     .select()
     .single();
 
+  if (request?.request_id) {
+    void syncAllActiveRoutesTodayForRequest(request.request_id);
+  }
+
   return request;
 }
 
@@ -296,13 +297,11 @@ export async function updateScheduleInDB(
     dropoffLocId: number;
   }
 ) {
-  // Upload photos first: if this fails nothing has been changed yet
   const itemsPayload = await buildItemsPayload(state.items);
 
   const pickup = state.pickupLocation as any;
   const dropoff = state.dropoffLocation as any;
 
-  // Update pickup location with all fields
   await supabase
     .from('locations')
     .update({
@@ -316,7 +315,6 @@ export async function updateScheduleInDB(
     })
     .eq('location_id', existingIds.pickupLocId);
 
-  // Update dropoff location with all fields
   await supabase
     .from('locations')
     .update({
@@ -330,14 +328,15 @@ export async function updateScheduleInDB(
     })
     .eq('location_id', existingIds.dropoffLocId);
 
-  // Update cargo
   const smallQty = state.items.filter(i => i.size === 'Small').length;
   const mediumQty = state.items.filter(i => i.size === 'Medium').length;
   const largeQty = state.items.filter(i => i.size === 'Large').length;
   const isFragile = state.items.some(i => i.fragile);
-  const totalWeight = smallQty * 5 + mediumQty * 15 + largeQty * 30;
+  const totalWeight =
+    smallQty * SHIPMENT_SIZE_SPECS.Small.maxWeightKg +
+    mediumQty * SHIPMENT_SIZE_SPECS.Medium.maxWeightKg +
+    largeQty * SHIPMENT_SIZE_SPECS.Large.maxWeightKg;
 
-  // Use the first available photo from the items (if any)
   const cargoPic = itemsPayload.find(i => i.photo)?.photo ?? null;
 
   const cargoUpdate = {
@@ -358,14 +357,12 @@ export async function updateScheduleInDB(
     await supabase.from('cargo_profiles').update(cargoUpdate).eq('cargo_id', existingIds.cargoId);
   }
 
-  // Match rate_id and recalculate distance on edit as well
   const resolvedRateId = await resolveRateIdForDropoffType(state.dropoffType);
   const distanceKm = await getRoadDistanceKm(
     state.pickupLocation!,
     state.dropoffLocation!,
   );
 
-  // ScheduleState may not declare `receiver`, so read it loosely to avoid TS errors
   const stateReceiver = (state as any).receiver;
   const receiverId = stateReceiver?.receiver_id ?? null;
   const receiverPhone =
@@ -373,7 +370,6 @@ export async function updateScheduleInDB(
     stateReceiver?.phone_number ||
     '';
 
-  // Update request
   await supabase
     .from('delivery_requests')
     .update({
@@ -391,6 +387,8 @@ export async function updateScheduleInDB(
       preferred_route_id: state.preferredRouteId ?? null,
     })
     .eq('request_id', existingIds.requestId);
+
+  void syncAllActiveRoutesTodayForRequest(existingIds.requestId);
 }
 
 export async function deleteDelivery(
@@ -399,7 +397,11 @@ export async function deleteDelivery(
   pickupLocId: number,
   dropoffLocId: number
 ) {
-  // Delete the request first (child tables depend on it)
+  await supabase
+    .from('route_request_matches')
+    .delete()
+    .eq('request_id', requestId);
+
   const { error: reqErr } = await supabase
     .from('delivery_requests')
     .delete()
@@ -410,11 +412,10 @@ export async function deleteDelivery(
     throw reqErr;
   }
 
-  // Now delete the associated records in parallel
   const [cargoRes, pickupRes, dropoffRes] = await Promise.all([
     supabase.from('cargo_profiles').delete().eq('cargo_id', cargoId),
     supabase.from('locations').delete().eq('location_id', pickupLocId),
-    supabase.from('locations').delete().eq('location_id', dropoffLocId),  
+    supabase.from('locations').delete().eq('location_id', dropoffLocId),
   ]);
 
   if (cargoRes.error) console.error('Delete cargo error:', cargoRes.error);

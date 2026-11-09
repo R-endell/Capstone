@@ -397,19 +397,6 @@ export default function AccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('DisputeCenter' as any)} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={styles.menuIconWrapper}>
-                  <SolarIcon name="ShieldCheck" size={24} />
-                </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dispute Center</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem with a delivery</Text>
-                </View>
-              </View>
-              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
-            </TouchableOpacity>
-
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'sender' })} activeOpacity={0.7}>

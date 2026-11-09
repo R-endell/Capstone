@@ -96,8 +96,6 @@ import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsLis
 // Support FAB, Proof of Delivery Modal & In-App Call Modal
 import SupportFab from './src/components/SupportFab';
 import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
-import InAppCallModal from './src/components/InAppCallModal';
-
 // Canonical background matcher
 import {
   startBackgroundMatcher,
@@ -768,8 +766,6 @@ function AppInner() {
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
         <Stack.Screen name="ProviderNavigation" component={ProviderNavigationScreen} options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
       </Stack.Navigator>
-
-      <InAppCallModal />
     </NavigationContainer>
   );
 }

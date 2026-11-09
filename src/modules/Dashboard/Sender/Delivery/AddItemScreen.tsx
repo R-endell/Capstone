@@ -10,17 +10,14 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import { SHIPMENT_SIZE_SPECS } from '../../../../services/matchingService';
 
 const ORANGE = '#F27024';
 
-const SIZE_META = {
-  Small: { color: '#3B82F6', bg: '#EFF6FF', bgDark: '#0F2744' },
-  Medium: { color: ORANGE, bg: '#FFF7ED', bgDark: '#2A1A0E' },
-  Large: { color: '#8B5CF6', bg: '#F5F3FF', bgDark: '#231542' },
-} as const;
-
 export default function AddItemScreen({ route, navigation }: any) {
-  const { size } = route.params;
+  const size: 'Small' | 'Medium' | 'Large' = route.params?.size || route.params?.initialSize || 'Small';
+  const spec = SHIPMENT_SIZE_SPECS[size] || SHIPMENT_SIZE_SPECS.Small;
+
   const { dispatch } = useSchedule();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
@@ -108,7 +105,9 @@ export default function AddItemScreen({ route, navigation }: any) {
         <View style={styles.headerInnerContent}>
           <View style={styles.stepRow}>
             <View style={styles.stepPill}>
-              <Text style={styles.stepText}>ADD ITEM</Text>
+              <Text style={styles.stepText}>
+                {size.toUpperCase()} · {spec.inchesLabel} · {spec.liters}L
+              </Text>
             </View>
           </View>
 
@@ -117,13 +116,13 @@ export default function AddItemScreen({ route, navigation }: any) {
               <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
-              <Text style={styles.headerSub}>Add to shipment</Text>
+              <Text style={styles.headerSub}>Add to shipment ({spec.weightRangeLabel})</Text>
               <Text style={styles.headerTitle}>New {size} Item</Text>
             </View>
           </View>
 
           <Text style={styles.headerSubtitle}>
-            Provide details so providers can handle your package safely.
+            Max Box: {spec.inchesLabel} ({spec.feetCmLabel}) · Samples: {spec.sampleItems}
           </Text>
         </View>
       </Animated.View>
@@ -166,7 +165,6 @@ export default function AddItemScreen({ route, navigation }: any) {
           <Animated.View style={fadeUp(descAnim, 20)}>
             <Text style={styles.sectionLabel}>Description</Text>
             <View style={[styles.inputWrapper, focused && styles.inputWrapperFocused]}>
-              {/* ✅ FIX 1: Wrapped in View to apply padding properly */}
               <View style={styles.inputIcon}>
                 <SolarIcon
                   name="Pen"
@@ -177,7 +175,7 @@ export default function AddItemScreen({ route, navigation }: any) {
               </View>
               <TextInput
                 style={styles.input}
-                placeholder="e.g., Glass flower vase"
+                placeholder={`e.g., ${spec.sampleItems.split(',')[0]}`}
                 placeholderTextColor={colors.textMuted}
                 value={description}
                 onChangeText={setDescription}
@@ -194,7 +192,7 @@ export default function AddItemScreen({ route, navigation }: any) {
             <View style={[styles.toggleIconBox, fragile && styles.toggleIconBoxOn]}>
               <SolarIcon
                 name="Warning"
-                variant={fragile ? "bold" : "duotone"}
+                variant={fragile ? 'bold' : 'duotone'}
                 size={22}
                 color={fragile ? colors.error : colors.textMuted}
               />
@@ -218,7 +216,7 @@ export default function AddItemScreen({ route, navigation }: any) {
           <Animated.View style={[styles.summaryChip, fadeUp(fragileAnim, 20)]}>
             <SolarIcon name="Info" variant="duotone" size={16} color={colors.accent} />
             <Text style={styles.summaryChipText}>
-              This item will be added as a <Text style={{ fontFamily: 'Poppins_700Bold' }}>{size}</Text> package
+              This item will be added as a <Text style={{ fontFamily: 'Poppins_700Bold' }}>{size}</Text> package ({spec.inchesLabel}, {spec.liters} Liters, {spec.weightRangeLabel})
               {fragile ? ' marked as fragile' : ''}.
             </Text>
           </Animated.View>
@@ -232,7 +230,6 @@ export default function AddItemScreen({ route, navigation }: any) {
               onPressOut={animatePressOut}
               activeOpacity={0.9}
             >
-              {/* ✅ FIX 2: Changed variant to linear so it shows up white on orange */}
               <SolarIcon name="AddCircle" variant="linear" size={20} color="#FFFFFF" />
               <Text style={styles.addBtnText}>Add Item to Shipment</Text>
             </TouchableOpacity>
@@ -262,7 +259,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
-  
+
   stepText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 16 },
   backButton: {
@@ -274,7 +271,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   headerSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.3, marginBottom: 2 },
   headerTitle: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.3 },
   headerSubtitle: {
-    fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20, maxWidth: '90%', fontFamily: 'Poppins_400Regular', marginTop: 4,
+    fontSize: 12.5, color: 'rgba(255,255,255,0.9)', lineHeight: 18, fontFamily: 'Poppins_400Regular', marginTop: 4,
   },
 
   scrollContent: {
@@ -283,7 +280,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingBottom: 40,
     backgroundColor: c.background,
   },
-  
+
   sectionLabel: {
     fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary,
     letterSpacing: 0.5, marginBottom: 12, textTransform: 'uppercase',
@@ -327,7 +324,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   inputWrapperFocused: {
     borderColor: c.accent, backgroundColor: c.accentSoft,
   },
-  inputIcon: { paddingLeft: 16, paddingRight: 8 }, // This now applies to the View wrapper
+  inputIcon: { paddingLeft: 16, paddingRight: 8 },
   input: {
     flex: 1, paddingVertical: 16, paddingHorizontal: 8,
     fontSize: 16, color: c.textPrimary, fontFamily: 'Poppins_500Medium',

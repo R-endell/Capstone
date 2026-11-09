@@ -21,6 +21,8 @@ const SIZE_META = {
   Small: {
     image: require('../../../../../assets/small-package-icon.png'),
     range: 'Less than 5 kg',
+    dimensions: '12" × 12" × 12"',
+    dimensionsCm: '30 × 30 × 30 cm',
     color: '#3B82F6',
     bg: '#EFF6FF',
     bgDark: '#0F2744',
@@ -28,6 +30,8 @@ const SIZE_META = {
   Medium: {
     image: require('../../../../../assets/medium-package-icon.png'),
     range: '5 – 20 kg',
+    dimensions: '18" × 14" × 14"',
+    dimensionsCm: '45 × 35 × 35 cm',
     color: '#F27024',
     bg: '#FFF7ED',
     bgDark: '#2A1A0E',
@@ -35,6 +39,8 @@ const SIZE_META = {
   Large: {
     image: require('../../../../../assets/large-package-icon.png'),
     range: 'More than 20 kg',
+    dimensions: '24" × 18" × 18"',
+    dimensionsCm: '60 × 45 × 45 cm',
     color: '#8B5CF6',
     bg: '#F5F3FF',
     bgDark: '#231542',
@@ -161,6 +167,9 @@ export default function ShipmentSizeScreen({ navigation }: any) {
           </View>
           <Text style={styles.sizeLabel}>{size}</Text>
           <Text style={styles.sizeSub}>{meta.range}</Text>
+          {/* Added Dimensions */}
+          <Text style={styles.sizeDimensions}>{meta.dimensions}</Text>
+          <Text style={styles.sizeDimensionsCm}>{meta.dimensionsCm}</Text>
         </TouchableOpacity>
       </Animated.View>
     );
@@ -231,7 +240,6 @@ export default function ShipmentSizeScreen({ navigation }: any) {
 
             {state.items.length === 0 ? (
               <View style={styles.emptyBox}>
-                {/* ✅ Replaced flat icon with 3D asset */}
                 <Image 
                   source={EMPTY_BOX_ICON} 
                   style={styles.emptyImage} 
@@ -309,6 +317,12 @@ export default function ShipmentSizeScreen({ navigation }: any) {
                   </TouchableOpacity>
 
                   <Text style={styles.modalSize}>{selectedItem.size} Package</Text>
+                  
+                  {/* Added Max Size in Modal */}
+                  <Text style={styles.modalDimensions}>
+                    Max Size: {SIZE_META[selectedItem.size as keyof typeof SIZE_META].dimensions} ({SIZE_META[selectedItem.size as keyof typeof SIZE_META].dimensionsCm})
+                  </Text>
+
                   <Text style={styles.modalDesc}>
                     {selectedItem.description || 'No specific description provided.'}
                   </Text>
@@ -408,7 +422,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sizesRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 28, gap: 12 },
   sizeItemWrapper: { flex: 1 },
   
-  // ✅ ADDED flex: 1 HERE TO MAKE ALL CARDS STRETCH UNIFORMLY
   sizeItem: {
     flex: 1,
     alignItems: 'center',
@@ -436,6 +449,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   countBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_700Bold' },
   sizeLabel: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
   sizeSub: { fontSize: 11, color: c.textSecondary, fontFamily: 'Poppins_500Medium', textAlign: 'center' },
+  
+  // New styles for dimensions
+  sizeDimensions: { 
+    fontSize: 10, 
+    color: c.textPrimary, 
+    fontFamily: 'Poppins_600SemiBold', 
+    textAlign: 'center', 
+    marginTop: 6 
+  },
+  sizeDimensionsCm: { 
+    fontSize: 9, 
+    color: c.textMuted, 
+    fontFamily: 'Poppins_400Regular', 
+    textAlign: 'center',
+    marginTop: 2
+  },
 
   itemsListContainer: { marginBottom: 16 },
   itemsHeader: {
@@ -452,7 +481,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   
-  // ✅ ADDED emptyImage style for the 3D icon
   emptyImage: {
     width: 120,
     height: 120,
@@ -540,6 +568,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalPhoto: { width: 88, height: 88, borderRadius: 16 },
   modalImagePlaceholder: { width: 52, height: 52 },
   modalSize: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8 },
+  
+  // New style for modal dimensions
+  modalDimensions: {
+    fontSize: 13, 
+    color: c.textSecondary, 
+    fontFamily: 'Poppins_600SemiBold',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  
   modalDesc: {
     fontSize: 14, color: c.textSecondary, textAlign: 'center', lineHeight: 20,
     paddingHorizontal: 12, marginBottom: 16, fontFamily: 'Poppins_400Regular',

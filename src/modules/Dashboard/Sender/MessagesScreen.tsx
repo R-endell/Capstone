@@ -16,7 +16,6 @@ import { supabase } from '../../../utils/supabase';
 import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 
@@ -994,10 +993,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 {selectedRoom.is_support ? 'System' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
               </Text>
             </View>
-
-            <TouchableOpacity style={styles.callBtnFlat} activeOpacity={0.7} onPress={handleCallPress}>
-              <SolarIcon name="Phone" variant="bold" size={20} color={colors.accent} />
-            </TouchableOpacity>
           </Animated.View>
         </SafeAreaView>
 

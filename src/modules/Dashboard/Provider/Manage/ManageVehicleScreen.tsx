@@ -43,6 +43,18 @@ interface Vehicle {
 
 const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck'];
 
+// Same box-volume scale used by matchingService.computeCargoVolumeLiters
+// (Small = 15L, Medium = 45L, Large = 95L), so a vehicle's trunk capacity can be
+// shown in the same "boxes" language senders/providers already see elsewhere,
+// instead of a bare liter figure that doesn't read as physical space on its own.
+const LARGE_BOX_LITERS = 95;
+const boxEquivalentLabel = (liters: number): string => {
+  const n = Number(liters) || 0;
+  if (n <= 0) return '';
+  const boxes = Math.max(1, Math.floor(n / LARGE_BOX_LITERS));
+  return `≈ ${boxes} Large box${boxes === 1 ? '' : 'es'}`;
+};
+
 export default function ManageVehicleScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -381,6 +393,9 @@ export default function ManageVehicleScreen() {
             <View style={styles.tile}>
               <Text style={styles.tileLabel}>MAX VOLUME</Text>
               <Text style={styles.tileValue}>{item.max_volume_liters} L</Text>
+              {boxEquivalentLabel(item.max_volume_liters) !== '' && (
+                <Text style={styles.tileSubValue}>{boxEquivalentLabel(item.max_volume_liters)}</Text>
+              )}
             </View>
             <View style={[styles.tile, { width: '100%' }]}>
               <Text style={styles.tileLabel}>CARGO DIMENSIONS</Text>
@@ -551,6 +566,9 @@ export default function ManageVehicleScreen() {
                       keyboardType="numeric"
                     />
                   </View>
+                  {boxEquivalentLabel(parseFloat(maxVolume) || 0) !== '' && (
+                    <Text style={styles.hintText}>{boxEquivalentLabel(parseFloat(maxVolume) || 0)} of trunk space</Text>
+                  )}
                 </View>
                 <View style={styles.halfField}>
                   <Text style={styles.inputLabel}>Max Weight (kg)</Text>
@@ -871,6 +889,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontSize: 15,
     fontFamily: 'Poppins_800ExtraBold',
     color: c.textPrimary,
+    marginTop: 4,
+  },
+  tileSubValue: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textMuted,
+    marginTop: 2,
+  },
+  hintText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textMuted,
     marginTop: 4,
   },
 

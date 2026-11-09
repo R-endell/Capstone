@@ -425,7 +425,7 @@ export default function RegisterProviderScreen() {
   };
 
   const handlePickLicense = (side: Side) => {
-    const title = side === 'front' ? "Front of Driver's License" : "Back of Driver's License";
+    const title = side === 'front' ? "Front of Driver's License" : "Back of Driver's License (Optional)";
     Alert.alert(title, 'Choose how you want to provide the photo.', [
       { text: 'Take Photo', onPress: () => pickImage(side, 'camera') },
       { text: 'Choose from Gallery', onPress: () => pickImage(side, 'library') },
@@ -521,7 +521,7 @@ export default function RegisterProviderScreen() {
         if (backVerified) {
           Alert.alert(
             'License Verified ✓',
-            "Both front and back of your Driver's License have been verified. Please confirm the expiry date below."
+            "Front of your Driver's License is verified. Since the front is valid, the back is optional."
           );
         }
       } else {
@@ -554,8 +554,6 @@ export default function RegisterProviderScreen() {
           }
         }
 
-        const singleBackDocNum = unwrapField(singleBackScan.data?.documentNumber || singleBackScan.data?.licenseNumber);
-        const singleBackHasPortrait = Boolean(unwrapField(singleBackScan.data?.face) || singleBackScan.raw?.face);
         if (licenseFrontBase64 && base64 === licenseFrontBase64) {
           resetSideState('back');
           Alert.alert(
@@ -671,21 +669,22 @@ export default function RegisterProviderScreen() {
   };
 
   const handleRegisterProvider = async () => {
-    if (!licenseFrontUri || !licenseBackUri || !frontVerified || !backVerified) {
+    // We only strictly require the FRONT photo to be valid. Back is optional.
+    if (!licenseFrontUri || !frontVerified) {
       Alert.alert(
         'Valid License Required',
-        "Please upload clear, valid photos of both the FRONT and BACK of your Philippine Driver's License."
+        "Please upload a clear, valid photo of the FRONT of your Philippine Driver's License."
       );
       return;
     }
-    if (!licenseFrontUrl || !licenseBackUrl) {
-      Alert.alert('Please Wait', 'Your license images are still uploading. Please try again in a moment.');
+    if (!licenseFrontUrl) {
+      Alert.alert('Please Wait', 'Your license image is still uploading. Please try again in a moment.');
       return;
     }
     if (!lastScanResult || !lastScanResult.isValidDriverLicense) {
       Alert.alert(
         "Invalid Driver's License",
-        "Your uploaded photos could not be verified as a valid Philippine Driver's License. Please upload clear photos of your actual license."
+        "Your uploaded photo could not be verified as a valid Philippine Driver's License. Please upload a clear photo of your actual license."
       );
       return;
     }
@@ -819,7 +818,7 @@ export default function RegisterProviderScreen() {
           drivers_license_number: resolvedIdNumber,
           license_expiry_date: licenseExpiry.trim(),
           selfie_photo: licenseFrontUrl,
-          selfie_photo_back: licenseBackUrl,
+          selfie_photo_back: licenseBackUrl || null, // Optional
           live_selfie_photo: selfieUrl,
           verification_status: 'Pending',
           id_analyzer_decision: lastScanResult?.decision || null,
@@ -864,7 +863,7 @@ export default function RegisterProviderScreen() {
           role: 'Provider',
           provider_documents: {
             drivers_license_front: licenseFrontUrl,
-            drivers_license_back: licenseBackUrl,
+            drivers_license_back: licenseBackUrl || null,
             license_number: resolvedIdNumber,
             valid_id_type: resolvedIdType,
             id_analyzer_confidence: resolvedConfidence,
@@ -901,13 +900,12 @@ export default function RegisterProviderScreen() {
   };
 
   const uploadingLicense = uploadingSide !== null;
+  
+  // Back is no longer required if the front is verified.
   const licenseComplete =
     frontVerified &&
-    backVerified &&
     !!licenseFrontUri &&
-    !!licenseBackUri &&
     !!licenseFrontUrl &&
-    !!licenseBackUrl &&
     !!lastScanResult?.isValidDriverLicense;
 
   const detailsFilled =
@@ -942,8 +940,8 @@ export default function RegisterProviderScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Upload clear front and back photos of your Philippine Driver's License. Each photo
-              is automatically verified — non-ID photos or other ID types will be rejected.
+              Upload a clear photo of the FRONT of your Philippine Driver's License. Each photo
+              is automatically verified — non-ID photos or other ID types will be rejected. The Back photo is optional.
             </Text>
           </View>
         </Animated.View>
@@ -986,7 +984,7 @@ export default function RegisterProviderScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.uploadTitle}>Driver's License Photos</Text>
-                <Text style={styles.uploadSubtitle}>Upload front & back — verified automatically</Text>
+                <Text style={styles.uploadSubtitle}>Upload Front (Back is optional)</Text>
               </View>
             </View>
             {licenseComplete && (
@@ -1021,7 +1019,7 @@ export default function RegisterProviderScreen() {
               ) : (
                 <View style={styles.tileEmpty}>
                   <SolarIcon name="DocumentText" variant="linear" size={26} color={colors.accent} />
-                  <Text style={styles.tileEmptyText}>Front</Text>
+                  <Text style={styles.tileEmptyText}>Front (Required)</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -1049,7 +1047,7 @@ export default function RegisterProviderScreen() {
               ) : (
                 <View style={styles.tileEmpty}>
                   <SolarIcon name="DocumentText" variant="linear" size={26} color={colors.accent} />
-                  <Text style={styles.tileEmptyText}>Back</Text>
+                  <Text style={styles.tileEmptyText}>Back (Optional)</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -1141,8 +1139,7 @@ export default function RegisterProviderScreen() {
             <View style={styles.waitingNote}>
               <SolarIcon name="CloudUpload" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.waitingNoteText}>
-                Upload clear photos of both the front and back of your Driver's License above to
-                auto-fill your license number.
+                Upload a clear photo of the FRONT of your Driver's License above to auto-fill your license number.
               </Text>
             </View>
           )}

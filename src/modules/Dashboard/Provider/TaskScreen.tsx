@@ -11,15 +11,19 @@ import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { formatDate, formatDateTime } from '../../../utils/dateUtils';
-import { getProviderDeliveries } from '../../../services/matchingService';
+import { formatDateTime } from '../../../utils/dateUtils';
+import {
+  getProviderDeliveries,
+  fetchPendingRequestsForProvider,
+  computeCargoVolumeLiters,
+  SHIPMENT_SIZE_SPECS,
+} from '../../../services/matchingService';
 import { getActiveRouteId } from '../../../services/activeRouteStore';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 
@@ -248,7 +252,7 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
-type TabType = 'active' | 'completed' | 'cancelled' | 'all';
+type TabType = 'active' | 'pending' | 'completed' | 'cancelled' | 'all';
 
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
@@ -261,11 +265,13 @@ export default function TaskScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [providerId, setProviderId] = useState<number | null>(null);
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
+  const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -362,12 +368,211 @@ export default function TaskScreen() {
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
       const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
 
+      let pending: any[] = [];
+      try {
+        const selectedRouteId = await getActiveRouteId();
+        const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
+        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
+        const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
+
+        const senderIds = Array.from(new Set(filteredRows.map(m => m.request?.sender_id).filter(Boolean)));
+        const senders: Record<number, any> = {};
+        if (senderIds.length > 0) {
+          const { data: uRows } = await supabase
+            .from('users')
+            .select('user_id, first_name, last_name, phone_number')
+            .in('user_id', senderIds as number[]);
+          (uRows || []).forEach((u: any) => { senders[u.user_id] = u; });
+        }
+
+        pending = filteredRows.map(m => ({
+          ...m,
+          sender: senders[m.request?.sender_id] || null,
+        }));
+      } catch (e) {
+        console.warn('[Task] pending load failed:', e);
+      }
+
       setActiveDeliveries(acceptedActive);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
+      setPendingDeliveries(pending);
     } catch (error) {
       console.error('Error fetching deliveries:', error);
     }
+  };
+
+  const handleAcceptPendingMatch = async (m: any) => {
+    if (!providerId || acceptingReqId != null) return;
+    const req = m.request;
+    if (!req?.request_id) return;
+
+    Alert.alert(
+      'Accept this delivery request?',
+      `You will earn ${money(req.estimated_cost)} for delivering this package along your route.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Accept Request',
+          onPress: async () => {
+            setAcceptingReqId(req.request_id);
+            try {
+              let vehicleId: number | null = null;
+              const { data: v } = await supabase
+                .from('vehicles')
+                .select('vehicle_id')
+                .eq('provider_id', providerId)
+                .eq('verification_status', 'Verified')
+                .limit(1)
+                .maybeSingle();
+              vehicleId = v?.vehicle_id ?? null;
+
+              if (!vehicleId) {
+                const { data: anyVeh } = await supabase
+                  .from('vehicles')
+                  .select('vehicle_id')
+                  .eq('provider_id', providerId)
+                  .limit(1)
+                  .maybeSingle();
+                vehicleId = anyVeh?.vehicle_id ?? null;
+              }
+              if (!vehicleId) {
+                Alert.alert('Vehicle required', 'You need a registered vehicle before accepting deliveries.');
+                return;
+              }
+
+              let resolvedRouteId: number | null =
+                req.preferred_route_id ?? m.route_id ?? (await getActiveRouteId()) ?? null;
+              if (!resolvedRouteId) {
+                const { data: rRow } = await supabase
+                  .from('provider_routes')
+                  .select('route_id')
+                  .eq('provider_id', providerId)
+                  .eq('is_deleted', false)
+                  .order('created_at', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                resolvedRouteId = rRow?.route_id ?? null;
+              }
+
+              const { data: claimed, error: claimErr } = await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Accepted' })
+                .eq('request_id', req.request_id)
+                .eq('delivery_status', 'Pending')
+                .select('request_id, sender_id, estimated_cost')
+                .maybeSingle();
+
+              if (claimErr || !claimed) {
+                Alert.alert('Request unavailable', 'This request was already accepted or cancelled.');
+                await fetchDeliveries(providerId);
+                return;
+              }
+
+              const { data: delivery, error: deliveryError } = await supabase
+                .from('deliveries')
+                .insert({
+                  request_id: req.request_id,
+                  provider_id: providerId,
+                  vehicle_id: vehicleId,
+                  route_id: resolvedRouteId,
+                  accepted_at: new Date().toISOString(),
+                  estimated_eta: new Date(Date.now() + 3600000).toISOString(),
+                })
+                .select('*')
+                .single();
+
+              if (deliveryError) {
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw deliveryError;
+              }
+
+              const { error: qrError } = await supabase.from('qr_verifications').insert({
+                delivery_id: delivery.delivery_id,
+                pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
+                dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
+                pickup_pin: randPin(),
+                dropoff_pin: randPin(),
+              });
+              if (qrError) {
+                await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw qrError;
+              }
+
+              try {
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'accepted' })
+                  .eq('request_id', req.request_id)
+                  .eq('provider_id', providerId);
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'expired' })
+                  .eq('request_id', req.request_id)
+                  .neq('provider_id', providerId)
+                  .eq('status', 'matched');
+              } catch {}
+
+              if (resolvedRouteId) {
+                const { data: rCap } = await supabase
+                  .from('provider_routes')
+                  .select('remaining_weight_kg, remaining_volume_liters')
+                  .eq('route_id', resolvedRouteId)
+                  .maybeSingle();
+                if (rCap) {
+                  const cargo = Array.isArray(req.cargo) ? req.cargo[0] : req.cargo;
+                  const cargoWeight = Number(cargo?.total_weight_kg) || 5;
+                  const cargoVol = computeCargoVolumeLiters(cargo);
+                  await supabase
+                    .from('provider_routes')
+                    .update({
+                      remaining_weight_kg: Math.max(0, Number(rCap.remaining_weight_kg ?? 100) - cargoWeight),
+                      remaining_volume_liters: Math.max(0, Number(rCap.remaining_volume_liters ?? 300) - cargoVol),
+                    })
+                    .eq('route_id', resolvedRouteId);
+                }
+              }
+
+              await supabase.from('escrow_payments').insert({
+                amount: claimed.estimated_cost,
+                delivery_id: delivery.delivery_id,
+                sender_id: claimed.sender_id,
+                provider_id: providerId,
+                escrow_status: 'On hold',
+                emergency_frozen: false,
+                created_at: new Date().toISOString(),
+              });
+
+              if (claimed.sender_id) {
+                const code = trackingCode(req.request_id);
+                try {
+                  await notifyUser(
+                    claimed.sender_id,
+                    'Route-Matched Courier Accepted! 🚚',
+                    `Your courier accepted parcel #${code} along the declared route.`,
+                    { deliveryId: delivery.delivery_id },
+                  );
+                } catch {}
+              }
+
+              await fetchDeliveries(providerId);
+              setActiveTab('active');
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to accept request.');
+            } finally {
+              setAcceptingReqId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const handlePingSender = async (delivery: any) => {
@@ -702,6 +907,7 @@ export default function TaskScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [providerId]);
@@ -812,17 +1018,18 @@ export default function TaskScreen() {
 
   const tabCount = (t: TabType) =>
     t === 'active' ? activeDeliveries.length
+      : t === 'pending' ? pendingDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
 
   const filteredTasks =
     activeTab === 'active' ? activeDeliveries
+      : activeTab === 'pending' ? pendingDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
 
-  /* --------------------------- shared pieces --------------------------- */
   const renderServicePill = (info: any) => (
     <View style={styles.svcPill}>
       <SolarIcon name="Package" variant="duotone" size={14} color={colors.info} />
@@ -881,26 +1088,16 @@ export default function TaskScreen() {
     color: string;
     hideCall?: boolean;
   }) => {
-    const canCall = !o.hideCall && (!!o.phone || !!o.userId);
-
-    const triggerCall = () => {
-      promptCallChoice({
-        name: o.name,
-        role: o.role,
-        calleeId: o.userId ?? null,
-        phone: o.phone,
-        deliveryId: o.deliveryId ?? null,
-      });
-    };
+    const canCall = !o.hideCall && !!o.phone;
 
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'In-App Call Available')}`,
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'N/A')}`,
         canCall
           ? [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Call', onPress: triggerCall },
+              { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
             ]
           : [{ text: 'OK' }],
       );
@@ -920,7 +1117,7 @@ export default function TaskScreen() {
             style={styles.mcCallSmall}
             onPress={(e) => {
               e.stopPropagation();
-              triggerCall();
+              if (o.phone) Linking.openURL(`tel:${o.phone}`);
             }}
             activeOpacity={0.8}
             hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
@@ -941,12 +1138,11 @@ export default function TaskScreen() {
   const cargoLabelFull = (info: any) => info.sizeSummary?.full || cargoLabel(info);
   const pkgCount = (info: any) => `${info.totalItems} ${info.totalItems === 1 ? 'pkg' : 'pkgs'}`;
   const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
-    Small:  { letter: 'S', kg: '~5 kg',  color: colors.info, bg: colors.infoSoft },
-    Medium: { letter: 'M', kg: '~15 kg', color: colors.warning, bg: colors.warningBg },
-    Large:  { letter: 'L', kg: '~30 kg', color: colors.secondary, bg: colors.secondarySoft },
+    Small:  { letter: 'S', kg: `${SHIPMENT_SIZE_SPECS.Small.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Small.inchesLabel}`,  color: colors.info, bg: colors.infoSoft },
+    Medium: { letter: 'M', kg: `${SHIPMENT_SIZE_SPECS.Medium.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Medium.inchesLabel}`, color: colors.warning, bg: colors.warningBg },
+    Large:  { letter: 'L', kg: `${SHIPMENT_SIZE_SPECS.Large.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Large.inchesLabel}`, color: colors.secondary, bg: colors.secondarySoft },
   };
 
-  /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
@@ -1032,13 +1228,95 @@ export default function TaskScreen() {
     );
   };
 
-  /* ---------------------------- list view ---------------------------- */
+  const renderPendingCard = (m: any) => {
+    const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
+    const isDirect = m.request?.preferred_provider_id != null;
+    const isBusy = acceptingReqId === m.request_id;
+
+    return (
+      <View key={`pending-${m.request_id}`} style={styles.oCard}>
+        <View style={styles.oPad}>
+          <View style={styles.oTopRow}>
+            {renderServicePill(info)}
+            <View style={[styles.stPill, { backgroundColor: colors.warningBg }]}>
+              <View style={[styles.stDot, { backgroundColor: colors.warning }]} />
+              <Text style={[styles.stPillText, { color: colors.warning }]}>
+                {isDirect ? 'DIRECT ROUTE REQUEST' : `${Math.round(Number(m.match_score) || 90)}% ROUTE MATCH`}
+              </Text>
+            </View>
+          </View>
+
+          {renderRoute(info, { notes: true })}
+
+          <View style={styles.oContactsRow}>
+            {renderMiniContact({
+              role: 'SENDER',
+              name: info.senderName || 'Sender',
+              phone: null,
+              color: colors.info,
+              hideCall: true,
+            })}
+            {renderMiniContact({
+              role: 'RECEIVER',
+              name: info.receiverName || 'Receiver',
+              phone: null,
+              color: colors.secondary,
+              hideCall: true,
+            })}
+          </View>
+        </View>
+
+        <View style={styles.oFooter}>
+          <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
+            <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
+          </TouchableOpacity>
+          {info.fragile && (
+            <View style={styles.oChip}>
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
+              <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
+            </View>
+          )}
+          <View style={{ flex: 1 }} />
+          <Text style={styles.oPrice}>{money(info.earnings)}</Text>
+        </View>
+
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oChatBtn}
+            onPress={() => navigation.navigate('MainTabs', { screen: 'Jobs' })}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="MapPoint" variant="linear" size={16} color={colors.accent} />
+            <Text style={styles.oChatText}>View on Map</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.oRouteBtn, isBusy && { opacity: 0.7 }]}
+            onPress={() => handleAcceptPendingMatch(m)}
+            disabled={isBusy}
+            activeOpacity={0.9}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <SolarIcon name="CheckCircle" variant="bold" size={16} color="#FFFFFF" />
+                <Text style={styles.oRouteText}>Accept Request</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['active', 'pending', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             const label = t.charAt(0).toUpperCase() + t.slice(1);
@@ -1067,32 +1345,35 @@ export default function TaskScreen() {
         <Animated.View style={{ opacity: contentAnim }}>
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Image 
-                source={EMPTY_BOX_ICON} 
-                style={{ width: 140, height: 140, marginBottom: 20 }} 
-                resizeMode="contain" 
+              <Image
+                source={EMPTY_BOX_ICON}
+                style={{ width: 140, height: 140, marginBottom: 20 }}
+                resizeMode="contain"
               />
               <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
-                  : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
+                  : activeTab === 'pending'
+                    ? 'No pending requests'
+                    : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
-                  : allTasks.length === 0
-                    ? 'Deliveries you accept appear here.'
-                    : 'Try another tab to view history.'}
+                  : activeTab === 'pending'
+                    ? 'Requests waiting for your acceptance along your route will appear here.'
+                    : allTasks.length === 0
+                      ? 'Deliveries you accept appear here.'
+                      : 'Try another tab to view history.'}
               </Text>
             </View>
-          ) : filteredTasks.map(renderTaskCard)}
+          ) : filteredTasks.map(d => activeTab === 'pending' ? renderPendingCard(d) : renderTaskCard(d))}
           <View style={styles.bottomSpacer} />
         </Animated.View>
       </ScrollView>
     </View>
   );
 
-  /* --------------------------- detail view --------------------------- */
   const renderDetailView = (d: any) => {
     const info = buildTaskInfo(d);
     const stage = stageOf(d);
@@ -1538,7 +1819,7 @@ export default function TaskScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.pkgName}>{k}</Text>
-                  <Text style={styles.pkgSub}>{SIZE_META[k].kg} each</Text>
+                  <Text style={styles.pkgSub}>{SIZE_META[k].kg}</Text>
                 </View>
                 <Text style={styles.pkgQty}>×{counts[k]}</Text>
               </View>
@@ -1799,8 +2080,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepLabelOn: { color: c.textPrimary },
 
   mCancelledText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.error, marginTop: 8 },
-  mPrimaryBtn: { 
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, 
+  mPrimaryBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: c.accent, paddingVertical: 14, borderRadius: 14,
     shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1
   },
@@ -1825,22 +2106,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 2 },
   rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
-  oCard: { 
-    backgroundColor: c.card, 
-    borderRadius: 12, 
-    marginBottom: 14, 
-    borderWidth: 1, 
-    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
+  oCard: {
+    backgroundColor: c.card,
+    borderRadius: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     overflow: 'hidden',
-    shadowColor: '#000', 
-    shadowOffset: { width: 0, height: 3 }, 
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.04,
-    shadowRadius: 6, 
+    shadowRadius: 6,
     elevation: 1,
   },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  
+
   oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
   mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
@@ -1903,20 +2184,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   doneTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.success },
   doneSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  sdMap: { width: '100%', height: 120, backgroundColor: '#F3F4F6' },
-  mapTapHint: {
-    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
-  },
-  mapTapHintText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
-  sdRoutePad: { padding: 18 },
-  sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
   sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
   sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
   sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
-  sdRouteText: { flex: 1, paddingBottom: 16 },
   sdRouteMain: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 3 },
   sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },

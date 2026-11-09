@@ -30,10 +30,8 @@ export default function LoginScreen() {
   const { colors, isDark, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  // 'login' | '2fa'
   const [phase, setPhase] = useState<'login' | '2fa'>('login');
 
-  // Login State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -42,7 +40,6 @@ export default function LoginScreen() {
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
 
-  // 2FA State
   const [otpCode, setOtpCode] = useState('');
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [cooldown, setCooldown] = useState(0);
@@ -68,7 +65,6 @@ export default function LoginScreen() {
     return () => glow.stop();
   }, [fadeAnim, glowAnim]);
 
-  // Re-trigger fade animation on phase change
   useEffect(() => {
     fadeAnim.setValue(0);
     Animated.timing(fadeAnim, {
@@ -78,7 +74,6 @@ export default function LoginScreen() {
     }).start();
   }, [phase, fadeAnim]);
 
-  // Cooldown timer
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
@@ -143,9 +138,9 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const { data: signInData, error } = await supabase.auth.signInWithPassword({ 
-        email: email.trim(), 
-        password 
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password
       });
 
       if (error) throw error;
@@ -161,7 +156,7 @@ export default function LoginScreen() {
         if (otpError) throw otpError;
 
         await supabase.auth.signOut();
-        
+
         setSentTo(email.trim().toLowerCase());
         setPhase('2fa');
         setCooldown(COOLDOWN_SECONDS);
@@ -398,7 +393,7 @@ export default function LoginScreen() {
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
-              
+
               {phase === '2fa' ? (
                 /* --- 2FA OTP STATE --- */
                 <>
@@ -409,13 +404,13 @@ export default function LoginScreen() {
                     <Text style={styles.header}>Two-Factor Auth</Text>
                     <Text style={styles.subHeader}>
                       We sent a 6-digit code to{'\n'}
-                      <Text style={{ fontWeight: '600', color: colors.textPrimary }}>{sentTo}</Text>
+                      <Text style={{ fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }}>{sentTo}</Text>
                     </Text>
                   </View>
 
                   <View style={styles.formContainer}>
                     <View style={[
-                      styles.inputWrapper, 
+                      styles.inputWrapper,
                       { height: 64, marginBottom: 20 },
                       focusedInput === 'otp' && styles.inputFocused
                     ]}>
@@ -423,7 +418,7 @@ export default function LoginScreen() {
                         <PhIcon name="Keypad" size={24} color={focusedInput === 'otp' ? ORANGE : colors.textMuted} />
                       </View>
                       <TextInput
-                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontWeight: '700' }]}
+                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontFamily: 'Poppins_700Bold' }]}
                         placeholder="000000"
                         placeholderTextColor={colors.textMuted}
                         keyboardType="number-pad"
@@ -448,14 +443,14 @@ export default function LoginScreen() {
                   <View style={styles.dividerContainer}>
                     <Text style={styles.dividerText}>Didn't receive it? </Text>
                     <TouchableOpacity onPress={handleResendOtp} disabled={cooldown > 0 || loading}>
-                      <Text style={{ color: cooldown > 0 ? colors.textMuted : ORANGE, fontWeight: '700', fontSize: 14 }}>
+                      <Text style={{ color: cooldown > 0 ? colors.textMuted : ORANGE, fontFamily: 'Poppins_700Bold', fontSize: 14 }}>
                         {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend Code'}
                       </Text>
                     </TouchableOpacity>
                   </View>
 
                   <TouchableOpacity onPress={() => setPhase('login')} style={{ marginTop: 10, alignItems: 'center' }}>
-                    <Text style={{ color: colors.textSecondary, fontSize: 13, textDecorationLine: 'underline' }}>
+                    <Text style={{ color: colors.textSecondary, fontSize: 13, fontFamily: 'Poppins_400Regular', textDecorationLine: 'underline' }}>
                       Cancel and go back
                     </Text>
                   </TouchableOpacity>
@@ -466,7 +461,6 @@ export default function LoginScreen() {
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
                       <Image source={require('../../../assets/appiconfinal2.png')} style={styles.logoImage} resizeMode="contain" />
-                      {/* FIXED: Only "N" is orange */}
                       <Text style={styles.brandText}>
                         Pack-<Text style={styles.brandTextOrange}>N</Text>-Ship
                       </Text>
@@ -557,12 +551,12 @@ export default function LoginScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   keyboardAvoid: { flex: 1 },
-  themeToggle: { 
-    position: 'absolute', right: 20, zIndex: 20, width: 44, height: 44, borderRadius: 22, 
-    backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', 
-    borderWidth: 1, borderColor: c.border, 
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, 
-    shadowOpacity: isDark ? 0.4 : 0.05, shadowRadius: 8, elevation: 2 
+  themeToggle: {
+    position: 'absolute', right: 20, zIndex: 20, width: 44, height: 44, borderRadius: 22,
+    backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: c.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.4 : 0.05, shadowRadius: 8, elevation: 2
   },
   backgroundLayer: { ...StyleSheet.absoluteFill, overflow: 'hidden' },
   glow: { position: 'absolute', borderRadius: 999, backgroundColor: ORANGE },
@@ -570,57 +564,56 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   glowBottom: { width: 300, height: 300, bottom: -140, left: -120, opacity: 0.05 },
   innerContainer: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 40, flexGrow: 1, justifyContent: 'center' },
   contentWrapper: { flex: 1, justifyContent: 'center' },
-  
+
   headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
   brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
   logoImage: { width: 74, height: 74 },
-  brandText: { 
-    fontSize: 29, fontWeight: '800', color: c.textPrimary, 
-    letterSpacing: -0.5, marginLeft: -12 // Removed italic
+  brandText: {
+    fontSize: 29, fontFamily: 'Poppins_700Bold', color: c.textPrimary,
+    letterSpacing: -0.5, marginLeft: -12
   },
   brandTextOrange: { color: ORANGE },
-  header: { fontSize: 28, fontWeight: '800', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.5 },
-  subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
-  
+  header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.5 },
+  subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
+
   formContainer: { marginBottom: 16 },
-  inputWrapper: { 
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card, 
-    borderWidth: 1, borderColor: c.border, borderRadius: 16, // Softer radius
-    marginBottom: 12, height: 54 
+  inputWrapper: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.card,
+    borderWidth: 1, borderColor: c.border, borderRadius: 16,
+    marginBottom: 12, height: 54
   },
   inputIcon: { paddingLeft: 16, paddingRight: 12, justifyContent: 'center', alignItems: 'center' },
-  input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary },
+  input: { flex: 1, height: '100%', fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary },
   inputFocused: { backgroundColor: c.card, borderColor: ORANGE },
   inputError: { borderColor: c.error, backgroundColor: c.errorBg },
   eyeButton: { paddingHorizontal: 16, height: '100%', justifyContent: 'center' },
-  errorText: { color: c.error, fontSize: 12, fontWeight: '500', marginTop: -8, marginBottom: 10, marginLeft: 4 },
-  
+  errorText: { color: c.error, fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: -8, marginBottom: 10, marginLeft: 4 },
+
   forgotPasswordButton: { alignSelf: 'flex-end', paddingVertical: 4, marginBottom: 12 },
-  forgotPasswordText: { color: ORANGE, fontSize: 14, fontWeight: '600' },
-  
-  loginButton: { 
-    backgroundColor: ORANGE, height: 54, borderRadius: 16, // Softer radius
+  forgotPasswordText: { color: ORANGE, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
+
+  loginButton: {
+    backgroundColor: ORANGE, height: 54, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20,
-    // Added premium shadow
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   buttonDisabled: { opacity: 0.7 },
-  loginText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
-  
+  loginText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 16 },
+
   dividerContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20 },
   dividerLine: { flex: 1, height: 1, backgroundColor: c.border },
-  dividerText: { marginHorizontal: 12, color: c.textSecondary, fontWeight: '500', fontSize: 14 },
-  
-  googleButton: { 
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', 
-    borderWidth: 1, borderColor: c.border, borderRadius: 16, // Softer radius
-    height: 54, width: '100%', marginBottom: 24, backgroundColor: c.card 
+  dividerText: { marginHorizontal: 12, color: c.textSecondary, fontFamily: 'Poppins_400Regular', fontSize: 14 },
+
+  googleButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: c.border, borderRadius: 16,
+    height: 54, width: '100%', marginBottom: 24, backgroundColor: c.card
   },
   googleIcon: { width: 22, height: 22, marginRight: 10 },
-  googleText: { color: c.textPrimary, fontWeight: '600', fontSize: 15 },
-  
+  googleText: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold', fontSize: 15 },
+
   signUpContainer: { width: '100%', alignItems: 'center', paddingVertical: 8 },
-  signUpText: { color: c.textSecondary, fontSize: 14 },
-  signUpTextBold: { color: ORANGE, fontWeight: '600' },
+  signUpText: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_400Regular' },
+  signUpTextBold: { color: ORANGE, fontFamily: 'Poppins_600SemiBold' },
 });

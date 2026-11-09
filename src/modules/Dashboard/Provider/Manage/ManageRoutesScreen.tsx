@@ -1121,6 +1121,26 @@ export default function ManageRoutesScreen() {
             ? `Route saved (${res.distanceKm} km). Note: Routes over 25 km are flagged for Admin coverage review.`
             : 'Your route corridor is active and scanning for forward matches!',
         );
+
+        // Optimistic insert: the route row itself (is_active / is_deleted) is already
+        // correct the moment the insert returns, BEFORE the background
+        // `evaluate_route_matches` RPC runs. Add it to local state right away so the
+        // "Active" tab/badge reflects it instantly instead of waiting on a re-fetch
+        // that happens after that RPC — and isn't left stuck at 0 if that RPC is slow
+        // or (depending on backend config) touches the row.
+        if (res.route) {
+          const vehicleObj = vehicles.find(v => v.vehicle_id === selectedVehicleId) || null;
+          const optimisticRoute: Route = {
+            ...res.route,
+            start_location: startLocation,
+            end_location: endLocation,
+            vehicle: vehicleObj as any,
+          };
+          setRoutes(prev => {
+            if (prev.some(r => r.route_id === optimisticRoute.route_id)) return prev;
+            return [optimisticRoute, ...prev];
+          });
+        }
       }
 
       resetForm();

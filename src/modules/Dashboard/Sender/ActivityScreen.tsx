@@ -14,7 +14,6 @@ import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
-import { promptCallChoice } from '../../../services/callService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon'; 
@@ -1266,31 +1265,32 @@ export default function ActivityScreen() {
     </View>
   );
 
-  const renderMiniContact = (o: {
-    role: string;
-    name: string | null;
-    phone: string | null;
-    userId?: number | null;
-    deliveryId?: number | null;
-    color: string;
-    subBadge?: string | null;
-  }) => {
-    const canCall = !!o.phone || !!o.userId;
+    const renderMiniContact = (o: {
+      role: string;
+      name: string | null;
+      phone: string | null;
+      userId?: number | null;   // kept for caller compatibility, unused
+      deliveryId?: number | null;
+      color: string;
+      subBadge?: string | null;
+    }) => {
+      const canCall = !!o.phone;
 
     const triggerCall = () => {
-      promptCallChoice({
-        name: o.name,
-        role: o.role,
-        calleeId: o.userId ?? null,
-        phone: o.phone,
-        deliveryId: o.deliveryId ?? null,
+      if (!o.phone) {
+        Alert.alert('No Phone Number', `No phone number is available for ${o.name || 'this contact'}.`);
+        return;
+      }
+      const url = `tel:${String(o.phone).replace(/\s+/g, '')}`;
+      Linking.openURL(url).catch(() => {
+        Alert.alert('Unable to Call', 'Your device cannot open the phone dialer.');
       });
     };
 
     const handlePress = () => {
       Alert.alert(
         o.role,
-        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || (o.userId ? 'In-App Call Available' : 'N/A')}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
+        `Name: ${o.name || 'N/A'}\nPhone: ${o.phone || 'N/A'}${o.subBadge ? `\nStatus: ${o.subBadge}` : ''}`,
         canCall
           ? [
               { text: 'Cancel', style: 'cancel' },

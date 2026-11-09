@@ -22,8 +22,9 @@ import {
   getDemoMode,
   setDemoMode,
   subscribeDemoMode,
+  syncSelectedRouteToDb,
 } from '../../../services/activeRouteStore';
-import { evaluateAndFetchRouteMatches, computeCargoVolumeLiters, RouteMatchRow } from '../../../services/matchingService';
+import { evaluateAndFetchRouteMatches, fetchDirectRequestMatches, computeCargoVolumeLiters, parseRequestCreatedTime, RouteMatchRow } from '../../../services/matchingService';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
@@ -36,7 +37,12 @@ import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
-const OFFER_SECONDS = 45;
+// No countdown any more: a request stays available until the sender cancels it or a provider accepts it.
+// Requests whose live route match has lapsed (e.g. server-side window closed) are still listed under
+// "Awaiting acceptance" as MISSED. Set to false to show them but block accepting them.
+const ALLOW_LATE_ACCEPT = true;
+// Lapsed (non-live) requests older than this are treated as abandoned drafts and hidden.
+const AWAITING_MAX_AGE_HOURS = 24;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
@@ -89,6 +95,7 @@ interface Route {
   admin_review_flag?: boolean;
   is_deleted?: boolean;
   is_active?: boolean;
+  is_selected?: boolean;
   start_location_id: number;
   end_location_id: number;
   provider_id: number;
@@ -344,9 +351,6 @@ const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, cu
   };
 };
 
-/* ==================================================================== */
-/* Map helpers                                                          */
-/* ==================================================================== */
 const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
 
 const makeMapStyles = (c: ThemeColors) => StyleSheet.create({
@@ -404,9 +408,6 @@ const fetchRoadCoords = async (
   return fallback;
 };
 
-/* ==================================================================== */
-/* ProviderMap                                                          */
-/* ==================================================================== */
 const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online = true }: any) => {
   const { colors, isDark } = useTheme();
   const mapStyles = useMemo(() => makeMapStyles(colors), [colors]);
@@ -615,9 +616,6 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
   );
 };
 
-/* ==================================================================== */
-/* Reverse-geocode helpers (shared by picker)                           */
-/* ==================================================================== */
 const reverseGeocodeGoogle = async (coords: Coord) => {
   if (!HAS_API_KEY) return null;
   try {
@@ -701,9 +699,6 @@ const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
   return [];
 };
 
-/* ==================================================================== */
-/* RouteLocationPickerModal                                             */
-/* ==================================================================== */
 const RouteLocationPickerModal = ({
   visible, onClose, onSelect, initialCoords, title, pinColor,
 }: {
@@ -1277,9 +1272,6 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   clearText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 });
 
-/* ==================================================================== */
-/* Main Screen                                                          */
-/* ==================================================================== */
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -1317,7 +1309,10 @@ export default function JobsScreen() {
   const [recenterTick, setRecenterTick] = useState(0);
 
   const [dismissedIds, setDismissedIds] = useState<number[]>([]);
-  const [offerSecondsLeft, setOfferSecondsLeft] = useState(OFFER_SECONDS);
+  const [requestListOpen, setRequestListOpen] = useState(false);
+  const [awaiting, setAwaiting] = useState<JobRequest[]>([]);
+  const [lapsedIds, setLapsedIds] = useState<number[]>([]);
+  const awaitingSeqRef = useRef(0);
   const [todayStats, setTodayStats] = useState<{ count: number; earned: number; rating: number | null }>({ count: 0, earned: 0, rating: null });
 
   const [notifModalOpen, setNotifModalOpen] = useState(false);
@@ -1371,11 +1366,16 @@ export default function JobsScreen() {
   useEffect(() => {
     return subscribeActiveRoute((newRouteId) => {
       if (!newRouteId) return;
+      if (activeRouteRef.current?.route_id === newRouteId) return;
       const found = routesRef.current.find(r => r.route_id === newRouteId);
-      if (found && activeRouteRef.current?.route_id !== newRouteId) {
+      if (found) {
+        // Selection changed (here or in Manage Routes): show ONLY that route's requests, automatically.
         setActiveRoute(found);
         activeRouteRef.current = found;
         void refreshMatches(providerIdRef.current, found, routesRef.current);
+      } else {
+        // A brand-new route we haven't loaded yet.
+        void loadData();
       }
     });
   }, []);
@@ -1612,6 +1612,8 @@ export default function JobsScreen() {
       if (restored) {
         setActiveRoute(restored);
         activeRouteRef.current = restored;
+        // Keep the shared flag in sync so senders' Explore shows only this route.
+        if (restored.is_selected !== true) void syncSelectedRouteToDb(restored.route_id, true);
         return { resolvedRoute: restored, validRoutes };
       } else if (validRoutes.length > 0) {
         const firstRoute = validRoutes[0];
@@ -1631,114 +1633,80 @@ export default function JobsScreen() {
     }
   };
 
-  const refreshMatches = useCallback(async (
-    overridePid?: number | null,
-    overrideActiveRoute?: Route | null,
-    overrideAllRoutes?: Route[],
-  ) => {
-    const pid = overridePid ?? providerIdRef.current;
-    if (!pid) return;
+  const refreshSeqRef = useRef(0);
 
-    const currentActive = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
-    const allCandidateRoutes = overrideAllRoutes ?? routesRef.current;
-
+  /**
+   * Loads the requests for the provider's SELECTED route only (plus requests a
+   * sender addressed straight to this provider). It never switches the selected
+   * route by itself: whatever is selected is what appears.
+   */
+  // Everything this provider could still accept: direct requests + every Pending request that was
+  // matched to one of their live routes (even if the live match has since lapsed).
+  const loadAwaiting = useCallback(async (pid: number | null) => {
+    const seq = ++awaitingSeqRef.current;
+    const isLatest = () => seq === awaitingSeqRef.current;
+    if (!pid) { setAwaiting([]); setLapsedIds([]); return; }
     try {
-      setCheckingMatches(true);
-
-      const orderedRoutes: Route[] = [];
-      if (currentActive) orderedRoutes.push(currentActive);
-      for (const r of allCandidateRoutes) {
-        if (!orderedRoutes.some(x => x.route_id === r.route_id)) {
-          orderedRoutes.push(r);
-        }
-      }
-
-      if (orderedRoutes.length === 0) {
-        const storedId = await getActiveRouteId();
-        if (storedId) {
-          orderedRoutes.push({ route_id: storedId } as Route);
-        } else {
-          setRequests([]);
-          return;
-        }
-      }
-
-      const isDemo = await getDemoMode();
-      let winningRoute: Route | null = orderedRoutes[0] || null;
-      let winningMatches: RouteMatchRow[] = [];
-
-      for (const candidate of orderedRoutes) {
-        const rows = await evaluateAndFetchRouteMatches(candidate.route_id, isDemo);
-        if (rows.length > 0) {
-          winningRoute = candidate;
-          winningMatches = rows;
-          break;
-        }
-      }
-
-      if (winningMatches.length === 0) {
-        const { data: directReqs } = await supabase
-          .from('delivery_requests')
-          .select(`
-            *,
-            pickup_location:locations!delivery_requests_pickup_location_id_fkey(*),
-            dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*),
-            cargo:cargo_id(*),
-            receiver:receiver_id(*)
-          `)
+      const sel = `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`;
+      const [directRes, matchRes] = await Promise.all([
+        supabase.from('delivery_requests').select(sel)
           .eq('preferred_provider_id', pid)
-          .eq('delivery_status', 'Pending');
+          .eq('delivery_status', 'Pending'),
+        supabase.from('route_request_matches')
+          .select(`*, route:provider_routes(route_id, is_active, is_deleted), request:delivery_requests (${sel})`)
+          .eq('provider_id', pid)
+          .in('status', ['matched', 'expired'])
+          .order('match_score', { ascending: false }),
+      ]);
+      if (directRes.error) console.warn('[Jobs] awaiting direct read failed:', directRes.error.message);
+      if (matchRes.error) console.warn('[Jobs] awaiting match read failed:', matchRes.error.message);
 
-        if (directReqs && directReqs.length > 0) {
-          const reqIds = directReqs.map((r: any) => r.request_id);
-          const { data: existingDelivs } = await supabase
-            .from('deliveries')
-            .select('request_id')
-            .in('request_id', reqIds);
-          const takenSet = new Set((existingDelivs || []).map((d: any) => d.request_id));
-          const openDirect = directReqs.filter((r: any) => !takenSet.has(r.request_id));
+      const byReq = new Map<number, RouteMatchRow>();
+      const lapsed = new Set<number>();
+      const maxAgeMs = AWAITING_MAX_AGE_HOURS * 3600000;
 
-          if (openDirect.length > 0) {
-            const firstPrefRouteId = openDirect[0].preferred_route_id;
-            const matchedRouteObj =
-              orderedRoutes.find(r => r.route_id === Number(firstPrefRouteId)) ||
-              orderedRoutes[0];
-
-            if (matchedRouteObj) {
-              winningRoute = matchedRouteObj;
-              winningMatches = openDirect.map((dr: any) => ({
-                match_id: 0,
-                route_id: matchedRouteObj.route_id,
-                request_id: dr.request_id,
-                provider_id: pid,
-                match_score: 100,
-                is_fallback: false,
-                fallback_type: null,
-                pickup_dist_m: 0,
-                dropoff_dist_m: 0,
-                pickup_fraction: 0,
-                dropoff_fraction: 1,
-                extra_detour_km: 0,
-                status: 'matched',
-                request: dr,
-              }));
-            }
-          }
+      for (const m of (matchRes.data || []) as any[]) {
+        const req = m.request;
+        const route = Array.isArray(m.route) ? m.route[0] : m.route;
+        if (!req || req.delivery_status !== 'Pending') continue;
+        if (route && (route.is_deleted || route.is_active === false)) continue;
+        if (req.preferred_provider_id != null && Number(req.preferred_provider_id) !== Number(pid)) continue;
+        const isDirect = req.preferred_provider_id != null && Number(req.preferred_provider_id) === Number(pid);
+        const live = m.status === 'matched';
+        if (!live && !isDirect) {
+          const ageMs = Date.now() - parseRequestCreatedTime(req).getTime();
+          if (ageMs > maxAgeMs) continue;
         }
+        const id = Number(m.request_id);
+        const prev = byReq.get(id);
+        if (prev && (prev.status === 'matched' || !live)) continue;
+        byReq.set(id, { ...m, request: req } as RouteMatchRow);
+        if (live || isDirect) lapsed.delete(id); else lapsed.add(id);
       }
 
-      if (winningRoute && winningRoute.start_location && activeRouteRef.current?.route_id !== winningRoute.route_id) {
-        setActiveRoute(winningRoute);
-        activeRouteRef.current = winningRoute;
-        await setActiveRouteId(winningRoute.route_id);
+      for (const dr of (directRes.data || []) as any[]) {
+        const id = Number(dr.request_id);
+        if (byReq.has(id) && byReq.get(id)!.status === 'matched') continue;
+        byReq.set(id, {
+          match_id: 0, route_id: Number(dr.preferred_route_id || 0), request_id: id, provider_id: pid,
+          match_score: 100, is_fallback: false, fallback_type: null,
+          pickup_dist_m: 0, dropoff_dist_m: 0, pickup_fraction: 0, dropoff_fraction: 1, extra_detour_km: 0,
+          status: 'matched', request: dr,
+        } as RouteMatchRow);
+        lapsed.delete(id);
       }
 
-      if (winningMatches.length === 0) {
-        setRequests([]);
+      const ids = Array.from(byReq.keys());
+      if (ids.length === 0) {
+        if (isLatest()) { setAwaiting([]); setLapsedIds([]); }
         return;
       }
 
-      const senderIds = Array.from(new Set(winningMatches.map(m => m.request?.sender_id).filter(Boolean)));
+      const { data: taken } = await supabase.from('deliveries').select('request_id').in('request_id', ids);
+      const takenSet = new Set((taken || []).map((d: any) => Number(d.request_id)));
+      const rows = ids.filter(id => !takenSet.has(id)).map(id => byReq.get(id)!);
+
+      const senderIds = Array.from(new Set(rows.map(m => m.request?.sender_id).filter(Boolean)));
       const senders: Record<number, string> = {};
       if (senderIds.length > 0) {
         const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
@@ -1748,7 +1716,76 @@ export default function JobsScreen() {
         });
       }
 
-      const hydrated = winningMatches.map(m => normalizeMatchRow(m, senders, pid));
+      // live ones first (best score first), lapsed ones after
+      rows.sort((a, b) => {
+        const al = lapsed.has(Number(a.request_id)) ? 1 : 0;
+        const bl = lapsed.has(Number(b.request_id)) ? 1 : 0;
+        if (al !== bl) return al - bl;
+        return Number(b.match_score) - Number(a.match_score);
+      });
+
+      if (!isLatest()) return;
+      setAwaiting(rows.map(m => normalizeMatchRow(m, senders, pid)));
+      setLapsedIds(rows.filter(m => lapsed.has(Number(m.request_id))).map(m => Number(m.request_id)));
+    } catch (e) {
+      console.warn('[Jobs] loadAwaiting error:', e);
+    }
+  }, []);
+
+  const refreshMatches = useCallback(async (
+    overridePid?: number | null,
+    overrideActiveRoute?: Route | null,
+    _overrideAllRoutes?: Route[],
+  ) => {
+    const pid = overridePid ?? providerIdRef.current;
+    if (!pid) return;
+
+    void loadAwaiting(pid);
+
+    const selected = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
+    const seq = ++refreshSeqRef.current;
+    const isLatest = () => seq === refreshSeqRef.current;
+
+    try {
+      setCheckingMatches(true);
+
+      // Rule 1: no posted/selected route => no requests.
+      if (!selected) {
+        if (isLatest()) setRequests([]);
+        return;
+      }
+
+      const isDemo = await getDemoMode();
+      const [directMatches, standardMatches] = await Promise.all([
+        fetchDirectRequestMatches(pid, selected.route_id),
+        evaluateAndFetchRouteMatches(selected.route_id, isDemo),
+      ]);
+
+      const allMatches: RouteMatchRow[] = [...directMatches];
+      for (const sm of standardMatches) {
+        if (!allMatches.some(m => m.request_id === sm.request_id)) allMatches.push(sm);
+      }
+
+      if (!isLatest()) return;
+
+      if (allMatches.length === 0) {
+        setRequests([]);
+        return;
+      }
+
+      const senderIds = Array.from(new Set(allMatches.map(m => m.request?.sender_id).filter(Boolean)));
+      const senders: Record<number, string> = {};
+      if (senderIds.length > 0) {
+        const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
+        (users || []).forEach((u: any) => {
+          const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
+          senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
+        });
+      }
+
+      if (!isLatest()) return;
+
+      const hydrated = allMatches.map(m => normalizeMatchRow(m, senders, pid));
 
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
@@ -1765,7 +1802,7 @@ export default function JobsScreen() {
     } catch (e) {
       console.warn('refreshMatches error:', e);
     } finally {
-      setCheckingMatches(false);
+      if (isLatest()) setCheckingMatches(false);
     }
   }, []);
 
@@ -1783,20 +1820,45 @@ export default function JobsScreen() {
 
   useEffect(() => {
     if (!providerId) return;
+
     const channel = supabase
       .channel(`jobs-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => {
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => {
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, () => {
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'route_request_matches' },
+        () => {
+          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_requests' },
+        () => {
+          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'deliveries' },
+        () => {
+          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        },
+      )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [providerId, refreshMatches]);
+
+  // Automatic: re-scan the selected route while this screen is open, so nothing has to be pressed.
+  useEffect(() => {
+    if (!providerId || !isFocused) return;
+    const t = setInterval(() => {
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+    }, 15000);
+    return () => clearInterval(t);
+  }, [providerId, isFocused, refreshMatches]);
 
   const fetchVehiclesForNewRoute = async (pid: number) => {
     const { data } = await supabase
@@ -1977,9 +2039,36 @@ export default function JobsScreen() {
       );
 
       setAddRouteModalVisible(false);
+
       if (res.route) {
-        await setActiveRouteId(res.route.route_id);
+        const vehicleObj = newRouteVehicles.find(v => v.vehicle_id === newRouteVehicleId) || null;
+        const optimisticRoute: Route = {
+          ...res.route,
+          start_location: {
+            location_id: newRouteStart.location_id,
+            latitude: newRouteStart.latitude,
+            longitude: newRouteStart.longitude,
+            street_address: newRouteStart.street_address,
+          } as any,
+          end_location: {
+            location_id: newRouteEnd.location_id,
+            latitude: newRouteEnd.latitude,
+            longitude: newRouteEnd.longitude,
+            street_address: newRouteEnd.street_address,
+          } as any,
+          vehicle: vehicleObj as any,
+        };
+
+        setRoutes(prev => (prev.some(r => r.route_id === optimisticRoute.route_id) ? prev : [optimisticRoute, ...prev]));
+        routesRef.current = routesRef.current.some(r => r.route_id === optimisticRoute.route_id)
+          ? routesRef.current
+          : [optimisticRoute, ...routesRef.current];
+
+        setActiveRoute(optimisticRoute);
+        activeRouteRef.current = optimisticRoute;
+        await setActiveRouteId(optimisticRoute.route_id);
       }
+
       const { resolvedRoute, validRoutes } = await fetchRoutes(providerId);
       await refreshMatches(providerId, resolvedRoute, validRoutes);
     } catch (err: any) {
@@ -2075,21 +2164,12 @@ export default function JobsScreen() {
 
   const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
 
+  const openRequestList = () => {
+    setRequestListOpen(true);
+    void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+  };
+
   useEffect(() => { setDismissedIds([]); }, [isOnline, activeRoute?.route_id]);
-
-  useEffect(() => {
-    if (!currentOffer) return;
-    setOfferSecondsLeft(OFFER_SECONDS);
-    if (currentOffer.isDirectRequest) return;
-    const t = setInterval(() => { setOfferSecondsLeft(sec => sec - 1); }, 1000);
-    return () => clearInterval(t);
-  }, [currentOffer?.request_id, currentOffer?.isDirectRequest]);
-
-  useEffect(() => {
-    if (currentOffer && !currentOffer.isDirectRequest && offerSecondsLeft <= 0) {
-      dismissOffer(currentOffer.request_id);
-    }
-  }, [offerSecondsLeft, currentOffer]);
 
   const triggerSOS = () => {
     Alert.alert('Emergency', 'Do you need emergency help? You can call the national emergency hotline now.', [
@@ -2141,18 +2221,101 @@ export default function JobsScreen() {
         resolvedRouteId = rRow?.route_id ?? null;
       }
 
-      const { data: fresh } = await supabase
-        .from('delivery_requests')
-        .select('delivery_status')
-        .eq('request_id', req.request_id)
-        .maybeSingle();
-      const { data: existing } = await supabase
-        .from('deliveries')
-        .select('delivery_id')
-        .eq('request_id', req.request_id)
-        .limit(1);
-      if (fresh?.delivery_status !== 'Pending' || (existing && existing.length > 0)) {
-        Alert.alert('Request unavailable', 'This request was accepted by another provider or cancelled.');
+      // Claim the request atomically: flip it to 'Accepted' ONLY if it's still 'Pending'.
+      //
+      // 1) Preferred path: the `claim_delivery_request` RPC (SECURITY DEFINER, see the SQL
+      //    shipped with this fix). It runs with the owner's rights, so a provider is never
+      //    silently refused by the delivery_requests UPDATE policy (which normally only lets
+      //    the SENDER update their own row).
+      // 2) Fallback: the direct table UPDATE, for databases that don't have the RPC yet.
+      //
+      // A plain UPDATE that RLS refuses does NOT error - it just touches 0 rows, which used to
+      // look identical to "somebody else got it first" / "request removed".
+      let claimed: { request_id: number; sender_id: number; estimated_cost: number } | null = null;
+      let claimErr: { message: string } | null = null;
+
+      const rpcRes = await supabase.rpc('claim_delivery_request', { p_request_id: req.request_id });
+      if (!rpcRes.error) {
+        const row = Array.isArray(rpcRes.data) ? rpcRes.data[0] : rpcRes.data;
+        claimed = row ?? null;
+      } else {
+        // RPC missing (PGRST202) or failed - fall back to the direct UPDATE.
+        const direct = await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Accepted' })
+          .eq('request_id', req.request_id)
+          .eq('delivery_status', 'Pending')
+          .select('request_id, sender_id, estimated_cost')
+          .maybeSingle();
+        claimed = (direct.data as any) ?? null;
+        claimErr = direct.error;
+      }
+
+      if (claimErr) {
+        Alert.alert('Could not accept request', `Please try again. (${claimErr.message})`);
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        return;
+      }
+
+      if (!claimed) {
+        // The claim touched 0 rows. Find out WHY, and never let a failed read masquerade as
+        // "the request was removed" (the old code ignored the read error entirely).
+        const [existingRes, stillRes] = await Promise.all([
+          supabase
+            .from('deliveries')
+            .select('delivery_id, provider_id')
+            .eq('request_id', req.request_id)
+            .limit(1),
+          supabase
+            .from('delivery_requests')
+            .select('delivery_status, preferred_provider_id')
+            .eq('request_id', req.request_id)
+            .maybeSingle(),
+        ]);
+        const existing = existingRes.data;
+        const still = stillRes.data;
+        console.warn('[Jobs] accept: claim matched 0 rows', {
+          request_id: req.request_id,
+          providerId,
+          deliveriesError: existingRes.error?.message ?? null,
+          requestReadError: stillRes.error?.message ?? null,
+          deliveryRows: existing?.length ?? 0,
+          requestStatus: still?.delivery_status ?? null,
+        });
+
+        if (existingRes.error || stillRes.error) {
+          Alert.alert(
+            'Could not verify request',
+            `We couldn't check this request's status (${(stillRes.error || existingRes.error)!.message}). Please try again.`,
+          );
+        } else if (existing && existing.length > 0) {
+          if (Number(existing[0].provider_id) === Number(providerId)) {
+            // Already accepted by THIS provider (e.g. a double tap) - not an error, go to the task.
+            setDetailRequestId(null);
+            void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+            if (!goToTaskTab()) Alert.alert('Already accepted', 'You already accepted this delivery. Find it in the Task tab.');
+            return;
+          }
+          Alert.alert('Request unavailable', 'This request was already accepted by another provider.');
+        } else if (!still) {
+          // No error, no row: the request really is gone (e.g. the sender cancelled and it was deleted).
+          Alert.alert(
+            'Request unavailable',
+            'The sender cancelled or removed this request. Pull to refresh to see current requests.',
+          );
+        } else if (still.delivery_status === 'Pending') {
+          // Readable + still Pending, yet our UPDATE changed nothing => the database REFUSED the
+          // write (row-level security), it is not a lost race.
+          Alert.alert(
+            'Could not accept request',
+            'This request is still open, but the server refused the update. Please contact support - the accept permission is not set up for providers.',
+          );
+        } else {
+          Alert.alert(
+            'Request unavailable',
+            `This request is now "${still.delivery_status}", so it can no longer be accepted.`,
+          );
+        }
         void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
         return;
       }
@@ -2165,7 +2328,12 @@ export default function JobsScreen() {
         accepted_at: new Date().toISOString(),
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
       }).select('*').single();
-      if (deliveryError) throw deliveryError;
+      if (deliveryError) {
+        // The deliveries insert failed after we'd already claimed the request - put it
+        // back to Pending so it isn't stuck "Accepted" with nobody actually assigned.
+        await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
+        throw deliveryError;
+      }
 
       const { error: qrError } = await supabase.from('qr_verifications').insert({
         delivery_id: delivery.delivery_id,
@@ -2176,27 +2344,35 @@ export default function JobsScreen() {
       });
       if (qrError) {
         await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
+        // Same as above: undo the claim so the request goes back to Pending instead of
+        // being stuck "Accepted" with no delivery behind it.
+        await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
         throw qrError;
       }
 
-      const { error: reqUpdateError } = await supabase
-        .from('delivery_requests')
-        .update({ delivery_status: 'Accepted' })
-        .eq('request_id', req.request_id);
-      if (reqUpdateError) throw reqUpdateError;
+      // delivery_status was already set to 'Accepted' by the atomic claim above.
 
-      if (req.matchId) {
+      try {
         await supabase
           .from('route_request_matches')
           .update({ status: 'accepted' })
-          .eq('match_id', req.matchId);
-      }
+          .eq('request_id', req.request_id)
+          .eq('provider_id', providerId);
+        await supabase
+          .from('route_request_matches')
+          .update({ status: 'expired' })
+          .eq('request_id', req.request_id)
+          .neq('provider_id', providerId)
+          .eq('status', 'matched');
+      } catch (e) { console.warn('[Jobs] match status update failed', e); }
 
-      if (activeRoute) {
+      // Deduct trunk space from the route this request was actually accepted on.
+      const capacityRoute = routes.find(r => r.route_id === resolvedRouteId) ?? activeRoute;
+      if (capacityRoute) {
         const cargoWeight = req.weightKg || 5;
         const cargoVol = computeCargoVolumeLiters(req.items);
-        const newWeight = Math.max(0, Number(activeRoute.remaining_weight_kg ?? 100) - cargoWeight);
-        const newVol = Math.max(0, Number(activeRoute.remaining_volume_liters ?? 300) - cargoVol);
+        const newWeight = Math.max(0, Number(capacityRoute.remaining_weight_kg ?? 100) - cargoWeight);
+        const newVol = Math.max(0, Number(capacityRoute.remaining_volume_liters ?? 300) - cargoVol);
         await supabase
           .from('provider_routes')
           .update({
@@ -2204,7 +2380,7 @@ export default function JobsScreen() {
             remaining_volume_liters: newVol,
             ...(req.isFallback ? { fallback_used: true } : {}),
           })
-          .eq('route_id', activeRoute.route_id);
+          .eq('route_id', capacityRoute.route_id);
       }
 
       const { data: requestData } = await supabase
@@ -2337,7 +2513,9 @@ export default function JobsScreen() {
   );
 
   const renderFullDetails = () => {
-    const o = detailRequestId != null ? requests.find(r => r.request_id === detailRequestId) : null;
+    const o = detailRequestId != null
+      ? (requests.find(r => r.request_id === detailRequestId) ?? awaiting.find(r => r.request_id === detailRequestId))
+      : null;
     if (!o) return null;
 
     const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
@@ -2574,7 +2752,6 @@ export default function JobsScreen() {
   };
 
   const renderOfferPopup = (o: JobRequest) => {
-    const pct = o.isDirectRequest ? 100 : Math.max(0, Math.min(100, (offerSecondsLeft / OFFER_SECONDS) * 100));
     const SHEET_H = Math.round(SCREEN_H * 0.50);
 
     return (
@@ -2594,16 +2771,6 @@ export default function JobsScreen() {
           elevation: 1,
         }}
       >
-        <View style={styles.offerTimerTrack}>
-          <View
-            style={[
-              styles.offerTimerFill,
-              { width: `${pct}%` as any, backgroundColor: colors.accent },
-              !o.isDirectRequest && offerSecondsLeft <= 10 && { backgroundColor: colors.error },
-            ]}
-          />
-        </View>
-
         <View style={{ flex: 1, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 90 + insets.bottom }}>
           <View style={styles.oTopRow}>
             {renderServicePill(o)}
@@ -2619,16 +2786,23 @@ export default function JobsScreen() {
                 <Text style={styles.fallbackBadgeText}>FALLBACK</Text>
               </View>
             )}
-            {offers.length > 1 && <Text style={styles.offerCount}>1 of {offers.length}</Text>}
-            <View style={{ flex: 1 }} />
-            {!o.isDirectRequest && (
-              <View style={styles.offerTimerPill}>
-                <SolarIcon name="Clock" variant="linear" size={13} color={offerSecondsLeft <= 10 ? colors.error : colors.textSecondary} />
-                <Text style={[styles.offerTimerText, offerSecondsLeft <= 10 && { color: colors.error }]}>
-                  {Math.max(0, offerSecondsLeft)}s
+            {awaiting.length > 1 && (
+              <TouchableOpacity
+                onPress={openRequestList}
+                activeOpacity={0.8}
+                hitSlop={8}
+                style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 4,
+                  paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
+                  backgroundColor: colors.accentSoft,
+                }}
+              >
+                <Text style={[styles.offerCount, { color: colors.accent }]}>
+                  {offers.length > 1 ? `1 of ${offers.length} · ` : ''}View all ({awaiting.length})
                 </Text>
-              </View>
+              </TouchableOpacity>
             )}
+            <View style={{ flex: 1 }} />
           </View>
 
           <View style={[styles.offerMainRow, { marginTop: 4 }]}>
@@ -2740,9 +2914,9 @@ export default function JobsScreen() {
                     ? 'Post a route to see matched deliveries.'
                     : checkingMatches
                       ? 'Scanning route corridor...'
-                      : requests.length === 0
+                      : awaiting.length === 0 && requests.length === 0
                         ? 'No matches on your route yet.'
-                        : `${requests.length} matched request${requests.length === 1 ? '' : 's'} on your route`}
+                        : `${Math.max(awaiting.length, requests.length)} request${Math.max(awaiting.length, requests.length) === 1 ? '' : 's'} awaiting your acceptance`}
                 </Text>
               </View>
             </View>
@@ -2751,6 +2925,30 @@ export default function JobsScreen() {
               <Text style={[styles.statusPillText, { color: isOnline ? colors.success : OFF.sub }]}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
             </View>
           </View>
+
+          <TouchableOpacity
+            onPress={openRequestList}
+            activeOpacity={0.85}
+            style={{
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+              paddingHorizontal: 14, paddingVertical: 12, marginBottom: 10, borderRadius: 12,
+              backgroundColor: colors.accent,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <SolarIcon name="DocumentText" variant="linear" size={18} color="#FFFFFF" />
+              <Text style={{ fontSize: 14, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' }}>Awaiting acceptance</Text>
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={{
+                minWidth: 26, height: 24, paddingHorizontal: 8, borderRadius: 12,
+                alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.25)',
+              }}>
+                <Text style={{ fontSize: 12.5, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' }}>{awaiting.length}</Text>
+              </View>
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color="#FFFFFF" />
+            </View>
+          </TouchableOpacity>
 
           <View style={{
             flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -3058,6 +3256,138 @@ export default function JobsScreen() {
     </Modal>
   );
 
+  const renderRequestListModal = () => {
+    const isLapsed = (r: JobRequest) => lapsedIds.includes(r.request_id);
+    const active = awaiting.filter(r => !dismissedIds.includes(r.request_id) && !isLapsed(r));
+    const skipped = awaiting.filter(r => dismissedIds.includes(r.request_id) && !isLapsed(r));
+    const missed = awaiting.filter(r => isLapsed(r));
+    const data = [...active, ...skipped, ...missed];
+    const border = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+
+    const tag = (label: string, color: string, bg: string) => (
+      <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: bg }}>
+        <Text style={{ fontSize: 10.5, fontFamily: 'Poppins_700Bold', color, letterSpacing: 0.4 }}>{label}</Text>
+      </View>
+    );
+
+    const renderRow = ({ item: r }: { item: JobRequest }) => {
+      const isSkipped = dismissedIds.includes(r.request_id);
+      const lapsed = lapsedIds.includes(r.request_id);
+      const canAccept = !lapsed || ALLOW_LATE_ACCEPT;
+      return (
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 16, padding: 14,
+          borderWidth: 1, borderColor: border, opacity: isSkipped ? 0.85 : 1,
+        }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+            {renderServicePill(r)}
+            {r.matchScore != null && tag(`${Math.round(r.matchScore)}% MATCH`, colors.success, 'rgba(34,197,94,0.12)')}
+            {r.isDirectRequest && tag('DIRECT', colors.accent, colors.accentSoft)}
+            {isSkipped && tag('SKIPPED', colors.textSecondary, 'rgba(100,116,139,0.15)')}
+            {lapsed && tag('MISSED', colors.error, 'rgba(239,68,68,0.12)')}
+            <View style={{ flex: 1 }} />
+            <Text style={{ fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: colors.textSecondary }}>
+              {requestCode(r.request_id)}
+            </Text>
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 }}>
+            <View style={{ flex: 1, paddingRight: 10 }}>
+              <Text style={{ fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }} numberOfLines={1}>
+                {r.pickup.main}
+              </Text>
+              <Text style={{ fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary, marginVertical: 1 }}>↓</Text>
+              <Text style={{ fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }} numberOfLines={1}>
+                {r.dropoff.main}
+              </Text>
+            </View>
+            <View style={{ alignItems: 'flex-end' }}>
+              <Text style={{ fontSize: 10.5, fontFamily: 'Poppins_600SemiBold', color: colors.textSecondary, letterSpacing: 0.6 }}>PAY</Text>
+              <Text style={{ fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: colors.textPrimary }}>{money(r.estimated_cost)}</Text>
+            </View>
+          </View>
+
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity
+              style={{
+                flex: 1, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+                borderWidth: 1, borderColor: colors.accent,
+              }}
+              onPress={() => { setRequestListOpen(false); setDetailRequestId(r.request_id); }}
+              activeOpacity={0.85}
+            >
+              <Text style={{ fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: colors.accent }}>Details</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[{
+                flex: 1, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+                backgroundColor: colors.accent,
+              }, (accepting || !canAccept) && { opacity: 0.6 }]}
+              onPress={() => acceptRequest(r)}
+              disabled={accepting || !canAccept}
+              activeOpacity={0.9}
+            >
+              {accepting
+                ? <ActivityIndicator size="small" color="#FFFFFF" />
+                : <Text style={{ fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' }}>Accept</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    };
+
+    return (
+      <Modal visible={requestListOpen} animationType="slide" onRequestClose={() => setRequestListOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: colors.background }}>
+          <View style={{
+            flexDirection: 'row', alignItems: 'center',
+            paddingHorizontal: 16, paddingTop: insets.top + 8, paddingBottom: 12,
+            backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.divider,
+          }}>
+            <TouchableOpacity
+              onPress={() => setRequestListOpen(false)}
+              style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center' }}
+              activeOpacity={0.7} hitSlop={10}
+            >
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={{ fontSize: 18, fontFamily: 'Poppins_700Bold', color: colors.textPrimary, letterSpacing: -0.3 }}>
+                Route Requests
+              </Text>
+              <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
+                {awaiting.length} awaiting{skipped.length > 0 ? ` · ${skipped.length} skipped` : ''}{missed.length > 0 ? ` · ${missed.length} missed` : ''}
+              </Text>
+            </View>
+            <View style={{ width: 42 }} />
+          </View>
+
+          <FlatList
+            data={data}
+            keyExtractor={(r) => String(r.request_id)}
+            renderItem={renderRow}
+            ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+            refreshing={checkingMatches}
+            onRefresh={() => { void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current); }}
+            contentContainerStyle={{ padding: 16, paddingBottom: 24 + insets.bottom }}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              <View style={{ alignItems: 'center', paddingTop: 60 }}>
+                <Image source={EMPTY_COMPASS_ICON} style={{ width: 72, height: 72 }} resizeMode="contain" />
+                <Text style={{ marginTop: 10, fontSize: 14, fontFamily: 'Poppins_700Bold', color: colors.textPrimary }}>
+                  Nothing awaiting acceptance
+                </Text>
+                <Text style={{ marginTop: 2, fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
+                  New matches on your route will show up here.
+                </Text>
+              </View>
+            }
+          />
+        </View>
+      </Modal>
+    );
+  };
+
   const renderAddRouteModal = () => (
     <Modal
       visible={addRouteModalVisible}
@@ -3340,6 +3670,7 @@ export default function JobsScreen() {
 
       {renderNotifModal()}
       {renderFullListModal()}
+      {renderRequestListModal()}
 
       <Modal visible={routePickerVisible} transparent animationType="slide" onRequestClose={() => setRoutePickerVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -3460,9 +3791,6 @@ export default function JobsScreen() {
   );
 }
 
-/* ==================================================================== */
-/* Styles                                                               */
-/* ==================================================================== */
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mapTools: { position: 'absolute', right: 12, gap: 10 },
   mapToolBtn: {
@@ -3601,14 +3929,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 
-  offerTimerTrack: { height: 5, backgroundColor: c.border },
-  offerTimerFill: { height: '100%' },
   offerCount: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
-  offerTimerPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.divider, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 999,
-  },
-  offerTimerText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   offerMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12 },
   offerPrice: { fontSize: 32, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -1, marginTop: 2 },
   offerCode: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted },

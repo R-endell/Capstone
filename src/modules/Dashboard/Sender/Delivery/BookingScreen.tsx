@@ -10,21 +10,24 @@ import * as Notifications from 'expo-notifications';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
 import { supabase } from '../../../../utils/supabase';
-import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown } from '../../../../services/routeService';
+import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown, parseNaiveRouteTime } from '../../../../services/routeService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
 import { notifyUser } from '../../../../services/pushService';
+import {
+  syncAllActiveRoutesTodayForRequest,
+  isRouteTimeValidForRequest,
+  getRouteTodayDepartureDate,
+} from '../../../../services/matchingService';
 
 const { height } = Dimensions.get('window');
-const SHEET_MAX_H = Math.round(height * 0.5);
+const SHEET_MAX_H = Math.round(height * 0.52);
 const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
-// How long we search before offering "Try Again" / "Go Home". Change this one number to adjust.
 const SEARCH_DURATION_MS = 60000;
 
-const SHOW_ANIMATION_SWITCHER = false;
 const ANIMATION_STYLES = [
   { key: 'radar', label: 'Radar' },
   { key: 'vehicle', label: 'Vehicle' },
@@ -36,10 +39,10 @@ const DEFAULT_FINDING_ANIMATION: FindingAnimation = 'radar';
 const FINDING_STATUS_MESSAGES = [
   'Locating nearby delivery partners...',
   'Matching cargo capacity and vehicle type...',
-  'Broadcasting your request to available riders...',
-  'Pinging riders in your immediate area...',
+  'Checking providers with routes today...',
+  'Pinging riders along your corridor...',
   'Optimizing delivery route for best fare...',
-  'Checking availability of nearby drivers...',
+  'Checking departure times of active drivers...',
   'Notifying top-rated riders nearby...',
   'Almost there, waiting for a response...',
   'Expanding search radius for more options...',
@@ -75,18 +78,29 @@ const nowManilaNaive = (): string => {
   return `${y}-${m}-${d}T${hh}:${mm}:00`;
 };
 
-const formatDepartureTime = (isoString: string | null | undefined) => {
+const formatDepartureTime = (isoString: string | null | undefined, routeFreq?: string | null) => {
   if (!isoString) return null;
   try {
-    const d = new Date(isoString.replace(' ', 'T'));
-    if (isNaN(d.getTime())) return null;
-    return d.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
+    const dep = parseNaiveRouteTime(isoString);
+    if (isNaN(dep.getTime())) return null;
+    const freq = String(routeFreq || '').trim().toLowerCase();
+    const timePart = dep.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       hour12: true,
     });
+    if (freq === 'daily' || freq === 'weekly') {
+      return `Today at ${timePart}`;
+    }
+    const now = new Date();
+    const isToday =
+      dep.getFullYear() === now.getFullYear() &&
+      dep.getMonth() === now.getMonth() &&
+      dep.getDate() === now.getDate();
+    if (isToday) {
+      return `Today at ${timePart}`;
+    }
+    return `${dep.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${timePart}`;
   } catch {
     return null;
   }
@@ -98,9 +112,6 @@ interface ProviderRating {
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
 
-/* ==================================================================== */
-/* Local match notification                                            */
-/* ==================================================================== */
 const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
   try {
     await Notifications.scheduleNotificationAsync({
@@ -122,16 +133,15 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
   }
 };
 
-/* ==================================================================== */
-/* Local direct-provider request notification                          */
-/* ==================================================================== */
-const fireDirectRequestNotification = async (providerName: string, requestId: number) => {
+const fireDirectRequestNotification = async (providerName: string, requestId: number, isAutoRouteMatch = false) => {
   const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: '📨 Request Sent to Provider!',
-        body: `Your delivery #${trackingId} has been sent directly to ${providerName}.`,
+        title: isAutoRouteMatch ? '🎯 Route Provider Matched!' : '📨 Request Sent to Provider!',
+        body: isAutoRouteMatch
+          ? `Delivery #${trackingId} matched with ${providerName}'s route today and is awaiting acceptance.`
+          : `Your delivery #${trackingId} has been sent directly to ${providerName}.`,
         data: { type: 'direct_request', requestId },
         sound: 'default',
         ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
@@ -147,9 +157,6 @@ const fireDirectRequestNotification = async (providerName: string, requestId: nu
   }
 };
 
-/* ==================================================================== */
-/* Local cancellation / refund notification                            */
-/* ==================================================================== */
 const fireCancelNotification = async (opts: {
   requestId: number;
   amount?: number | null;
@@ -196,9 +203,6 @@ const fireCancelNotification = async (opts: {
   }
 };
 
-/* ==================================================================== */
-/* Push notification to the assigned provider on cancellation          */
-/* ==================================================================== */
 const notifyProviderOfCancellation = async (opts: {
   providerId: number | null | undefined;
   requestId: number;
@@ -222,10 +226,6 @@ const notifyProviderOfCancellation = async (opts: {
   }
 };
 
-/* ==================================================================== */
-/* Persistent snapshot of preferred-provider info captured at payment  */
-/* time. Survives context resets and DB write failures.               */
-/* ==================================================================== */
 type PreferredSnapshot = {
   requestId: number | null;
   providerId: number | null;
@@ -244,11 +244,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'no_match'>('review');
   const [matchFound, setMatchFound] = useState(false);
   const [isDirectPreferredProvider, setIsDirectPreferredProvider] = useState(false);
+  const [isAcceptedByProvider, setIsAcceptedByProvider] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
   const [departureTime, setDepartureTime] = useState<string | null>(null);
+  const [routeFrequency, setRouteFrequency] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
 
@@ -263,11 +265,9 @@ export default function BookingScreen({ route, navigation }: any) {
   const [longSearch, setLongSearch] = useState(false);
   const [dotCount, setDotCount] = useState(0);
   const [statusIndex, setStatusIndex] = useState(0);
-  const [animStyle, setAnimStyle] = useState<FindingAnimation>(DEFAULT_FINDING_ANIMATION);
+  const [animStyle] = useState<FindingAnimation>(DEFAULT_FINDING_ANIMATION);
 
   const spinAnim = useRef(new Animated.Value(0)).current;
-  const travelAnim = useRef(new Animated.Value(0)).current;
-  const bobAnim = useRef(new Animated.Value(0)).current;
   const textAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(0)).current;
   const radarAnim1 = useRef(new Animated.Value(0)).current;
@@ -280,14 +280,12 @@ export default function BookingScreen({ route, navigation }: any) {
   const matchChannelRef = useRef<any>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ---- DOUBLE-TAP GUARD ----
   const proceedingRef = useRef(false);
   const proceedReturnToRef = useRef<number | null>(null);
   const [savingBooking, setSavingBooking] = useState(false);
 
   const cancellingRef = useRef(false);
 
-  // ---- PREFERRED-PROVIDER SNAPSHOT ----
   const preferredAtPaymentRef = useRef<PreferredSnapshot>({
     requestId: null,
     providerId: null,
@@ -299,6 +297,70 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
   const [refiningDistance, setRefiningDistance] = useState(false);
+
+  // Fetch preferred provider info and departure time immediately when coming from Explore
+  useEffect(() => {
+    if (!state.preferredProviderId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: provider } = await supabase
+          .from('users')
+          .select('first_name, last_name, phone_number')
+          .eq('user_id', state.preferredProviderId)
+          .maybeSingle();
+
+        let routeId = state.preferredRouteId;
+        if (!routeId) {
+          const { data: rRow } = await supabase
+            .from('provider_routes')
+            .select('route_id')
+            .eq('provider_id', state.preferredProviderId)
+            .eq('is_active', true)
+            .eq('is_deleted', false)
+            .order('is_selected', { ascending: false })
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          routeId = rRow?.route_id ?? null;
+        }
+
+        let vehicle: any = null;
+        let depTime: string | null = null;
+        let freq: string | null = null;
+
+        if (routeId) {
+          const { data: routeRow } = await supabase
+            .from('provider_routes')
+            .select('departure_time, route_frequency, vehicle:vehicles!provider_routes_vehicle_id_fkey(vehicle_type, plate_number)')
+            .eq('route_id', routeId)
+            .maybeSingle();
+          if (routeRow) {
+            depTime = routeRow.departure_time ?? null;
+            freq = routeRow.route_frequency ?? null;
+            vehicle = Array.isArray((routeRow as any).vehicle)
+              ? (routeRow as any).vehicle[0]
+              : (routeRow as any).vehicle;
+          }
+        }
+
+        if (!cancelled) {
+          setProviderData({
+            first_name: provider?.first_name || state.preferredProviderName?.split(' ')[0] || 'Selected',
+            last_name: provider?.last_name || state.preferredProviderName?.split(' ').slice(1).join(' ') || 'Provider',
+            phone_number: provider?.phone_number || '',
+            vehicle_type: vehicle?.vehicle_type || 'Courier Vehicle',
+            plate_number: vehicle?.plate_number || 'Assigned Route',
+          });
+          setDepartureTime(depTime);
+          setRouteFrequency(freq);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch preferred provider info', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [state.preferredProviderId, state.preferredRouteId, state.preferredProviderName]);
 
   useEffect(() => {
     if (!state.pickupLocation || !state.dropoffLocation) return;
@@ -384,8 +446,6 @@ export default function BookingScreen({ route, navigation }: any) {
     return unsub;
   }, [navigation]);
 
-  // During the first search window the user can't leave by swipe or the Android back button.
-  // ("Cancel Search" still works, and the lock lifts when the window ends.)
   useEffect(() => {
     const locked = bookingState === 'finding' && !longSearch;
     navigation.setOptions({ gestureEnabled: !locked });
@@ -510,26 +570,44 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
-  const loadProviderDeparture = async (routeId: number | null | undefined) => {
-    if (!routeId) {
-      setDepartureTime(null);
-      return;
-    }
+  const loadProviderDeparture = async (routeId: number | null | undefined, providerId?: number | null) => {
     try {
-      const { data, error } = await supabase
-        .from('provider_routes')
-        .select('departure_time')
-        .eq('route_id', routeId)
-        .maybeSingle();
+      if (routeId) {
+        const { data, error } = await supabase
+          .from('provider_routes')
+          .select('departure_time, route_frequency')
+          .eq('route_id', routeId)
+          .maybeSingle();
 
-      if (!error && data?.departure_time) {
-        setDepartureTime(data.departure_time);
-      } else {
-        setDepartureTime(null);
+        if (!error && data?.departure_time) {
+          setDepartureTime(data.departure_time);
+          setRouteFrequency(data.route_frequency ?? null);
+          return;
+        }
       }
+      if (providerId) {
+        const { data: fallbackRoute } = await supabase
+          .from('provider_routes')
+          .select('departure_time, route_frequency')
+          .eq('provider_id', providerId)
+          .eq('is_active', true)
+          .eq('is_deleted', false)
+          .order('is_selected', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (fallbackRoute?.departure_time) {
+          setDepartureTime(fallbackRoute.departure_time);
+          setRouteFrequency(fallbackRoute.route_frequency ?? null);
+          return;
+        }
+      }
+      setDepartureTime(null);
+      setRouteFrequency(null);
     } catch (e) {
       console.warn('[Booking] departure fetch failed', e);
       setDepartureTime(null);
+      setRouteFrequency(null);
     }
   };
 
@@ -538,8 +616,9 @@ export default function BookingScreen({ route, navigation }: any) {
     providerId: number;
     routeId?: number | null;
     notifyProvider?: boolean;
+    isAutoRouteMatch?: boolean;
   }) => {
-    const { requestId, providerId, routeId, notifyProvider = false } = opts;
+    const { requestId, providerId, routeId, notifyProvider = false, isAutoRouteMatch = false } = opts;
 
     try {
       const { data: provider } = await supabase
@@ -548,17 +627,34 @@ export default function BookingScreen({ route, navigation }: any) {
         .eq('user_id', providerId)
         .maybeSingle();
 
+      let resolvedRouteId = routeId ?? null;
+      if (!resolvedRouteId) {
+        const { data: rRow } = await supabase
+          .from('provider_routes')
+          .select('route_id')
+          .eq('provider_id', providerId)
+          .eq('is_active', true)
+          .eq('is_deleted', false)
+          .order('is_selected', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        resolvedRouteId = rRow?.route_id ?? null;
+      }
+
       let vehicle: any = null;
       let depTime: string | null = null;
+      let freq: string | null = null;
 
-      if (routeId) {
+      if (resolvedRouteId) {
         const { data: routeRow } = await supabase
           .from('provider_routes')
-          .select('departure_time, vehicle:vehicles!provider_routes_vehicle_id_fkey(vehicle_type, plate_number, max_weight_kg)')
-          .eq('route_id', routeId)
+          .select('departure_time, route_frequency, vehicle:vehicles!provider_routes_vehicle_id_fkey(vehicle_type, plate_number, max_weight_kg)')
+          .eq('route_id', resolvedRouteId)
           .maybeSingle();
         if (routeRow) {
           depTime = routeRow.departure_time ?? null;
+          freq = routeRow.route_frequency ?? null;
           vehicle = Array.isArray((routeRow as any).vehicle)
             ? (routeRow as any).vehicle[0]
             : (routeRow as any).vehicle;
@@ -576,7 +672,7 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       setProviderData({
-        first_name: provider?.first_name || state.preferredProviderName?.split(' ')[0] || 'Selected',
+        first_name: provider?.first_name || state.preferredProviderName?.split(' ')[0] || 'Matched',
         last_name: provider?.last_name || state.preferredProviderName?.split(' ').slice(1).join(' ') || 'Provider',
         phone_number: provider?.phone_number || '',
         vehicle_type: vehicle?.vehicle_type || 'Courier Vehicle',
@@ -585,12 +681,13 @@ export default function BookingScreen({ route, navigation }: any) {
       });
 
       setDepartureTime(depTime);
+      setRouteFrequency(freq);
       loadProviderRating(providerId);
 
       const providerFullName =
         provider
           ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim()
-          : state.preferredProviderName || 'your selected provider';
+          : state.preferredProviderName || 'your matched provider';
 
       if (notifyProvider) {
         const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
@@ -599,21 +696,23 @@ export default function BookingScreen({ route, navigation }: any) {
             providerId,
             '📦 New Route Delivery Request!',
             `A sender requested a delivery (#${trackingId}) along your route. Open the Jobs tab to review and accept it.`,
-            { type: 'direct_route_request', requestId, routeId: routeId ?? null },
+            { type: 'direct_route_request', requestId, routeId: resolvedRouteId ?? null },
           );
         } catch (err) {
           console.warn('[BookingScreen] direct provider push failed:', err);
         }
-        fireDirectRequestNotification(providerFullName, requestId);
+        fireDirectRequestNotification(providerFullName, requestId, isAutoRouteMatch);
       }
 
       setIsDirectPreferredProvider(true);
+      setIsAcceptedByProvider(false);
       setMatchFound(true);
       setIsSearching(false);
       setBookingState('matched');
     } catch (e) {
       console.warn('[BookingScreen] finalizePreferredProviderBooking failed:', e);
       setIsDirectPreferredProvider(true);
+      setIsAcceptedByProvider(false);
       setMatchFound(true);
       setIsSearching(false);
       setBookingState('matched');
@@ -643,6 +742,41 @@ export default function BookingScreen({ route, navigation }: any) {
       setSavedRequestId(requestId);
       searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
 
+      // 1. Evaluate all active provider routes today that haven't departed yet
+      //    (e.g. booked at 8:00 AM, provider route leaves at 10:00 AM -> matches!
+      //     booked at 11:00 AM, provider route left at 10:00 AM -> does NOT match!)
+      let matchedRoutes: any[] = [];
+      try {
+        matchedRoutes = await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
+      } catch (e) {
+        console.warn('[BookingScreen] route matching failed:', e);
+      }
+
+      // 2. If a valid same-day route match was found before departure, immediately show the
+      //    Matched Provider card with their Time of Departure, and link the request so it
+      //    appears in the Provider's JobsScreen (realtime) and TaskScreen -> Pending tab!
+      if (matchedRoutes.length > 0) {
+        const bestMatch = matchedRoutes[0];
+        try {
+          await supabase
+            .from('delivery_requests')
+            .update({
+              preferred_provider_id: bestMatch.provider_id,
+              preferred_route_id: bestMatch.route_id,
+            })
+            .eq('request_id', requestId);
+        } catch {}
+
+        await finalizePreferredProviderBooking({
+          requestId,
+          providerId: bestMatch.provider_id,
+          routeId: bestMatch.route_id,
+          notifyProvider: false, // already notified inside syncAllActiveRoutesTodayForRequest
+          isAutoRouteMatch: true,
+        });
+        return;
+      }
+
       if (matchChannelRef.current) {
         supabase.removeChannel(matchChannelRef.current);
         matchChannelRef.current = null;
@@ -652,6 +786,9 @@ export default function BookingScreen({ route, navigation }: any) {
         searchTimeoutRef.current = null;
       }
 
+      // 3. Otherwise, listen in real time for either:
+      //    - a provider accepting the request into `deliveries`, OR
+      //    - a new route match appearing in `route_request_matches`
       const matchChannel = supabase
         .channel(`match-listener-${requestId}`)
         .on(
@@ -674,8 +811,7 @@ export default function BookingScreen({ route, navigation }: any) {
             if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
             if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
-            if (delivery.route_id) loadProviderDeparture(delivery.route_id);
-            else setDepartureTime(null);
+            await loadProviderDeparture(delivery.route_id, delivery.provider_id);
 
             fireMatchNotification(
               provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
@@ -684,6 +820,7 @@ export default function BookingScreen({ route, navigation }: any) {
             );
 
             setIsDirectPreferredProvider(false);
+            setIsAcceptedByProvider(true);
             setMatchFound(true);
             setBookingState('matched');
             setIsSearching(false);
@@ -696,18 +833,41 @@ export default function BookingScreen({ route, navigation }: any) {
             matchChannelRef.current = null;
           }
         )
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'route_request_matches', filter: `request_id=eq.${requestId}` },
+          async (payload) => {
+            const m: any = payload.new;
+            if (!m || m.status !== 'matched') return;
+
+            if (searchTimeoutRef.current) {
+              clearTimeout(searchTimeoutRef.current);
+              searchTimeoutRef.current = null;
+            }
+            supabase.removeChannel(matchChannel);
+            matchChannelRef.current = null;
+
+            await finalizePreferredProviderBooking({
+              requestId,
+              providerId: Number(m.provider_id),
+              routeId: Number(m.route_id),
+              notifyProvider: false,
+              isAutoRouteMatch: true,
+            });
+          }
+        )
         .subscribe();
 
       matchChannelRef.current = matchChannel;
 
       searchTimeoutRef.current = setTimeout(() => {
+        searchTimeoutRef.current = null;
         setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
         setIsSearching(false);
         if (matchChannelRef.current) {
           supabase.removeChannel(matchChannelRef.current);
           matchChannelRef.current = null;
         }
-        searchTimeoutRef.current = null;
       }, SEARCH_DURATION_MS);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
@@ -730,8 +890,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
     if (delivery.provider_id) loadProviderRating(delivery.provider_id);
 
-    if (delivery.route_id) loadProviderDeparture(delivery.route_id);
-    else setDepartureTime(null);
+    await loadProviderDeparture(delivery.route_id, delivery.provider_id);
   };
 
   const resumeBooking = async (requestId: number) => {
@@ -770,6 +929,7 @@ export default function BookingScreen({ route, navigation }: any) {
       if (delivery) {
         await loadProviderForDelivery(delivery);
         setIsDirectPreferredProvider(false);
+        setIsAcceptedByProvider(true);
         setMatchFound(true);
         setIsSearching(false);
         setBookingState('matched');
@@ -799,6 +959,19 @@ export default function BookingScreen({ route, navigation }: any) {
       if (req.delivery_status !== 'Pending') {
         Alert.alert('Order updated', `This order is now ${req.delivery_status}.`);
         navigation.goBack();
+        return;
+      }
+
+      const matchedNow = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
+      if (matchedNow.length > 0) {
+        const best = matchedNow[0];
+        await finalizePreferredProviderBooking({
+          requestId,
+          providerId: best.provider_id,
+          routeId: best.route_id,
+          notifyProvider: false,
+          isAutoRouteMatch: true,
+        });
         return;
       }
 
@@ -852,6 +1025,7 @@ export default function BookingScreen({ route, navigation }: any) {
           );
 
           setIsDirectPreferredProvider(false);
+          setIsAcceptedByProvider(true);
           setMatchFound(true);
           setBookingState('matched');
           setIsSearching(false);
@@ -924,12 +1098,22 @@ export default function BookingScreen({ route, navigation }: any) {
             console.warn('[BookingScreen] direct provider push failed:', err);
           }
 
-          fireDirectRequestNotification(providerFullName, numericReqId);
+          fireDirectRequestNotification(providerFullName, numericReqId, false);
         } catch (e) {
           console.warn('[BookingScreen] post-payment provider notify failed:', e);
         }
 
         preferredAtPaymentRef.current = { requestId: null, providerId: null, routeId: null, name: null };
+
+        try {
+          await supabase
+            .from('delivery_requests')
+            .update({ preferred_provider_id: prefProviderId, preferred_route_id: prefRouteId ?? null })
+            .eq('request_id', numericReqId);
+          await syncAllActiveRoutesTodayForRequest(numericReqId, { notify: false });
+        } catch (e) {
+          console.warn('[BookingScreen] direct match sync failed:', e);
+        }
 
         if (matchChannelRef.current) {
           supabase.removeChannel(matchChannelRef.current);
@@ -945,6 +1129,7 @@ export default function BookingScreen({ route, navigation }: any) {
           providerId: prefProviderId,
           routeId: prefRouteId ?? null,
           notifyProvider: false,
+          isAutoRouteMatch: false,
         });
 
         proceedingRef.current = false;
@@ -1158,6 +1343,7 @@ export default function BookingScreen({ route, navigation }: any) {
             .select('cargo_id')
             .eq('request_id', savedRequestId)
             .maybeSingle();
+          await supabase.from('route_request_matches').delete().eq('request_id', savedRequestId);
           await supabase.from('delivery_requests').delete().eq('request_id', savedRequestId);
           if (cargoRow?.cargo_id) {
             await supabase.from('cargo_profiles').delete().eq('cargo_id', cargoRow.cargo_id);
@@ -1197,7 +1383,7 @@ export default function BookingScreen({ route, navigation }: any) {
         proceedingRef.current = false;
         proceedReturnToRef.current = null;
         setSavingBooking(false);
-        navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+        navigation.popTo('MainTabs');
         return;
       }
 
@@ -1221,7 +1407,7 @@ export default function BookingScreen({ route, navigation }: any) {
     proceedReturnToRef.current = null;
     setSavingBooking(false);
     dispatch({ type: 'RESET' });
-    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+    navigation.popTo('MainTabs');
   };
 
   const handleTryAgain = () => {
@@ -1235,7 +1421,7 @@ export default function BookingScreen({ route, navigation }: any) {
     proceedingRef.current = false;
     proceedReturnToRef.current = null;
     setSavingBooking(false);
-    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+    navigation.popTo('MainTabs');
   };
 
   const handleSelectReceiver = () => {
@@ -1273,6 +1459,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const mapTopPad = Math.round(insets.top + 70);
   const mapBottomPad = SHEET_MAX_H + 16;
 
+  const formattedDep = formatDepartureTime(departureTime, routeFrequency);
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
@@ -1294,7 +1482,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
 
-        {/* --- REVIEW STATE --- */}
         {bookingState === 'review' && (
           <Animated.View style={[styles.sheetCard, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1317,8 +1504,13 @@ export default function BookingScreen({ route, navigation }: any) {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.preferredProviderLabel}>SELECTED COURIER PARTNER</Text>
                     <Text style={styles.preferredProviderName} numberOfLines={1}>
-                      {state.preferredProviderName || `Provider #${state.preferredProviderId}`}
+                      {providerData ? `${providerData.first_name || ''} ${providerData.last_name || ''}`.trim() || state.preferredProviderName : state.preferredProviderName || `Provider #${state.preferredProviderId}`}
                     </Text>
+                    {formattedDep && (
+                      <Text style={styles.preferredProviderRoute} numberOfLines={1}>
+                        Time of Departure: {formattedDep}
+                      </Text>
+                    )}
                     {state.preferredRoute && (
                       <Text style={styles.preferredProviderRoute} numberOfLines={1}>
                         Route: {state.preferredRoute.pickup.split(',')[0]} → {state.preferredRoute.dropoff.split(',')[0]}
@@ -1467,7 +1659,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- FINDING STATE --- */}
         {bookingState === 'finding' && (
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
             <View style={{ width: '100%', alignItems: 'center', paddingTop: 8 }}>
@@ -1593,7 +1784,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- MATCHED / SELECTED PROVIDER STATE --- */}
         {bookingState === 'matched' && matchFound && (
           <Animated.View style={[styles.sheetCardMatched, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1610,12 +1800,12 @@ export default function BookingScreen({ route, navigation }: any) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.matchedHeaderTitle}>
-                    {isDirectPreferredProvider ? 'Request Sent to Provider!' : 'Provider Matched!'}
+                    {isAcceptedByProvider ? 'Provider Accepted!' : 'Provider Matched!'}
                   </Text>
                   <Text style={styles.matchedHeaderSub}>
-                    {isDirectPreferredProvider
-                      ? 'Your selected courier partner has been notified along this route'
-                      : 'Your delivery partner is on the way'}
+                    {isAcceptedByProvider
+                      ? 'Your delivery partner is on the way'
+                      : 'Matched with a provider traveling along your route today'}
                   </Text>
                 </View>
               </View>
@@ -1643,17 +1833,22 @@ export default function BookingScreen({ route, navigation }: any) {
                         <SolarIcon name="TagPrice" variant="linear" size={12} color={colors.textSecondary} />
                         <Text style={styles.carText}>{providerData?.plate_number || 'Loading...'}</Text>
                       </View>
-                      {departureTime && (
-                        <View style={styles.carDetailRow}>
-                          <SolarIcon name="Clock" variant="linear" size={12} color={colors.textSecondary} />
-                          <Text style={styles.carText}>
-                            Departure: {formatDepartureTime(departureTime)}
-                          </Text>
-                        </View>
-                      )}
                     </View>
                   </View>
                 </View>
+
+                {/* Prominent Provider Time of Departure Banner */}
+                {formattedDep && (
+                  <View style={styles.departureBanner}>
+                    <View style={styles.departureIconBox}>
+                      <SolarIcon name="Clock" variant="bold" size={16} color={ORANGE} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.departureLabel}>PROVIDER TIME OF DEPARTURE</Text>
+                      <Text style={styles.departureValue}>{formattedDep}</Text>
+                    </View>
+                  </View>
+                )}
 
                 {providerRating && (
                   <>
@@ -1752,7 +1947,6 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {/* --- NO MATCH STATE --- */}
         {bookingState === 'no_match' && (
           <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
@@ -1761,7 +1955,7 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
             <Text style={styles.noMatchTitle}>No Provider Available</Text>
             <Text style={styles.noMatchSubtitle}>
-              We couldn't find an available provider on this route right now. Please try again or modify your request.
+              No provider has an upcoming route along your corridor today (or today's routes have already departed). Try again or schedule for later.
             </Text>
 
             <View style={styles.noMatchActions}>
@@ -1978,13 +2172,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 2, borderColor: c.card,
   },
-  noMatchModifyLink: { marginTop: 14, alignItems: 'center' },
-  noMatchModifyLinkText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textMuted, textDecorationLine: 'underline' },
   matchedRightCol: { flex: 1 },
   matchedName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
   carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   carText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+
+  departureBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    marginTop: 12, paddingHorizontal: 12, paddingVertical: 10,
+    borderRadius: 10, backgroundColor: c.accentSoft,
+    borderWidth: 1, borderColor: ORANGE,
+  },
+  departureIconBox: {
+    width: 30, height: 30, borderRadius: 8,
+    backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
+  },
+  departureLabel: { fontSize: 9.5, fontFamily: 'Poppins_800ExtraBold', color: ORANGE, letterSpacing: 0.6 },
+  departureValue: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 1 },
+
   matchedDivider: { height: 1, backgroundColor: c.border, marginVertical: 10 },
   matchedReceiverRow: { flexDirection: 'row', alignItems: 'center' },
   matchedReceiverLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 2 },
