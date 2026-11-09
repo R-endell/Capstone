@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Image, Linking, Share, BackHandler, Pressable,
+  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
@@ -45,7 +45,7 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
-const GEOFENCE_RADIUS_M = 150;
+const GEOFENCE_RADIUS_M = 1000;
 
 const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371000;
@@ -70,8 +70,31 @@ const verifyProviderWithinGeofence = async (
     Alert.alert('Location Required', 'Please enable GPS location permissions to verify arrival.');
     return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
   }
-  const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-  const { latitude, longitude } = pos.coords;
+
+  // Try last known position first — returns instantly if OS has cached GPS
+  let coords: { latitude: number; longitude: number } | null = null;
+  try {
+    const last = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
+    if (last?.coords) coords = last.coords;
+  } catch { /* ignore */ }
+
+  // Fall back to a live fix, but don't let it hang forever
+  if (!coords) {
+    try {
+      const pos = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
+      if (pos) coords = pos.coords;
+    } catch { /* ignore */ }
+  }
+
+  if (!coords) {
+    Alert.alert('Location Unavailable', 'Could not get a GPS fix. Move near a window or enable location services.');
+    return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
+  }
+
+  const { latitude, longitude } = coords;
 
   if (targetLat == null || targetLng == null) {
     return { allowed: true, lat: latitude, lng: longitude, distanceM: 0 };
@@ -371,8 +394,15 @@ export default function TaskScreen() {
     if (!graceModalVisible || !graceDelivery?.dropoff_arrived_at) return;
     const updateTimer = () => {
       const startedMs = new Date(graceDelivery.dropoff_arrived_at).getTime();
+      if (Number.isNaN(startedMs)) {
+        setGraceRemainingSec(600);
+        return;
+      }
       const elapsedSec = Math.floor((Date.now() - startedMs) / 1000);
-      setGraceRemainingSec(Math.max(0, 600 - elapsedSec));
+      // Clamp — if DB clock and device clock differ, or if the timestamp is in the future,
+      // don't show weird values.
+      const remaining = Math.min(600, Math.max(0, 600 - elapsedSec));
+      setGraceRemainingSec(remaining);
     };
     updateTimer();
     const interval = setInterval(updateTimer, 1000);
@@ -780,20 +810,15 @@ const handleAcceptPendingMatch = async (m: any) => {
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
-      // PHASE 2 System Action 1: Automated SMS to Receiver
+      // PHASE 2 System Action 1: Notify the receiver via SMS from the courier's own phone
       const info = buildTaskInfo(verifyTarget);
       const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
       const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
       const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
 
-      if (info.receiverPhone) {
-        const smsMsg = `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`;
-        supabase.functions
-          .invoke('send-sms', {
-            body: { to: info.receiverPhone, message: smsMsg, type: 'pickup_verified_sms', delivery_id: deliveryId },
-          })
-          .catch(() => console.log('[SMS FALLBACK]:', smsMsg));
-      }
+      const smsMsg = info.receiverPhone
+        ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
+        : '';
 
       // PHASE 2 System Action 2: Push Prompt to Sender
       if (info.senderId) {
@@ -809,7 +834,32 @@ const handleAcceptPendingMatch = async (m: any) => {
         }
       }
 
-      Alert.alert('✅ Item Collected', 'Pickup verified and automated SMS sent to the receiver.');
+      // Show confirmation with an action button so the courier can send the SMS from their own phone
+      const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
+      if (info.receiverPhone) {
+        alertButtons.push({
+          text: 'Send SMS to Receiver',
+          onPress: () => {
+            const url = Platform.select({
+              ios: `sms:${info.receiverPhone}&body=${encodeURIComponent(smsMsg)}`,
+              android: `sms:${info.receiverPhone}?body=${encodeURIComponent(smsMsg)}`,
+            });
+            if (url) {
+              Linking.openURL(url).catch(() => {
+                Alert.alert('Cannot Open SMS', 'Your device cannot open the SMS app. Please notify the receiver manually.');
+              });
+            }
+          },
+        });
+      }
+
+      Alert.alert(
+        '✅ Item Collected',
+        info.receiverPhone
+          ? `Pickup verified. Tap below to notify ${info.receiverName || 'the receiver'} via SMS from your phone.`
+          : 'Pickup verified. (No receiver phone number on file.)',
+        alertButtons
+      );
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
     } catch (e: any) {
@@ -1027,11 +1077,63 @@ const handleAcceptPendingMatch = async (m: any) => {
       // Refund 50% Return Deposit to Sender if Option A was selected
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
       if (returnDep > 0 && requestId) {
-        supabase.functions
-          .invoke('xendit-refund', {
-            body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' },
-          })
-          .catch(e => console.warn('[Deposit refund warning]:', e));
+        try {
+          const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
+            'xendit-refund',
+            { body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' } },
+          );
+
+          const refundOk = !refundErr && refundResult?.success;
+
+          if (!refundOk) {
+            console.warn('[completeDelivery] refund failed:', refundErr?.message || refundResult);
+            await supabase
+              .from('delivery_requests')
+              .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
+              .eq('request_id', requestId);
+          } else {
+            // Record the refund in the escrow ledger so the audit trail is complete.
+            // The provider is the same channel the sender paid with (gcash/maya).
+            const rawProvider = String(
+              deliveryOTPTarget?.escrow?.payment_method ||
+              deliveryOTPTarget?.delivery_requests?.payment_provider ||
+              ''
+            ).toLowerCase();
+            const txProvider = ['gcash', 'maya'].includes(rawProvider) ? rawProvider : 'gcash';
+
+            try {
+              await supabase.from('escrow_transactions').insert({
+                request_id: requestId,
+                event: 'deposit_refunded_to_sender',
+                amount: returnDep,
+                provider: txProvider,
+                notes: `Deposit refunded to sender on completed delivery | Amount=₱${returnDep}${
+                  rawProvider && rawProvider !== txProvider ? ` | WARN: unknown provider "${rawProvider}", assumed ${txProvider}` : ''
+                }`,
+              });
+
+              await supabase
+                .from('delivery_requests')
+                .update({
+                  refund_status: 'refunded',
+                  escrow_refunded_at: new Date().toISOString(),
+                })
+                .eq('request_id', requestId);
+            } catch (insertErr: any) {
+              console.error('[completeDelivery] refund row insert failed:', insertErr);
+              Alert.alert(
+                'Refund Sent — Record Missing',
+                `The ₱${returnDep.toFixed(2)} deposit was refunded to the sender, but the audit row could not be saved. Please note this for support.`
+              );
+            }
+          }
+        } catch (refundCallErr: any) {
+          console.warn('[completeDelivery] refund call threw:', refundCallErr);
+          await supabase
+            .from('delivery_requests')
+            .update({ refund_status: 'failed' })
+            .eq('request_id', requestId);
+        }
       }
 
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
@@ -1060,8 +1162,30 @@ const handleAcceptPendingMatch = async (m: any) => {
     const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
     if (!geo.allowed) return;
 
-    let updated = { ...delivery };
-    if (!delivery.dropoff_arrived_at) {
+    // Fetch the freshest timestamps directly from the DB so re-opening the modal resumes
+    // the timer instead of restarting it, even if local state is stale.
+    const { data: freshRow, error: freshErr } = await supabase
+      .from('deliveries')
+      .select('dropoff_arrived_at, dropoff_wait_lat, dropoff_wait_lng, call_receiver_at, sms_receiver_at, chat_sender_at')
+      .eq('delivery_id', delivery.delivery_id)
+      .maybeSingle();
+
+    if (freshErr) {
+      Alert.alert('Error', freshErr.message);
+      return;
+    }
+
+    const existingArrivedAt = freshRow?.dropoff_arrived_at ?? delivery.dropoff_arrived_at ?? null;
+
+    let updated = {
+      ...delivery,
+      dropoff_arrived_at: existingArrivedAt,
+      call_receiver_at: freshRow?.call_receiver_at ?? delivery.call_receiver_at ?? null,
+      sms_receiver_at: freshRow?.sms_receiver_at ?? delivery.sms_receiver_at ?? null,
+      chat_sender_at: freshRow?.chat_sender_at ?? delivery.chat_sender_at ?? null,
+    };
+
+    if (!existingArrivedAt) {
       const nowIso = new Date().toISOString();
       const { error } = await supabase
         .from('deliveries')
@@ -1085,6 +1209,9 @@ const handleAcceptPendingMatch = async (m: any) => {
           { deliveryId: delivery.delivery_id }
         );
       }
+
+      // Refresh local state so the next tap sees the new timestamp
+      if (providerId) fetchDeliveries(providerId).catch(() => {});
     }
 
     setContactLogs({
@@ -2007,10 +2134,10 @@ const handleAcceptPendingMatch = async (m: any) => {
                 color="#FFFFFF"
               />
               <Text style={styles.mPrimaryText}>
-                {stage === 'pickup'
-                  ? 'Verify Pickup'
-                  : d.delivery_requests?.delivery_status === 'Returning'
-                    ? 'Verify Return QR'
+                { d.delivery_requests?.delivery_status === 'Returning'
+                  ? 'Verify Return QR'
+                  : stage === 'pickup'
+                    ? 'Verify Pickup'
                     : 'Complete'}
               </Text>
             </TouchableOpacity>
@@ -2058,8 +2185,21 @@ const handleAcceptPendingMatch = async (m: any) => {
 
         <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
           <View style={styles.sheetHandle} />
-          <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
-          <Text style={styles.sheetSubheading}>Point your camera at the Sender's screen to automatically verify pickup.</Text>
+          {(() => {
+            const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+            return (
+              <>
+                <Text style={styles.sheetHeading}>
+                  {isReturning ? 'Scan Return QR' : 'Scan Pickup QR'}
+                </Text>
+                <Text style={styles.sheetSubheading}>
+                  {isReturning
+                    ? "Point your camera at the Sender's screen to verify the return."
+                    : "Point your camera at the Sender's screen to automatically verify pickup."}
+                </Text>
+              </>
+            );
+          })()}
 
           <View style={styles.orRow}>
             <View style={styles.orLine} />

@@ -13,6 +13,7 @@ import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS } from '../../../../utils/mapConfig';
 import { getNavRoute, fmtDistance, fmtDuration } from '../../../../components/map/directions';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import { Ionicons } from '@expo/vector-icons';
 
 const STALE_MS = 45_000;
 const REROUTE_MIN_MS = 15_000;
@@ -20,6 +21,8 @@ const REROUTE_MIN_MOVE_M = 80;
 const MIN_GLIDE_MS = 600;
 const MAX_GLIDE_MS = 2000;
 const FRAME_MS = 33;
+
+const ORANGE = '#FF751F';
 
 type LatLng = { latitude: number; longitude: number };
 type PkgItem = { size: string | null; name: string; fragile: boolean };
