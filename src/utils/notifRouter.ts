@@ -96,10 +96,10 @@ export async function routeNotification(
       if (data?.dispute_id) {
         navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
       } else {
-        navigation.navigate('DisputeCenter');
+        navigation.navigate('Support', { role });
       }
     } catch {
-      navigation.navigate('DisputeCenter');
+      navigation.navigate('Support', { role });
     }
     return true;
   }

@@ -54,6 +54,7 @@ import MessagesScreen from './src/modules/Dashboard/Sender/MessagesScreen';
 import ActivityScreen from './src/modules/Dashboard/Sender/ActivityScreen';
 import EditProfileScreen from './src/modules/Dashboard/Sender/EditProfileScreen';
 import RegisterProviderScreen from './src/modules/Dashboard/Sender/RegisterProviderScreen';
+import ProviderApplicationStatusScreen from './src/modules/Dashboard/Sender/ProviderApplicationStatusScreen';
 
 // Settings Screens
 import SettingsScreen from './src/modules/Settings/SettingsScreen';
@@ -142,6 +143,7 @@ export type RootStackParamList = {
   LegalPolicies: undefined;
   PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
+  ProviderApplicationStatus: undefined;
   SendNowIntro: undefined;
   ScheduleIntro: undefined; 
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
@@ -744,6 +746,7 @@ function AppInner() {
         <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
         <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+        <Stack.Screen name="ProviderApplicationStatus" component={ProviderApplicationStatusScreen} />
         <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
         <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
         <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />

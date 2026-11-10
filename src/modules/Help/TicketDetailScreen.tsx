@@ -1,9 +1,20 @@
 // src/modules/Help/TicketDetailScreen.tsx
-// Params: { ticketId: number }  (or legacy { disputeId: number }, resolved to its ticket)
+// Params: { ticketId: number, source?: 'reportAgainstMe' }
+//         (or legacy { disputeId: number }, resolved to its ticket)
+//
+// Visual system copied from RegisterProviderScreen: Poppins fonts, radius-16
+// section cards with hairline borders (no shadows), numbered upload-style
+// section headers, tinted notes, primary button with press spring, staged
+// fade-up entrance. Chat bubbles + bottom sheets keep their own idioms
+// (there is no form equivalent) but align typography/inputs to the system.
+//
+// When the viewer is the counterparty (i.e. a sender reported them), this
+// screen shows the report read-only plus a one-time "Dispute this report"
+// action. That's the flow for a report AGAINST you — it isn't your ticket.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar, TextInput, Image, Modal,
-  KeyboardAvoidingView, Platform, Alert, ActivityIndicator, Pressable,
+  KeyboardAvoidingView, Platform, Alert, ActivityIndicator, Pressable, Animated,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -16,7 +27,9 @@ import {
   getMyUserId, isClosed, sendMessage, signAttachmentUrls, statusView, subscribeTickets,
   trackingIdFor, uploadPhotos,
 } from '../../services/ticketService';
-import { ScreenHeader, StatusPill, ORANGE } from './helpUi';
+import {
+  ScreenHeader, StatusPill, TicketStepper, SectionCard, Note, ORANGE, useStagedEntrance, fadeUp,
+} from './helpUi';
 import { APPEAL_MIN_CHARS, APPEAL_WINDOW_DAYS, AppealState, loadAppealState, submitAppeal } from '../../services/appealService';
 
 export default function TicketDetailScreen() {
@@ -47,6 +60,12 @@ export default function TicketDetailScreen() {
   const [appealText, setAppealText] = useState('');
   const [appealing, setAppealing] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+
+  // Staged entrance: summary → stepper → resolution → messages
+  const [summaryAnim, stepperAnim, resolutionAnim, messagesAnim] = useStagedEntrance(4);
+  const btnScale = useRef(new Animated.Value(1)).current;
+  const pressIn = () => Animated.spring(btnScale, { toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4 }).start();
+  const pressOut = () => Animated.spring(btnScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
 
   // Legacy deep link: { disputeId } -> the ticket that mirrors it
   useEffect(() => {
@@ -165,9 +184,11 @@ export default function TicketDetailScreen() {
       <View style={styles.container}>
         <ScreenHeader title="Ticket" onBack={() => navigation.goBack()} />
         <View style={styles.center}>
-          <Ionicons name="alert-circle-outline" size={34} color={colors.textMuted} />
-          <Text style={styles.centerTitle}>We couldn't find this ticket</Text>
-          <Text style={styles.centerSub}>It may have been removed, or it belongs to another account.</Text>
+          <SectionCard style={{ alignItems: 'center', gap: 8 }}>
+            <Ionicons name="alert-circle-outline" size={34} color={colors.textMuted} />
+            <Text style={styles.centerTitle}>We couldn't find this ticket</Text>
+            <Text style={styles.centerSub}>It may have been removed, or it belongs to another account.</Text>
+          </SectionCard>
         </View>
       </View>
     );
@@ -178,7 +199,11 @@ export default function TicketDetailScreen() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
-      <ScreenHeader title={ticket.ticket_ref || 'Ticket'} subtitle={ticket.category} onBack={() => navigation.goBack()} />
+      <ScreenHeader
+        title={ticket.ticket_ref || 'Ticket'}
+        subtitle={iAmCounterparty ? 'Report against you' : ticket.category}
+        onBack={() => navigation.goBack()}
+      />
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
@@ -188,95 +213,113 @@ export default function TicketDetailScreen() {
           keyboardShouldPersistTaps="handled"
         >
           {/* summary */}
-          <View style={styles.summary}>
-            <Text style={styles.sumTitle}>{ticket.sub_issue}</Text>
-            <StatusPill view={view} />
-            <Text style={styles.sumHint}>{view.hint}</Text>
-            <View style={styles.facts}>
-              {ticket.request_id ? <Fact styles={styles} label="Delivery" value={trackingIdFor(ticket.request_id)} /> : null}
-              <Fact styles={styles} label="Reported by"
-                value={iAmCounterparty ? displayName(ticket.reporter) : 'You'} />
-              {ticket.requested_resolution ? <Fact styles={styles} label="Requested outcome" value={ticket.requested_resolution} /> : null}
-              <Fact styles={styles} label="Opened" value={fmtDateTime(ticket.created_at)} />
-            </View>
-          </View>
-
-          {/* timeline */}
-          <View style={styles.block}>
-            <Text style={styles.blockTitle}>Progress</Text>
-            {timeline.map((s, i) => (
-              <View key={s.key} style={styles.tlRow}>
-                <View style={styles.tlRail}>
-                  <View style={[styles.tlDot, s.done && styles.tlDotDone, s.current && styles.tlDotNow]}>
-                    {s.done && <Ionicons name="checkmark" size={12} color="#FFF" />}
-                  </View>
-                  {i < timeline.length - 1 && <View style={[styles.tlLine, s.done && { backgroundColor: ORANGE }]} />}
+          <Animated.View style={fadeUp(summaryAnim, 20)}>
+            <SectionCard>
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionNumberBadge}>
+                  <Text style={styles.sectionNumberText}>1</Text>
                 </View>
-                <View style={{ flex: 1, paddingBottom: i < timeline.length - 1 ? 18 : 0 }}>
-                  <Text style={[styles.tlTitle, !s.done && !s.current && { color: colors.textMuted }]}>{s.title}</Text>
-                  <Text style={styles.tlSub}>{s.sub}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>Summary</Text>
+                  <Text style={styles.sectionSubtitle}>{ticket.ticket_ref}</Text>
                 </View>
               </View>
-            ))}
-          </View>
+
+              <Text style={styles.sumTitle}>{ticket.sub_issue}</Text>
+              <View style={{ marginTop: 8 }}>
+                <StatusPill view={view} />
+              </View>
+              <Text style={styles.sumHint}>{view.hint}</Text>
+              <View style={styles.facts}>
+                {ticket.request_id ? <Fact styles={styles} label="Delivery" value={trackingIdFor(ticket.request_id)} /> : null}
+                <Fact styles={styles} label="Reported by"
+                  value={iAmCounterparty ? displayName(ticket.reporter) : 'You'} />
+                {ticket.requested_resolution ? <Fact styles={styles} label="Requested outcome" value={ticket.requested_resolution} /> : null}
+                <Fact styles={styles} label="Opened" value={fmtDateTime(ticket.created_at)} />
+              </View>
+            </SectionCard>
+          </Animated.View>
+
+          {/* progress stepper */}
+          <Animated.View style={fadeUp(stepperAnim, 20)}>
+            <TicketStepper steps={timeline} />
+          </Animated.View>
 
           {/* resolution */}
           {closed && ticket.resolution ? (
-            <View style={styles.resolution}>
-              <View style={styles.resHead}>
-                <Ionicons name="shield-checkmark-outline" size={18} color={colors.success} />
-                <Text style={styles.resTitle}>{ticket.status === 'Resolved' ? 'Decision' : 'Closed'}</Text>
+            <Animated.View style={fadeUp(resolutionAnim, 20)}>
+              <View style={styles.resolution}>
+                <View style={styles.resHead}>
+                  <Ionicons name="shield-checkmark-outline" size={18} color={colors.success} />
+                  <Text style={styles.resTitle}>{ticket.status === 'Resolved' ? 'Decision' : 'Closed'}</Text>
+                </View>
+                <Text style={styles.resBody}>{ticket.resolution}</Text>
               </View>
-              <Text style={styles.resBody}>{ticket.resolution}</Text>
-            </View>
+            </Animated.View>
           ) : null}
 
           {/* conversation */}
-          <View style={styles.block}>
-            <Text style={styles.blockTitle}>Messages</Text>
-            <View style={styles.privacy}>
-              <Ionicons name="lock-closed-outline" size={14} color={colors.textSecondary} />
-              <Text style={styles.privacyText}>
+          <Animated.View style={fadeUp(messagesAnim, 20)}>
+            <SectionCard>
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionNumberBadge}>
+                  <Text style={styles.sectionNumberText}>2</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>Messages</Text>
+                  <Text style={styles.sectionSubtitle}>
+                    {iAmCounterparty
+                      ? 'Your response goes to support only'
+                      : 'Private between you and support'}
+                  </Text>
+                </View>
+              </View>
+
+              <Note
+                tone="neutral"
+                icon={<Ionicons name="lock-closed-outline" size={14} color={colors.textSecondary} />}
+              >
                 {iAmCounterparty
                   ? 'The report and its photos are shown below. Your response goes to our support team only, and the decision is shared with both sides.'
                   : 'Only you and our support team can see your messages. Everyone on this ticket sees the original report and the final decision.'}
-              </Text>
-            </View>
-            <View style={{ gap: 12 }}>
-              {messages.map(m => {
-                const mine = m.sender_id === me && m.sender_kind !== 'staff';
-                const staff = m.sender_kind === 'staff';
-                return (
-                  <View key={m.message_id} style={[styles.msgWrap, mine ? { alignItems: 'flex-end' } : { alignItems: 'flex-start' }]}>
-                    <Text style={styles.msgWho}>{whoLabel(m)}   {fmtDateTime(m.created_at)}</Text>
-                    <View style={[styles.bubble, mine ? styles.bubbleMine : staff ? styles.bubbleStaff : styles.bubbleOther]}>
-                      {m.body ? <Text style={[styles.bubbleText, mine && { color: '#FFF' }]}>{m.body}</Text> : null}
-                      {(m.attachments || []).length > 0 && (
-                        <View style={styles.thumbs}>
-                          {m.attachments.map(a => urls[a.path] ? (
-                            <TouchableOpacity key={a.path} onPress={() => setViewer(urls[a.path])} activeOpacity={0.85}>
-                              <Image source={{ uri: urls[a.path] }} style={styles.thumb} />
-                            </TouchableOpacity>
-                          ) : (
-                            <View key={a.path} style={[styles.thumb, styles.thumbLoading]}>
-                              <Ionicons name="image-outline" size={18} color={colors.textMuted} />
-                            </View>
-                          ))}
-                        </View>
-                      )}
+              </Note>
+
+              <View style={{ gap: 12 }}>
+                {messages.map(m => {
+                  const mine = m.sender_id === me && m.sender_kind !== 'staff';
+                  const staff = m.sender_kind === 'staff';
+                  return (
+                    <View key={m.message_id} style={[styles.msgWrap, mine ? { alignItems: 'flex-end' } : { alignItems: 'flex-start' }]}>
+                      <Text style={styles.msgWho}>{whoLabel(m)}   {fmtDateTime(m.created_at)}</Text>
+                      <View style={[styles.bubble, mine ? styles.bubbleMine : staff ? styles.bubbleStaff : styles.bubbleOther]}>
+                        {m.body ? <Text style={[styles.bubbleText, mine && { color: '#FFF' }]}>{m.body}</Text> : null}
+                        {(m.attachments || []).length > 0 && (
+                          <View style={styles.thumbs}>
+                            {m.attachments.map(a => urls[a.path] ? (
+                              <TouchableOpacity key={a.path} onPress={() => setViewer(urls[a.path])} activeOpacity={0.85}>
+                                <Image source={{ uri: urls[a.path] }} style={styles.thumb} />
+                              </TouchableOpacity>
+                            ) : (
+                              <View key={a.path} style={[styles.thumb, styles.thumbLoading]}>
+                                <Ionicons name="image-outline" size={18} color={colors.textMuted} />
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
                     </View>
-                  </View>
-                );
-              })}
-              {!closed && !(iAmCounterparty ? hasResponded : hasPrivate) && (
-                <Text style={styles.emptyThread}>
-                  {iAmCounterparty
-                    ? 'Review the report and photos above, then tap "Dispute this report" to explain your side.'
-                    : 'Replies from our team will appear here. You can add more details or photos any time.'}
-                </Text>
-              )}
-            </View>
-          </View>
+                  );
+                })}
+                {!closed && !(iAmCounterparty ? hasResponded : hasPrivate) && (
+                  <Text style={styles.emptyThread}>
+                    {iAmCounterparty
+                      ? 'Review the report and photos above, then tap "Dispute this report" to explain your side.'
+                      : 'Replies from our team will appear here. You can add more details or photos any time.'}
+                  </Text>
+                )}
+              </View>
+            </SectionCard>
+          </Animated.View>
         </ScrollView>
 
         {/* composer */}
@@ -287,19 +330,29 @@ export default function TicketDetailScreen() {
                 <Text style={styles.closedText}>
                   Not happy with the decision? You can appeal once within {APPEAL_WINDOW_DAYS} days. The result of an appeal is final.
                 </Text>
-                <TouchableOpacity style={[styles.respondBtn, { marginTop: 10 }]} onPress={() => setAppealOpen(true)} activeOpacity={0.9}>
-                  <Ionicons name="repeat-outline" size={18} color="#FFF" />
-                  <Text style={styles.respondBtnText}>Appeal this decision</Text>
-                </TouchableOpacity>
+                <Animated.View style={{ width: '100%', marginTop: 10, transform: [{ scale: btnScale }] }}>
+                  <TouchableOpacity
+                    style={styles.primaryBtn}
+                    onPress={() => setAppealOpen(true)}
+                    onPressIn={pressIn} onPressOut={pressOut}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name="repeat-outline" size={18} color="#FFF" />
+                    <Text style={styles.primaryBtnText}>Appeal this decision</Text>
+                  </TouchableOpacity>
+                </Animated.View>
               </>
             ) : appeal.state === 'filed' && appeal.appealTicketId ? (
               <>
                 <Text style={styles.closedText}>You already appealed this decision.</Text>
-                <TouchableOpacity
-                  style={[styles.respondBtn, { marginTop: 10 }]} activeOpacity={0.9}
-                  onPress={() => navigation.navigate('TicketDetail', { ticketId: appeal.appealTicketId })}>
-                  <Text style={styles.respondBtnText}>View my appeal</Text>
-                </TouchableOpacity>
+                <Animated.View style={{ width: '100%', marginTop: 10, transform: [{ scale: btnScale }] }}>
+                  <TouchableOpacity
+                    style={styles.primaryBtn} activeOpacity={0.9}
+                    onPressIn={pressIn} onPressOut={pressOut}
+                    onPress={() => navigation.navigate('TicketDetail', { ticketId: appeal.appealTicketId })}>
+                    <Text style={styles.primaryBtnText}>View my appeal</Text>
+                  </TouchableOpacity>
+                </Animated.View>
               </>
             ) : appeal.state === 'expired' ? (
               <Text style={styles.closedText}>
@@ -314,10 +367,17 @@ export default function TicketDetailScreen() {
             {canRespond ? (
               <>
                 <Text style={styles.respondNote}>You can respond once. Our team reviews both sides before deciding.</Text>
-                <TouchableOpacity style={styles.respondBtn} onPress={() => setRespondOpen(true)} activeOpacity={0.9}>
-                  <Ionicons name="shield-outline" size={18} color="#FFF" />
-                  <Text style={styles.respondBtnText}>Dispute this report</Text>
-                </TouchableOpacity>
+                <Animated.View style={{ width: '100%', transform: [{ scale: btnScale }] }}>
+                  <TouchableOpacity
+                    style={styles.primaryBtn}
+                    onPress={() => setRespondOpen(true)}
+                    onPressIn={pressIn} onPressOut={pressOut}
+                    activeOpacity={0.9}
+                  >
+                    <Ionicons name="shield-outline" size={18} color="#FFF" />
+                    <Text style={styles.primaryBtnText}>Dispute this report</Text>
+                  </TouchableOpacity>
+                </Animated.View>
               </>
             ) : (
               <Text style={styles.respondedText}>
@@ -395,9 +455,9 @@ export default function TicketDetailScreen() {
               )}
             </ScrollView>
             <TouchableOpacity
-              style={[styles.respondBtn, (text.trim().length < 10 || sending) && styles.respondBtnOff]}
+              style={[styles.primaryBtn, (text.trim().length < 10 || sending) && styles.primaryBtnOff]}
               disabled={text.trim().length < 10 || sending} onPress={send} activeOpacity={0.9}>
-              {sending ? <ActivityIndicator color="#FFF" /> : <Text style={styles.respondBtnText}>Submit my response</Text>}
+              {sending ? <ActivityIndicator color="#FFF" /> : <Text style={styles.primaryBtnText}>Submit my response</Text>}
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -437,9 +497,9 @@ export default function TicketDetailScreen() {
               )}
             </ScrollView>
             <TouchableOpacity
-              style={[styles.respondBtn, (appealText.trim().length < APPEAL_MIN_CHARS || appealing) && styles.respondBtnOff]}
+              style={[styles.primaryBtn, (appealText.trim().length < APPEAL_MIN_CHARS || appealing) && styles.primaryBtnOff]}
               disabled={appealText.trim().length < APPEAL_MIN_CHARS || appealing} onPress={sendAppeal} activeOpacity={0.9}>
-              {appealing ? <ActivityIndicator color="#FFF" /> : <Text style={styles.respondBtnText}>Submit appeal</Text>}
+              {appealing ? <ActivityIndicator color="#FFF" /> : <Text style={styles.primaryBtnText}>Submit appeal</Text>}
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
@@ -469,58 +529,52 @@ function Fact({ styles, label, value }: { styles: any; label: string; value: str
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   content: { padding: 20, paddingBottom: 24, gap: 16 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 },
-  centerTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary },
-  centerSub: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  centerTitle: { fontSize: 16, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, textAlign: 'center' },
+  centerSub: { fontSize: 13, color: c.textSecondary, textAlign: 'center', lineHeight: 19, fontFamily: 'Poppins_500Medium' },
 
-  summary: { backgroundColor: c.card, borderRadius: 20, padding: 18, borderWidth: 1, borderColor: c.divider, gap: 10 },
-  sumTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  sumHint: { fontSize: 13, color: c.textSecondary, lineHeight: 19, fontWeight: '500' },
-  facts: { marginTop: 4, gap: 10, borderTopWidth: 1, borderTopColor: c.divider, paddingTop: 12 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 14 },
+  sectionNumberBadge: {
+    width: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 2,
+  },
+  sectionNumberText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  sectionTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
+  sectionSubtitle: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted, marginTop: 1 },
+
+  sumTitle: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.5 },
+  sumHint: { fontSize: 13, color: c.textSecondary, lineHeight: 19, fontFamily: 'Poppins_500Medium', marginTop: 8 },
+  facts: { marginTop: 12, gap: 10, borderTopWidth: 1, borderTopColor: c.divider, paddingTop: 12 },
   fact: { flexDirection: 'row', justifyContent: 'space-between', gap: 16 },
-  factLabel: { fontSize: 12.5, color: c.textSecondary, fontWeight: '600' },
-  factValue: { fontSize: 13, color: c.textPrimary, fontWeight: '700', flexShrink: 1, textAlign: 'right' },
+  factLabel: { fontSize: 12.5, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
+  factValue: { fontSize: 13, color: c.textPrimary, fontFamily: 'Poppins_700Bold', flexShrink: 1, textAlign: 'right' },
 
-  block: { backgroundColor: c.card, borderRadius: 20, padding: 18, borderWidth: 1, borderColor: c.divider },
-  blockTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary, marginBottom: 14, letterSpacing: -0.2 },
-
-  tlRow: { flexDirection: 'row', gap: 14 },
-  tlRail: { alignItems: 'center', width: 22 },
-  tlDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: c.border, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  tlDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  tlDotNow: { borderColor: ORANGE, borderWidth: 3 },
-  tlLine: { flex: 1, width: 2, backgroundColor: c.divider, marginVertical: 2 },
-  tlTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  tlSub: { fontSize: 12.5, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
-
-  resolution: { backgroundColor: c.successBg, borderRadius: 20, padding: 18, borderWidth: 1, borderColor: c.success, gap: 8 },
+  resolution: { backgroundColor: c.successBg, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: c.success, gap: 8 },
   resHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  resTitle: { fontSize: 15, fontWeight: '800', color: c.success },
-  resBody: { fontSize: 14, color: c.textPrimary, lineHeight: 21, fontWeight: '500' },
+  resTitle: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.success },
+  resBody: { fontSize: 14, color: c.textPrimary, lineHeight: 21, fontFamily: 'Poppins_500Medium' },
 
-  privacy: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginTop: -6, marginBottom: 14 },
-  privacyText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textSecondary, fontWeight: '500' },
-  emptyThread: { fontSize: 13, lineHeight: 19, color: c.textSecondary, textAlign: 'center', paddingVertical: 8 },
-
+  emptyThread: { fontSize: 13, lineHeight: 19, color: c.textSecondary, textAlign: 'center', paddingVertical: 8, fontFamily: 'Poppins_500Medium' },
   msgWrap: { gap: 4 },
-  msgWho: { fontSize: 11.5, color: c.textMuted, fontWeight: '600' },
+  msgWho: { fontSize: 11.5, color: c.textMuted, fontFamily: 'Poppins_600SemiBold' },
   bubble: { maxWidth: '88%', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
   bubbleMine: { backgroundColor: ORANGE, borderBottomRightRadius: 6 },
   bubbleOther: { backgroundColor: isDark ? '#27272A' : '#F3F4F6', borderBottomLeftRadius: 6 },
   bubbleStaff: { backgroundColor: isDark ? '#0F2744' : '#EFF6FF', borderBottomLeftRadius: 6 },
-  bubbleText: { fontSize: 14, lineHeight: 20, color: c.textPrimary, fontWeight: '500' },
+  bubbleText: { fontSize: 14, lineHeight: 20, color: c.textPrimary, fontFamily: 'Poppins_500Medium' },
   thumbs: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   thumb: { width: 84, height: 84, borderRadius: 10 },
   thumbLoading: { backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
 
   composer: { borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background, paddingHorizontal: 14, paddingTop: 10 },
-  composerNote: { fontSize: 12, color: ORANGE, fontWeight: '700', marginBottom: 8, paddingHorizontal: 4 },
+  composerNote: { fontSize: 12, color: ORANGE, fontFamily: 'Poppins_700Bold', marginBottom: 8, paddingHorizontal: 4 },
   inputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   attach: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   input: {
-    flex: 1, maxHeight: 120, minHeight: 42, backgroundColor: c.card, borderRadius: 21, borderWidth: 1.5, borderColor: c.border,
+    flex: 1, maxHeight: 120, minHeight: 42, backgroundColor: c.card, borderRadius: 21, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 16, paddingTop: Platform.OS === 'ios' ? 12 : 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8,
-    fontSize: 14, color: c.textPrimary,
+    fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_500Medium',
   },
   send: { width: 42, height: 42, borderRadius: 21, backgroundColor: ORANGE, alignItems: 'center', justifyContent: 'center' },
   sendOff: { backgroundColor: isDark ? '#5A3418' : '#FDBA74' },
@@ -528,35 +582,37 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pendImg: { width: '100%', height: '100%' },
   pendX: { position: 'absolute', top: 3, right: 3, width: 18, height: 18, borderRadius: 9, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center' },
 
-  respondBar: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background, gap: 10 },
-  respondNote: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', fontWeight: '500' },
-  respondBtn: {
-    flexDirection: 'row', gap: 8, backgroundColor: ORANGE, paddingVertical: 15, borderRadius: 16,
+  primaryBtn: {
+    flexDirection: 'row', gap: 8, backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 12, elevation: 6,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
   },
-  respondBtnOff: { backgroundColor: isDark ? '#5A3418' : '#FDBA74', shadowOpacity: 0, elevation: 0 },
-  respondBtnText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
-  respondedText: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', lineHeight: 18, fontWeight: '500', paddingBottom: 4 },
+  primaryBtnOff: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
+  primaryBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
+
+  respondBar: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background, gap: 10 },
+  respondNote: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', fontFamily: 'Poppins_500Medium' },
+  respondedText: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', lineHeight: 18, fontFamily: 'Poppins_500Medium', paddingBottom: 4 },
+
+  closedBar: { paddingHorizontal: 20, paddingTop: 14, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background },
+  closedText: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', lineHeight: 18, fontFamily: 'Poppins_500Medium' },
 
   sheetRoot: { flex: 1, justifyContent: 'flex-end' },
   sheetBackdrop: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(17,24,39,0.5)' },
   sheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 10 },
   sheetHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.border, marginBottom: 14 },
-  sheetTitle: { fontSize: 19, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4 },
-  sheetSub: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginTop: 6, marginBottom: 14, fontWeight: '500' },
+  sheetTitle: { fontSize: 19, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+  sheetSub: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginTop: 6, marginBottom: 14, fontFamily: 'Poppins_500Medium' },
   sheetInput: {
-    minHeight: 120, maxHeight: 200, backgroundColor: c.background, borderRadius: 16, borderWidth: 1.5, borderColor: c.border,
-    padding: 14, fontSize: 14, color: c.textPrimary, fontWeight: '500',
+    minHeight: 120, maxHeight: 200, backgroundColor: c.background, borderRadius: 14, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    padding: 14, fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_500Medium',
   },
-  sheetCount: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  sheetCount: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontFamily: 'Poppins_600SemiBold' },
   sheetAdd: {
     width: 56, height: 56, borderRadius: 10, borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
     alignItems: 'center', justifyContent: 'center', backgroundColor: c.accentSoft,
   },
-
-  closedBar: { paddingHorizontal: 20, paddingTop: 14, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background },
-  closedText: { fontSize: 12.5, color: c.textSecondary, textAlign: 'center', lineHeight: 18, fontWeight: '500' },
 
   viewerBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   viewerImg: { width: '100%', height: '82%' },
