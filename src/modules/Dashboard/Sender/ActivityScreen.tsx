@@ -1215,6 +1215,7 @@ export default function ActivityScreen() {
         },
       ]
     );
+  };
 
   /* --------------------------- Stage & Status --------------------------- */
   const stageOf = (item: MappedDelivery): 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled' => {
@@ -2882,4 +2883,4 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1.5, borderColor: c.accent, marginBottom: 4,
   },
   otpCopyBtnText: { color: c.accent, fontFamily: 'Poppins_600SemiBold', fontSize: 14 },
-})};
+});

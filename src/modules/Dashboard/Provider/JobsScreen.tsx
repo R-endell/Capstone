@@ -1758,7 +1758,8 @@ export default function JobsScreen() {
       const isDemo = await getDemoMode();
       const [directMatches, standardMatches] = await Promise.all([
         fetchDirectRequestMatches(pid, selected.route_id),
-        evaluateAndFetchRouteMatches(selected.route_id, isDemo),
+        // Add { evaluate: false } here so Realtime events don't trigger a new RPC loop
+        evaluateAndFetchRouteMatches(selected.route_id, isDemo, { evaluate: false }),
       ]);
 
       const allMatches: RouteMatchRow[] = [...directMatches];
@@ -1807,6 +1808,12 @@ export default function JobsScreen() {
   }, []);
 
   const loadData = useCallback(async () => {
+    // FAIL-SAFE: If a modal is open, NEVER set loading to true.
+    // This prevents the screen from unmounting and destroying the native Modals.
+    if (addRouteModalVisible || routeLocationPickerVisible) {
+      return; 
+    }
+
     setLoading(true);
     const pid = await getProviderData();
     if (pid) {
@@ -1814,9 +1821,18 @@ export default function JobsScreen() {
       await refreshMatches(pid, resolvedRoute, validRoutes);
     }
     setLoading(false);
-  }, [refreshMatches]);
+  }, [refreshMatches, addRouteModalVisible, routeLocationPickerVisible]);
 
-  useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
+  useFocusEffect(
+    useCallback(() => {
+      // Prevent loadData() from unmounting the screen while the location picker
+      // or add route modal is open. Unmounting destroys the native Modal and
+      // causes it to re-open in an infinite loop.
+      if (addRouteModalVisible || routeLocationPickerVisible) return;
+      
+      loadData();
+    }, [loadData, addRouteModalVisible, routeLocationPickerVisible])
+  );
 
   useEffect(() => {
     if (!providerId) return;
@@ -1896,22 +1912,25 @@ export default function JobsScreen() {
 
   const handleNewRouteLocationSelect = async (locData: any, type: 'start' | 'end') => {
     try {
-      const { data: existing } = await supabase
+      const { data: existing, error: existingErr } = await supabase
         .from('locations')
         .select('*')
         .eq('latitude', locData.latitude)
         .eq('longitude', locData.longitude)
         .limit(1);
 
+      if (existingErr) throw existingErr;
+
       let location: Location | null = existing && existing.length > 0 ? existing[0] : null;
 
       if (!location) {
         const { data: newLoc, error } = await supabase.from('locations').insert({
-          street_address: locData.street_address,
-          barangay: locData.barangay,
-          city: locData.city,
-          province: locData.province,
-          zip_code: locData.zip_code,
+          // Fallback to 'Pinned location' if street_address is somehow empty
+          street_address: locData.street_address || 'Pinned location', 
+          barangay: locData.barangay || 'Unknown',
+          city: locData.city || 'Unknown',
+          province: locData.province || 'Unknown',
+          zip_code: locData.zip_code || '0000',
           latitude: locData.latitude,
           longitude: locData.longitude,
         }).select('*').single();
@@ -2559,7 +2578,7 @@ export default function JobsScreen() {
               {renderServicePill(o)}
               {o.matchScore != null && (
                 <View style={styles.scoreBadge}>
-                  <SolarIcon name="Chart" variant="linear" size={13} color={colors.success} />
+                  <SolarIcon name="Info" variant="linear" size={13} color={colors.success} />
                   <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
                 </View>
               )}
@@ -2776,7 +2795,7 @@ export default function JobsScreen() {
             {renderServicePill(o)}
             {o.matchScore != null && (
               <View style={styles.scoreBadge}>
-                <SolarIcon name="Chart" variant="linear" size={13} color={colors.success} />
+                <SolarIcon name="CheckCircle" variant="linear" size={13} color={colors.success} />
                 <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
               </View>
             )}
@@ -3390,7 +3409,7 @@ export default function JobsScreen() {
 
   const renderAddRouteModal = () => (
     <Modal
-      visible={addRouteModalVisible}
+      visible={addRouteModalVisible && !routeLocationPickerVisible}
       transparent
       animationType="slide"
       onRequestClose={() => setAddRouteModalVisible(false)}

@@ -387,6 +387,7 @@ async function evaluatePairAndUpsertMatch(
   reqRow: any,
   now: Date,
   shouldNotify: boolean,
+  isDemo: boolean = false, // <--- ADD THIS
 ): Promise<boolean> {
   if (!route || !reqRow || reqRow.delivery_status !== 'Pending') return false;
   if (Number(route.provider_id) === Number(reqRow.sender_id)) return false;
@@ -400,8 +401,8 @@ async function evaluatePairAndUpsertMatch(
 
   if (isDirectRequest && !isPreferredRoute) return false;
 
-  // Enforce same-day before-departure rule for Send Package Now
-  if (!isRouteTimeValidForRequest(route, reqRow, now)) {
+  // DEMO OVERRIDE: Ignore time window
+  if (!isDemo && !isRouteTimeValidForRequest(route, reqRow, now)) {
     return false;
   }
 
@@ -437,18 +438,26 @@ async function evaluatePairAndUpsertMatch(
 
   const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
   const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-  const fallbackMaxM = 5000;
+  
+  // DEMO OVERRIDE: Expand fallback radius to 30km
+  const fallbackMaxM = isDemo ? 30000 : 5000; 
 
-  const fitsCapacity =
+  // DEMO OVERRIDE: Ignore capacity and direction
+  const fitsCapacity = isDemo ? true : (
     Number(route.remaining_weight_kg ?? 100) >= reqWeight &&
-    Number(route.remaining_volume_liters ?? 300) >= reqVol;
-  const isForward = doProj.fraction >= puProj.fraction - 0.05;
+    Number(route.remaining_volume_liters ?? 300) >= reqVol
+  );
+  
+  const isForward = isDemo ? true : (doProj.fraction >= puProj.fraction - 0.05);
+  
   const withinPrimary = puProj.minDistanceM <= maxCorridorM && doProj.minDistanceM <= maxCorridorM;
   const withinFallback = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
 
   if (!isPreferredRoute && !(fitsCapacity && isForward && (withinPrimary || withinFallback))) {
     return false;
   }
+
+  // ... the rest of the function (the database insert and notification) stays exactly the same
 
   const { data: existingMatch } = await supabase
     .from('route_request_matches')
@@ -569,7 +578,8 @@ export async function syncAllActiveRoutesTodayForRequest(
 
     for (const route of candidateRoutes) {
       await ensureRouteCorridorBackfilled(route.route_id);
-      if (isRouteTimeValidForRequest(route, reqRow, now)) {
+      // ADD `|| isDemo` SO IT ALWAYS RUNS IN DEMO MODE
+      if (isRouteTimeValidForRequest(route, reqRow, now) || isDemo) {
         try {
           await supabase.rpc('evaluate_route_matches', {
             p_route_id: route.route_id,
@@ -577,7 +587,7 @@ export async function syncAllActiveRoutesTodayForRequest(
           });
         } catch {}
       }
-      await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify);
+      await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify, isDemo);
     }
 
     const { data: matches } = await supabase
@@ -610,6 +620,7 @@ export async function syncAllActiveRoutesTodayForRequest(
 export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<void> {
   if (!routeId) return;
   try {
+    const isDemo = await getDemoMode();
     const { data: route } = await supabase
       .from('provider_routes')
       .select(
@@ -643,7 +654,7 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
 
     for (const reqRow of pendingReqs) {
       if (takenSet.has(reqRow.request_id)) continue;
-      await evaluatePairAndUpsertMatch(route, reqRow, now, false);
+      await evaluatePairAndUpsertMatch(route, reqRow, now, false, isDemo);
     }
   } catch (e) {
     console.warn('[matchingService] syncOpenPendingRequestsForRoute warning:', e);
@@ -658,8 +669,9 @@ export async function evaluateAndFetchRouteMatches(
   if (!routeId) return [];
   const doEvaluate = opts.evaluate !== false;
 
+  const isDemo = demoMode !== undefined ? demoMode : await getDemoMode();
+
   if (doEvaluate) {
-    const isDemo = demoMode !== undefined ? demoMode : await getDemoMode();
     await ensureRouteCorridorBackfilled(routeId);
     try {
       await supabase.rpc('evaluate_route_matches', { p_route_id: routeId, p_demo_mode: isDemo });
@@ -699,8 +711,10 @@ export async function evaluateAndFetchRouteMatches(
       Number(m.request.preferred_provider_id) === Number(m.provider_id),
   );
   const afterTime = afterPreferred.filter((m: any) =>
-    isRouteTimeValidForRequest(routeRow, m.request, now),
+    isDemo || isRouteTimeValidForRequest(routeRow, m.request, now),
   );
+
+  
 
   return afterTime.map((m: any) => ({
     match_id: Number(m.match_id),
@@ -990,24 +1004,31 @@ export function startBackgroundMatcher() {
     runPeriodicFallbackAndMatchCheck();
   }, 5 * 60 * 1000);
 
+  // Unique channel name — never collides with a stale already-subscribed channel
+  const channelName = `realtime-global-matcher-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   globalMatchChannel = supabase
-    .channel('realtime-global-matcher')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, async (payload) => {
-      const row: any = payload.new;
-      if (!row || row.status !== 'matched') return;
-      const activeRouteId = await getActiveRouteId();
-      if (!activeRouteId || Number(row.route_id) !== Number(activeRouteId)) return;
-      if (!notifiedMatchIds.has(Number(row.match_id))) {
-        notifiedMatchIds.add(Number(row.match_id));
-        Alert.alert(
-          row.is_fallback ? '📦 Fallback Request Unlocked!' : `🎯 ${Math.round(Number(row.match_score))}% Route Match!`,
-          row.is_fallback
-            ? 'A 3 km fallback delivery request along your route is now available in My Route Requests.'
-            : 'A new sender request along your route corridor matched (≥60%). Open My Route Requests to review.',
-          [{ text: 'Got it', style: 'default' }],
-        );
-      }
-    })
+    .channel(channelName)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'route_request_matches' },
+      async (payload) => {
+        const row: any = payload.new;
+        if (!row || row.status !== 'matched') return;
+        const activeRouteId = await getActiveRouteId();
+        if (!activeRouteId || Number(row.route_id) !== Number(activeRouteId)) return;
+        if (!notifiedMatchIds.has(Number(row.match_id))) {
+          notifiedMatchIds.add(Number(row.match_id));
+          Alert.alert(
+            row.is_fallback ? '📦 Fallback Request Unlocked!' : `🎯 ${Math.round(Number(row.match_score))}% Route Match!`,
+            row.is_fallback
+              ? 'A 3 km fallback delivery request along your route is now available in My Route Requests.'
+              : 'A new sender request along your route corridor matched (≥60%). Open My Route Requests to review.',
+            [{ text: 'Got it', style: 'default' }],
+          );
+        }
+      },
+    )
     .subscribe();
   return () => stopBackgroundMatcher();
 }
