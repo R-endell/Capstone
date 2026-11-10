@@ -343,7 +343,7 @@ export default function ReportFlowScreen() {
                                 <View style={[styles.radio, sel && styles.radioOn]}>
                                   {sel && <View style={styles.radioDot} />}
                                 </View>
-                                <Text style={[styles.subText, sel && { color: colors.textPrimary, fontWeight: '800' }]}>{s.label}</Text>
+                                <Text style={[styles.subText, sel && { color: colors.textPrimary, fontFamily: 'Poppins_800ExtraBold' }]}>{s.label}</Text>
                               </TouchableOpacity>
                             );
                           })}
@@ -467,15 +467,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   seg: { flex: 1, height: 4, borderRadius: 2, backgroundColor: c.divider },
   segOn: { backgroundColor: ORANGE },
   content: { padding: 20, paddingBottom: 40, gap: 12 },
-  stepTitle: { fontSize: 24, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.6 },
-  stepSub: { fontSize: 13.5, color: c.textSecondary, lineHeight: 20, marginBottom: 4, fontWeight: '500' },
+  stepTitle: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.6 },
+  stepSub: { fontSize: 13.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 20, marginBottom: 4 },
   search: {
     flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.card,
     borderWidth: 1.5, borderColor: c.border, borderRadius: 14, paddingHorizontal: 14, height: 48,
   },
-  searchInput: { flex: 1, fontSize: 14, color: c.textPrimary, fontWeight: '600', paddingVertical: 0 },
-  hint: { fontSize: 12.5, color: c.textSecondary, lineHeight: 18, marginTop: 4 },
-  label: { fontSize: 14.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, marginBottom: 8 },
+  searchInput: { flex: 1, fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, paddingVertical: 0 },
+  hint: { fontSize: 12.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 18, marginTop: 4 },
+  label: { fontSize: 14.5, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.2, marginBottom: 8 },
 
   card: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
@@ -484,28 +484,28 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   cardOn: { borderColor: ORANGE, backgroundColor: c.accentSoft },
   cardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  cardTitle: { fontSize: 14.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  cardSub: { fontSize: 12.5, color: c.textSecondary, lineHeight: 17, fontWeight: '500' },
-  cardMeta: { fontSize: 11.5, color: c.textMuted, fontWeight: '600', marginTop: 2 },
-  roleTag: { fontSize: 11, fontWeight: '800', color: ORANGE },
-  openTag: { fontSize: 11.5, fontWeight: '800', color: '#3B82F6', marginTop: 4 },
+  cardTitle: { fontSize: 14.5, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.2 },
+  cardSub: { fontSize: 12.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 17 },
+  cardMeta: { fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 2 },
+  roleTag: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: ORANGE },
+  openTag: { fontSize: 11.5, fontFamily: 'Poppins_800ExtraBold', color: '#3B82F6', marginTop: 4 },
   catIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
   context: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.card, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: c.divider },
-  contextText: { flex: 1, fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  contextText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
   subList: { backgroundColor: c.card, borderRadius: 16, marginTop: 6, paddingVertical: 4, borderWidth: 1, borderColor: c.divider },
   subRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, paddingHorizontal: 14 },
-  subText: { flex: 1, fontSize: 14, color: c.textSecondary, fontWeight: '600' },
+  subText: { flex: 1, fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center' },
   radioOn: { borderColor: ORANGE },
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
 
   textArea: {
     minHeight: 130, backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, borderRadius: 16, padding: 16,
-    fontSize: 14, color: c.textPrimary, fontWeight: '500',
+    fontSize: 14, fontFamily: 'Poppins_500Medium', color: c.textPrimary,
   },
-  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  counter: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, textAlign: 'right', marginTop: 6 },
 
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   photoBox: { width: 86, height: 86, borderRadius: 14, overflow: 'hidden' },
@@ -515,20 +515,20 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 86, height: 86, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
     alignItems: 'center', justifyContent: 'center', gap: 4, backgroundColor: c.accentSoft,
   },
-  photoAddText: { fontSize: 11, fontWeight: '800', color: ORANGE },
+  photoAddText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: ORANGE },
 
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 999, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.card },
   chipOn: { backgroundColor: ORANGE, borderColor: ORANGE },
-  chipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
+  chipText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
   review: { backgroundColor: c.card, borderRadius: 18, borderWidth: 1, borderColor: c.divider, paddingHorizontal: 16 },
   reviewRow: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.divider, gap: 4 },
-  reviewLabel: { fontSize: 12, fontWeight: '700', color: c.textSecondary },
-  reviewValue: { fontSize: 14, fontWeight: '600', color: c.textPrimary, lineHeight: 20 },
+  reviewLabel: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
+  reviewValue: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, lineHeight: 20 },
 
   banner: { flexDirection: 'row', gap: 10, backgroundColor: isDark ? '#0F2744' : '#EFF6FF', padding: 14, borderRadius: 14, alignItems: 'center' },
-  bannerText: { flex: 1, fontSize: 12.5, color: isDark ? '#93C5FD' : '#1E40AF', lineHeight: 18, fontWeight: '500' },
+  bannerText: { flex: 1, fontSize: 12.5, fontFamily: 'Poppins_500Medium', color: isDark ? '#93C5FD' : '#1E40AF', lineHeight: 18 },
 
   footer: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background },
   primary: {
@@ -536,17 +536,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.28, shadowRadius: 12, elevation: 6,
   },
   primaryOff: { backgroundColor: isDark ? '#5A3418' : '#FDBA74', shadowOpacity: 0, elevation: 0 },
-  primaryText: { color: '#FFF', fontSize: 15.5, fontWeight: '800', letterSpacing: -0.2 },
+  primaryText: { color: '#FFF', fontSize: 15.5, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.2 },
   ghost: { alignItems: 'center', paddingVertical: 16 },
-  ghostText: { color: c.textSecondary, fontSize: 14.5, fontWeight: '700' },
+  ghostText: { color: c.textSecondary, fontSize: 14.5, fontFamily: 'Poppins_700Bold' },
 
   doneWrap: { alignItems: 'stretch', paddingHorizontal: 24, paddingBottom: 40, gap: 14 },
   doneIcon: { alignSelf: 'center', width: 84, height: 84, borderRadius: 42, backgroundColor: c.success, alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 24, fontWeight: '800', color: c.textPrimary, textAlign: 'center', letterSpacing: -0.6, marginTop: 8 },
-  doneRef: { fontSize: 15, fontWeight: '800', color: ORANGE, textAlign: 'center', letterSpacing: 0.4 },
+  doneTitle: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, textAlign: 'center', letterSpacing: -0.6, marginTop: 8 },
+  doneRef: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: ORANGE, textAlign: 'center', letterSpacing: 0.4 },
   nextCard: { backgroundColor: c.card, borderRadius: 18, padding: 18, borderWidth: 1, borderColor: c.divider, gap: 12, marginVertical: 8 },
-  nextTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
+  nextTitle: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary },
   nextRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   nextDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE, marginTop: 6 },
-  nextText: { flex: 1, fontSize: 13.5, color: c.textSecondary, lineHeight: 20, fontWeight: '500' },
+  nextText: { flex: 1, fontSize: 13.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 20 },
 });
