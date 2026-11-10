@@ -920,16 +920,14 @@ export default function RegisterProviderScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
+      <Animated.View style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 10 }, fadeUp(headerAnim, -14)]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.85}>
-          <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerSubtitle}>Become a partner</Text>
-          <Text style={styles.headerTitle}>Register as Provider</Text>
-        </View>
+        <Text style={styles.headerTitle}>Register as Provider</Text>
+        <View style={{ width: 42 }} />
       </Animated.View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -1292,28 +1290,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
   header: {
-    backgroundColor: c.accent,
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingBottom: 26, gap: 12,
-    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25, shadowRadius: 14, elevation: 6,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 14,
   },
   backBtn: {
-    width: 42, height: 42, borderRadius: 21,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  headerSubtitle: { fontSize: 11, color: 'rgba(255,255,255,0.8)', fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.3, marginBottom: 2 },
-  headerTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
+  headerTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
   content: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 60 },
+  scrollContent: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 60 },
 
   introCard: {
     flexDirection: 'row', alignItems: 'flex-start',
-    backgroundColor: c.card, borderRadius: 12, padding: 16, gap: 12, marginBottom: 20,
+    backgroundColor: c.card, borderRadius: 16, padding: 16, gap: 12, marginBottom: 16,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
     shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 12, elevation: 0,
@@ -1327,13 +1319,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   progressRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    marginBottom: 26, paddingHorizontal: 10,
+    marginBottom: 16, paddingHorizontal: 14, paddingTop: 16, paddingBottom: 6,
+    backgroundColor: c.card, borderRadius: 16,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   progressStep: { alignItems: 'center', gap: 6 },
   progressDot: {
     width: 26, height: 26, borderRadius: 13, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     justifyContent: 'center', alignItems: 'center',
-    borderWidth: 2, borderColor: c.card,
+    borderWidth: 0,
   },
   progressDotDone: { backgroundColor: c.success },
   progressDotText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted },
@@ -1342,9 +1336,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   progressLine: { flex: 1, height: 2, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginHorizontal: 6, marginBottom: 20 },
   progressLineDone: { backgroundColor: c.success },
 
-  uploadSection: { marginBottom: 20 },
+  uploadSection: {
+    marginBottom: 16, backgroundColor: c.card, borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
   uploadHeader: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14,
   },
   uploadTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   uploadNumberBadge: {
@@ -1365,7 +1362,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   tilesRow: { flexDirection: 'row', gap: 12 },
   tile: {
-    flex: 1, height: 140, borderRadius: 12,
+    flex: 1, height: 140, borderRadius: 14,
     borderWidth: 2, borderStyle: 'dashed', borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
     backgroundColor: c.background, overflow: 'hidden', position: 'relative',
   },
@@ -1407,11 +1404,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   scanResultError: { backgroundColor: c.divider, borderColor: c.border },
   scanResultText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.2 },
 
-  detailsSection: { marginBottom: 20 },
+  detailsSection: {
+    marginBottom: 16, backgroundColor: c.card, borderRadius: 16, padding: 16,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
   fieldGroup: { marginBottom: 14 },
   fieldLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 6, letterSpacing: 0.2 },
   textInput: {
-    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 14,
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_500Medium',
   },
   textInputLocked: {
@@ -1455,7 +1455,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   manualNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 15 },
 
   datePickerButton: {
-    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 14,
     paddingHorizontal: 14, paddingVertical: 14,
     flexDirection: 'row', alignItems: 'center', gap: 10,
   },

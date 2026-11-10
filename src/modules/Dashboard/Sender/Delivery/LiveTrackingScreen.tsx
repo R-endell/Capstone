@@ -107,14 +107,10 @@ const haversineM = (a: LatLng, b: LatLng) => {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 };
 
-const angDiff = (to: number, from: number) => ((((to - from) % 360) + 540) % 360) - 180;
-const norm360 = (a: number) => ((a % 360) + 360) % 360;
-
 const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: ProviderFix; live: boolean }) {
   const { colors } = useTheme();
   const focused = useIsFocused();
   const [pos, setPos] = useState<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
-  const [rot, setRot] = useState(fix.heading ?? 0);
 
   const cur = useRef<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
   const from = useRef<LatLng>(cur.current);
@@ -122,9 +118,6 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
   const startAt = useRef(0);
   const dur = useRef(MIN_GLIDE_MS);
   const lastFixAt = useRef(0);
-  const want = useRef<number | null>(fix.heading ?? null);
-  const rotCur = useRef(fix.heading ?? 0);
-  const rotShown = useRef(fix.heading ?? 0);
   const raf = useRef<number | null>(null);
   const lastDraw = useRef(0);
   const alive = useRef(true);
@@ -156,18 +149,9 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
     cur.current = p;
     if (t < 1) busy = true;
 
-    if (want.current != null) {
-      const d = angDiff(want.current, rotCur.current);
-      if (Math.abs(d) > 0.4) { rotCur.current = norm360(rotCur.current + d * 0.25); busy = true; }
-    }
-
     if (now - lastDraw.current >= FRAME_MS || !busy) {
       lastDraw.current = now;
       setPos(p);
-      if (Math.abs(angDiff(rotCur.current, rotShown.current)) > 0.3) {
-        rotShown.current = rotCur.current;
-        setRot(rotCur.current);
-      }
     }
     if (busy) raf.current = requestAnimationFrame(frame);
   };
@@ -188,19 +172,16 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
     dur.current = Math.min(MAX_GLIDE_MS, Math.max(MIN_GLIDE_MS, gap));
     startAt.current = now;
     lastFixAt.current = now;
-    if (fix.heading != null && fix.heading >= 0) want.current = fix.heading;
     kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fix.latitude, fix.longitude, fix.heading]);
 
   return (
-    <Marker coordinate={pos} anchor={{ x: 0.5, y: 0.5 }} flat rotation={rot} tracksViewChanges zIndex={10}>
+    <Marker coordinate={pos} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges zIndex={10}>
       <View style={{ width: 76, height: 76, alignItems: 'center', justifyContent: 'center' }}>
         <Animated.View style={[{ position: 'absolute', width: 76, height: 76, borderRadius: 38, backgroundColor: live ? 'rgba(16,185,129,0.35)' : 'rgba(100,116,139,0.25)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
         <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6 }}>
-          <View style={{ transform: [{ rotate: '-45deg' }] }}>
-            <SolarIcon name="Routing" variant="bold" size={26} color="#000000" />
-          </View>
+          <SolarIcon name="Car" variant="bold" size={26} color={colors.accent} />
         </View>
       </View>
     </Marker>
@@ -246,6 +227,8 @@ export default function LiveTrackingScreen() {
   const pulse = useRef(new Animated.Value(0)).current;
 
   const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  // The whole trip: sender's pickup -> drop-off. Drawn under the live leg so the sender always sees it.
+  const [fullRoute, setFullRoute] = useState<LatLng[]>([]);
   const lastRoute = useRef<{ at: number; from: LatLng | null; tKey: string }>({ at: 0, from: null, tKey: '' });
   const lastFitKey = useRef('');
 
@@ -478,6 +461,16 @@ export default function LiveTrackingScreen() {
     return () => { cancelled = true; };
   }, [data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, fix?.latitude, fix?.longitude, targetIsDropoff]);
 
+  useEffect(() => {
+    if (!data) { setFullRoute([]); return; }
+    let cancelled = false;
+    getNavRoute(
+      { latitude: data.pickup.latitude, longitude: data.pickup.longitude },
+      { latitude: data.dropoff.latitude, longitude: data.dropoff.longitude },
+    ).then(r => { if (!cancelled) setFullRoute(r.coords); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude]);
+
   const fitAll = useCallback((animated: boolean) => {
     if (!data) return;
     const pts: LatLng[] = [
@@ -601,6 +594,9 @@ export default function LiveTrackingScreen() {
         rotateEnabled={false}
         pitchEnabled={false}
       >
+        {fullRoute.length > 1 && (
+          <Polyline coordinates={fullRoute} strokeColor="#94A3B8" strokeWidth={6} lineCap="round" lineJoin="round" />
+        )}
         {routeCoords.length > 1 && (
           <Polyline coordinates={routeCoords} strokeColor={colors.accent} strokeWidth={6} lineCap="round" lineJoin="round" />
         )}

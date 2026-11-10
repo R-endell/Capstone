@@ -235,7 +235,7 @@ export default function AccountScreen() {
       return;
     }
     if (providerState === 'pending') {
-      Alert.alert('Awaiting Approval', 'Your provider application is pending admin review. You will be able to switch to Provider Mode once approved.', [{ text: 'OK' }]);
+      (navigation as any).navigate('ProviderApplicationStatus');
       return;
     }
     if (providerState === 'rejected') {
@@ -264,7 +264,7 @@ export default function AccountScreen() {
   const providerMenuSubtext = (() => {
     switch (providerState) {
       case 'approved': return 'Manage delivery tasks';
-      case 'pending':  return 'Waiting for admin approval';
+      case 'pending':  return 'Tap to track your application';
       case 'rejected':
         return rejectionReason ? `Reason: ${rejectionReason}` : 'Tap to view rejection reason & register again';
       default:         return 'Earn by delivering packages';
@@ -394,8 +394,6 @@ export default function AccountScreen() {
               </View>
               <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
-
-            <View style={styles.menuDivider} />
 
             <View style={styles.menuDivider} />
 

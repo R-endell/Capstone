@@ -69,13 +69,39 @@ export const isClosed = (s: TicketStatus) => s === 'Resolved' || s === 'Closed';
 
 // ---------------------------------------------------------------- queries
 
+/**
+ * Tickets the signed-in user opened themselves ("my tickets").
+ * A sender's report AGAINST a provider is NOT included here, even for the
+ * provider — those surface via `fetchReportsAgainstMe` and the notification
+ * center. Narrowing this to `reporter_id` is what keeps a provider's Active
+ * list from filling up with other people's reports about them.
+ */
 export const fetchMyTickets = async (): Promise<Ticket[]> => {
   const me = await getMyUserId();
   if (!me) return [];
   const { data, error } = await supabase
     .from('support_tickets')
     .select(TICKET_SELECT)
-    .or(`reporter_id.eq.${me},counterparty_id.eq.${me}`)
+    .eq('reporter_id', me)
+    .order('last_activity_at', { ascending: false });
+  if (error) throw error;
+  return (data || []) as any;
+};
+
+/**
+ * Open reports against me where I'm the counterparty. Not "my tickets" —
+ * these are reports someone else filed about me that I still need to respond
+ * to (or that support is still reviewing). Resolved/Closed are excluded; those
+ * arrive as a decision notification once support rules.
+ */
+export const fetchReportsAgainstMe = async (): Promise<Ticket[]> => {
+  const me = await getMyUserId();
+  if (!me) return [];
+  const { data, error } = await supabase
+    .from('support_tickets')
+    .select(TICKET_SELECT)
+    .eq('counterparty_id', me)
+    .in('status', ['Open', 'Awaiting Other Party', 'In Review', 'Awaiting Reporter'])
     .order('last_activity_at', { ascending: false });
   if (error) throw error;
   return (data || []) as any;
@@ -171,7 +197,12 @@ export const fetchMyDeliveries = async (roles: Role[] = ['sender', 'provider']):
   return all.map(d => ({ ...d, openTicketId: openMap.get(d.delivery_id) ?? null }));
 };
 
-/** Tickets waiting on me (used for the badge on the help button). */
+/**
+ * Tickets waiting on me:
+ *   - reports AGAINST me where support is waiting on my one-time response
+ *   - my own tickets where support asked me for more info
+ * Used for the badge on the Help button.
+ */
 export const countNeedingMyAction = async (): Promise<number> => {
   const me = await getMyUserId();
   if (!me) return 0;
@@ -214,12 +245,14 @@ export const createTicket = async (input: CreateTicketInput): Promise<Ticket> =>
   const t = data as Ticket;
 
   // The DB already wrote the in-app notification; this sends the device push.
+  // Deep-link payload carries `ticketId` and `source: 'reportAgainstMe'` so the
+  // provider lands on the read-only report view with a one-time response.
   if (t.counterparty_id) {
     notifyUser(
       t.counterparty_id,
       `Issue reported on ${t.request_id ? trackingIdFor(t.request_id) : 'a delivery'}`,
       `A ${t.reporter_role} reported: ${t.sub_issue}. Open the report to see the details and photos, then tap Dispute to explain your side.`,
-      { type: 'ticket', ticketId: t.ticket_id },
+      { type: 'ticket', ticketId: t.ticket_id, source: 'reportAgainstMe' },
     );
   }
   return t;
