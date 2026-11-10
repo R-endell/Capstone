@@ -4,7 +4,7 @@ import React, {
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const STORAGE_KEY = 'app_theme_mode'; 
+const STORAGE_KEY = 'app_theme_mode';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -24,6 +24,12 @@ export interface ThemeColors {
 
   accent: string;
   accentSoft: string;
+
+  // ✅ NEW: Semantic role colors (Courier=info, Receiver=secondary)
+  info: string;
+  infoSoft: string;
+  secondary: string;
+  secondarySoft: string;
 
   success: string;
   successBg: string;
@@ -46,6 +52,10 @@ const LIGHT: ThemeColors = {
   statusBarStyle: 'dark-content',
   accent: '#F27024',
   accentSoft: '#FFF7ED',
+  info: '#3B82F6',
+  infoSoft: '#EFF6FF',
+  secondary: '#8B5CF6',
+  secondarySoft: '#F5F3FF',
   success: '#10B981',
   successBg: '#ECFDF5',
   warning: '#F59E0B',
@@ -55,30 +65,28 @@ const LIGHT: ThemeColors = {
 };
 
 const DARK: ThemeColors = {
-  // Matched to screenshot: Deep Navy Background & Slate Cards
-  background: '#0B1120', 
-  card: '#111827',       
-  cardElevated: '#1F2937', 
-  border: '#1F2937',     
-  divider: '#374151',
-
-  textPrimary: '#F9FAFB',
-  textSecondary: '#9CA3AF',
-  textMuted: '#6B7280',
-  textInverted: '#0B1120',
-
+  background: '#0F172A',
+  card: '#1E293B',
+  cardElevated: '#334155',
+  border: '#1E293B',
+  divider: '#334155',
+  textPrimary: '#F8FAFC',
+  textSecondary: '#94A3B8',
+  textMuted: '#64748B',
+  textInverted: '#0F172A',
   statusBarStyle: 'light-content',
-
-  accent: '#F27024', // Your brand orange
+  accent: '#F27024',
   accentSoft: '#2A1A0E',
-
-  // Matched to screenshot: Pill badges
-  success: '#34D399', // Bright green text
-  successBg: '#064E3B', // Dark green background
-  warning: '#FBBF24', 
+  info: '#60A5FA',
+  infoSoft: '#0F2744',
+  secondary: '#A78BFA',
+  secondarySoft: '#231542',
+  success: '#34D399',
+  successBg: '#064E3B',
+  warning: '#FBBF24',
   warningBg: '#2A1F0A',
-  error: '#F87171', // Bright red text
-  errorBg: '#7F1D1D', // Dark red background
+  error: '#F87171',
+  errorBg: '#7F1D1D',
 };
 
 interface ThemeContextValue {

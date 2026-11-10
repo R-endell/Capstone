@@ -1,16 +1,13 @@
 // src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen.tsx
 import React, { useEffect, useRef, useMemo } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Image,
-  Dimensions, Animated, Easing, StatusBar, ScrollView,
+  View, Text, TouchableOpacity, StyleSheet,
+  Animated, Easing, StatusBar, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-
-const { width } = Dimensions.get('window');
-const ORANGE = '#F27024';
+import { SolarIcon } from '../../../../components/ui/SolarIcon'; // ✅ Unified Icons
 
 export default function DropoffTypeScreen({ route, navigation }: any) {
   const { state, dispatch } = useSchedule();
@@ -23,7 +20,6 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
   const titleAnim = useRef(new Animated.Value(0)).current;
   const option1Anim = useRef(new Animated.Value(0)).current;
   const option2Anim = useRef(new Animated.Value(0)).current;
-  const graphicAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
@@ -35,12 +31,11 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
 
     Animated.parallel([
       animate(headerAnim, 0),
-      animate(graphicAnim, 120),
       animate(titleAnim, 200),
       animate(option1Anim, 320),
       animate(option2Anim, 420),
     ]).start();
-  }, [headerAnim, graphicAnim, titleAnim, option1Anim, option2Anim]);
+  }, [headerAnim, titleAnim, option1Anim, option2Anim]);
 
   useEffect(() => {
     if (editData) {
@@ -124,17 +119,11 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     }],
   });
 
-  const graphicSlide = {
-    opacity: graphicAnim,
-    transform: [{
-      translateX: graphicAnim.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }),
-    }],
-  };
-
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle="light-content" backgroundColor={colors.accent} />
 
+      {/* Clean, premium header */}
       <Animated.View style={[styles.headerBackground, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
         <View style={styles.headerInnerContent}>
           <View style={styles.stepRow}>
@@ -145,7 +134,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
 
           <View style={styles.headerTopRow}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-              <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#FFFFFF" />
             </TouchableOpacity>
             <View style={{ flex: 1 }}>
               <Text style={styles.headerSub}>
@@ -159,12 +148,6 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
             Choose how the receiver will collect their package.
           </Text>
         </View>
-
-        <Animated.Image
-          source={require('../../../../../assets/drop-off-method.png')}
-          style={[styles.headerGraphicImage, graphicSlide]}
-          resizeMode="contain"
-        />
       </Animated.View>
 
       <ScrollView
@@ -179,6 +162,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
           </View>
 
           <View style={styles.optionsWrapper}>
+            {/* Curb-side Option */}
             <Animated.View style={[styles.optionWrapper, fadeUp(option1Anim, 20)]}>
               <TouchableOpacity
                 style={[styles.optionBox, state.dropoffType === 'curb-side' && styles.optionBoxActive]}
@@ -187,15 +171,15 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               >
                 <View style={[styles.activeIndicator, state.dropoffType === 'curb-side' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'curb-side' && (
-                    <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+                    <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                   )}
                 </View>
 
-                <View style={styles.optionIconBox}>
-                  <Image
-                    source={require('../../../../../assets/curb-side-drop-off.png')}
-                    style={styles.customOptionIcon}
-                    resizeMode="contain"
+                <View style={[styles.optionIconBox, state.dropoffType === 'curb-side' && styles.optionIconBoxActive]}>
+                  <SolarIcon 
+                    name="MapPoint" 
+                    variant="duotone"
+                    size={28} 
                   />
                 </View>
                 <Text style={styles.optionLabel}>Curb-side</Text>
@@ -205,6 +189,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               </TouchableOpacity>
             </Animated.View>
 
+            {/* Door-to-door Option */}
             <Animated.View style={[styles.optionWrapper, fadeUp(option2Anim, 20)]}>
               <TouchableOpacity
                 style={[styles.optionBox, state.dropoffType === 'door-to-door' && styles.optionBoxActive]}
@@ -213,15 +198,15 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
               >
                 <View style={[styles.activeIndicator, state.dropoffType === 'door-to-door' && styles.activeIndicatorOn]}>
                   {state.dropoffType === 'door-to-door' && (
-                    <Ionicons name="checkmark" size={10} color="#FFFFFF" />
+                    <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                   )}
                 </View>
 
-                <View style={styles.optionIconBox}>
-                  <Image
-                    source={require('../../../../../assets/door-to-door.png')}
-                    style={styles.customOptionIcon}
-                    resizeMode="contain"
+                <View style={[styles.optionIconBox, state.dropoffType === 'door-to-door' && styles.optionIconBoxActive]}>
+                  <SolarIcon 
+                    name="Routing" 
+                    variant="duotone"
+                    size={28} 
                   />
                 </View>
                 <Text style={styles.optionLabel}>Door-to-Door</Text>
@@ -233,7 +218,7 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
           </View>
 
           <View style={styles.infoFooter}>
-            <Ionicons name="information-circle-outline" size={16} color={ORANGE} />
+            <SolarIcon name="Info" variant="duotone" size={18} color={colors.textPrimary} />
             <Text style={styles.infoFooterText}>
               You can change this later before confirming your booking.
             </Text>
@@ -248,10 +233,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
   headerBackground: {
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     position: 'relative',
     overflow: 'hidden',
-    paddingBottom: 22,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
     zIndex: 1,
   },
   headerInnerContent: {
@@ -259,65 +246,63 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   stepRow: {
     flexDirection: 'row',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   stepPill: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: 'rgba(255,255,255,0.25)',
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   stepText: {
     color: '#FFFFFF',
     fontSize: 10,
-    fontWeight: '800',
+    fontFamily: 'Poppins_800ExtraBold',
     letterSpacing: 0.8,
   },
+  
   headerTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 8,
-    gap: 12,
+    gap: 16,
   },
   backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.15)',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: 'rgba(255,255,255,0.25)',
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   headerSub: {
-    fontSize: 11,
-    color: '#FFE0C7',
-    fontWeight: '600',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)',
+    fontFamily: 'Poppins_600SemiBold',
     letterSpacing: 0.3,
     marginBottom: 2,
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 24,
+    fontFamily: 'Poppins_700Bold',
     color: '#FFFFFF',
     letterSpacing: -0.3,
   },
   headerSubtitle: {
-    fontSize: 13,
-    color: '#FFE0C7',
-    lineHeight: 18,
-    maxWidth: '58%',
-    fontWeight: '500',
-  },
-  headerGraphicImage: {
-    position: 'absolute',
-    right: -10,
-    bottom: -5,
-    width: 190,
-    height: 130,
-    zIndex: 2,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.85)',
+    lineHeight: 20,
+    maxWidth: '90%',
+    fontFamily: 'Poppins_400Regular',
+    marginTop: 4,
   },
 
   scrollView: {
@@ -333,112 +318,122 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   card: {
     backgroundColor: c.background,
-    borderRadius: 0,
-    padding: 0,
   },
   textTitleContainer: {
     marginBottom: 20,
-    paddingBottom: 4,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   cardTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
     marginBottom: 4,
   },
   cardSubtitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: c.textSecondary,
-    fontWeight: '400',
-    lineHeight: 18,
+    fontFamily: 'Poppins_400Regular',
+    lineHeight: 20,
   },
 
   optionsWrapper: {
-    gap: 14,
+    gap: 16,
     marginBottom: 24,
   },
   optionWrapper: { width: '100%' },
+  
+  // ✅ ATOME BORDERS & SHADOWS
   optionBox: {
     width: '100%',
     backgroundColor: c.card,
-    borderRadius: 16,
-    paddingVertical: 22,
+    borderRadius: 12, // Flatter radius
+    paddingVertical: 24,
     paddingHorizontal: 16,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', // Subtle border
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.02, // Flat shadow
+    shadowRadius: 1,
+    elevation: 0,
   },
   optionBoxActive: {
-    borderColor: ORANGE,
+    borderColor: c.accent,
     borderWidth: 1.5,
     backgroundColor: c.accentSoft,
   },
   activeIndicator: {
     position: 'absolute',
-    top: 12,
-    right: 12,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: c.border,
+    top: 16,
+    right: 16,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)',
     backgroundColor: c.card,
     justifyContent: 'center',
     alignItems: 'center',
   },
   activeIndicatorOn: {
-    backgroundColor: ORANGE,
-    borderColor: ORANGE,
+    backgroundColor: c.accent,
+    borderColor: c.accent,
   },
   optionIconBox: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
+    width: 72,
+    height: 72,
+    borderRadius: 12, // Matches card radius
+    backgroundColor: c.background,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  customOptionIcon: {
-    width: 36,
-    height: 36,
+  optionIconBoxActive: {
+    backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : '#FFFFFF', // Handles dark mode
+    borderColor: c.accent,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   optionLabel: {
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
     color: c.textPrimary,
-    marginBottom: 4,
+    marginBottom: 6,
     letterSpacing: -0.2,
   },
   optionSub: {
-    fontSize: 12,
+    fontSize: 13,
     color: c.textSecondary,
     textAlign: 'center',
-    lineHeight: 16,
-    paddingHorizontal: 12,
-    fontWeight: '400',
+    lineHeight: 18,
+    paddingHorizontal: 20,
+    fontFamily: 'Poppins_400Regular',
   },
 
   infoFooter: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: c.card,
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: c.accentSoft,
     borderRadius: 12,
-    padding: 14,
+    padding: 16,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: c.accent,
   },
+  
+  // ✅ ATOME TYPOGRAPHY
   infoFooterText: {
     flex: 1,
-    fontSize: 12,
-    color: c.textSecondary,
-    fontWeight: '500',
+    fontSize: 13,
+    color: c.textPrimary,
+    fontFamily: 'Poppins_500Medium',
     lineHeight: 18,
   },
 });

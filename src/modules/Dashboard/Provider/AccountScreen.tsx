@@ -1,12 +1,11 @@
 // src/modules/Dashboard/Provider/AccountScreen.tsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
   Alert, StatusBar, Animated, Easing, ActivityIndicator, BackHandler, Switch, Modal, Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
@@ -15,18 +14,17 @@ import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
-const ORANGE = '#FA7A25';
-const BLUE = '#3B82F6';
-const BLACK = '#111827';
-const PURPLE = '#8B5CF6';
+const EMPTY_CLIPBOARD_ICON = require('../../../../assets/empty-state-clipboard-icon.png');
+
 const { height: SCREEN_H } = Dimensions.get('window');
 
 export default function ProviderAccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
   const { isDark, colors, toggleDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [firstName, setFirstName] = useState<string>('First');
   const [lastName, setLastName] = useState<string>('Last');
@@ -171,17 +169,17 @@ export default function ProviderAccountScreen() {
         let statusLabel = 'Awaiting Pickup';
         let statusColor = colors.warning;
         let statusBg = colors.warningBg;
-        let statusIcon: any = 'time-outline';
+        let statusIcon: any = 'Clock';
 
         if (isCompleted) {
-          statusLabel = 'Completed'; statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'checkmark-circle';
+          statusLabel = 'Completed'; statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'CheckCircle';
         } else if (isCancelled) {
-          statusLabel = 'Cancelled'; statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'close-circle';
+          statusLabel = 'Cancelled'; statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'CloseCircle';
         } else if (isTransit) {
-          statusLabel = 'In Transit'; statusColor = '#0EA5E9'; statusBg = isDark ? '#0C2130' : '#E0F2FE'; statusIcon = 'car-sport';
+          statusLabel = 'In Transit'; statusColor = colors.info; statusBg = colors.infoSoft; statusIcon = 'Lightning';
         } else {
           // This handles 'Accepted' or 'Pending' statuses where pickup is not yet verified
-          statusLabel = 'Awaiting Pickup'; statusColor = colors.warning; statusBg = colors.warningBg; statusIcon = 'time-outline';
+          statusLabel = 'Awaiting Pickup'; statusColor = colors.warning; statusBg = colors.warningBg; statusIcon = 'Clock';
         }
 
         return {
@@ -317,7 +315,7 @@ export default function ProviderAccountScreen() {
             onPress={() => setSelectedHistoryJob(null)}
             activeOpacity={0.85}
           >
-            <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+            <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <ScrollView
@@ -344,7 +342,7 @@ export default function ProviderAccountScreen() {
                     <Text style={styles.serviceTypeText}>{item.type === 'door-to-door' ? 'Door-to-Door' : 'Curb-side'}</Text>
                   </View>
                   <View style={[styles.statusBadge, { backgroundColor: item.statusBg }]}>
-                    <Ionicons name={item.statusIcon} size={12} color={item.statusColor} />
+                    <SolarIcon name={item.statusIcon} variant="bold" size={12} color={item.statusColor} />
                     <Text style={[styles.statusBadgeText, { color: item.statusColor }]}>{item.statusLabel}</Text>
                   </View>
                 </View>
@@ -375,13 +373,13 @@ export default function ProviderAccountScreen() {
                 <View style={{ gap: 8, marginBottom: 16 }}>
                   {!!item.pickupNote && (
                     <View style={styles.modalNoteBox}>
-                      <Ionicons name="chatbubble-ellipses-outline" size={14} color={ORANGE} />
+                      <SolarIcon name="ChatCircleText" variant="duotone" size={14} />
                       <Text style={styles.modalNoteText}>Pickup: {item.pickupNote}</Text>
                     </View>
                   )}
                   {!!item.dropoffNote && (
                     <View style={styles.modalNoteBox}>
-                      <Ionicons name="chatbubble-ellipses-outline" size={14} color={ORANGE} />
+                      <SolarIcon name="ChatCircleText" variant="duotone" size={14} />
                       <Text style={styles.modalNoteText}>Drop-off: {item.dropoffNote}</Text>
                     </View>
                   )}
@@ -390,7 +388,7 @@ export default function ProviderAccountScreen() {
 
               <View style={styles.modalContactsRow}>
                 <View style={styles.modalContactCard}>
-                  <View style={[styles.modalContactAvatar, { backgroundColor: BLUE }]}>
+                  <View style={[styles.modalContactAvatar, { backgroundColor: colors.info }]}>
                     <Text style={styles.modalContactAvatarText}>
                       {(item.sender.split(' ').filter(Boolean).slice(0, 2).map((w: string) => w[0]).join('') || '?').toUpperCase()}
                     </Text>
@@ -401,7 +399,7 @@ export default function ProviderAccountScreen() {
                   </View>
                 </View>
                 <View style={styles.modalContactCard}>
-                  <View style={[styles.modalContactAvatar, { backgroundColor: PURPLE }]}>
+                  <View style={[styles.modalContactAvatar, { backgroundColor: colors.textPrimary }]}>
                     <Text style={styles.modalContactAvatarText}>
                       {(item.receiverName.split(' ').filter(Boolean).slice(0, 2).map((w: string) => w[0]).join('') || '?').toUpperCase()}
                     </Text>
@@ -416,19 +414,19 @@ export default function ProviderAccountScreen() {
               {item.podPhotoUrl && (
                 <>
                   <View style={styles.modalSecHead}>
-                    <Ionicons name="shield-checkmark-outline" size={17} color={colors.success} />
+                    <SolarIcon name="ShieldCheck" variant="duotone" size={17} color={colors.success} secondaryColor={colors.success} />
                     <Text style={styles.modalSecTitle}>Proof of Delivery</Text>
                   </View>
                   <Image
                     source={{ uri: item.podPhotoUrl }}
-                    style={{ width: '100%', height: 180, borderRadius: 14, borderWidth: 1, borderColor: colors.border }}
+                    style={{ width: '100%', height: 180, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
                     resizeMode="cover"
                   />
                 </>
               )}
 
               <View style={styles.modalSecHead}>
-                <Ionicons name="cube-outline" size={17} color={ORANGE} />
+                <SolarIcon name="Package" variant="duotone" size={17} />
                 <Text style={styles.modalSecTitle}>Package Details</Text>
               </View>
 
@@ -443,7 +441,7 @@ export default function ProviderAccountScreen() {
                 </View>
                 <View style={styles.tile}>
                   <Text style={styles.tileLabel}>HANDLING</Text>
-                  <Text style={[styles.tileValue, item.items.some((i: any) => i.fragile) && { color: ORANGE }]}>
+                  <Text style={[styles.tileValue, item.items.some((i: any) => i.fragile) && { color: colors.accent }]}>
                     {item.items.some((i: any) => i.fragile) ? 'Fragile' : 'Standard'}
                   </Text>
                 </View>
@@ -480,10 +478,10 @@ export default function ProviderAccountScreen() {
 
         <View style={[styles.historyHeader, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity onPress={() => setShowHistory(false)} style={styles.backBtn} activeOpacity={0.8}>
-            <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+            <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.historyHeaderTitle}>Job History</Text>
-          <View style={{ width: 40 }} />
+          <View style={{ width: 42 }} />
         </View>
 
         <ScrollView style={styles.historyContent} contentContainerStyle={styles.historyScroll} showsVerticalScrollIndicator={false}>
@@ -508,14 +506,12 @@ export default function ProviderAccountScreen() {
 
             {historyLoading ? (
               <View style={styles.historyStateContainer}>
-                <ActivityIndicator color={ORANGE} size="large" />
+                <ActivityIndicator color={colors.accent} size="large" />
                 <Text style={styles.historyStateText}>Loading jobs...</Text>
               </View>
             ) : filteredHistory.length === 0 ? (
               <View style={styles.historyStateContainer}>
-                <View style={styles.emptyIconBox}>
-                  <Ionicons name="briefcase-outline" size={38} color={ORANGE} />
-                </View>
+                <Image source={EMPTY_CLIPBOARD_ICON} style={{ width: 140, height: 140, marginBottom: 20 }} resizeMode="contain" />
                 <Text style={styles.historyEmptyTitle}>No jobs found</Text>
                 <Text style={styles.historyEmptySubtext}>
                   {historyFilter === 'All'
@@ -542,7 +538,7 @@ export default function ProviderAccountScreen() {
                         </Text>
                       </View>
                       <View style={[styles.statusBadge, { backgroundColor: item.statusBg }]}>
-                        <Ionicons name={item.statusIcon} size={12} color={item.statusColor} />
+                        <SolarIcon name={item.statusIcon} variant="bold" size={12} color={item.statusColor} />
                         <Text style={[styles.statusBadgeText, { color: item.statusColor }]}>{item.statusLabel}</Text>
                       </View>
                     </View>
@@ -562,12 +558,12 @@ export default function ProviderAccountScreen() {
 
                   <View style={styles.cardContextRow}>
                     <View style={styles.contextDateBox}>
-                      <Ionicons name="calendar-outline" size={13} color={colors.textSecondary} />
+                      <SolarIcon name="Calendar" variant="linear" size={13} color={colors.textSecondary} />
                       <Text style={styles.contextText}>{item.date} • {item.time}</Text>
                     </View>
                     {item.sender !== 'Unknown Sender' && (
                       <View style={styles.contextProviderPill}>
-                        <Ionicons name="person" size={13} color={colors.success} />
+                        <SolarIcon name="User" variant="linear" size={13} color={colors.success} />
                         <Text style={styles.contextProviderText} numberOfLines={1}>{item.sender}</Text>
                       </View>
                     )}
@@ -575,7 +571,7 @@ export default function ProviderAccountScreen() {
 
                   <View style={styles.cardFooter}>
                     <View style={styles.hTrackingWrapper}>
-                      <Ionicons name="barcode-outline" size={13} color={colors.textSecondary} />
+                      <SolarIcon name="QrCode" variant="linear" size={13} color={colors.textSecondary} />
                       <Text style={styles.hTracking}>{item.tracking}</Text>
                     </View>
                     <Text style={styles.priceText}>₱{item.price}</Text>
@@ -613,7 +609,7 @@ export default function ProviderAccountScreen() {
                     onError={() => setImageError(true)}
                   />
                 ) : (
-                  <Ionicons name="person" size={28} color={ORANGE} />
+                  <SolarIcon name="User" variant="boldDuotone" size={28} />
                 )}
               </View>
             </Animated.View>
@@ -621,18 +617,18 @@ export default function ProviderAccountScreen() {
             <View style={styles.nameContainer}>
               <View style={styles.nameAndBadgeRow}>
                 <Text style={styles.profileName} numberOfLines={1}>{firstName} {lastName}</Text>
-                <View style={[styles.roleBadgeInline, { backgroundColor: '#EFF6FF', borderColor: '#3B82F6' }]}>
-                  <Text style={[styles.roleBadgeTextInline, { color: '#3B82F6' }]}>SENDER</Text>
+                <View style={[styles.roleBadgeInline, { backgroundColor: colors.infoSoft, borderColor: colors.info }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: colors.info }]}>SENDER</Text>
                 </View>
-                <View style={[styles.roleBadgeInline, { backgroundColor: '#FFF7ED', borderColor: ORANGE }]}>
-                  <Text style={[styles.roleBadgeTextInline, { color: ORANGE }]}>PROVIDER</Text>
+                <View style={[styles.roleBadgeInline, { backgroundColor: colors.accentSoft, borderColor: colors.accent }]}>
+                  <Text style={[styles.roleBadgeTextInline, { color: colors.accent }]}>PROVIDER</Text>
                 </View>
               </View>
               <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
             </View>
 
             <TouchableOpacity style={styles.editIconBtn} onPress={() => navigation.navigate('EditProfile' as any)} activeOpacity={0.8}>
-              <Ionicons name="pencil" size={16} color={colors.textSecondary} />
+              <SolarIcon name="Pen" variant="linear" size={16} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -645,110 +641,94 @@ export default function ProviderAccountScreen() {
           <View style={styles.menuCard}>
             <TouchableOpacity style={styles.menuItem} onPress={handleSwitchToSender} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <Ionicons name="swap-horizontal-outline" size={19} color={ORANGE} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="TransferHorizontal" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Switch to Sender Mode</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Send packages instead of delivering</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('PaymentMethods' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#16243B' : '#EFF6FF' }]}>
-                  <Ionicons name="card-outline" size={19} color="#3B82F6" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Card" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Payment Methods</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Manage payout accounts</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('ManageVehicle' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.successBg }]}>
-                  <Ionicons name="car-sport-outline" size={19} color={colors.success} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Car" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Manage Vehicle</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Add or update your vehicles</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('ManageRoutes' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#1E1436' : '#F5F3FF' }]}>
-                  <Ionicons name="map-outline" size={19} color="#8B5CF6" />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Map" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Manage Travel Routes</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>View and edit your routes</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => setShowHistory(true)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.successBg }]}>
-                  <Ionicons name="briefcase-outline" size={19} color={colors.success} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="History" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Job History</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Past deliveries & jobs</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
-            <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('DisputeCenter', { mode: 'provider' })} activeOpacity={0.7}>
-              <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.warningBg }]}>
-                  <Ionicons name="shield-checkmark-outline" size={19} color="#D97706" />
-                </View>
-                <View style={styles.menuTextWrapper}>
-                  <Text style={styles.menuText}>Dispute Center</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>
-                    {disputeCount > 0 ? 'Reports waiting for your response' : 'Reports on your deliveries'}
-                  </Text>
-                </View>
-              </View>
-              {disputeCount > 0 && (
-                <View style={styles.disputeBadge}><Text style={styles.disputeBadgeText}>{disputeCount}</Text></View>
-              )}
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </TouchableOpacity>
+            
 
             <View style={styles.menuDivider} />
 
             <TouchableOpacity style={styles.menuItem} onPress={() => (navigation as any).navigate('Support', { role: 'provider' })} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.accentSoft }]}>
-                  <Ionicons name="headset-outline" size={19} color={ORANGE} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="HeadphonesRound" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
 
@@ -757,23 +737,23 @@ export default function ProviderAccountScreen() {
           <View style={styles.menuCard}>
             <TouchableOpacity style={styles.menuItem} onPress={() => navigation.navigate('Settings' as any)} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#1F262E' : '#F3F4F6' }]}>
-                  <Ionicons name="settings-outline" size={19} color={colors.textSecondary} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Settings" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Settings</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>App preferences & notifications</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
             </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
             <View style={styles.menuItem}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: isDark ? '#241A0B' : '#FFF7ED' }]}>
-                  <Ionicons name={isDark ? 'moon' : 'moon-outline'} size={19} color={ORANGE} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Moon" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Dark Mode</Text>
@@ -785,7 +765,7 @@ export default function ProviderAccountScreen() {
               <Switch
                 value={isDark}
                 onValueChange={toggleDark}
-                trackColor={{ false: '#D1D5DB', true: ORANGE }}
+                trackColor={{ false: '#D1D5DB', true: colors.accent }}
                 thumbColor="#FFFFFF"
                 ios_backgroundColor="#D1D5DB"
               />
@@ -795,15 +775,15 @@ export default function ProviderAccountScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={handleLogoutConfirm} activeOpacity={0.7}>
               <View style={styles.menuItemLeft}>
-                <View style={[styles.menuIconWrapper, { backgroundColor: colors.errorBg }]}>
-                  <Ionicons name="log-out-outline" size={19} color={colors.error} />
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="Logout" size={24} />
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.logoutText}>Log out</Text>
                   <Text style={styles.menuSubtext} numberOfLines={1}>Sign out of your account</Text>
                 </View>
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#FCA5A5" />
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.error} />
             </TouchableOpacity>
           </View>
 
@@ -817,202 +797,206 @@ export default function ProviderAccountScreen() {
 /* ------------------------------------------------------------------ */
 /* Styles                                                             */
 /* ------------------------------------------------------------------ */
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   fixedTopContainer: { backgroundColor: 'transparent', paddingHorizontal: 20, paddingBottom: 12 },
-  headerTopBar: { marginBottom: 14 },
-  headerTitle: { fontSize: 30, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
+  headerTopBar: { marginBottom: 16 },
+  headerTitle: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
 
   profileContainerCard: {
-    backgroundColor: c.card, borderRadius: 20, padding: 14,
-    borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.card, borderRadius: 12, padding: 18,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25,
-    shadowRadius: 8, elevation: 2,
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
   profileRow: { flexDirection: 'row', alignItems: 'center' },
   profilePicContainer: {
-    width: 54, height: 54, borderRadius: 27, backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center', marginRight: 12,
-    overflow: 'hidden', borderWidth: 1.5, borderColor: c.border,
+    width: 58, height: 58, borderRadius: 29, backgroundColor: c.accentSoft,
+    justifyContent: 'center', alignItems: 'center', marginRight: 14,
+    overflow: 'hidden', borderWidth: 1.5, borderColor: c.accent,
   },
   profileImage: { width: '100%', height: '100%' },
   nameContainer: { flex: 1, marginRight: 8, justifyContent: 'center' },
   nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  profileName: { fontSize: 16, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2 },
-  profileEmail: { fontSize: 12, color: c.textSecondary, fontWeight: '500', marginTop: 2 },
+  profileName: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  profileEmail: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   editIconBtn: {
-    width: 36, height: 36, borderRadius: 18, backgroundColor: c.divider,
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border,
+    width: 38, height: 38, borderRadius: 19, backgroundColor: c.background,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  roleBadgeInline: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
-  roleBadgeTextInline: { fontSize: 9, fontWeight: '800', letterSpacing: 0.6 },
+  roleBadgeInline: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  roleBadgeTextInline: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 1 },
 
   mainContent: { flex: 1 },
-  mainScrollContent: { paddingBottom: 100 },
+  mainScrollContent: { paddingBottom: 40 },
   bodyContentWrapper: { paddingHorizontal: 20, paddingTop: 8 },
-  sectionTitle: { fontSize: 16, fontWeight: '800', color: c.textPrimary, marginBottom: 12, letterSpacing: -0.3 },
+  sectionTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16, letterSpacing: -0.2 },
 
   menuCard: {
-    backgroundColor: c.card, borderRadius: 20, paddingHorizontal: 6, paddingVertical: 4,
+    backgroundColor: c.card, borderRadius: 12, paddingHorizontal: 6, paddingVertical: 6,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.04 : 0.25,
-    shadowRadius: 8, elevation: 2, borderWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
   menuItem: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingVertical: 14, paddingHorizontal: 10, borderRadius: 14,
+    paddingVertical: 18, paddingHorizontal: 10, borderRadius: 12,
   },
   menuItemLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 8 },
   menuIconWrapper: {
-    width: 42, height: 42, borderRadius: 13,
-    justifyContent: 'center', alignItems: 'center', marginRight: 14,
+    width: 32, height: 42,
+    justifyContent: 'center', alignItems: 'flex-start', marginRight: 14,
   },
   menuTextWrapper: { flex: 1 },
-  menuText: { fontSize: 15, fontWeight: '700', color: c.textPrimary },
-  menuSubtext: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
-  menuDivider: { height: 1, backgroundColor: c.divider, marginLeft: 66, marginRight: 10 },
+  menuText: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0 },
+  menuSubtext: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  menuDivider: {
+    height: 1,
+    backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
+    marginLeft: 56, marginRight: 10,
+  },
 
   disputeBadge: {
     minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.error,
     alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6, marginRight: 8,
   },
-  disputeBadgeText: { color: '#FFF', fontSize: 11, fontWeight: '800' },
-  logoutText: { fontSize: 15, fontWeight: '700', color: c.error },
+  disputeBadgeText: { color: '#FFF', fontSize: 11, fontFamily: 'Poppins_800ExtraBold' },
+  logoutText: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.error, letterSpacing: 0 },
   versionText: {
     textAlign: 'center', color: c.textMuted, fontSize: 11,
-    fontWeight: '600', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
+    fontFamily: 'Poppins_500Medium', marginTop: 24, marginBottom: 20, letterSpacing: 0.5,
   },
 
   historyHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, paddingBottom: 16,
-    backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border,
+    backgroundColor: c.card, borderBottomWidth: 1,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   backBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: c.divider,
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.background,
+    justifyContent: 'center', alignItems: 'center', borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  historyHeaderTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  historyHeaderTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   historyContent: { flex: 1, backgroundColor: c.background },
-  historyScroll: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 100 },
+  historyScroll: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 40 },
 
-  historyStateContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 64, paddingHorizontal: 24 },
-  emptyIconBox: {
-    width: 80, height: 80, borderRadius: 40, backgroundColor: c.accentSoft,
-    justifyContent: 'center', alignItems: 'center', marginBottom: 16,
-    borderWidth: 1, borderColor: c.border,
-  },
-  historyStateText: { marginTop: 14, fontSize: 14, color: c.textSecondary, fontWeight: '500' },
-  historyEmptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 6 },
-  historyEmptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', lineHeight: 20 },
+  historyStateContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
+  historyStateText: { marginTop: 14, fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  historyEmptyTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6 },
+  historyEmptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 20 },
 
   filterRow: { flexDirection: 'row', gap: 8, paddingRight: 20 },
   filterChip: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10,
-    borderRadius: 20, backgroundColor: c.card, borderWidth: 1.5, borderColor: c.border, gap: 6,
+    borderRadius: 20, backgroundColor: c.card, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
   },
   filterChipActive: {
-    backgroundColor: ORANGE, borderColor: ORANGE,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+    backgroundColor: c.accent, borderColor: c.accent,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04, shadowRadius: 1, elevation: 1,
   },
-  filterChipText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  filterChipTextActive: { color: '#FFFFFF' },
+  filterChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  filterChipTextActive: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold' },
   filterCount: {
     backgroundColor: c.divider, minWidth: 22, height: 22, borderRadius: 11,
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 6,
   },
   filterCountActive: { backgroundColor: 'rgba(255,255,255,0.28)' },
-  filterCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  filterCountText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   filterCountTextActive: { color: '#FFFFFF' },
 
   card: {
-    backgroundColor: c.card, borderRadius: 16, padding: 16, marginBottom: 12,
+    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.06 : 0.3,
-    shadowRadius: 8, elevation: 2, borderWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  completedCard: { backgroundColor: c.cardElevated, borderColor: c.border, opacity: 0.95 },
+  completedCard: { backgroundColor: c.card, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', opacity: 0.92 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8 },
   serviceTypeBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  serviceTypeText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
+  serviceTypeText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   statusBadge: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4,
   },
-  statusBadgeText: { fontSize: 11, fontWeight: '800' },
+  statusBadgeText: { fontSize: 11, fontFamily: 'Poppins_700Bold' },
   
   routeBox: {
     backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
-    marginBottom: 12, borderWidth: 1, borderColor: c.divider,
+    marginBottom: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   routeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE, marginTop: 6 },
+  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent, marginTop: 6 },
   dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary, marginTop: 6 },
   routeConnectorLine: { width: 2, height: 14, backgroundColor: c.border, marginLeft: 3, marginVertical: 3 },
-  routeAddressText: { fontSize: 14, fontWeight: '700', color: c.textPrimary, flex: 1 },
-  routeSubText: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  routeAddressText: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, flex: 1 },
+  routeSubText: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
   cardContextRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
   contextDateBox: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  contextText: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  contextText: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   contextProviderPill: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.successBg, paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: 10, gap: 5, borderWidth: 1, borderColor: c.success, flexShrink: 1,
   },
-  contextProviderText: { fontSize: 11, fontWeight: '700', color: c.success },
+  contextProviderText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.success },
   cardFooter: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider,
+    paddingTop: 12, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  priceText: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3 },
+  priceText: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   hTrackingWrapper: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: c.background, paddingHorizontal: 10, paddingVertical: 6,
-    borderRadius: 10, borderWidth: 1, borderColor: c.border,
+    borderRadius: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  hTracking: { fontSize: 12, color: c.textSecondary, fontWeight: '700', letterSpacing: 0.3 },
+  hTracking: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary, letterSpacing: 0.3 },
 
   /* Modal Details Styles */
   modalRoundBtn: {
     position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 1, elevation: 1, zIndex: 10,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   modalMap: { overflow: 'hidden' },
   modalSheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 20, paddingBottom: 24, minHeight: 500,
   },
   modalHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
-  modalCode: { fontSize: 24, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  modalDate: { fontSize: 13, fontWeight: '700', color: ORANGE, marginTop: 4, marginBottom: 16 },
+  modalCode: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+  modalDate: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4, marginBottom: 16 },
   
   modalNoteBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 6,
-    backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10,
+    backgroundColor: c.accentSoft, borderRadius: 12,
     paddingHorizontal: 12, paddingVertical: 10,
   },
-  modalNoteText: { flex: 1, fontSize: 13, lineHeight: 18, color: c.textPrimary, fontWeight: '600' },
+  modalNoteText: { flex: 1, fontSize: 13, lineHeight: 18, color: c.textPrimary, fontFamily: 'Poppins_500Medium' },
 
   modalContactsRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
   modalContactCard: {
     flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 12,
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12,
   },
   modalContactAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  modalContactAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
-  modalContactRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  modalContactName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  modalContactAvatarText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_800ExtraBold' },
+  modalContactRole: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  modalContactName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
   modalSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 20, marginBottom: 12 },
-  modalSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
+  modalSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
-  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 15, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 14 },
+  tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4 },
 });

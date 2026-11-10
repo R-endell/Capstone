@@ -293,9 +293,17 @@ export async function getTodayRouteStats(providerId: number) {
     (r: any) => r.is_deleted !== true && r.is_active !== false,
   );
 
-  const activeTodayRoutes = postedToday.filter(
-    (r: any) => r.is_deleted !== true && r.is_active !== false,
-  );
+  const activeTodayRoutes = postedToday.filter((r: any) => {
+    if (r.is_deleted === true || r.is_active === false) return false;
+
+    // Check if the route has already ended today
+    const depTime = parseNaiveRouteTime(r.departure_time);
+    const endTime = r.end_time
+      ? parseNaiveRouteTime(r.end_time)
+      : new Date(depTime.getTime() + 4 * 60 * 60 * 1000); // Fallback to 4-hour window
+      
+    return endTime.getTime() > now.getTime(); // Only keep routes that haven't ended yet
+  });
 
   return {
     usedTodayCount: postedToday.length,
@@ -350,6 +358,7 @@ export async function createProviderRouteWithGuardrails(
     routeFrequency,
   } = input;
 
+  const demoMode = await getDemoMode();
   const stats = await getTodayRouteStats(providerId);
 
   // Guardrail 1: Daily cap (Max 3 routes/day)
@@ -362,7 +371,7 @@ export async function createProviderRouteWithGuardrails(
   // Guardrail 2: Time window cap (Max 4 hours per route)
   const computedEnd = endTimeObj
     ? endTimeObj
-    : new Date(departureDateObj.getTime() + 2 * 60 * 60 * 1000); // default 2-hr window
+    : new Date(departureDateObj.getTime() + 2 * 60 * 60 * 1000);
 
   const durationHours =
     (computedEnd.getTime() - departureDateObj.getTime()) / (1000 * 60 * 60);
@@ -377,32 +386,35 @@ export async function createProviderRouteWithGuardrails(
   }
 
   // Guardrail 3: Route diversity (Destinations >= 3 km apart & no overlapping time windows today)
-  for (const existing of stats.activeTodayRoutes) {
-    const exStart = parseNaiveRouteTime(existing.departure_time);
-    const exEnd = existing.end_time
-      ? parseNaiveRouteTime(existing.end_time)
-      : new Date(exStart.getTime() + 2 * 60 * 60 * 1000);
+  // <--- WRAP THIS IN IF (!demoMode) --->
+  if (!demoMode) {
+    for (const existing of stats.activeTodayRoutes) {
+      const exStart = parseNaiveRouteTime(existing.departure_time);
+      const exEnd = existing.end_time
+        ? parseNaiveRouteTime(existing.end_time)
+        : new Date(exStart.getTime() + 2 * 60 * 60 * 1000);
 
-    const timeOverlaps =
-      departureDateObj.getTime() < exEnd.getTime() &&
-      computedEnd.getTime() > exStart.getTime();
+      const timeOverlaps =
+        departureDateObj.getTime() < exEnd.getTime() &&
+        computedEnd.getTime() > exStart.getTime();
 
-    if (timeOverlaps) {
-      throw new Error(
-        'Route Diversity Guardrail: This route overlaps in time with another route running today.',
-      );
-    }
-
-    const exEndLoc = existing.end_location;
-    if (exEndLoc?.latitude != null && exEndLoc?.longitude != null) {
-      const destSeparationKm = haversineKm(
-        { latitude: Number(endLocation.latitude), longitude: Number(endLocation.longitude) },
-        { latitude: Number(exEndLoc.latitude), longitude: Number(exEndLoc.longitude) },
-      );
-      if (destSeparationKm < MIN_DESTINATION_DIVERSITY_KM) {
+      if (timeOverlaps) {
         throw new Error(
-          `Route Diversity Guardrail: Destinations for routes on the same day must be at least ${MIN_DESTINATION_DIVERSITY_KM} km apart (this destination is ${destSeparationKm.toFixed(1)} km from another route today).`,
+          'Route Diversity Guardrail: This route overlaps in time with another route running today.',
         );
+      }
+
+      const exEndLoc = existing.end_location;
+      if (exEndLoc?.latitude != null && exEndLoc?.longitude != null) {
+        const destSeparationKm = haversineKm(
+          { latitude: Number(endLocation.latitude), longitude: Number(endLocation.longitude) },
+          { latitude: Number(exEndLoc.latitude), longitude: Number(exEndLoc.longitude) },
+        );
+        if (destSeparationKm < MIN_DESTINATION_DIVERSITY_KM) {
+          throw new Error(
+            `Route Diversity Guardrail: Destinations for routes on the same day must be at least ${MIN_DESTINATION_DIVERSITY_KM} km apart (this destination is ${destSeparationKm.toFixed(1)} km from another route today).`,
+          );
+        }
       }
     }
   }
@@ -452,7 +464,6 @@ export async function createProviderRouteWithGuardrails(
 
   await setActiveRouteId(inserted.route_id);
 
-  const demoMode = await getDemoMode();
   try {
     await supabase.rpc('evaluate_route_matches', {
       p_route_id: inserted.route_id,
@@ -540,6 +551,7 @@ export async function softDeleteProviderRoute(routeId: number) {
     .update({
       is_deleted: true,
       is_active: false,
+      is_selected: false,
       deleted_at: new Date().toISOString(),
     })
     .eq('route_id', routeId);

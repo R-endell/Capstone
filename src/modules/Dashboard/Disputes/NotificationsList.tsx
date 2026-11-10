@@ -9,13 +9,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { getMyUserId } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon'; // ✅ Replaced Ionicons
 
-const ORANGE = '#FF751F';
 const SENDER_NAME = 'Pack-N-Ship';
 
 type Notif = NotifRow;
@@ -43,27 +42,28 @@ const ago = (iso: string) => {
 const timeOnly = (iso: string) =>
   new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-const iconForType = (type: string): keyof typeof Ionicons.glyphMap => {
+const iconForType = (type: string): SolarIconName => {
   const t = (type || '').toLowerCase();
-  if (t.startsWith('dispute')) return 'shield-checkmark-outline';
-  if (t.startsWith('delivery')) return 'cube-outline';
-  if (t === 'match') return 'flash-outline';
-  if (t.startsWith('support')) return 'chatbubble-ellipses-outline';
-  if (t === 'chat') return 'chatbubbles-outline';
-  if (t === 'payment' || t === 'escrow') return 'card-outline';
-  return 'notifications-outline';
+  if (t.startsWith('dispute')) return 'ShieldCheck';
+  if (t.startsWith('delivery')) return 'Package';
+  if (t === 'match') return 'Lightning';
+  if (t.startsWith('support')) return 'ChatCircleText';
+  if (t === 'chat') return 'ChatCircleText';
+  if (t === 'payment' || t === 'escrow') return 'Card';
+  return 'Bell';
 };
 
 type Props = {
   embedded?: boolean;
   role?: 'sender' | 'provider';
+  ListEmptyComponent?: React.ReactNode;
 };
 
-export default function NotificationsList({ embedded = false, role = 'sender' }: Props) {
+export default function NotificationsList({ embedded = false, role = 'sender', ListEmptyComponent }: Props) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = makeStyles(colors, isDark);
 
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(true);
@@ -269,7 +269,6 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
     }
   };
 
-  // ---- NEW: mark all as read ----
   const markAllAsRead = () => {
     if (!myId.current) return;
     const unread = items.filter(i => !i.is_read);
@@ -285,9 +284,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
           onPress: async () => {
             setMarkingAll(true);
             try {
-              // Optimistic
               setItems(prev => prev.map(i => ({ ...i, is_read: true })));
-
               const { error } = await supabase
                 .from('notification_log')
                 .update({ is_read: true })
@@ -298,7 +295,6 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
             } catch (e: any) {
               console.warn('mark all read failed', e);
               Alert.alert('Could not mark all as read', e?.message || 'Please try again.');
-              // Re-sync
               load();
             } finally {
               setMarkingAll(false);
@@ -312,16 +308,12 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
   const open = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
 
-    // Support → open in-app thread modal
     if (type.startsWith('support')) {
       await openSupportThread(n);
       return;
     }
 
-    // Mark single as read (non-support)
     await markOneRead(n);
-
-    // Route to the correct screen
     const handled = await routeNotification(navigation, n, { role });
     if (!handled) {
       Alert.alert(n.title || 'Notification', n.body || '');
@@ -332,6 +324,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
     const t = (item.type || '').toLowerCase();
     const isSupport = t.startsWith('support');
     const isChat = t === 'chat';
+    const iconName = iconForType(item.type);
 
     return (
       <TouchableOpacity
@@ -340,7 +333,8 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
         onPress={() => open(item)}
       >
         <View style={styles.iconBox}>
-          <Ionicons name={iconForType(item.type)} size={20} color={ORANGE} />
+          {/* ✅ SolarIcon integration */}
+          <SolarIcon name={iconName} variant="duotone" size={22} />
         </View>
         <View style={{ flex: 1 }}>
           <View style={styles.row}>
@@ -357,7 +351,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
           <Text style={styles.body} numberOfLines={3}>{item.body}</Text>
           <Text style={styles.time}>{ago(item.created_at)}</Text>
         </View>
-        <Ionicons name="chevron-forward" size={16} color={colors.textMuted} style={{ alignSelf: 'center' }} />
+        <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} style={{ alignSelf: 'center' }} />
       </TouchableOpacity>
     );
   };
@@ -370,11 +364,11 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
         <View style={styles.modalRoot}>
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8 }]}>
             <TouchableOpacity onPress={closeSupportThread} style={styles.modalBackBtn} activeOpacity={0.7}>
-              <Ionicons name="chevron-back" size={26} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={24} color="#FFFFFF" />
             </TouchableOpacity>
 
             <View style={styles.modalHeaderAvatar}>
-              <Ionicons name="cube" size={20} color={ORANGE} />
+              <SolarIcon name="Package" variant="duotone" size={22} color={colors.accent} />
             </View>
 
             <View style={{ flex: 1 }}>
@@ -390,11 +384,11 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
           >
             <View style={{ flex: 1, backgroundColor: colors.background }}>
               {threadLoading && thread.length === 0 ? (
-                <View style={styles.center}><ActivityIndicator size="small" color={ORANGE} /></View>
+                <View style={styles.center}><ActivityIndicator size="small" color={colors.accent} /></View>
               ) : threadErr ? (
                 <View style={styles.center}>
-                  <Ionicons name="alert-circle-outline" size={36} color={colors.error} />
-                  <Text style={{ color: colors.textSecondary, marginTop: 8, textAlign: 'center', paddingHorizontal: 40 }}>
+                  <SolarIcon name="CloseCircle" variant="duotone" size={36} color={colors.error} />
+                  <Text style={{ color: colors.textSecondary, marginTop: 8, textAlign: 'center', paddingHorizontal: 40, fontFamily: 'Poppins_400Regular' }}>
                     {threadErr}
                   </Text>
                 </View>
@@ -414,7 +408,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
                       <View key={`${m.notif_id}-${idx}`} style={[styles.msgRow, isMe && styles.msgRowMe]}>
                         {!isMe && (
                           <View style={styles.supportAvatar}>
-                            <Ionicons name="cube" size={14} color="#FFFFFF" />
+                            <SolarIcon name="Package" variant="linear" size={14} color="#FFFFFF" />
                           </View>
                         )}
 
@@ -430,7 +424,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
 
                   {thread.length === 0 && (
                     <View style={styles.center}>
-                      <Text style={{ color: colors.textMuted, fontSize: 13 }}>
+                      <Text style={{ color: colors.textMuted, fontSize: 13, fontFamily: 'Poppins_400Regular' }}>
                         No messages in this conversation.
                       </Text>
                     </View>
@@ -455,7 +449,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
                 disabled={!reply.trim() || sending}
                 activeOpacity={0.85}
               >
-                {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="send" size={18} color="#FFFFFF" />}
+                {sending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <SolarIcon name="PaperPlane" variant="linear" size={18} color="#FFFFFF" />}
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
@@ -472,13 +466,13 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
         {!embedded && (
           <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
             <TouchableOpacity onPress={() => navigation.goBack()} style={styles.topBarBackBtn} activeOpacity={0.7} hitSlop={10}>
-              <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+              <SolarIcon name="ArrowLeft" variant="linear" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
             <Text style={styles.topBarTitle}>Notifications</Text>
             <View style={{ width: 32 }} />
           </View>
         )}
-        <View style={styles.center}><ActivityIndicator size="large" color={ORANGE} /></View>
+        <View style={styles.center}><ActivityIndicator size="large" color={colors.accent} /></View>
       </View>
     );
   }
@@ -488,11 +482,10 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
       {!embedded && (
         <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.topBarBackBtn} activeOpacity={0.7} hitSlop={10}>
-            <Ionicons name="chevron-back" size={24} color={colors.textPrimary} />
+            <SolarIcon name="ArrowLeft" variant="linear" size={24} color={colors.textPrimary} />
           </TouchableOpacity>
           <Text style={styles.topBarTitle}>Notifications</Text>
 
-          {/* NEW: Mark all as read */}
           {unreadCount > 0 ? (
             <TouchableOpacity
               onPress={markAllAsRead}
@@ -501,10 +494,10 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
               disabled={markingAll}
             >
               {markingAll ? (
-                <ActivityIndicator size="small" color={ORANGE} />
+                <ActivityIndicator size="small" color={colors.accent} />
               ) : (
                 <>
-                  <Ionicons name="checkmark-done" size={16} color={ORANGE} />
+                  <SolarIcon name="Check" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.markAllText}>Mark all</Text>
                 </>
               )}
@@ -515,7 +508,6 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
         </View>
       )}
 
-      {/* Embedded header row with the mark-all action */}
       {embedded && unreadCount > 0 && (
         <View style={styles.embeddedHeaderRow}>
           <View style={{ flex: 1 }}>
@@ -530,10 +522,10 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
             disabled={markingAll}
           >
             {markingAll ? (
-              <ActivityIndicator size="small" color={ORANGE} />
+              <ActivityIndicator size="small" color={colors.accent} />
             ) : (
               <>
-                <Ionicons name="checkmark-done" size={14} color={ORANGE} />
+                <SolarIcon name="Check" variant="linear" size={14} color={colors.accent} />
                 <Text style={styles.markAllTextSmall}>Mark all read</Text>
               </>
             )}
@@ -542,17 +534,21 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
       )}
 
       {items.length === 0 ? (
-        <View style={styles.center}>
-          <Ionicons name="notifications-outline" size={48} color={colors.textMuted} />
-          <Text style={styles.emptyTitle}>No notifications yet</Text>
-          <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
-        </View>
+        ListEmptyComponent ? (
+          <>{ListEmptyComponent}</>
+        ) : (
+          <View style={styles.center}>
+            <SolarIcon name="Bell" variant="duotone" size={48} color={colors.textMuted} />
+            <Text style={styles.emptyTitle}>No notifications yet</Text>
+            <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
+          </View>
+        )
       ) : (
         <FlatList
           data={items}
           keyExtractor={i => String(i.notif_id)}
           contentContainerStyle={{
-            paddingHorizontal: 20,
+            paddingHorizontal: 24,
             paddingTop: embedded ? 12 : insets.top + 12,
             paddingBottom: insets.bottom + 20,
           }}
@@ -561,7 +557,7 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
             <RefreshControl
               refreshing={refreshing}
               onRefresh={() => { setRefreshing(true); load(); }}
-              tintColor={ORANGE}
+              tintColor={colors.accent}
             />
           }
           renderItem={renderItem}
@@ -573,74 +569,77 @@ export default function NotificationsList({ embedded = false, role = 'sender' }:
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
   topBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 16, paddingBottom: 12,
-    backgroundColor: c.card,
+    backgroundColor: c.background,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   topBarBackBtn: {
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
   },
-  topBarTitle: { fontSize: 18, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.3, flex: 1, textAlign: 'center' },
+  // ✅ ATOME STYLE
+  topBarTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, textAlign: 'center' },
 
-  // Mark all
   markAllBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 6,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8,
     borderRadius: 10, backgroundColor: c.accentSoft,
     minWidth: 32,
   },
-  markAllText: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  markAllText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   embeddedHeaderRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 20, paddingTop: 8, paddingBottom: 4,
+    paddingHorizontal: 24, paddingTop: 8, paddingBottom: 4,
   },
   embeddedHeaderCount: {
-    fontSize: 12, fontWeight: '700', color: c.textSecondary,
+    fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary,
   },
   markAllBtnSmall: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 10, paddingVertical: 5,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 10, paddingVertical: 6,
     borderRadius: 10, backgroundColor: c.accentSoft,
   },
-  markAllTextSmall: { fontSize: 11, fontWeight: '800', color: ORANGE },
+  markAllTextSmall: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16 },
-  emptySub: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 16 },
+  emptySub: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
 
   item: {
-    flexDirection: 'row', gap: 12,
-    backgroundColor: c.card, borderRadius: 14, padding: 14, marginBottom: 10,
+    flexDirection: 'row', gap: 14,
+    backgroundColor: c.card, borderRadius: 18, padding: 16, marginBottom: 12,
     borderWidth: 1, borderColor: c.divider,
   },
-  itemUnread: { backgroundColor: c.accentSoft, borderColor: ORANGE },
+  itemUnread: { backgroundColor: c.accentSoft, borderColor: c.accent },
 
   iconBox: {
-    width: 40, height: 40, borderRadius: 20,
-    backgroundColor: c.accentSoft,
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.04)',
   },
 
   row: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  title: { flex: 1, fontSize: 14, fontWeight: '700', color: c.textPrimary },
-  subTitle: { fontSize: 12, color: c.textSecondary, fontWeight: '600', marginTop: 2 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: ORANGE },
-  body: { fontSize: 13, color: c.textSecondary, marginTop: 3, lineHeight: 18 },
-  time: { fontSize: 11, color: c.textMuted, marginTop: 6 },
+  
+  // ✅ ATOME STYLE
+  title: { flex: 1, fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  subTitle: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
+  body: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 4, lineHeight: 19 },
+  time: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 8 },
 
   modalRoot: { flex: 1, backgroundColor: c.background },
   modalHeader: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: ORANGE, paddingHorizontal: 12, paddingBottom: 14,
+    backgroundColor: c.accent, paddingHorizontal: 12, paddingBottom: 14,
     borderBottomLeftRadius: 22, borderBottomRightRadius: 22,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2, shadowRadius: 10, elevation: 5,
   },
   modalBackBtn: { padding: 4, marginRight: 4 },
@@ -649,14 +648,14 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     backgroundColor: '#FFFFFF',
     alignItems: 'center', justifyContent: 'center', marginRight: 10,
   },
-  modalHeaderName: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', letterSpacing: -0.2 },
-  modalHeaderSub: { color: '#FFE4D2', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  modalHeaderName: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_700Bold', letterSpacing: -0.2 },
+  modalHeaderSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontFamily: 'Poppins_500Medium', marginTop: 2 },
 
   msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 10 },
   msgRowMe: { justifyContent: 'flex-end' },
   supportAvatar: {
     width: 26, height: 26, borderRadius: 13,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
     marginRight: 8, marginBottom: 2,
   },
@@ -668,14 +667,14 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     borderWidth: 1, borderColor: c.divider,
   },
   msgBubbleMe: {
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     borderBottomLeftRadius: 18, borderBottomRightRadius: 6,
     borderWidth: 0,
   },
-  msgText: { fontSize: 14, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
+  msgText: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 20 },
   msgTextMe: { color: '#FFFFFF' },
   msgTime: {
-    fontSize: 10, color: c.textMuted, fontWeight: '600',
+    fontSize: 10, fontFamily: 'Poppins_500Medium', color: c.textMuted,
     marginTop: 4, alignSelf: 'flex-end',
   },
   msgTimeMe: { color: 'rgba(255,255,255,0.85)' },
@@ -690,11 +689,11 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
     flex: 1, backgroundColor: c.divider,
     borderRadius: 20, paddingHorizontal: 14, paddingVertical: 10,
     minHeight: 42, maxHeight: 120,
-    fontSize: 14, color: c.textPrimary,
+    fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
   },
   sendBtn: {
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: ORANGE,
+    backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
   },
 });

@@ -6,14 +6,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import {
   Dispute, fetchDispute, getMyUserId, respondToDispute, trackingIdFor, displayName, STATUS_STYLE,
 } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-
-const ORANGE = '#F27024';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const MIN_RESPONSE = 10;
 const MAX_RESPONSE = 500;
@@ -91,21 +89,21 @@ export default function DisputeDetailScreen() {
         style={styles.backBtn}
         onPress={() => navigation.goBack()}
         hitSlop={10}
-        activeOpacity={0.8}
+        activeOpacity={0.85}
       >
-        <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
+        <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>Dispute Details</Text>
-      <View style={{ width: 40 }} />
+      <View style={{ width: 42 }} />
     </View>
   );
 
   if (loading) {
     return (
       <View style={styles.container}>
-        <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+        <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
         {header}
-        <ActivityIndicator color={ORANGE} style={{ marginTop: 60 }} />
+        <ActivityIndicator color={colors.accent} style={{ marginTop: 60 }} />
       </View>
     );
   }
@@ -113,11 +111,11 @@ export default function DisputeDetailScreen() {
   if (!dispute) {
     return (
       <View style={styles.container}>
-        <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+        <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
         {header}
         <View style={styles.missingWrap}>
           <View style={styles.missingIcon}>
-            <Ionicons name="alert-circle-outline" size={32} color={colors.textMuted} />
+            <SolarIcon name="DangerCircle" variant="duotone" size={32} color={colors.textMuted} />
           </View>
           <Text style={styles.missing}>This report could not be found.</Text>
         </View>
@@ -152,7 +150,7 @@ export default function DisputeDetailScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} backgroundColor={colors.background} translucent />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {header}
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -171,15 +169,15 @@ export default function DisputeDetailScreen() {
             </View>
             <Text style={styles.issue}>{dispute.issue_type}</Text>
             <View style={styles.metaRow}>
-              <Ionicons name="barcode-outline" size={14} color={colors.textSecondary} />
+              <SolarIcon name="QrCode" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Tracking ID: {trackingIdFor(dispute.request_id)}</Text>
             </View>
             <View style={styles.metaRow}>
-              <Ionicons name="person-outline" size={14} color={colors.textSecondary} />
+              <SolarIcon name="User" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Reported by: {isReporter ? 'You' : displayName(dispute.reporter)}</Text>
             </View>
             <View style={styles.metaRow}>
-              <Ionicons name="cube-outline" size={14} color={colors.textSecondary} />
+              <SolarIcon name="Package" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.meta}>Provider: {isProvider ? 'You' : displayName(dispute.provider)}</Text>
             </View>
           </View>
@@ -188,7 +186,7 @@ export default function DisputeDetailScreen() {
           {canRespond && (
             <View style={styles.actionBanner}>
               <View style={styles.actionBannerIcon}>
-                <Ionicons name="alert-circle" size={20} color={colors.warning} />
+                <SolarIcon name="DangerCircle" variant="duotone" size={20} color={colors.warning} />
               </View>
               <Text style={styles.actionBannerText}>
                 A sender reported an issue on this delivery. Please explain what happened so the admin can review both sides.
@@ -203,7 +201,7 @@ export default function DisputeDetailScreen() {
               <View key={s.title} style={styles.stepRow}>
                 <View style={styles.stepRail}>
                   <View style={[styles.dot, s.done && styles.dotDone, s.current && styles.dotCurrent]}>
-                    {s.done && <Ionicons name="checkmark" size={12} color="#FFF" />}
+                    {s.done && <SolarIcon name="Check" variant="bold" size={12} color="#FFF" />}
                   </View>
                   {i < steps.length - 1 && <View style={[styles.line, s.done && styles.lineDone]} />}
                 </View>
@@ -220,10 +218,8 @@ export default function DisputeDetailScreen() {
           {/* Sender's report */}
           <View style={styles.card}>
             <View style={styles.sectionHeaderRow}>
-              <View style={[styles.sectionIconWrap, isDark
-                ? { backgroundColor: '#0F2744', borderColor: '#1E3A5F' }
-                : { backgroundColor: '#EFF6FF', borderColor: '#DBEAFE' }]}>
-                <Ionicons name="chatbubble-ellipses-outline" size={16} color="#3B82F6" />
+              <View style={[styles.sectionIconWrap, { backgroundColor: colors.infoSoft, borderColor: colors.info }]}>
+                <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.info} />
               </View>
               <Text style={styles.sectionTitle}>Sender's report</Text>
             </View>
@@ -236,12 +232,12 @@ export default function DisputeDetailScreen() {
           {responded && (
             <View style={styles.card}>
               <View style={styles.sectionHeaderRow}>
-                <View style={[styles.sectionIconWrap, { backgroundColor: colors.accentSoft, borderColor: ORANGE }]}>
-                  <Ionicons name="chatbox-ellipses-outline" size={16} color={ORANGE} />
+                <View style={[styles.sectionIconWrap, { backgroundColor: colors.accentSoft, borderColor: colors.accent }]}>
+                  <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.textPrimary} />
                 </View>
                 <Text style={styles.sectionTitle}>Provider's response</Text>
               </View>
-              <View style={[styles.quoteBox, { backgroundColor: colors.accentSoft, borderColor: ORANGE }]}>
+              <View style={[styles.quoteBox, { backgroundColor: colors.accentSoft, borderColor: colors.accent }]}>
                 <Text style={styles.body}>{dispute.provider_response}</Text>
               </View>
               <Text style={styles.stamp}>{fmt(dispute.provider_responded_at)}</Text>
@@ -274,7 +270,7 @@ export default function DisputeDetailScreen() {
                   <ActivityIndicator color="#FFF" />
                 ) : (
                   <>
-                    <Ionicons name="paper-plane-outline" size={18} color="#FFF" />
+                    <SolarIcon name="PaperPlane" variant="linear" size={18} color="#FFF" />
                     <Text style={styles.submitText}>Submit Response</Text>
                   </>
                 )}
@@ -289,7 +285,7 @@ export default function DisputeDetailScreen() {
           {!closed && !canRespond && (
             <View style={styles.waitCard}>
               <View style={styles.waitIcon}>
-                <Ionicons name="time-outline" size={18} color={isDark ? '#93C5FD' : '#1D4ED8'} />
+                <SolarIcon name="Clock" variant="linear" size={18} color={colors.info} />
               </View>
               <Text style={styles.waitText}>
                 {dispute.status === 'Awaiting Provider'
@@ -307,8 +303,8 @@ export default function DisputeDetailScreen() {
               style={[
                 styles.card,
                 {
-                  borderColor: dispute.status === 'Resolved' ? colors.success : colors.border,
-                  backgroundColor: dispute.status === 'Resolved' ? colors.successBg : colors.card,
+                  borderColor: dispute.status === 'Resolved' ? colors.success : colors.error,
+                  backgroundColor: dispute.status === 'Resolved' ? colors.successBg : colors.errorBg,
                 },
               ]}
             >
@@ -317,15 +313,16 @@ export default function DisputeDetailScreen() {
                   style={[
                     styles.sectionIconWrap,
                     {
-                      backgroundColor: dispute.status === 'Resolved' ? colors.successBg : colors.divider,
-                      borderColor: dispute.status === 'Resolved' ? colors.success : colors.border,
+                      backgroundColor: dispute.status === 'Resolved' ? colors.card : colors.card,
+                      borderColor: dispute.status === 'Resolved' ? colors.success : colors.error,
                     },
                   ]}
                 >
-                  <Ionicons
-                    name={dispute.status === 'Resolved' ? 'checkmark-done-outline' : 'close-outline'}
+                  <SolarIcon
+                    name={dispute.status === 'Resolved' ? 'CheckCircle' : 'CloseCircle'}
+                    variant="linear"
                     size={16}
-                    color={dispute.status === 'Resolved' ? colors.success : colors.textSecondary}
+                    color={dispute.status === 'Resolved' ? colors.success : colors.error}
                   />
                 </View>
                 <Text style={styles.sectionTitle}>Admin decision</Text>
@@ -353,130 +350,130 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 20, paddingBottom: 12, gap: 12,
   },
   backBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.card,
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: c.divider,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.06, shadowRadius: 6, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
   headerTitle: {
     flex: 1, textAlign: 'center',
-    fontSize: 20, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.4,
+    fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3,
   },
   missingWrap: { alignItems: 'center', marginTop: 80, gap: 12 },
   missingIcon: {
     width: 64, height: 64, borderRadius: 32, backgroundColor: c.divider,
     alignItems: 'center', justifyContent: 'center',
   },
-  missing: { color: c.textSecondary, fontSize: 14, fontWeight: '600' },
+  missing: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_500Medium' },
 
   /* ── Content ────────────────────────────────────── */
   content: { padding: 20, paddingBottom: 60, gap: 14 },
 
   card: {
-    backgroundColor: c.card, borderRadius: 18, padding: 18,
-    borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.card, borderRadius: 12, padding: 18,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.3 : 0.05, shadowRadius: 8, elevation: 2,
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 8, elevation: 0,
   },
 
   rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
-  caseRef: { fontSize: 12, fontWeight: '800', color: c.textSecondary, letterSpacing: 0.4 },
+  caseRef: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.4 },
   issue: {
-    fontSize: 20, fontWeight: '800', color: c.textPrimary,
+    fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary,
     marginTop: 10, marginBottom: 12, letterSpacing: -0.4,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
-  meta: { fontSize: 12.5, color: c.textSecondary, fontWeight: '500' },
+  meta: { fontSize: 12.5, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
 
   badge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999 },
-  badgeText: { fontSize: 10.5, fontWeight: '800', letterSpacing: 0.4, textTransform: 'uppercase' },
+  badgeText: { fontSize: 10.5, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4, textTransform: 'uppercase' },
 
   /* Action banner */
   actionBanner: {
     flexDirection: 'row', gap: 12, backgroundColor: c.warningBg,
-    padding: 14, borderRadius: 16, borderWidth: 1, borderColor: c.warning,
+    padding: 14, borderRadius: 12, borderWidth: 1, borderColor: c.warning,
   },
   actionBannerIcon: {
     width: 32, height: 32, borderRadius: 16,
     backgroundColor: isDark ? '#3A2411' : '#FDE68A',
     alignItems: 'center', justifyContent: 'center',
   },
-  actionBannerText: { flex: 1, color: c.warning, fontSize: 13, lineHeight: 19, fontWeight: '600' },
+  actionBannerText: { flex: 1, color: c.warning, fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_600SemiBold' },
 
   /* Section headers */
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
   sectionIconWrap: {
-    width: 30, height: 30, borderRadius: 10,
+    width: 30, height: 30, borderRadius: 12,
     alignItems: 'center', justifyContent: 'center', borderWidth: 1,
   },
   sectionTitle: {
-    fontSize: 14.5, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2,
+    fontSize: 14.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2,
   },
   quoteBox: {
-    backgroundColor: c.background, padding: 14, borderRadius: 14,
-    borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.background, padding: 14, borderRadius: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  body: { fontSize: 14, color: c.textSecondary, lineHeight: 21, fontWeight: '500' },
-  stamp: { fontSize: 11, color: c.textMuted, marginTop: 10, fontWeight: '600' },
+  body: { fontSize: 14, color: c.textSecondary, lineHeight: 21, fontFamily: 'Poppins_400Regular' },
+  stamp: { fontSize: 11, color: c.textMuted, marginTop: 10, fontFamily: 'Poppins_500Medium' },
 
   /* Progress */
-  stepRow: { flexDirection: 'row', gap: 12 },
+  stepRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
   stepRail: { alignItems: 'center', width: 22 },
   dot: {
-    width: 22, height: 22, borderRadius: 11, backgroundColor: c.border,
+    width: 22, height: 22, borderRadius: 11, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     alignItems: 'center', justifyContent: 'center',
   },
   dotDone: {
-    backgroundColor: ORANGE,
-    shadowColor: ORANGE, shadowOpacity: 0.4, shadowRadius: 5, elevation: 3,
+    backgroundColor: c.accent,
+    shadowColor: c.accent, shadowOpacity: 0.4, shadowRadius: 5, elevation: 3,
   },
-  dotCurrent: { backgroundColor: c.card, borderWidth: 3, borderColor: ORANGE },
-  line: { flex: 1, width: 2, backgroundColor: c.border, marginVertical: 2 },
-  lineDone: { backgroundColor: ORANGE },
-  stepTitle: { fontSize: 14, fontWeight: '700', color: c.textPrimary, letterSpacing: -0.2 },
-  stepSub: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontWeight: '500' },
+  dotCurrent: { backgroundColor: c.card, borderWidth: 3, borderColor: c.accent },
+  line: { flex: 1, width: 2, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 2 },
+  lineDone: { backgroundColor: c.accent },
+  stepTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
+  stepSub: { fontSize: 12, color: c.textSecondary, marginTop: 3, fontFamily: 'Poppins_400Regular' },
 
   /* Response input */
   textArea: {
     minHeight: 120, backgroundColor: c.background,
-    borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
-    padding: 14, fontSize: 14, color: c.textPrimary, fontWeight: '500',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
+    padding: 14, fontSize: 14, color: c.textPrimary, fontFamily: 'Poppins_400Regular',
+    marginTop: 12, textAlignVertical: 'top',
   },
-  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontWeight: '600' },
+  counter: { fontSize: 11, color: c.textMuted, textAlign: 'right', marginTop: 6, fontFamily: 'Poppins_500Medium' },
 
   /* Submit */
   submit: {
-    flexDirection: 'row', backgroundColor: ORANGE,
-    paddingVertical: 15, borderRadius: 14,
+    flexDirection: 'row', backgroundColor: c.accent,
+    paddingVertical: 16, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 14,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.28, shadowRadius: 12, elevation: 5,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25, shadowRadius: 12, elevation: 4,
   },
   submitDisabled: {
-    backgroundColor: isDark ? '#5A3418' : '#FDBA74',
-    shadowOpacity: 0, elevation: 0,
+    backgroundColor: c.accentSoft, shadowOpacity: 0, elevation: 0,
   },
-  submitText: { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: -0.2 },
+  submitText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: -0.2 },
   footnote: {
-    fontSize: 11, color: c.textSecondary, textAlign: 'center', marginTop: 10, fontWeight: '500',
+    fontSize: 11, color: c.textSecondary, textAlign: 'center', marginTop: 10, fontFamily: 'Poppins_400Regular',
   },
 
   /* Waiting card */
   waitCard: {
     flexDirection: 'row', gap: 12,
-    backgroundColor: isDark ? '#0F2744' : '#EFF6FF',
-    padding: 14, borderRadius: 16, borderWidth: 1,
-    borderColor: isDark ? '#1E3A5F' : '#DBEAFE',
+    backgroundColor: c.infoSoft,
+    padding: 14, borderRadius: 12, borderWidth: 1,
+    borderColor: isDark ? 'rgba(96, 165, 250, 0.2)' : 'rgba(59, 130, 246, 0.2)',
   },
   waitIcon: {
     width: 32, height: 32, borderRadius: 16,
-    backgroundColor: isDark ? '#1E3A5F' : '#DBEAFE',
+    backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
   waitText: {
     flex: 1, fontSize: 13,
-    color: isDark ? '#93C5FD' : '#1E40AF',
-    lineHeight: 19, fontWeight: '500',
+    color: c.info,
+    lineHeight: 19, fontFamily: 'Poppins_400Regular',
   },
 });

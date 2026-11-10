@@ -32,21 +32,11 @@ const GOOGLE_MAPS_API_KEY: string =
   '';
 const HAS_GOOGLE_KEY = GOOGLE_MAPS_API_KEY.length > 10;
 
-// Common Metro Cebu postal code fallback when geocoders omit zip code
 const CEBU_ZIP_FALLBACK: Record<string, string> = {
-  'cebu city': '6000',
-  'mandaue': '6014',
-  'mandaue city': '6014',
-  'lapu-lapu': '6015',
-  'lapu-lapu city': '6015',
-  'talisay': '6045',
-  'talisay city': '6045',
-  'consolacion': '6001',
-  'liloan': '6002',
-  'minglanilla': '6046',
-  'naga': '6037',
-  'naga city': '6037',
-  'cordova': '6017',
+  'cebu city': '6000', 'mandaue': '6014', 'mandaue city': '6014',
+  'lapu-lapu': '6015', 'lapu-lapu city': '6015', 'talisay': '6045', 'talisay city': '6045',
+  'consolacion': '6001', 'liloan': '6002', 'minglanilla': '6046', 'naga': '6037',
+  'naga city': '6037', 'cordova': '6017',
 };
 
 type LatLng = { lat: number; lng: number };
@@ -66,23 +56,15 @@ const metersBetween = (a: LatLng, b: LatLng): number => {
 const formatDistance = (m: number): string =>
   m < 1000 ? `${Math.max(1, Math.round(m))}m` : `${(m / 1000).toFixed(2)} km`;
 
-// --- ADDRESS RESOLUTION TUNING ---
-// An address we already resolved within this distance is reused instead of asking
-// Google again. GPS drifts 10-40 m between fixes, which is enough to flip a
-// street / barangay / city result near a boundary (Cebu City <-> Mandaue is the
-// classic one), so a spot keeps the first answer it got.
 const ADDRESS_REUSE_RADIUS_M = 25;
 const GEOCODE_DEBOUNCE_MS = 250;
 const GEOCODE_TIMEOUT_MS = 6000;
 
-// GPS: use a recent accurate cached fix instantly; otherwise sample briefly and keep
-// the most accurate reading instead of waiting on one slow "high accuracy" request.
 const GPS_CACHED_MAX_ACCURACY_M = 35;
 const GPS_GOOD_ENOUGH_M = 25;
 const GPS_ACCEPTABLE_M = 60;
 const GPS_SOFT_WAIT_MS = 1500;
 const GPS_MAX_WAIT_MS = 5000;
-// A GPS fix taken at screen-open stays usable for the map this long.
 const PREFETCH_MAX_AGE_MS = 90000;
 
 type ResolvedAddress = {
@@ -95,26 +77,19 @@ type ResolvedAddress = {
 };
 
 const UNRESOLVED_ADDRESS: ResolvedAddress = {
-  street: 'Not identified',
-  barangay: 'Not identified',
-  city: 'Not identified',
-  province: 'Not identified',
-  zip_code: '',
+  street: 'Not identified', barangay: 'Not identified', city: 'Not identified',
+  province: 'Not identified', zip_code: '',
   formatted: 'Address details unavailable. Move the pin slightly or try again.',
 };
 
-// Google sometimes returns the REGION (Central Visayas / Gitnang Kabisayaan /
-// Region VII) in a slot where a province or city is expected. It is never either.
 const REGION_NAME_RE = /central visayas|gitnang kabisayaan|kabisayaan|region\s*(vii|7)\b/i;
 
-// "Cebu City" / "City of Mandaue" / "Lapu-Lapu City" -> "cebu" / "mandaue" / "lapulapu"
 const normKey = (v: string): string =>
   (v || '')
     .toLowerCase()
     .replace(/\b(city|municipality|of|province)\b/g, '')
     .replace(/[^a-z0-9]/g, '');
 
-// Every city and municipality of Cebu Province (normalized).
 const CEBU_LGU_KEYS = new Set(
   ('cebu mandaue lapulapu talisay naga danao carcar toledo bogo alcantara alcoy alegria ' +
     'aloguinsan argao asturias badian balamban bantayan barili boljoon borbon carmen catmon ' +
@@ -125,18 +100,11 @@ const CEBU_LGU_KEYS = new Set(
 );
 
 const CITY_DISPLAY: Record<string, string> = {
-  cebu: 'Cebu City',
-  mandaue: 'Mandaue City',
-  lapulapu: 'Lapu-Lapu City',
-  talisay: 'Talisay City',
-  naga: 'Naga City',
-  danao: 'Danao City',
-  carcar: 'Carcar City',
-  toledo: 'Toledo City',
-  bogo: 'Bogo City',
+  cebu: 'Cebu City', mandaue: 'Mandaue City', lapulapu: 'Lapu-Lapu City',
+  talisay: 'Talisay City', naga: 'Naga City', danao: 'Danao City',
+  carcar: 'Carcar City', toledo: 'Toledo City', bogo: 'Bogo City',
 };
 
-// Rough bounds of Cebu Province (mainland + Camotes, excluding Bohol).
 const inCebuProvince = (c: LatLng): boolean =>
   c.lat >= 9.4 && c.lat <= 11.4 && c.lng >= 123.2 && c.lng <= 124.6 &&
   (c.lng <= 124.05 || c.lat >= 10.45);
@@ -144,7 +112,6 @@ const inCebuProvince = (c: LatLng): boolean =>
 const hasType = (r: any, types: string[]): boolean =>
   (r?.types || []).some((t: string) => types.includes(t));
 
-// Component lookup within ONE geocoder result, honouring the priority order of `types`.
 const compOf = (r: any, types: string[]): string => {
   const comps: any[] = r?.address_components || [];
   for (const t of types) {
@@ -154,17 +121,6 @@ const compOf = (r: any, types: string[]): string => {
   return '';
 };
 
-// Turns Google's reverse-geocode results into one consistent address.
-//
-// Why this is built the way it is: the old code took the "nearest road" result and
-// then back-filled any missing field from ANY other result. Near a boundary, the
-// nearest road changes with a few metres of GPS drift, and the back-fill mixed
-// cities/barangays from different results. Here:
-//   - barangay / city / province come from the area result that CONTAINS the point
-//     (a political boundary, which does not depend on which road is nearest),
-//     all read from a single result so the hierarchy is coherent;
-//   - the street comes from a road result in that same city;
-//   - region names are never allowed to show up as a province or city.
 const parseGoogleAddress = (results: any[], coords: LatLng): ResolvedAddress => {
   const barangayResult =
     results.find((r) =>
@@ -174,10 +130,7 @@ const parseGoogleAddress = (results: any[], coords: LatLng): ResolvedAddress => 
   const areaResult = barangayResult || cityResult || results[0];
 
   const barangay = compOf(barangayResult, [
-    'sublocality_level_1',
-    'sublocality',
-    'administrative_area_level_4',
-    'neighborhood',
+    'sublocality_level_1', 'sublocality', 'administrative_area_level_4', 'neighborhood',
   ])
     .replace(/^Brgy\.?\s*/i, '')
     .replace(/^Barangay\s+/i, '')
@@ -187,9 +140,8 @@ const parseGoogleAddress = (results: any[], coords: LatLng): ResolvedAddress => 
     compOf(areaResult, ['administrative_area_level_2']) ||
     compOf(cityResult, ['administrative_area_level_2']);
 
-  // City
   let cityRaw = compOf(areaResult, ['locality']) || compOf(cityResult, ['locality']);
-  if (!cityRaw && /\bcity\b/i.test(admin2Raw)) cityRaw = admin2Raw; // HUCs sometimes sit at level 2
+  if (!cityRaw && /\bcity\b/i.test(admin2Raw)) cityRaw = admin2Raw;
   if (!cityRaw) {
     const admin3 =
       compOf(areaResult, ['administrative_area_level_3']) ||
@@ -201,15 +153,12 @@ const parseGoogleAddress = (results: any[], coords: LatLng): ResolvedAddress => 
   const city = (CITY_DISPLAY[cityKey] || cityRaw).trim();
   const inCebu = CEBU_LGU_KEYS.has(cityKey) && inCebuProvince(coords);
 
-  // Province: Google's level-2 value when it is a real province; otherwise Cebu for
-  // Cebu LGUs (the independent cities, Cebu City / Mandaue / Lapu-Lapu, have none).
   const admin2 = admin2Raw.replace(/^province of\s+/i, '').replace(/\s+province$/i, '').trim();
   const admin2Usable = !!admin2 && !REGION_NAME_RE.test(admin2) && !/\bcity\b/i.test(admin2);
   let province = admin2Usable ? admin2 : '';
   if (!province && inCebu) province = 'Cebu';
   if (REGION_NAME_RE.test(province)) province = '';
 
-  // Street: prefer a road/address result that belongs to the same city as the pin.
   const isAddressResult = (r: any) => hasType(r, ['street_address', 'premise', 'subpremise']);
   const streetCandidates = [
     ...results.filter(isAddressResult),
@@ -226,8 +175,6 @@ const parseGoogleAddress = (results: any[], coords: LatLng): ResolvedAddress => 
   const premise = compOf(streetResult, ['premise']);
   const street = (route ? [streetNumber, route].filter(Boolean).join(' ') : premise).trim();
 
-  // ZIP: one code per Cebu city, so the table is more reliable than whichever road
-  // result Google happened to return; elsewhere use Google's postal code.
   const zipCode =
     (inCebu && CEBU_ZIP_FALLBACK[city.toLowerCase()]) ||
     compOf(streetResult, ['postal_code']) ||
@@ -263,8 +210,6 @@ const fetchGoogleAddress = async (
   return parseGoogleAddress(json.results, coords);
 };
 
-// Fast + accurate GPS fix. Returns instantly from a recent accurate cached fix;
-// otherwise samples the GPS and stops as soon as a good reading arrives.
 const getAccurateFix = async (): Promise<Location.LocationObject> => {
   const cached = await Location.getLastKnownPositionAsync({
     maxAge: 30000,
@@ -308,8 +253,6 @@ const getAccurateFix = async (): Promise<Location.LocationObject> => {
   });
 };
 
-// Turns Supabase auth errors into something a user can act on. The raw server
-// message is always logged, and shown too in development builds.
 const friendlyAuthError = (err: any): string => {
   const raw = String(err?.message || '');
   let friendly = raw || 'Something went wrong.';
@@ -334,22 +277,15 @@ export default function RegisterScreen() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
 
-  // Location State
   const [address, setAddress] = useState('');
   const [lat, setLat] = useState<number | null>(null);
   const [lng, setLng] = useState<number | null>(null);
   const [isGpsMatched, setIsGpsMatched] = useState(false);
 
-  // Structured Address State
   const [structuredAddress, setStructuredAddress] = useState({
-    street: '',
-    barangay: '',
-    city: '',
-    province: '',
-    zip_code: '',
+    street: '', barangay: '', city: '', province: '', zip_code: '',
   });
 
-  // Map Modal & Redesigned Confirmation Sheet State
   const [isMapVisible, setIsMapVisible] = useState(false);
   const [showConfirmSheet, setShowConfirmSheet] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
@@ -457,14 +393,11 @@ export default function RegisterScreen() {
     return '';
   };
   const validateConfirmPassword = (password: string, confirm: string) => {
-  if (!confirm) return 'Please confirm your password';
-  if (password !== confirm) return 'Passwords do not match';
-  return '';
-};
+    if (!confirm) return 'Please confirm your password';
+    if (password !== confirm) return 'Passwords do not match';
+    return '';
+  };
 
-  // --- STABLE REVERSE GEOCODER ---
-  // One lookup per spot: known spots resolve instantly and identically, duplicate
-  // requests for the same spot are shared, and a newer request cancels an older one.
   const geocodeCache = useRef<Map<string, ResolvedAddress>>(new Map());
   const geocodeRequestIdRef = useRef(0);
   const lastResolvedCoordsRef = useRef<LatLng | null>(null);
@@ -498,10 +431,9 @@ export default function RegisterScreen() {
 
   const resolveFullAddressAtCoords = useCallback(
     async (coords: LatLng): Promise<ResolvedAddress> => {
-      // 1) Spot already resolved -> instant, same answer every time.
       const reusable = findReusableAddress(coords);
       if (reusable) {
-        geocodeRequestIdRef.current += 1; // invalidate any older lookup still running
+        geocodeRequestIdRef.current += 1;
         abortRef.current?.abort();
         inFlightRef.current = null;
         setLivePreviewAddress(reusable);
@@ -509,14 +441,11 @@ export default function RegisterScreen() {
         return reusable;
       }
 
-      // 2) Same spot already being looked up (e.g. "locate me" and the map's own
-      //    region callback both fire) -> share that request instead of racing it.
       const pending = inFlightRef.current;
       if (pending && metersBetween(pending.coords, coords) < ADDRESS_REUSE_RADIUS_M) {
         return pending.promise;
       }
 
-      // 3) New spot -> cancel any older lookup and ask Google once.
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -528,7 +457,6 @@ export default function RegisterScreen() {
         try {
           const result = await fetchGoogleAddress(coords, controller.signal);
           rememberAddress(coords, result);
-          // Ignore answers for a pin the user has already moved away from.
           if (requestId === geocodeRequestIdRef.current) {
             lastResolvedCoordsRef.current = coords;
             setLivePreviewAddress(result);
@@ -553,8 +481,6 @@ export default function RegisterScreen() {
     [findReusableAddress, rememberAddress],
   );
 
-  // Called whenever the map settles. Known spots update instantly; new spots wait a
-  // short beat so a drag does not fire a request per frame.
   const scheduleGeocode = useCallback(
     (coords: LatLng) => {
       if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
@@ -582,13 +508,8 @@ export default function RegisterScreen() {
     [],
   );
 
-  // --- WARM-UP (once, when the screen opens) ---
-  // Get the first GPS fix, the first connection to Google and the first address ready
-  // while the user is still typing their name, so the map opens already positioned.
-  // Only runs if location permission was ALREADY granted; it never shows a prompt.
   useEffect(() => {
     let cancelled = false;
-    // Opens the DNS/TLS connection to Google now. The request is free; result ignored.
     fetch('https://maps.googleapis.com/', { method: 'HEAD' }).catch(() => {});
     (async () => {
       try {
@@ -598,7 +519,7 @@ export default function RegisterScreen() {
         if (cancelled) return;
         const coords: LatLng = { lat: loc.coords.latitude, lng: loc.coords.longitude };
         prefetchedFixRef.current = { coords, at: Date.now() };
-        resolveFullAddressAtCoords(coords); // fills the address cache; harmless while the map is closed
+        resolveFullAddressAtCoords(coords);
       } catch {
         // warm-up is best effort
       }
@@ -608,7 +529,6 @@ export default function RegisterScreen() {
     };
   }, [resolveFullAddressAtCoords]);
 
-  // --- LOCATE USER'S CURRENT GPS POSITION ---
   const handleLocateMe = useCallback(async () => {
     locatingRef.current = true;
     setIsLocatingGps(true);
@@ -658,16 +578,11 @@ export default function RegisterScreen() {
     }
   }, [resolveFullAddressAtCoords]);
 
-  // --- OPEN MAP & DEFAULT TO CURRENT LOCATION ---
   const handleOpenMapModal = async () => {
     Keyboard.dismiss();
     setShowConfirmSheet(false);
     setIsMapVisible(true);
 
-    // Reopening must show exactly what the user already confirmed: no new lookup and
-    // no new GPS fix. Seeding the cache with the saved address also means the map's
-    // own "region changed" callback (it fires on mount) reuses it instead of asking
-    // Google about a point a few metres away and getting a different answer.
     if (lat !== null && lng !== null) {
       const savedPin = { lat, lng };
       const savedAddress: ResolvedAddress = { ...structuredAddress, formatted: address };
@@ -690,8 +605,6 @@ export default function RegisterScreen() {
       return;
     }
 
-    // GPS fix + address were prepared when the screen opened: put the map straight
-    // on them before it mounts (no spinner, no jump, address already on screen).
     const warm = prefetchedFixRef.current;
     if (warm && Date.now() - warm.at < PREFETCH_MAX_AGE_MS) {
       setDeviceGps(warm.coords);
@@ -703,7 +616,6 @@ export default function RegisterScreen() {
     await handleLocateMe();
   };
 
-  // Distance between user's live GPS and the map pin
   const livePinDistanceM = useMemo(() => {
     if (!deviceGps) return null;
     return metersBetween(deviceGps, mapCenter);
@@ -714,12 +626,8 @@ export default function RegisterScreen() {
 
   const applyConfirmedLocation = (
     resolved: {
-      street: string;
-      barangay: string;
-      city: string;
-      province: string;
-      zip_code: string;
-      formatted: string;
+      street: string; barangay: string; city: string;
+      province: string; zip_code: string; formatted: string;
     },
     gpsMatched: boolean,
   ) => {
@@ -741,24 +649,17 @@ export default function RegisterScreen() {
 
   const handlePressConfirmBtn = async () => {
     if (geocodeTimeoutRef.current) clearTimeout(geocodeTimeoutRef.current);
-    // Instant when this spot is already resolved (or a lookup is in flight); otherwise
-    // exactly one lookup. Never trusts a stale preview from a previous pin position.
     const resolved = await resolveFullAddressAtCoords(mapCenter);
     const dist = deviceGps ? metersBetween(deviceGps, mapCenter) : null;
 
-    // If within 150m of live GPS, confirm directly with green GPS badge
     if (dist === null || dist <= GPS_MATCH_RADIUS_M) {
       applyConfirmedLocation(resolved, true);
       return;
     }
 
-    // Otherwise open the custom designed Confirmation Modal Sheet
     setShowConfirmSheet(true);
   };
 
-  // --- BACKGROUND DUPLICATE CHECK ---
-  // Phone/email availability is checked when the user leaves the field, so by the
-  // time they press Sign Up the answer is already known. Results are cached per value.
   const dupCheckCache = useRef<Map<string, { at: number; promise: Promise<boolean> }>>(new Map());
   const phoneRef = useRef('');
   const emailRef = useRef('');
@@ -773,21 +674,16 @@ export default function RegisterScreen() {
       const { data } = await supabase.from('users').select('user_id').eq(column, value).maybeSingle();
       return !!data;
     })().catch(() => {
-      dupCheckCache.current.delete(key); // don't cache a failed check
+      dupCheckCache.current.delete(key);
       return false;
     });
     dupCheckCache.current.set(key, { at: Date.now(), promise });
     return promise;
   }, []);
 
-  // Sign-up work that runs AFTER the verification email has been triggered, so the
-  // code screen never waits on it.
   const pendingFinalizeRef = useRef<Promise<void> | null>(null);
-  // Profile link that could not be written before the email was verified (retried once
-  // the user is signed in, right after the code is accepted).
   const profileLinkRef = useRef<{ authUserId: string; update: Record<string, unknown> } | null>(null);
 
-  // --- SIGN UP ---
   const handleSignUp = async () => {
     const firstNameValidation = validateName(firstName, 'First name');
     const lastNameValidation = validateName(lastName, 'Last name');
@@ -821,8 +717,6 @@ export default function RegisterScreen() {
       const cleanedPhone = phone.trim();
       const cleanedEmail = email.trim().toLowerCase();
 
-      // Normally already answered in the background when the user left each field,
-      // so this is free; otherwise both checks run side by side.
       const [phoneTaken, emailTaken] = await Promise.all([
         checkTaken('phone_number', cleanedPhone),
         checkTaken('email', cleanedEmail),
@@ -837,7 +731,6 @@ export default function RegisterScreen() {
       }
       lap('duplicate checks');
 
-      // This single call creates the account AND asks Supabase to send the code.
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: email.trim(),
         password,
@@ -857,15 +750,11 @@ export default function RegisterScreen() {
       const authUserId = signUpData.user.id;
       const hasSession = !!signUpData.session;
 
-      // For an already-registered email Supabase returns a user with no identities
-      // and sends nothing.
       if (Array.isArray(signUpData.user.identities) && signUpData.user.identities.length === 0) {
         setEmailError('This email is already registered.');
         return;
       }
 
-      // Everything below (sign-in for RLS, avatar, address, profile link) now runs in
-      // the background, so the code screen appears as soon as the email was sent.
       const finalizeProfile = async () => {
         if (!hasSession) {
           const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -918,7 +807,6 @@ export default function RegisterScreen() {
               .catch((e: unknown) => console.warn('Avatar metadata update failed:', e))
           : Promise.resolve();
 
-        // Update-and-check in one request; the users row is created by a database trigger.
         const profileUpdate = { location_id: locationId, profile_photo: avatarUrl || null };
         const deadline = Date.now() + 2500;
         let profileLinked = false;
@@ -941,7 +829,6 @@ export default function RegisterScreen() {
         }
 
         await authMetaPromise;
-        // Local sign-out clears the session on the device without a network round trip.
         await supabase.auth.signOut({ scope: 'local' });
       };
 
@@ -956,8 +843,6 @@ export default function RegisterScreen() {
         },
       );
 
-      // signUp returns a session ONLY when the server does not require email
-      // confirmation. In that case no email exists, so a code screen would be a dead end.
       if (hasSession) {
         console.warn(
           '[signup] signUp returned a session: email confirmation is OFF on this Supabase project, so no code was sent. ' +
@@ -993,7 +878,6 @@ export default function RegisterScreen() {
 
     setVerifyingOtp(true);
     try {
-      // Let the background profile save from sign-up finish first (normally long done).
       await pendingFinalizeRef.current;
 
       const { error } = await supabase.auth.verifyOtp({
@@ -1004,8 +888,6 @@ export default function RegisterScreen() {
 
       if (error) throw error;
 
-      // If the profile link couldn't be written before verification, do it now that
-      // the user is signed in.
       const pendingLink = profileLinkRef.current;
       if (pendingLink) {
         profileLinkRef.current = null;
@@ -1106,7 +988,7 @@ export default function RegisterScreen() {
                         style={styles.inputIcon}
                       />
                       <TextInput
-                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontWeight: '700' }]}
+                        style={[styles.input, { fontSize: 24, letterSpacing: 6, fontFamily: 'Poppins_700Bold' }]}
                         placeholder="000000"
                         placeholderTextColor={colors.textMuted}
                         keyboardType="number-pad"
@@ -1138,7 +1020,7 @@ export default function RegisterScreen() {
                   </View>
 
                   <TouchableOpacity onPress={() => setPhase('form')} style={{ marginTop: 24, alignItems: 'center' }}>
-                    <Text style={{ color: colors.textSecondary, fontSize: 13, textDecorationLine: 'underline' }}>
+                    <Text style={{ color: colors.textSecondary, fontSize: 13, fontFamily: 'Poppins_400Regular', textDecorationLine: 'underline' }}>
                       Entered the wrong email? Go back
                     </Text>
                   </TouchableOpacity>
@@ -1282,7 +1164,6 @@ export default function RegisterScreen() {
                     </View>
                     {emailError ? <Text style={styles.errorText}>{emailError}</Text> : null}
 
-                    {/* --- HOME ADDRESS SELECTOR CARD --- */}
                     <TouchableOpacity
                       style={[
                         styles.addressCardTrigger,
@@ -1431,7 +1312,7 @@ export default function RegisterScreen() {
         </TouchableWithoutFeedback>
       </KeyboardAvoidingView>
 
-      {/* --- REDESIGNED MAP & CONFIRM HOME ADDRESS MODAL --- */}
+      {/* --- MAP & CONFIRM HOME ADDRESS MODAL --- */}
       <Modal visible={isMapVisible} animationType="slide" transparent={false}>
         <View style={{ flex: 1, backgroundColor: '#000' }}>
           <MapView
@@ -1449,8 +1330,6 @@ export default function RegisterScreen() {
             onRegionChangeComplete={(region) => {
               const nextCenter = { lat: region.latitude, lng: region.longitude };
               setMapCenter(nextCenter);
-              // While "locate me" is running it resolves the address itself; don't
-              // fire a second lookup for the intermediate / default map position.
               if (!locatingRef.current) scheduleGeocode(nextCenter);
             }}
             pitchEnabled={false}
@@ -1475,7 +1354,6 @@ export default function RegisterScreen() {
             )}
           </MapView>
 
-          {/* Center Pin with Floating Label */}
           <View style={styles.mapPinContainer} pointerEvents="none">
             <View style={[styles.pinFloatingPill, isPinAtCurrentGps && { backgroundColor: GREEN }]}>
               <Text style={styles.pinFloatingText}>
@@ -1489,7 +1367,6 @@ export default function RegisterScreen() {
             <View style={styles.mapPinShadow} />
           </View>
 
-          {/* Top Floating Header */}
           <View style={[styles.mapTopOverlay, { paddingTop: insets.top + 10 }]}>
             <TouchableOpacity style={styles.mapBackBtn} onPress={() => setIsMapVisible(false)} activeOpacity={0.85}>
               <Ionicons name="arrow-back" size={22} color="#111827" />
@@ -1514,7 +1391,6 @@ export default function RegisterScreen() {
             </View>
           </View>
 
-          {/* Floating Locate Me FAB */}
           <TouchableOpacity
             style={[styles.mapLocateBtn, { bottom: insets.bottom + 278 }]}
             onPress={handleLocateMe}
@@ -1528,11 +1404,9 @@ export default function RegisterScreen() {
             )}
           </TouchableOpacity>
 
-          {/* Redesigned Bottom Sheet: Confirm Home Address */}
           <View style={[styles.mapBottomSheet, { paddingBottom: Math.max(insets.bottom + 14, 20) }]}>
             <View style={styles.sheetHandle} />
 
-            {/* Sheet Header Row */}
             <View style={styles.sheetHeaderRow}>
               <View style={styles.sheetIconBox}>
                 <Ionicons
@@ -1552,7 +1426,6 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            {/* 2x2 Address Breakdown Grid */}
             <View style={styles.sheetBreakdownGrid}>
               <View style={styles.sheetGridItem}>
                 <Text style={styles.sheetGridLabel}>STREET / ROAD</Text>
@@ -1580,7 +1453,6 @@ export default function RegisterScreen() {
               </View>
             </View>
 
-            {/* Primary Confirm Button */}
             <TouchableOpacity
               style={[
                 styles.mapConfirmBtn,
@@ -1608,7 +1480,6 @@ export default function RegisterScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Custom Designed Verification Modal (when pin is dragged >150m away from current GPS) */}
           {showConfirmSheet && (
             <View style={styles.verifyOverlay}>
               <View style={styles.verifyModalCard}>
@@ -1619,7 +1490,7 @@ export default function RegisterScreen() {
                 <Text style={styles.verifyModalTitle}>Confirm Home Location?</Text>
                 <Text style={styles.verifyModalSub}>
                   This pin is{' '}
-                  <Text style={{ fontWeight: '800', color: '#111827' }}>
+                  <Text style={{ fontFamily: 'Poppins_700Bold', color: '#111827' }}>
                     {livePinDistanceM !== null ? formatDistance(livePinDistanceM) : 'away'}
                   </Text>{' '}
                   from your phone's current GPS position.
@@ -1685,11 +1556,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     headerContainer: { marginBottom: 24, alignItems: 'flex-start' },
     brandRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, gap: 12 },
     logoImage: { width: 64, height: 64 },
-    brandText: { fontSize: 25, fontWeight: '800', fontStyle: 'italic', color: c.textPrimary, letterSpacing: -0.3, marginLeft: -12 },
+    brandText: { fontSize: 25, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3, marginLeft: -12 },
     brandTextOrange: { color: ORANGE },
-    header: { fontSize: 28, fontWeight: '700', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
-    subHeader: { fontSize: 15, color: c.textSecondary, fontWeight: '400', lineHeight: 22 },
-    emailHighlight: { color: c.textPrimary, fontWeight: '600' },
+    header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
+    subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
+    emailHighlight: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
     imageUploadSection: { alignItems: 'center', marginBottom: 20 },
     imagePicker: {
@@ -1710,35 +1581,32 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       borderWidth: 1, borderColor: c.border, borderRadius: 12, marginBottom: 12, height: 52,
     },
     inputIcon: { paddingLeft: 16, paddingRight: 8 },
-    input: { flex: 1, height: '100%', fontSize: 15, color: c.textPrimary, paddingTop: 14 },
+    input: { flex: 1, height: '100%', fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, paddingTop: 14 },
     inputFocused: { borderColor: ORANGE },
     inputError: { borderColor: c.error, backgroundColor: c.errorBg },
     eyeButton: { paddingHorizontal: 16, height: '100%', justifyContent: 'center' },
-    errorText: { color: c.error, fontSize: 12, fontWeight: '500', marginTop: -8, marginBottom: 10, marginLeft: 4 },
+    errorText: { color: c.error, fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: -8, marginBottom: 10, marginLeft: 4 },
 
-    // --- FORM ADDRESS SELECTOR CARD ---
     addressCardTrigger: {
       backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
       borderRadius: 14, padding: 14, marginBottom: 12,
     },
-    addressHeaderRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 12,
-    },
+    addressHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     addressIconBadge: {
       width: 38, height: 38, borderRadius: 10,
       backgroundColor: 'rgba(242,112,36,0.12)', alignItems: 'center', justifyContent: 'center',
     },
     addressFieldLabel: {
-      fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.6, marginBottom: 2,
+      fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.6, marginBottom: 2,
     },
     addressMainText: {
-      fontSize: 14, fontWeight: '600', lineHeight: 19,
+      fontSize: 14, fontFamily: 'Poppins_600SemiBold', lineHeight: 19,
     },
     changePinPill: {
       flexDirection: 'row', alignItems: 'center', gap: 4,
       backgroundColor: 'rgba(242,112,36,0.12)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
     },
-    changePinText: { fontSize: 12, fontWeight: '700', color: ORANGE },
+    changePinText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: ORANGE },
     structuredPillsWrap: {
       flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 12,
       paddingTop: 10, borderTopWidth: 1, borderTopColor: c.border,
@@ -1747,25 +1615,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       backgroundColor: c.background, borderWidth: 1, borderColor: c.border,
       paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6,
     },
-    miniTagText: { fontSize: 11, fontWeight: '700', color: c.textSecondary },
+    miniTagText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
     verificationBadgeRow: {
       flexDirection: 'row', alignItems: 'center', gap: 6,
       marginTop: 10, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8,
     },
-    verificationBadgeText: { flex: 1, fontSize: 11, fontWeight: '700' },
+    verificationBadgeText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_700Bold' },
 
     button: {
       backgroundColor: ORANGE, height: 54, borderRadius: 12,
       alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20,
     },
     buttonDisabled: { opacity: 0.7 },
-    buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
+    buttonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
 
     linkContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
-    link: { color: c.textSecondary, fontSize: 14 },
-    linkBold: { color: ORANGE, fontWeight: '600' },
+    link: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_400Regular' },
+    linkBold: { color: ORANGE, fontFamily: 'Poppins_600SemiBold' },
 
-    // --- MAP MODAL & REDESIGNED BOTTOM SHEET ---
     mapPinContainer: {
       position: 'absolute', top: '42%', left: '50%',
       marginLeft: -55, marginTop: -70, width: 110,
@@ -1776,7 +1643,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       borderRadius: 999, marginBottom: 6,
       shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 4,
     },
-    pinFloatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
+    pinFloatingText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_700Bold', letterSpacing: 0.3 },
     mapPinHead: {
       width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
       justifyContent: 'center', alignItems: 'center',
@@ -1809,7 +1676,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 6, elevation: 4,
     },
     statusDot: { width: 8, height: 8, borderRadius: 4 },
-    mapInstructionText: { fontSize: 12, fontWeight: '700', color: '#111827' },
+    mapInstructionText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
 
     mapLocateBtn: {
       position: 'absolute', right: 18, width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFF',
@@ -1828,19 +1695,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',
       alignSelf: 'center', marginBottom: 14,
     },
-    sheetHeaderRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14,
-    },
+    sheetHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
     sheetIconBox: {
       width: 46, height: 46, borderRadius: 14,
       backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FFEDD5',
       alignItems: 'center', justifyContent: 'center',
     },
-    sheetOverline: {
-      fontSize: 10, fontWeight: '800', color: '#6B7280', letterSpacing: 0.7,
-    },
+    sheetOverline: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: '#6B7280', letterSpacing: 0.7 },
     sheetFullAddress: {
-      fontSize: 15, fontWeight: '800', color: '#111827', marginTop: 2, lineHeight: 20,
+      fontSize: 15, fontFamily: 'Poppins_700Bold', color: '#111827', marginTop: 2, lineHeight: 20,
     },
     sheetBreakdownGrid: {
       flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between',
@@ -1850,17 +1713,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       width: '48.5%', backgroundColor: '#F9FAFB', borderRadius: 10,
       paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: '#F3F4F6',
     },
-    sheetGridLabel: { fontSize: 9, fontWeight: '800', color: '#9CA3AF', letterSpacing: 0.5 },
-    sheetGridValue: { fontSize: 12, fontWeight: '700', color: '#1F2937', marginTop: 2 },
+    sheetGridLabel: { fontSize: 9, fontFamily: 'Poppins_700Bold', color: '#9CA3AF', letterSpacing: 0.5 },
+    sheetGridValue: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#1F2937', marginTop: 2 },
 
     mapConfirmBtn: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       backgroundColor: ORANGE, paddingVertical: 16, borderRadius: 16, gap: 8,
       shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.28, shadowRadius: 8, elevation: 5,
     },
-    mapConfirmText: { color: '#FFF', fontSize: 16, fontWeight: '800', letterSpacing: 0.2 },
+    mapConfirmText: { color: '#FFF', fontSize: 16, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 
-    // --- CUSTOM CONFIRMATION OVERLAY MODAL ---
     verifyOverlay: {
       position: 'absolute', top: 0, bottom: 0, left: 0, right: 0,
       backgroundColor: 'rgba(17, 24, 39, 0.55)',
@@ -1876,25 +1738,25 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       backgroundColor: 'rgba(242, 112, 36, 0.12)',
       alignItems: 'center', justifyContent: 'center', marginBottom: 12,
     },
-    verifyModalTitle: { fontSize: 19, fontWeight: '800', color: '#111827', marginBottom: 6 },
+    verifyModalTitle: { fontSize: 19, fontFamily: 'Poppins_700Bold', color: '#111827', marginBottom: 6 },
     verifyModalSub: {
-      fontSize: 13, color: '#6B7280', textAlign: 'center', lineHeight: 19, marginBottom: 16,
+      fontSize: 13, fontFamily: 'Poppins_400Regular', color: '#6B7280', textAlign: 'center', lineHeight: 19, marginBottom: 16,
     },
     verifyAddressBox: {
       width: '100%', flexDirection: 'row', alignItems: 'flex-start', gap: 10,
       backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB',
       borderRadius: 14, padding: 12, marginBottom: 18,
     },
-    verifyAddressTitle: { fontSize: 14, fontWeight: '800', color: '#111827' },
-    verifyAddressSub: { fontSize: 12, fontWeight: '600', color: '#4B5563', marginTop: 2, lineHeight: 17 },
+    verifyAddressTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: '#111827' },
+    verifyAddressSub: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: '#4B5563', marginTop: 2, lineHeight: 17 },
     verifyPrimaryBtn: {
       width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
       backgroundColor: ORANGE, paddingVertical: 14, borderRadius: 14, marginBottom: 10,
     },
-    verifyPrimaryBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+    verifyPrimaryBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
     verifySecondaryBtn: {
       width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
       backgroundColor: 'rgba(242, 112, 36, 0.1)', paddingVertical: 13, borderRadius: 14,
     },
-    verifySecondaryBtnText: { color: ORANGE, fontSize: 14, fontWeight: '700' },
+    verifySecondaryBtnText: { color: ORANGE, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   });

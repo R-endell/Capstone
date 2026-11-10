@@ -47,21 +47,42 @@ export async function routeNotification(
     return true;
   }
 
-  // ---- SUPPORT ----------------------------------------------------
+  // ---- TICKETS (new help flow) -------------------------------------
+  if (type === 'ticket') {
+    if (typeof ref === 'number') {
+      navigation.navigate('TicketDetail', { ticketId: ref });
+    } else {
+      navigation.navigate('Support', { role });
+    }
+    return true;
+  }
+
+  // ---- SUPPORT (legacy types) --------------------------------------
   if (type.startsWith('support')) {
-    // Support is not a separate screen in the app — open Notifications
-    // list so the support thread modal can be opened there.
-    navigation.navigate('NotificationsList');
+    navigation.navigate('Support', { role });
     return true;
   }
 
   // ---- DISPUTES ---------------------------------------------------
   if (type.startsWith('dispute')) {
     if (ref == null) {
-      navigation.navigate('DisputeCenter');
+      navigation.navigate('Support', { role });
       return true;
     }
     if (typeof ref === 'number') {
+      // Admin decisions still arrive as 'dispute' notifications. If this dispute is
+      // mirrored by a ticket, open the ticket; otherwise fall back to the old screen.
+      try {
+        const { data: tk } = await supabase
+          .from('support_tickets')
+          .select('ticket_id')
+          .eq('legacy_dispute_id', ref)
+          .maybeSingle();
+        if (tk?.ticket_id) {
+          navigation.navigate('TicketDetail', { ticketId: tk.ticket_id });
+          return true;
+        }
+      } catch {}
       navigation.navigate('DisputeDetail', { disputeId: ref });
       return true;
     }
@@ -75,10 +96,10 @@ export async function routeNotification(
       if (data?.dispute_id) {
         navigation.navigate('DisputeDetail', { disputeId: data.dispute_id });
       } else {
-        navigation.navigate('DisputeCenter');
+        navigation.navigate('Support', { role });
       }
     } catch {
-      navigation.navigate('DisputeCenter');
+      navigation.navigate('Support', { role });
     }
     return true;
   }

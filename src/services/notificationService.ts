@@ -1,9 +1,9 @@
 // src/services/notificationService.ts
+import { Linking, Platform } from 'react-native';
 import { supabase } from '../utils/supabase';
 
 /**
- * Send OTP to receiver's phone number
- * In production, replace this with a real SMS service (Twilio, Semaphore, etc.)
+ * Open the device's SMS app to send the OTP to the receiver's phone number.
  */
 export const sendDeliveryOTP = async (
   phoneNumber: string,
@@ -14,32 +14,19 @@ export const sendDeliveryOTP = async (
   try {
     const message = `Hi ${receiverName || 'there'}! Your package #${deliveryId} is on the way. Share this OTP with the provider upon delivery: ${otp}. Valid for 24 hours.`;
 
-    // Option 1: Use Supabase Edge Function (recommended for production)
-    try {
-      const { data, error } = await supabase.functions.invoke('send-sms', {
-        body: {
-          to: phoneNumber,
-          message: message,
-          type: 'delivery_otp',
-          delivery_id: deliveryId,
-        },
-      });
+    const url = Platform.select({
+      ios: `sms:${phoneNumber}&body=${encodeURIComponent(message)}`,
+      android: `sms:${phoneNumber}?body=${encodeURIComponent(message)}`,
+    });
 
-      if (error) {
-        console.error('Edge function error:', error);
-        console.log(`[SMS FALLBACK] To: ${phoneNumber}, Message: ${message}`);
-        return true;
-      }
-      return true;
-    } catch (edgeError) {
-      // Edge function not deployed yet — log for development
-      console.log(`[SMS FALLBACK] To: ${phoneNumber}, Message: ${message}`);
+    if (url) {
+      await Linking.openURL(url);
       return true;
     }
+    return false;
   } catch (error) {
-    console.error('Failed to send OTP:', error);
-    console.log(`[SMS FALLBACK] To: ${phoneNumber}, OTP: ${otp}`);
-    return true;
+    console.error('Failed to open SMS app for OTP:', error);
+    return false;
   }
 };
 

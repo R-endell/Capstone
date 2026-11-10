@@ -3,17 +3,21 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Image, Linking, Share, BackHandler, Pressable,
+  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { formatDate, formatDateTime } from '../../../utils/dateUtils';
-import { getProviderDeliveries } from '../../../services/matchingService';
+import { formatDateTime } from '../../../utils/dateUtils';
+import {
+  getProviderDeliveries,
+  fetchPendingRequestsForProvider,
+  computeCargoVolumeLiters,
+  SHIPMENT_SIZE_SPECS,
+} from '../../../services/matchingService';
 import { getActiveRouteId } from '../../../services/activeRouteStore';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
@@ -21,17 +25,91 @@ import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import * as Location from 'expo-location';
+import { Ionicons } from '@expo/vector-icons';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
-const MAYA_LOGO = require('../../../../assets/maya.jpeg');
+const MAYA_LOGO = require('../../../../assets/maya.png');
+const EMPTY_BOX_ICON = require('../../../../assets/empty-box-icon.png');
 
 const ORANGE = '#FF751F';
+const BLUE = '#3B82F6';
+const RED = '#EF4444';
+const PURPLE = '#8B5CF6';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
+
+const GEOFENCE_RADIUS_M = __DEV__ ? 999999 : 150;
+
+const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const verifyProviderWithinGeofence = async (
+  targetLat: number | null,
+  targetLng: number | null,
+  label: 'pickup' | 'drop-off'
+): Promise<{ allowed: boolean; lat: number; lng: number; distanceM: number }> => {
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert('Location Required', 'Please enable GPS location permissions to verify arrival.');
+    return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
+  }
+
+  // Try last known position first — returns instantly if OS has cached GPS
+  let coords: { latitude: number; longitude: number } | null = null;
+  try {
+    const last = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
+    if (last?.coords) coords = last.coords;
+  } catch { /* ignore */ }
+
+  // Fall back to a live fix, but don't let it hang forever
+  if (!coords) {
+    try {
+      const pos = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Lowest }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]);
+      if (pos) coords = pos.coords;
+    } catch { /* ignore */ }
+  }
+
+  if (!coords) {
+    Alert.alert('Location Unavailable', 'Could not get a GPS fix. Move near a window or enable location services.');
+    return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
+  }
+
+  const { latitude, longitude } = coords;
+
+  if (targetLat == null || targetLng == null) {
+    return { allowed: true, lat: latitude, lng: longitude, distanceM: 0 };
+  }
+
+  const dist = getDistanceMeters(latitude, longitude, Number(targetLat), Number(targetLng));
+  if (dist > GEOFENCE_RADIUS_M) {
+    Alert.alert(
+      'Too Far from Pin',
+      `You are ${Math.round(dist)}m away from the ${label} pin. Please move within ${GEOFENCE_RADIUS_M}m to unlock this action.`
+    );
+    return { allowed: false, lat: latitude, lng: longitude, distanceM: dist };
+  }
+  return { allowed: true, lat: latitude, lng: longitude, distanceM: dist };
+};
 
 const randToken = (len = 16) => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -57,9 +135,6 @@ const extractFunctionError = async (error: any, fallback = 'Something went wrong
   return detail;
 };
 
-/* ==================================================================== */
-/* Helpers                                                              */
-/* ==================================================================== */
 const hydrateQr = async (deliveries: any[]) => {
   if (!deliveries || deliveries.length === 0) return deliveries;
   const ids = deliveries.map(d => d.delivery_id).filter(Boolean);
@@ -118,7 +193,6 @@ const buildCargoItems = (cargo: any) => {
   }];
 };
 
-/** Count packages per size across ALL items (not just the first one). */
 const summarizeSizes = (items: any[], cargo: any): { full: string; short: string } => {
   const counts: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
   items.forEach(it => { if (it?.size && counts[it.size] != null) counts[it.size] += 1; });
@@ -200,9 +274,6 @@ const enrichDeliveries = async (list: any[]) => {
   });
 };
 
-/* ==================================================================== */
-/* Cancellation detection                                               */
-/* ==================================================================== */
 const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
@@ -221,9 +292,6 @@ const isCancelledDelivery = (d: any): boolean => {
   return false;
 };
 
-/* ==================================================================== */
-/* Payment method badge                                                 */
-/* ==================================================================== */
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
   if (!provider) return null;
   const p = String(provider).toLowerCase();
@@ -248,39 +316,34 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
       }}>
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
-      <Text style={{ fontSize: 12, fontWeight: '800', color: tint }}>{label}</Text>
+      <Text style={{ fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: tint }}>{label}</Text>
     </View>
   );
 };
 
-/* ==================================================================== */
-/* TaskScreen                                                           */
-/* ==================================================================== */
-const BLUE = '#3B82F6';
-const RED = '#EF4444';
-const PURPLE = '#8B5CF6';
-const BLACK = '#111827';
 const initials = (n?: string | null) =>
   (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
-type TabType = 'active' | 'completed' | 'cancelled' | 'all';
+type TabType = 'active' | 'pending' | 'completed' | 'cancelled' | 'all';
 
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
-  const { colors } = useTheme();
-  const styles = makeStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const hasLoadedRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [providerId, setProviderId] = useState<number | null>(null);
   const [activeDeliveries, setActiveDeliveries] = useState<any[]>([]);
+  const [pendingDeliveries, setPendingDeliveries] = useState<any[]>([]);
   const [completedDeliveries, setCompletedDeliveries] = useState<any[]>([]);
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -296,7 +359,7 @@ export default function TaskScreen() {
   const [mapModalVisible, setMapModalVisible] = useState(false);
   const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
-  const [pkgInfo, setPkgInfo] = useState<any | null>(null);   // package breakdown pop-up
+  const [pkgInfo, setPkgInfo] = useState<any | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
 
@@ -306,11 +369,45 @@ export default function TaskScreen() {
   const [deliveryOTPVerifying, setDeliveryOTPVerifying] = useState(false);
   const [deliveryOTPResending, setDeliveryOTPResending] = useState(false);
 
-  // --- Proof of Delivery (POD) Camera States ---
   const podCameraRef = useRef<any>(null);
   const [podCameraOpen, setPodCameraOpen] = useState(false);
   const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
   const [podTakingPhoto, setPodTakingPhoto] = useState(false);
+
+  // --- Phase 3 & 4: 10-Min Grace Period & Failure Resolution States ---
+  const [graceModalVisible, setGraceModalVisible] = useState(false);
+  const [graceDelivery, setGraceDelivery] = useState<any>(null);
+  const [graceRemainingSec, setGraceRemainingSec] = useState<number>(600);
+  const [contactLogs, setContactLogs] = useState<{ call: boolean; sms: boolean; chat: boolean }>({
+    call: false,
+    sms: false,
+    chat: false,
+  });
+  const [failureCameraOpen, setFailureCameraOpen] = useState(false);
+  const [failurePhotoUri, setFailurePhotoUri] = useState<string | null>(null);
+  const [failureCoords, setFailureCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [failureTimestamp, setFailureTimestamp] = useState<string>('');
+  const [submittingFailure, setSubmittingFailure] = useState(false);
+  const failureCameraRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!graceModalVisible || !graceDelivery?.dropoff_arrived_at) return;
+    const updateTimer = () => {
+      const startedMs = new Date(graceDelivery.dropoff_arrived_at).getTime();
+      if (Number.isNaN(startedMs)) {
+        setGraceRemainingSec(600);
+        return;
+      }
+      const elapsedSec = Math.floor((Date.now() - startedMs) / 1000);
+      // Clamp — if DB clock and device clock differ, or if the timestamp is in the future,
+      // don't show weird values.
+      const remaining = Math.min(600, Math.max(0, 600 - elapsedSec));
+      setGraceRemainingSec(remaining);
+    };
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [graceModalVisible, graceDelivery?.dropoff_arrived_at]);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -378,15 +475,227 @@ export default function TaskScreen() {
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
       const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
 
+      let pending: any[] = [];
+      try {
+        const selectedRouteId = await getActiveRouteId();
+        const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
+        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
+        const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
+
+        const senderIds = Array.from(new Set(filteredRows.map(m => m.request?.sender_id).filter(Boolean)));
+        const senders: Record<number, any> = {};
+        if (senderIds.length > 0) {
+          const { data: uRows } = await supabase
+            .from('users')
+            .select('user_id, first_name, last_name, phone_number')
+            .in('user_id', senderIds as number[]);
+          (uRows || []).forEach((u: any) => { senders[u.user_id] = u; });
+        }
+
+        pending = filteredRows.map(m => ({
+          ...m,
+          sender: senders[m.request?.sender_id] || null,
+        }));
+      } catch (e) {
+        console.warn('[Task] pending load failed:', e);
+      }
+
       setActiveDeliveries(acceptedActive);
       setCompletedDeliveries(completed);
       setCancelledDeliveries(cancelled);
+      setPendingDeliveries(pending);
     } catch (error) {
       console.error('Error fetching deliveries:', error);
     }
   };
+const handleAcceptPendingMatch = async (m: any) => {
+    if (!providerId || acceptingReqId != null) return;
+    const req = m.request;
+    if (!req?.request_id) return;
 
-  const handlePingSender = async (delivery: any) => {
+    Alert.alert(
+      'Accept this delivery request?',
+      `You will earn ${money(req.estimated_cost)} for delivering this package along your route.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Accept Request',
+          onPress: async () => {
+            setAcceptingReqId(req.request_id);
+            try {
+              let vehicleId: number | null = null;
+              const { data: v } = await supabase
+                .from('vehicles')
+                .select('vehicle_id')
+                .eq('provider_id', providerId)
+                .eq('verification_status', 'Verified')
+                .limit(1)
+                .maybeSingle();
+              vehicleId = v?.vehicle_id ?? null;
+
+              if (!vehicleId) {
+                const { data: anyVeh } = await supabase
+                  .from('vehicles')
+                  .select('vehicle_id')
+                  .eq('provider_id', providerId)
+                  .limit(1)
+                  .maybeSingle();
+                vehicleId = anyVeh?.vehicle_id ?? null;
+              }
+              if (!vehicleId) {
+                Alert.alert('Vehicle required', 'You need a registered vehicle before accepting deliveries.');
+                return;
+              }
+
+              let resolvedRouteId: number | null =
+                req.preferred_route_id ?? m.route_id ?? (await getActiveRouteId()) ?? null;
+              if (!resolvedRouteId) {
+                const { data: rRow } = await supabase
+                  .from('provider_routes')
+                  .select('route_id')
+                  .eq('provider_id', providerId)
+                  .eq('is_deleted', false)
+                  .order('created_at', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                resolvedRouteId = rRow?.route_id ?? null;
+              }
+
+              const { data: claimed, error: claimErr } = await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Accepted' })
+                .eq('request_id', req.request_id)
+                .eq('delivery_status', 'Pending')
+                .select('request_id, sender_id, estimated_cost')
+                .maybeSingle();
+
+              if (claimErr || !claimed) {
+                Alert.alert('Request unavailable', 'This request was already accepted or cancelled.');
+                await fetchDeliveries(providerId);
+                return;
+              }
+
+              const { data: delivery, error: deliveryError } = await supabase
+                .from('deliveries')
+                .insert({
+                  request_id: req.request_id,
+                  provider_id: providerId,
+                  vehicle_id: vehicleId,
+                  route_id: resolvedRouteId,
+                  accepted_at: new Date().toISOString(),
+                  estimated_eta: new Date(Date.now() + 3600000).toISOString(),
+                })
+                .select('*')
+                .single();
+
+              if (deliveryError) {
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw deliveryError;
+              }
+
+              const { error: qrError } = await supabase.from('qr_verifications').insert({
+                delivery_id: delivery.delivery_id,
+                pickup_qr: `PU-${randToken(14)}-${delivery.delivery_id}`,
+                dropoff_qr: `DO-${randToken(14)}-${delivery.delivery_id}`,
+                pickup_pin: randPin(),
+                dropoff_pin: randPin(),
+              });
+              if (qrError) {
+                await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
+                await supabase
+                  .from('delivery_requests')
+                  .update({ delivery_status: 'Pending' })
+                  .eq('request_id', req.request_id);
+                throw qrError;
+              }
+
+              try {
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'accepted' })
+                  .eq('request_id', req.request_id)
+                  .eq('provider_id', providerId);
+                await supabase
+                  .from('route_request_matches')
+                  .update({ status: 'expired' })
+                  .eq('request_id', req.request_id)
+                  .neq('provider_id', providerId)
+                  .eq('status', 'matched');
+              } catch {}
+
+              if (resolvedRouteId) {
+                const { data: rCap } = await supabase
+                  .from('provider_routes')
+                  .select('remaining_weight_kg, remaining_volume_liters')
+                  .eq('route_id', resolvedRouteId)
+                  .maybeSingle();
+                if (rCap) {
+                  const cargo = Array.isArray(req.cargo) ? req.cargo[0] : req.cargo;
+                  const cargoWeight = Number(cargo?.total_weight_kg) || 5;
+                  const cargoVol = computeCargoVolumeLiters(cargo);
+                  await supabase
+                    .from('provider_routes')
+                    .update({
+                      remaining_weight_kg: Math.max(0, Number(rCap.remaining_weight_kg ?? 100) - cargoWeight),
+                      remaining_volume_liters: Math.max(0, Number(rCap.remaining_volume_liters ?? 300) - cargoVol),
+                    })
+                    .eq('route_id', resolvedRouteId);
+                }
+              }
+
+              await supabase.from('escrow_payments').insert({
+                amount: claimed.estimated_cost,
+                delivery_id: delivery.delivery_id,
+                sender_id: claimed.sender_id,
+                provider_id: providerId,
+                escrow_status: 'On hold',
+                emergency_frozen: false,
+                created_at: new Date().toISOString(),
+              });
+
+              if (claimed.sender_id) {
+                const code = trackingCode(req.request_id);
+                try {
+                  await notifyUser(
+                    claimed.sender_id,
+                    'Route-Matched Courier Accepted! 🚚',
+                    `Your courier accepted parcel #${code} along the declared route.`,
+                    { deliveryId: delivery.delivery_id },
+                  );
+                } catch {}
+              }
+
+              await fetchDeliveries(providerId);
+              setActiveTab('active');
+            } catch (e: any) {
+              Alert.alert('Error', e?.message || 'Failed to accept request.');
+            } finally {
+              setAcceptingReqId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handlePingSender = (delivery: any) => {
+    Alert.alert(
+      'On My Way to Pickup',
+      'Select your estimated arrival time at the pickup point:',
+      [
+        { text: '5 mins', onPress: () => sendOnMyWayNotification(delivery, 5) },
+        { text: '10 mins', onPress: () => sendOnMyWayNotification(delivery, 10) },
+        { text: '15 mins', onPress: () => sendOnMyWayNotification(delivery, 15) },
+        { text: '20+ mins', onPress: () => sendOnMyWayNotification(delivery, 25) },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const sendOnMyWayNotification = async (delivery: any, etaMins: number) => {
     const senderId = (delivery.delivery_requests as any)?.sender_id
       ?? (delivery.delivery_requests as any)?.sender?.user_id;
 
@@ -397,16 +706,22 @@ export default function TaskScreen() {
 
     setPingingId(delivery.delivery_id);
     try {
-      const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('deliveries')
+        .update({ provider_on_way_at: nowIso, provider_eta_mins: etaMins })
+        .eq('delivery_id', delivery.delivery_id);
 
+      const code = trackingCode((delivery.delivery_requests as any)?.request_id ?? delivery.delivery_id);
       await notifyUser(
         senderId,
-        'Courier is on the way! 🚚',
-        `Your courier is heading to the pickup location for parcel #${code}. Please have the package ready.`,
-        { deliveryId: delivery.delivery_id },
+        `Courier is ~${etaMins} mins away! 🚚`,
+        `Your courier for #${code} is heading to pickup. Have you notified the receiver? Tap to call or message them now.`,
+        { deliveryId: delivery.delivery_id, etaMins },
       );
 
-      Alert.alert('Sender Pinged', 'The sender has been notified that you are on your way to pick up the package.');
+      Alert.alert('Sender Pinged', `Sender has been notified (ETA: ~${etaMins} mins) and prompted to contact the receiver.`);
+      if (providerId) await fetchDeliveries(providerId);
     } catch (error) {
       console.error('Failed to ping sender:', error);
       Alert.alert('Error', 'Could not send the notification. Please try again.');
@@ -416,6 +731,10 @@ export default function TaskScreen() {
   };
 
   const openVerifyModal = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.pickup.lat, info.pickup.lng, 'pickup');
+    if (!geo.allowed) return;
+
     if (!cameraPermission?.granted) {
       const res = await requestCameraPermission();
       if (!res?.granted) {
@@ -436,13 +755,52 @@ export default function TaskScreen() {
     setPinInput('');
   };
 
-    const markPickupVerified = async (deliveryId: number, requestId: number) => {
+  const markPickupVerified = async (deliveryId: number, requestId: number) => {
     if (!requestId) {
       Alert.alert('Error', 'Request ID is missing. Cannot update delivery status.');
       return;
     }
 
     try {
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+
+      if (isReturning) {
+        // PHASE 4 (Option A): Verify Return back to Sender & Release Full Escrow (Base + Return Deposit)
+        const now = new Date().toISOString();
+        const { error: retQrErr } = await supabase
+          .from('qr_verifications')
+          .update({ return_verified: true, return_verified_at: now })
+          .eq('delivery_id', deliveryId);
+        if (retQrErr) throw retQrErr;
+
+        const { error: retDelErr } = await supabase
+          .from('deliveries')
+          .update({ returned_at: now, completed_at: now })
+          .eq('delivery_id', deliveryId);
+        if (retDelErr) throw retDelErr;
+
+        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
+          p_delivery_id: deliveryId,
+          p_outcome: 'returned_to_sender',
+        });
+        if (settleErr) throw settleErr;
+
+        const senderId = (verifyTarget?.delivery_requests as any)?.sender_id;
+        if (senderId) {
+          await notifyUser(
+            senderId,
+            'Package Returned Safely 📦',
+            `Your package (#PNS-${String(requestId).padStart(4, '0')}) has been returned to you.`,
+            { deliveryId }
+          );
+        }
+
+        Alert.alert('✅ Return Complete', 'Package returned to Sender. Full escrow (Base Fare + 50% Return Deposit) has been released to your wallet!');
+        closeVerifyModal();
+        if (providerId) await fetchDeliveries(providerId);
+        return;
+      }
+
       const { error: qrErr } = await supabase
         .from('qr_verifications')
         .update({ pickup_verified: true })
@@ -455,34 +813,56 @@ export default function TaskScreen() {
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
-      const patchDelivery = (list: any[]) =>
-        list.map(d => {
-          if (d.delivery_id !== deliveryId) return d;
-          const currentQr = d.qr_verifications
-            ? (Array.isArray(d.qr_verifications) ? d.qr_verifications[0] : d.qr_verifications)
-            : {};
-          return {
-            ...d,
-            qr_verifications: { ...currentQr, pickup_verified: true },
-            delivery_requests: d.delivery_requests
-              ? { ...d.delivery_requests, delivery_status: 'In Transit' }
-              : d.delivery_requests,
-          };
-        });
+      // PHASE 2 System Action 1: Notify the receiver via SMS from the courier's own phone
+      const info = buildTaskInfo(verifyTarget);
+      const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
+      const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
+      const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
 
-      setActiveDeliveries(prev => patchDelivery(prev));
-      setCompletedDeliveries(prev => patchDelivery(prev));
+      const smsMsg = info.receiverPhone
+        ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
+        : '';
 
-      Alert.alert('✅ Item Collected', 'Pickup verified. You can now deliver to the receiver.');
-      const senderId = (verifyTarget?.delivery_requests as any)?.sender_id
-        ?? (verifyTarget?.delivery_requests as any)?.sender?.user_id;
-      if (senderId) {
+      // PHASE 2 System Action 2: Push Prompt to Sender
+      if (info.senderId) {
         try {
-          await notifyUser(senderId, 'Package picked up', 'Your courier picked up your parcel and is now in transit.', { deliveryId: verifyTarget?.delivery_id });
+          await notifyUser(
+            info.senderId,
+            'Your courier is on the way! 🚚',
+            `Package picked up. Have you notified ${info.receiverName || 'the receiver'}? Tap to call/message them.`,
+            { deliveryId: verifyTarget?.delivery_id }
+          );
         } catch (err) {
           console.warn('[Task] notify sender pickup failed', err);
         }
       }
+
+      // Show confirmation with an action button so the courier can send the SMS from their own phone
+      const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
+      if (info.receiverPhone) {
+        alertButtons.push({
+          text: 'Send SMS to Receiver',
+          onPress: () => {
+            const url = Platform.select({
+              ios: `sms:${info.receiverPhone}&body=${encodeURIComponent(smsMsg)}`,
+              android: `sms:${info.receiverPhone}?body=${encodeURIComponent(smsMsg)}`,
+            });
+            if (url) {
+              Linking.openURL(url).catch(() => {
+                Alert.alert('Cannot Open SMS', 'Your device cannot open the SMS app. Please notify the receiver manually.');
+              });
+            }
+          },
+        });
+      }
+
+      Alert.alert(
+        '✅ Item Collected',
+        info.receiverPhone
+          ? `Pickup verified. Tap below to notify ${info.receiverName || 'the receiver'} via SMS from your phone.`
+          : 'Pickup verified. (No receiver phone number on file.)',
+        alertButtons
+      );
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
     } catch (e: any) {
@@ -490,11 +870,11 @@ export default function TaskScreen() {
     }
   };
 
-    const handleBarcodeScanned = async ({ data }: { data: string }) => {
+  const handleBarcodeScanned = async ({ data }: { data: string }) => {
     if (scanned || !verifyTarget) return;
     setScanned(true);
     try {
-      const qrData = data.trim(); // ✅ FIX: Trim whitespace from QR
+      const qrData = data.trim();
       const { data: row, error } = await supabase
         .from('qr_verifications').select('*')
         .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single();
@@ -505,13 +885,13 @@ export default function TaskScreen() {
         ]);
         return;
       }
-      if (row.pickup_verified) {
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+      if (row.pickup_verified && !isReturning) {
         Alert.alert('Already Verified', 'This pickup has already been verified.', [
           { text: 'OK', onPress: () => closeVerifyModal() },
         ]);
         return;
       }
-      // ✅ FIX: Safely fallback to delivery_requests.request_id if request_id is undefined
       const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
       await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
@@ -520,6 +900,7 @@ export default function TaskScreen() {
       ]);
     }
   };
+  
 
   const handlePinVerify = async () => {
     if (!verifyTarget || pinInput.trim().length !== 4) return;
@@ -530,18 +911,27 @@ export default function TaskScreen() {
         .eq('delivery_id', verifyTarget.delivery_id).single();
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
-      if (row.pickup_verified) { Alert.alert('Already Verified', 'Pickup already verified.'); return; }
+      const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+      if (row.pickup_verified && !isReturning) {
+        Alert.alert('Already Verified', 'Pickup already verified.');
+        return;
+      }
       if (String(row.pickup_pin) !== String(pinInput).trim()) {
         Alert.alert('Wrong PIN', 'Please ask the sender for the correct 4-digit PIN.');
         return;
       }
-      await markPickupVerified(row.delivery_id, verifyTarget.request_id);
+      const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
+      await markPickupVerified(row.delivery_id, reqId);
     } catch (e: any) {
       Alert.alert('Verification Failed', e.message || 'Could not verify PIN.');
     } finally { setPinVerifying(false); }
   };
 
-  const openDeliveryOTPModal = (delivery: any) => {
+  const openDeliveryOTPModal = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
+    if (!geo.allowed) return;
+
     setDeliveryOTPTarget(delivery);
     setDeliveryOTPInput('');
     setPodPhotoUri(null);
@@ -681,6 +1071,75 @@ export default function TaskScreen() {
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
+      // In completeDelivery:
+      const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
+        p_delivery_id: deliveryId,
+        p_outcome: 'completed_normal',
+      });
+      if (settleErr) throw settleErr;
+
+      // Refund 50% Return Deposit to Sender if Option A was selected
+      const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
+      if (returnDep > 0 && requestId) {
+        try {
+          const { data: refundResult, error: refundErr } = await supabase.functions.invoke(
+            'xendit-refund',
+            { body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' } },
+          );
+
+          const refundOk = !refundErr && refundResult?.success;
+
+          if (!refundOk) {
+            console.warn('[completeDelivery] refund failed:', refundErr?.message || refundResult);
+            await supabase
+              .from('delivery_requests')
+              .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
+              .eq('request_id', requestId);
+          } else {
+            // Record the refund in the escrow ledger so the audit trail is complete.
+            // The provider is the same channel the sender paid with (gcash/maya).
+            const rawProvider = String(
+              deliveryOTPTarget?.escrow?.payment_method ||
+              deliveryOTPTarget?.delivery_requests?.payment_provider ||
+              ''
+            ).toLowerCase();
+            const txProvider = ['gcash', 'maya'].includes(rawProvider) ? rawProvider : 'gcash';
+
+            try {
+              await supabase.from('escrow_transactions').insert({
+                request_id: requestId,
+                event: 'deposit_refunded_to_sender',
+                amount: returnDep,
+                provider: txProvider,
+                notes: `Deposit refunded to sender on completed delivery | Amount=₱${returnDep}${
+                  rawProvider && rawProvider !== txProvider ? ` | WARN: unknown provider "${rawProvider}", assumed ${txProvider}` : ''
+                }`,
+              });
+
+              await supabase
+                .from('delivery_requests')
+                .update({
+                  refund_status: 'refunded',
+                  escrow_refunded_at: new Date().toISOString(),
+                })
+                .eq('request_id', requestId);
+            } catch (insertErr: any) {
+              console.error('[completeDelivery] refund row insert failed:', insertErr);
+              Alert.alert(
+                'Refund Sent — Record Missing',
+                `The ₱${returnDep.toFixed(2)} deposit was refunded to the sender, but the audit row could not be saved. Please note this for support.`
+              );
+            }
+          }
+        } catch (refundCallErr: any) {
+          console.warn('[completeDelivery] refund call threw:', refundCallErr);
+          await supabase
+            .from('delivery_requests')
+            .update({ refund_status: 'failed' })
+            .eq('request_id', requestId);
+        }
+      }
+
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
       const senderId = (deliveryOTPTarget?.delivery_requests as any)?.sender_id;
       if (senderId) {
@@ -698,6 +1157,204 @@ export default function TaskScreen() {
       Alert.alert('Completion Failed', error.message || 'Could not complete the delivery.');
     } finally {
       setDeliveryOTPVerifying(false);
+    }
+  };
+
+  // --- PHASE 3 & 4: 10-Minute Drop-off Grace Period & Fallback Execution ---
+  const handleStartDropoffGracePeriod = async (delivery: any) => {
+    const info = buildTaskInfo(delivery);
+    const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
+    if (!geo.allowed) return;
+
+    // Fetch the freshest timestamps directly from the DB so re-opening the modal resumes
+    // the timer instead of restarting it, even if local state is stale.
+    const { data: freshRow, error: freshErr } = await supabase
+      .from('deliveries')
+      .select('dropoff_arrived_at, dropoff_wait_lat, dropoff_wait_lng, call_receiver_at, sms_receiver_at, chat_sender_at')
+      .eq('delivery_id', delivery.delivery_id)
+      .maybeSingle();
+
+    if (freshErr) {
+      Alert.alert('Error', freshErr.message);
+      return;
+    }
+
+    const existingArrivedAt = freshRow?.dropoff_arrived_at ?? delivery.dropoff_arrived_at ?? null;
+
+    let updated = {
+      ...delivery,
+      dropoff_arrived_at: existingArrivedAt,
+      call_receiver_at: freshRow?.call_receiver_at ?? delivery.call_receiver_at ?? null,
+      sms_receiver_at: freshRow?.sms_receiver_at ?? delivery.sms_receiver_at ?? null,
+      chat_sender_at: freshRow?.chat_sender_at ?? delivery.chat_sender_at ?? null,
+    };
+
+    if (!existingArrivedAt) {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from('deliveries')
+        .update({
+          dropoff_arrived_at: nowIso,
+          dropoff_wait_lat: geo.lat,
+          dropoff_wait_lng: geo.lng,
+        })
+        .eq('delivery_id', delivery.delivery_id);
+      if (error) {
+        Alert.alert('Error', error.message);
+        return;
+      }
+      updated.dropoff_arrived_at = nowIso;
+
+      if (info.senderId) {
+        await notifyUser(
+          info.senderId,
+          '⚠️ Courier at Drop-off (10-Min Timer Started)',
+          `Your courier has arrived at drop-off. Please ensure ${info.receiverName || 'the receiver'} meets them within 10 minutes!`,
+          { deliveryId: delivery.delivery_id }
+        );
+      }
+
+      // Refresh local state so the next tap sees the new timestamp
+      if (providerId) fetchDeliveries(providerId).catch(() => {});
+    }
+
+    setContactLogs({
+      call: !!updated.call_receiver_at,
+      sms: !!updated.sms_receiver_at,
+      chat: !!updated.chat_sender_at,
+    });
+    setFailurePhotoUri(null);
+    setGraceDelivery(updated);
+    setGraceModalVisible(true);
+  };
+
+  const logProviderContactAttempt = async (kind: 'call' | 'sms' | 'chat') => {
+    if (!graceDelivery) return;
+    const info = buildTaskInfo(graceDelivery);
+    const nowIso = new Date().toISOString();
+
+    if (kind === 'call') {
+      if (!info.receiverPhone) return Alert.alert('No Phone', 'Receiver phone number unavailable.');
+      await supabase.from('deliveries').update({ call_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, call: true }));
+      Linking.openURL(`tel:${info.receiverPhone}`);
+    } else if (kind === 'sms') {
+      if (!info.receiverPhone) return;
+      await supabase.from('deliveries').update({ sms_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, sms: true }));
+      const msg = encodeURIComponent(`Hi ${info.receiverName || ''}, I am your Pack-N-Ship courier waiting at the drop-off location. Please meet me within 10 minutes.`);
+      Linking.openURL(`sms:${info.receiverPhone}?body=${msg}`);
+    } else if (kind === 'chat') {
+      await supabase.from('deliveries').update({ chat_sender_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
+      setContactLogs(prev => ({ ...prev, chat: true }));
+      const roomId = await getOrCreateChatRoom(graceDelivery.delivery_id);
+      if (roomId && providerId) {
+        await supabase.from('chat_messages').insert({
+          room_id: roomId,
+          sender_id: providerId,
+          message: "I'm here at the drop-off location, but the receiver isn't answering. The 10-minute grace timer is running.",
+        });
+        Alert.alert('Sent to Sender', 'Message logged and sent to the Sender in chat.');
+      }
+    }
+  };
+
+  const captureFailureProofPhoto = async () => {
+    if (!failureCameraRef.current) return;
+    try {
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const photo = await failureCameraRef.current.takePictureAsync({ quality: 0.75 });
+      if (photo?.uri) {
+        setFailureCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setFailureTimestamp(new Date().toISOString());
+        setFailurePhotoUri(photo.uri);
+        setFailureCameraOpen(false);
+      }
+    } catch (e: any) {
+      Alert.alert('Camera Error', e?.message || 'Failed to take proof photo.');
+    }
+  };
+
+  const executeFallbackProtocol = async () => {
+    if (!graceDelivery || !failurePhotoUri) return;
+    setSubmittingFailure(true);
+    try {
+      const deliveryId = graceDelivery.delivery_id;
+      const req = graceDelivery.delivery_requests || {};
+      const requestId = req.request_id;
+      const fallbackAction = req.fallback_action || 'return_to_sender';
+      const fallbackRecipient = req.fallback_recipient_name || 'Guard / Authorized Person';
+      const nowIso = new Date().toISOString();
+
+      const proofUrl = await uploadPodPhoto(failurePhotoUri, deliveryId);
+
+      if (fallbackAction === 'leave_with_guard') {
+        await supabase
+          .from('deliveries')
+          .update({
+            completed_at: nowIso,
+            pod_photo_url: proofUrl,
+            failure_photo_url: proofUrl,
+            failure_reason: `Left with ${fallbackRecipient}`,
+            failure_photo_lat: failureCoords?.lat ?? null,
+            failure_photo_lng: failureCoords?.lng ?? null,
+            pod_seen_by_sender: false,
+          })
+          .eq('delivery_id', deliveryId);
+
+        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
+          p_delivery_id: deliveryId,
+          p_outcome: 'completed_safe_drop',
+        });
+        if (settleErr) throw settleErr;
+
+        if (req.sender_id) {
+          await notifyUser(
+            req.sender_id,
+            'Delivery Left with Authorized Person 📦',
+            `Receiver was unreachable. Your courier has left the package with ${fallbackRecipient}. Tap for proof of delivery.`,
+            { deliveryId, requestId }
+          );
+        }
+        Alert.alert('✅ Left with Authorized Recipient', `Photo proof saved and your payout has been released.`);
+      } else {
+        await supabase
+          .from('deliveries')
+          .update({
+            failed_at: nowIso,
+            failure_reason: 'Receiver Unreachable (10m expired)',
+            failure_photo_url: proofUrl,
+            failure_photo_lat: failureCoords?.lat ?? null,
+            failure_photo_lng: failureCoords?.lng ?? null,
+          })
+          .eq('delivery_id', deliveryId);
+
+        await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Returning' })
+          .eq('request_id', requestId);
+
+        if (req.sender_id) {
+          await notifyUser(
+            req.sender_id,
+            'Delivery Failed — Returning Package 🔄',
+            `Receiver was unreachable after 10 mins. Your courier is returning the package to you. Show your Pickup QR/PIN upon arrival.`,
+            { deliveryId, requestId }
+          );
+        }
+        Alert.alert(
+          '🔄 Returning to Sender',
+          'Please drive back to the Pickup Address and scan the Sender’s QR/PIN to receive your full Escrow Payout (Base Fare + Return Deposit).'
+        );
+      }
+
+      setGraceModalVisible(false);
+      setGraceDelivery(null);
+      await loadData();
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not complete fallback action.');
+    } finally {
+      setSubmittingFailure(false);
     }
   };
 
@@ -719,6 +1376,7 @@ export default function TaskScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [providerId]);
@@ -747,12 +1405,12 @@ export default function TaskScreen() {
   const isPickupVerified = (delivery: any) => {
     const qr = delivery?.qr_verifications;
     if (qr) {
-      if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
-      else if (qr.pickup_verified) return true;
+    if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
+    else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Completed';
-  };
+    return status === 'In Transit' || status === 'Returning' || status === 'Completed' || status === 'Returned';
+    };
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
@@ -763,14 +1421,14 @@ export default function TaskScreen() {
   const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
     switch (stage) {
       case 'done':
-        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'checkmark-circle' };
+        return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
       case 'transit':
-        return { label: 'In Transit', bg: colors.accentSoft, fg: ORANGE, icon: 'navigate' };
+        return { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent, icon: 'NavigationArrow' };
       case 'cancelled':
-        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'close-circle' };
+        return { label: 'Cancelled', bg: colors.errorBg, fg: colors.error, icon: 'XCircle' };
       case 'pickup':
       default:
-        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'time-outline' };
+        return { label: 'Awaiting Pickup', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
     }
   };
 
@@ -829,20 +1487,21 @@ export default function TaskScreen() {
 
   const tabCount = (t: TabType) =>
     t === 'active' ? activeDeliveries.length
+      : t === 'pending' ? pendingDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
 
   const filteredTasks =
     activeTab === 'active' ? activeDeliveries
+      : activeTab === 'pending' ? pendingDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
 
-  /* --------------------------- shared pieces --------------------------- */
   const renderServicePill = (info: any) => (
     <View style={styles.svcPill}>
-      <Ionicons name="add-circle-outline" size={13} color={BLUE} />
+      <SolarIcon name="Package" variant="duotone" size={14} color={colors.info} />
       <Text style={styles.svcPillText}>{serviceLabel(info.request?.pickup_type)}</Text>
     </View>
   );
@@ -857,8 +1516,8 @@ export default function TaskScreen() {
   const renderRoute = (info: any, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', pt: info.pickup, color: ORANGE, note: info.pickupNote },
-        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: BLACK, note: info.dropoffNote },
+        { key: 'p', label: 'PICKUP', pt: info.pickup, color: colors.accent, note: info.pickupNote },
+        { key: 'd', label: 'DROP-OFF', pt: info.dropoff, color: colors.textPrimary, note: info.dropoffNote },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
@@ -869,20 +1528,17 @@ export default function TaskScreen() {
               </View>
             )}
           </View>
-          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 16 }]}>
             <Text style={styles.rtLabel}>{r.label}</Text>
             <Text style={styles.rtMain} numberOfLines={1}>{r.pt.main}</Text>
 
-            {!!r.pt.road && (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                <Ionicons name="map-outline" size={12} color={colors.textMuted} />
-                <Text style={styles.rtSub} numberOfLines={1}>{r.pt.road}</Text>
-              </View>
+            {!!r.pt.sub && (
+              <Text style={styles.rtSub} numberOfLines={1}>{r.pt.sub}</Text>
             )}
 
             {opts.notes && !!r.note && (
               <View style={styles.sdNote}>
-                <Ionicons name="chatbubble-ellipses-outline" size={13} color={ORANGE} />
+                <SolarIcon name="ChatCircleText" variant="duotone" size={14} color={colors.accent} />
                 <Text style={styles.sdNoteText}>{r.note}</Text>
               </View>
             )}
@@ -899,24 +1555,46 @@ export default function TaskScreen() {
     phone: string | null;
     color: string;
     hideCall?: boolean;
+    userId?: number | null;
+    deliveryId?: number | null;
   }) => {
+    const canCall = !o.hideCall && !!o.phone;
+
     const handlePress = () => {
       Alert.alert(
         o.role,
         `Name: ${o.name || 'N/A'}\nPhone: ${o.hideCall ? 'Hidden until accepted' : (o.phone || 'N/A')}`,
-        [{ text: 'OK' }],
+        canCall
+          ? [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Call', onPress: () => Linking.openURL(`tel:${o.phone}`) },
+            ]
+          : [{ text: 'OK' }],
       );
     };
 
     return (
-      <TouchableOpacity style={styles.mcCard} onPress={handlePress} activeOpacity={0.7}>
-        <View style={[styles.mcAvatar, { backgroundColor: o.color }]}>
-          <Text style={styles.mcAvatarText}>{initials(o.name)}</Text>
+      <TouchableOpacity style={styles.mcRow} onPress={handlePress} activeOpacity={0.7}>
+        <View style={[styles.mcAvatarSmall, { backgroundColor: o.color }]}>
+          <Text style={styles.mcAvatarTextSmall}>{initials(o.name)}</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.mcRole}>{o.role}</Text>
-          <Text style={styles.mcName} numberOfLines={1}>{o.name || 'N/A'}</Text>
+          <Text style={styles.mcRoleSmall}>{o.role}</Text>
+          <Text style={styles.mcNameSmall} numberOfLines={1}>{o.name || 'N/A'}</Text>
         </View>
+        {canCall && (
+          <TouchableOpacity
+            style={styles.mcCallSmall}
+            onPress={(e) => {
+              e.stopPropagation();
+              if (o.phone) Linking.openURL(`tel:${o.phone}`);
+            }}
+            activeOpacity={0.8}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <SolarIcon name="Phone" variant="bold" size={13} color={colors.accent} />
+          </TouchableOpacity>
+        )}
       </TouchableOpacity>
     );
   };
@@ -930,12 +1608,11 @@ export default function TaskScreen() {
   const cargoLabelFull = (info: any) => info.sizeSummary?.full || cargoLabel(info);
   const pkgCount = (info: any) => `${info.totalItems} ${info.totalItems === 1 ? 'pkg' : 'pkgs'}`;
   const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
-    Small:  { letter: 'S', kg: '~5 kg',  color: '#0284C7', bg: 'rgba(2,132,199,0.12)' },
-    Medium: { letter: 'M', kg: '~15 kg', color: '#D97706', bg: 'rgba(217,119,6,0.14)' },
-    Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
+    Small:  { letter: 'S', kg: `${SHIPMENT_SIZE_SPECS.Small.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Small.inchesLabel}`,  color: colors.info, bg: colors.infoSoft },
+    Medium: { letter: 'M', kg: `${SHIPMENT_SIZE_SPECS.Medium.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Medium.inchesLabel}`, color: colors.warning, bg: colors.warningBg },
+    Large:  { letter: 'L', kg: `${SHIPMENT_SIZE_SPECS.Large.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Large.inchesLabel}`, color: colors.secondary, bg: colors.secondarySoft },
   };
 
-  /* ---------------------------- list card ---------------------------- */
   const renderTaskCard = (d: any) => {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
@@ -962,19 +1639,22 @@ export default function TaskScreen() {
 
           {renderRoute(info)}
 
-          <View style={styles.oContacts}>
+          <View style={styles.oContactsRow}>
             {renderMiniContact({
               role: 'SENDER',
               name: info.senderName,
               phone: info.senderPhone,
-              color: BLUE,
+              userId: info.senderId,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: colors.info,
               hideCall: false,
             })}
             {renderMiniContact({
               role: 'RECEIVER',
               name: info.receiverName,
               phone: info.receiverPhone,
-              color: PURPLE,
+              deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+              color: colors.secondary,
               hideCall: false,
             })}
           </View>
@@ -983,13 +1663,12 @@ export default function TaskScreen() {
 
         <View style={styles.oFooter}>
           <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
-            <Ionicons name="cube-outline" size={14} color={ORANGE} />
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
             <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
-            <Ionicons name="chevron-forward" size={13} color={colors.textMuted} />
           </TouchableOpacity>
           {info.fragile && (
             <View style={styles.oChip}>
-              <Ionicons name="star-outline" size={14} color={ORANGE} />
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
             </View>
           )}
@@ -1002,15 +1681,15 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.oActions}>
             <TouchableOpacity style={styles.oChatBtn} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : (
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : (
                 <>
-                  <Ionicons name="chatbubble-outline" size={16} color={ORANGE} />
+                  <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.accent} />
                   <Text style={styles.oChatText}>Chat</Text>
                 </>
               )}
             </TouchableOpacity>
             <TouchableOpacity style={styles.oRouteBtn} onPress={() => openRoute(d)} activeOpacity={0.9}>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+              <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
               <Text style={styles.oRouteText}>Start Route</Text>
             </TouchableOpacity>
           </View>
@@ -1019,13 +1698,95 @@ export default function TaskScreen() {
     );
   };
 
-  /* ---------------------------- list view ---------------------------- */
+  const renderPendingCard = (m: any) => {
+    const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
+    const isDirect = m.request?.preferred_provider_id != null;
+    const isBusy = acceptingReqId === m.request_id;
+
+    return (
+      <View key={`pending-${m.request_id}`} style={styles.oCard}>
+        <View style={styles.oPad}>
+          <View style={styles.oTopRow}>
+            {renderServicePill(info)}
+            <View style={[styles.stPill, { backgroundColor: colors.warningBg }]}>
+              <View style={[styles.stDot, { backgroundColor: colors.warning }]} />
+              <Text style={[styles.stPillText, { color: colors.warning }]}>
+                {isDirect ? 'DIRECT ROUTE REQUEST' : `${Math.round(Number(m.match_score) || 90)}% ROUTE MATCH`}
+              </Text>
+            </View>
+          </View>
+
+          {renderRoute(info, { notes: true })}
+
+          <View style={styles.oContactsRow}>
+            {renderMiniContact({
+              role: 'SENDER',
+              name: info.senderName || 'Sender',
+              phone: null,
+              color: colors.info,
+              hideCall: true,
+            })}
+            {renderMiniContact({
+              role: 'RECEIVER',
+              name: info.receiverName || 'Receiver',
+              phone: null,
+              color: colors.secondary,
+              hideCall: true,
+            })}
+          </View>
+        </View>
+
+        <View style={styles.oFooter}>
+          <TouchableOpacity style={styles.oChip} onPress={() => setPkgInfo(info)} activeOpacity={0.8} hitSlop={6}>
+            <SolarIcon name="Package" variant="duotone" size={14} color={colors.accent} />
+            <Text style={styles.oChipText} numberOfLines={1}>{pkgCount(info)}</Text>
+          </TouchableOpacity>
+          {info.fragile && (
+            <View style={styles.oChip}>
+              <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
+              <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
+            </View>
+          )}
+          <View style={{ flex: 1 }} />
+          <Text style={styles.oPrice}>{money(info.earnings)}</Text>
+        </View>
+
+        <View style={styles.oActions}>
+          <TouchableOpacity
+            style={styles.oChatBtn}
+            onPress={() => navigation.navigate('MainTabs', { screen: 'Jobs' })}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="MapPoint" variant="linear" size={16} color={colors.accent} />
+            <Text style={styles.oChatText}>View on Map</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.oRouteBtn, isBusy && { opacity: 0.7 }]}
+            onPress={() => handleAcceptPendingMatch(m)}
+            disabled={isBusy}
+            activeOpacity={0.9}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <SolarIcon name="CheckCircle" variant="bold" size={16} color="#FFFFFF" />
+                <Text style={styles.oRouteText}>Accept Request</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
-          {(['active', 'completed', 'cancelled', 'all'] as const).map(t => {
+          {(['active', 'pending', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
             const count = tabCount(t);
             const label = t.charAt(0).toUpperCase() + t.slice(1);
@@ -1049,43 +1810,40 @@ export default function TaskScreen() {
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={ORANGE} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
       >
         <Animated.View style={{ opacity: contentAnim }}>
           {filteredTasks.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons
-                  name={
-                    activeTab === 'cancelled' ? 'close-circle-outline'
-                      : allTasks.length === 0 ? 'briefcase-outline'
-                      : 'search-outline'
-                  }
-                  size={30}
-                  color={ORANGE}
-                />
-              </View>
+              <Image
+                source={EMPTY_BOX_ICON}
+                style={{ width: 140, height: 140, marginBottom: 20 }}
+                resizeMode="contain"
+              />
               <Text style={styles.emptyTitle}>
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
-                  : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
+                  : activeTab === 'pending'
+                    ? 'No pending requests'
+                    : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
-                  : allTasks.length === 0
-                    ? 'Deliveries you accept appear here.'
-                    : 'Try another tab to view history.'}
+                  : activeTab === 'pending'
+                    ? 'Requests waiting for your acceptance along your route will appear here.'
+                    : allTasks.length === 0
+                      ? 'Deliveries you accept appear here.'
+                      : 'Try another tab to view history.'}
               </Text>
             </View>
-          ) : filteredTasks.map(renderTaskCard)}
+          ) : filteredTasks.map(d => activeTab === 'pending' ? renderPendingCard(d) : renderTaskCard(d))}
           <View style={styles.bottomSpacer} />
         </Animated.View>
       </ScrollView>
     </View>
   );
 
-  /* --------------------------- detail view --------------------------- */
   const renderDetailView = (d: any) => {
     const info = buildTaskInfo(d);
     const stage = stageOf(d);
@@ -1113,10 +1871,10 @@ export default function TaskScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]} onPress={() => setSelectedId(null)} activeOpacity={0.85}>
-          <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]} onPress={() => setMapModalVisible(true)} activeOpacity={0.85}>
-          <Ionicons name="expand-outline" size={20} color={colors.textPrimary} />
+          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.textPrimary} />
         </TouchableOpacity>
 
         <ScrollView
@@ -1130,7 +1888,6 @@ export default function TaskScreen() {
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={insets.top + 70} padBottom={60}
-                userInterfaceStyle="light"
               />
             </View>
           </View>
@@ -1146,7 +1903,7 @@ export default function TaskScreen() {
             <View style={styles.dCodeRow}>
               <Text style={styles.dCode} selectable numberOfLines={1}>#{code}</Text>
               <TouchableOpacity onPress={() => copyTracking(code)} activeOpacity={0.7} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.trackTextCopy}>
-                <Ionicons name={copied ? 'checkmark-circle' : 'copy-outline'} size={16} color={ORANGE} />
+                <SolarIcon name={copied ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
                 <Text style={styles.trackTextCopyLabel}>{copied ? 'Copied' : 'Copy'}</Text>
               </TouchableOpacity>
             </View>
@@ -1163,12 +1920,12 @@ export default function TaskScreen() {
                   return (
                     <View key={label} style={styles.stepCol}>
                       <View style={styles.stepLineRow}>
-                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
                         <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                          {done ? <Ionicons name="checkmark" size={14} color="#FFFFFF" />
+                          {done ? <SolarIcon name="Check" variant="bold" size={12} color="#FFFFFF" />
                             : current ? <View style={styles.stepDotInner} /> : null}
                         </View>
-                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: ORANGE }]} />
+                        <View style={[styles.stepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
                       </View>
                       <Text style={[styles.stepLabel, reached && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
                     </View>
@@ -1180,7 +1937,7 @@ export default function TaskScreen() {
             {isCancelled ? (
               <View style={styles.cancelBanner}>
                 <View style={styles.cancelBannerIcon}>
-                  <Ionicons name="close-circle" size={22} color={colors.error} />
+                  <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.error} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.cancelBannerTitle}>Booking cancelled</Text>
@@ -1191,7 +1948,7 @@ export default function TaskScreen() {
               </View>
             ) : stage === 'done' ? (
               <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><Ionicons name="checkmark" size={20} color={colors.success} /></View>
+                <View style={styles.doneIcon}><SolarIcon name="Check" variant="bold" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.doneTitle}>Delivered successfully</Text>
                   <Text style={styles.doneSub}>
@@ -1202,53 +1959,85 @@ export default function TaskScreen() {
               </View>
             ) : (
               <View style={styles.dHint}>
-                <Ionicons name={'information-circle'} size={18} color={ORANGE} />
+                <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.accent} />
                 <Text style={styles.dHintText}>{hintText}</Text>
               </View>
             )}
 
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
-            <View style={styles.oContacts}>
+            <View style={styles.oContactsRow}>
               {renderMiniContact({
                 role: 'SENDER',
                 name: info.senderName,
                 phone: info.senderPhone,
-                color: BLUE,
+                userId: info.senderId,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: colors.info,
                 hideCall: false,
               })}
               {renderMiniContact({
                 role: 'RECEIVER',
                 name: info.receiverName,
                 phone: info.receiverPhone,
-                color: PURPLE,
+                deliveryId: d.delivery_id > 0 ? d.delivery_id : null,
+                color: colors.secondary,
                 hideCall: false,
               })}
             </View>
 
             {stage === 'pickup' && (
-              <TouchableOpacity style={[styles.mSoftBtn, { marginTop: 14, flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
-                {pingingId === d.delivery_id ? (
-                  <ActivityIndicator size="small" color={ORANGE} />
-                ) : (
-                  <>
-                    <Ionicons name="notifications" size={16} color={ORANGE} />
-                    <Text style={styles.mSoftText}>Let sender know I’m on my way</Text>
-                  </>
-                )}
+              <View style={{ marginTop: 14, gap: 8 }}>
+                <TouchableOpacity style={[styles.mSoftBtn, { flex: 0 }]} onPress={() => handlePingSender(d)} disabled={pingingId === d.delivery_id} activeOpacity={0.85}>
+                  {pingingId === d.delivery_id ? (
+                    <ActivityIndicator size="small" color={ORANGE} />
+                  ) : (
+                    <>
+                      <Ionicons name="notifications" size={16} color={ORANGE} />
+                      <Text style={styles.mSoftText}>Let sender know I’m on my way (Set ETA)</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+                <View style={{
+                  flexDirection: 'row', alignItems: 'center', gap: 6,
+                  paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
+                  backgroundColor: d.receiver_notified ? colors.successBg : colors.warningBg,
+                }}>
+                  <Ionicons
+                    name={d.receiver_notified ? 'checkmark-circle' : 'time-outline'}
+                    size={16}
+                    color={d.receiver_notified ? colors.success : colors.warning}
+                  />
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: d.receiver_notified ? colors.success : colors.warning }}>
+                    {d.receiver_notified ? 'Sender notified the receiver ✓' : 'Sender has not confirmed receiver yet'}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {stage === 'transit' && d.delivery_requests?.delivery_status !== 'Returning' && (
+              <TouchableOpacity
+                style={[styles.mSoftBtn, { marginTop: 14, flex: 0, backgroundColor: colors.errorBg }]}
+                onPress={() => handleStartDropoffGracePeriod(d)}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="timer-outline" size={17} color={colors.error} />
+                <Text style={[styles.mSoftText, { color: colors.error }]}>
+                  {d.dropoff_arrived_at ? 'Open 10-Min Drop-off Timer / Fallback' : "I'm at Drop-off (Start 10-Min Timer)"}
+                </Text>
               </TouchableOpacity>
             )}
 
             {!!d.pod_photo_url && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="shield-checkmark-outline" size={17} color={colors.success} />
+                  <SolarIcon name="ShieldCheck" variant="duotone" size={17} color={colors.success} />
                   <Text style={styles.dSecTitle}>Proof of Delivery</Text>
                 </View>
                 <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pod_photo_url)}>
                   <Image
                     source={{ uri: d.pod_photo_url }}
-                    style={{ width: '100%', height: 190, borderRadius: 16, borderWidth: 1, borderColor: colors.border }}
+                    style={{ width: '100%', height: 190, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
                     resizeMode="cover"
                   />
                 </TouchableOpacity>
@@ -1258,7 +2047,7 @@ export default function TaskScreen() {
             {photos.length > 0 && (
               <>
                 <View style={styles.dSecHead}>
-                  <Ionicons name="images-outline" size={17} color={ORANGE} />
+                  <SolarIcon name="Gallery" variant="duotone" size={17} color={colors.accent} />
                   <Text style={styles.dSecTitle}>Package Photos</Text>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
@@ -1277,7 +2066,7 @@ export default function TaskScreen() {
             )}
 
             <View style={styles.dSecHead}>
-              <Ionicons name="cube-outline" size={17} color={ORANGE} />
+              <SolarIcon name="Package" variant="duotone" size={17} color={colors.accent} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
             {items.some((it: any) => !!it.description) && (
@@ -1305,7 +2094,7 @@ export default function TaskScreen() {
               <View style={styles.tile}><Text style={styles.tileLabel}>WEIGHT</Text><Text style={styles.tileValue}>{info.weightKg != null ? `${info.weightKg} kg` : '—'}</Text></View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
-                <Text style={[styles.tileValue, info.fragile && { color: ORANGE }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
+                <Text style={[styles.tileValue, info.fragile && { color: colors.accent }]}>{info.fragile ? 'Fragile' : 'Standard'}</Text>
               </View>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>{isCancelled ? 'EARNINGS' : 'YOU EARN'}</Text>
@@ -1329,19 +2118,33 @@ export default function TaskScreen() {
         {active && (
           <View style={styles.dBar}>
             <TouchableOpacity style={styles.dBarIcon} onPress={() => messageSender(d)} disabled={openingChat} activeOpacity={0.85}>
-              {openingChat ? <ActivityIndicator size="small" color={ORANGE} /> : <Ionicons name="chatbubble-outline" size={20} color={ORANGE} />}
+              {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <SolarIcon name="ChatCircleText" variant="linear" size={20} color={colors.accent} />}
             </TouchableOpacity>
             <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="arrow-forward" size={16} color={ORANGE} />
+              <SolarIcon name="Routing" variant="bold" size={16} color={colors.accent} />
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
-              onPress={() => (stage === 'pickup' ? openVerifyModal(d) : openDeliveryOTPModal(d))}
+              onPress={() =>
+                stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
+                  ? openVerifyModal(d)
+                  : openDeliveryOTPModal(d)
+              }
               activeOpacity={0.9}
             >
-              <Ionicons name={stage === 'pickup' ? 'qr-code-outline' : 'checkmark-circle'} size={18} color="#FFFFFF" />
-              <Text style={styles.mPrimaryText}>{stage === 'pickup' ? 'Verify Pickup' : 'Complete'}</Text>
+              <Ionicons
+                name={stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning' ? 'qr-code-outline' : 'checkmark-circle'}
+                size={18}
+                color="#FFFFFF"
+              />
+              <Text style={styles.mPrimaryText}>
+                { d.delivery_requests?.delivery_status === 'Returning'
+                  ? 'Verify Return QR'
+                  : stage === 'pickup'
+                    ? 'Verify Pickup'
+                    : 'Complete'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1381,14 +2184,27 @@ export default function TaskScreen() {
 
         <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
           <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
-            <Ionicons name="close" size={24} color="#FFF" />
+            <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
           </TouchableOpacity>
         </View>
 
         <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
           <View style={styles.sheetHandle} />
-          <Text style={styles.sheetHeading}>Scan Pickup QR</Text>
-          <Text style={styles.sheetSubheading}>Point your camera at the Sender's screen to automatically verify pickup.</Text>
+          {(() => {
+            const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+            return (
+              <>
+                <Text style={styles.sheetHeading}>
+                  {isReturning ? 'Scan Return QR' : 'Scan Pickup QR'}
+                </Text>
+                <Text style={styles.sheetSubheading}>
+                  {isReturning
+                    ? "Point your camera at the Sender's screen to verify the return."
+                    : "Point your camera at the Sender's screen to automatically verify pickup."}
+                </Text>
+              </>
+            );
+          })()}
 
           <View style={styles.orRow}>
             <View style={styles.orLine} />
@@ -1438,19 +2254,17 @@ export default function TaskScreen() {
                 onInfo={setNavInfo}
                 style={{ bottom: 150 + insets.bottom }}
                 padTop={20} padBottom={30}
-                userInterfaceStyle="light"
               />
             ) : (
               <RoutePreviewMap
                 pickupLat={info.pickup.lat} pickupLng={info.pickup.lng}
                 dropoffLat={info.dropoff.lat} dropoffLng={info.dropoff.lng}
                 padTop={100} padBottom={260}
-                userInterfaceStyle="light"
               />
             );
           })()}
           <TouchableOpacity style={[styles.mapCloseBtn, { top: insets.top + 12 }]} onPress={() => setMapModalVisible(false)} activeOpacity={0.85}>
-            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
+            <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
 
           <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
@@ -1463,7 +2277,7 @@ export default function TaskScreen() {
             </View>
             <View style={styles.contactDivider} />
             <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinDropoff}><Ionicons name="person" size={14} color="#000000" /></View>
+              <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.eyebrow}>DROP-OFF</Text>
                 <Text style={styles.sdRouteMain} numberOfLines={1}>{info.dropoff.main}</Text>
@@ -1478,7 +2292,7 @@ export default function TaskScreen() {
                   onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
                   activeOpacity={0.9}
                 >
-                  <Ionicons name="navigate" size={16} color="#FFFFFF" />
+                  <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
                   <Text style={styles.actionBtnText}>Open Route</Text>
                 </TouchableOpacity>
               );
@@ -1494,7 +2308,7 @@ export default function TaskScreen() {
       <View style={styles.previewOverlay}>
         {!!photoPreview && <Image source={{ uri: photoPreview }} style={styles.previewImg} resizeMode="contain" />}
         <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPhotoPreview(null)} activeOpacity={0.85}>
-          <Ionicons name="close" size={22} color="#FFFFFF" />
+          <SolarIcon name="CloseCircle" variant="linear" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1517,7 +2331,7 @@ export default function TaskScreen() {
             <View style={styles.pkgHead}>
               <Text style={styles.pkgTitle}>{info ? pkgCount(info) : ''} in this order</Text>
               <TouchableOpacity onPress={() => setPkgInfo(null)} hitSlop={10}>
-                <Ionicons name="close" size={22} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
             {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
@@ -1528,7 +2342,7 @@ export default function TaskScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.pkgName}>{k}</Text>
-                  <Text style={styles.pkgSub}>{SIZE_META[k].kg} each</Text>
+                  <Text style={styles.pkgSub}>{SIZE_META[k].kg}</Text>
                 </View>
                 <Text style={styles.pkgQty}>×{counts[k]}</Text>
               </View>
@@ -1547,7 +2361,7 @@ export default function TaskScreen() {
           <CameraView ref={podCameraRef} style={StyleSheet.absoluteFill} facing="back" />
           <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
             <TouchableOpacity style={styles.scannerCloseBtn} onPress={() => setPodCameraOpen(false)}>
-              <Ionicons name="close" size={24} color="#FFF" />
+              <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
             </TouchableOpacity>
           </View>
           <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
@@ -1566,7 +2380,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="camera" size={20} color="#FFF" />
+                  <SolarIcon name="Camera" variant="linear" size={20} color="#FFF" />
                   <Text style={styles.mPrimaryText}>Capture Photo</Text>
                 </>
               )}
@@ -1578,10 +2392,10 @@ export default function TaskScreen() {
           <View style={styles.otpModalCard}>
             <View style={styles.otpModalHeader}>
               <View style={styles.otpModalIconBox}>
-                <Ionicons name="shield-checkmark" size={24} color={colors.success} />
+                <SolarIcon name="ShieldCheck" variant="duotone" size={24} color={colors.success} />
               </View>
               <TouchableOpacity onPress={closeDeliveryOTPModal}>
-                <Ionicons name="close" size={24} color={colors.textPrimary} />
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1590,9 +2404,8 @@ export default function TaskScreen() {
               Take a Proof of Delivery photo and enter the receiver's 6-digit OTP to release payment.
             </Text>
 
-            {/* POD Photo Capture Slot */}
             {podPhotoUri ? (
-              <View style={{ marginBottom: 14, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: colors.border }}>
+              <View style={{ marginBottom: 14, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}>
                 <Image source={{ uri: podPhotoUri }} style={{ width: '100%', height: 150 }} resizeMode="cover" />
                 <TouchableOpacity
                   style={{
@@ -1602,22 +2415,22 @@ export default function TaskScreen() {
                   }}
                   onPress={openPodCamera}
                 >
-                  <Ionicons name="camera-reverse-outline" size={14} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '700' }}>Retake</Text>
+                  <SolarIcon name="Camera" variant="linear" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 12, fontFamily: 'Poppins_700Bold' }}>Retake</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <TouchableOpacity
                 style={{
                   flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  borderWidth: 1.5, borderStyle: 'dashed', borderColor: ORANGE,
-                  backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 14, marginBottom: 14,
+                  borderWidth: 1, borderStyle: 'dashed', borderColor: colors.accent,
+                  backgroundColor: colors.accentSoft, borderRadius: 12, paddingVertical: 14, marginBottom: 14,
                 }}
                 onPress={openPodCamera}
                 activeOpacity={0.85}
               >
-                <Ionicons name="camera-outline" size={20} color={ORANGE} />
-                <Text style={{ color: ORANGE, fontSize: 13, fontWeight: '800' }}>Take Proof of Delivery Photo (Required)</Text>
+                <SolarIcon name="Camera" variant="linear" size={20} color={colors.accent} />
+                <Text style={{ color: colors.accent, fontSize: 13, fontFamily: 'Poppins_700Bold' }}>Take Proof of Delivery Photo (Required)</Text>
               </TouchableOpacity>
             )}
 
@@ -1634,7 +2447,7 @@ export default function TaskScreen() {
             </View>
 
             <View style={styles.otpInfoBox}>
-              <Ionicons name="information-circle-outline" size={16} color={colors.textSecondary} />
+              <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.textSecondary} />
               <Text style={styles.otpInfoText} numberOfLines={2}>
                 Delivery #{deliveryOTPTarget?.delivery_id} • Receiver:{' '}
                 {deliveryOTPTarget?.delivery_requests?.receiver_phone ||
@@ -1663,7 +2476,7 @@ export default function TaskScreen() {
                 <ActivityIndicator color="#FFF" size="small" />
               ) : (
                 <>
-                  <Ionicons name="checkmark-circle" size={18} color="#FFF" />
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFF" />
                   <Text style={styles.otpVerifyButtonText}>Verify & Complete</Text>
                 </>
               )}
@@ -1703,11 +2516,200 @@ export default function TaskScreen() {
     active: !!broadcastingDelivery && !!providerId,
   });
 
+  const renderGracePeriodModal = () => {
+    if (!graceDelivery) return null;
+    const info = buildTaskInfo(graceDelivery);
+    const req = graceDelivery.delivery_requests || {};
+    const fallbackAction = req.fallback_action || 'return_to_sender';
+    const fallbackRecipient = req.fallback_recipient_name || 'Guard / Reception';
+    const mins = String(Math.floor(graceRemainingSec / 60)).padStart(2, '0');
+    const secs = String(graceRemainingSec % 60).padStart(2, '0');
+    const anyContacted = contactLogs.call || contactLogs.sms || contactLogs.chat;
+    const isLeaveWithGuard = fallbackAction === 'leave_with_guard';
+    // Option B (Leave with Guard/Neighbor) unlocks the live camera immediately without waiting 10 mins!
+    // Option A (Return to Sender) still requires the 10-minute timer + at least 1 contact attempt.
+    const canMarkUnavailable = isLeaveWithGuard ? true : (graceRemainingSec === 0 && anyContacted);
+
+    return (
+      <Modal visible={graceModalVisible} animationType="slide" transparent onRequestClose={() => setGraceModalVisible(false)}>
+        {failureCameraOpen ? (
+          <View style={styles.scannerRoot}>
+            <CameraView ref={failureCameraRef} style={StyleSheet.absoluteFill} facing="back" />
+            <View
+              style={{
+                position: 'absolute',
+                top: insets.top + 64,
+                left: 16,
+                right: 16,
+                backgroundColor: 'rgba(0,0,0,0.72)',
+                padding: 12,
+                borderRadius: 12,
+                borderLeftWidth: 4,
+                borderLeftColor: ORANGE,
+              }}
+            >
+              <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '900' }}>
+                PACK-N-SHIP LIVE PROOF • #{trackingCode(req.request_id ?? graceDelivery.delivery_id)}
+              </Text>
+              <Text style={{ color: '#D1D5DB', fontSize: 11, marginTop: 2 }}>
+                TIMESTAMP: {new Date().toLocaleString()}
+              </Text>
+              <Text style={{ color: '#D1D5DB', fontSize: 11 }}>
+                FALLBACK: {isLeaveWithGuard ? `Leave with ${fallbackRecipient}` : 'Return to Sender'}
+              </Text>
+            </View>
+
+            <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, alignItems: 'center' }]}>
+              <Text style={styles.sheetHeading}>Capture Live Location & Package Proof</Text>
+              <Text style={[styles.sheetSubheading, { textAlign: 'center' }]}>
+                Gallery uploads are disabled. Capture the package clearly at the drop-off location or with {fallbackRecipient}.
+              </Text>
+              <TouchableOpacity style={[styles.mPrimaryBtn, { width: '100%' }]} onPress={captureFailureProofPhoto}>
+                <Ionicons name="camera" size={20} color="#FFF" />
+                <Text style={styles.mPrimaryText}>Take Stamped Photo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.otpModalOverlay}>
+            <View style={[styles.otpModalCard, { maxWidth: 400 }]}>
+              <View style={styles.otpModalHeader}>
+                <View style={[styles.otpModalIconBox, { backgroundColor: isLeaveWithGuard ? colors.successBg : colors.warningBg }]}>
+                  <Ionicons
+                    name={isLeaveWithGuard ? 'shield-checkmark-outline' : 'timer-outline'}
+                    size={24}
+                    color={isLeaveWithGuard ? colors.success : ORANGE}
+                  />
+                </View>
+                <TouchableOpacity onPress={() => setGraceModalVisible(false)}>
+                  <Ionicons name="close" size={24} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.otpModalTitle}>
+                {isLeaveWithGuard ? 'Safe Drop-off Authorized' : '10-Minute Drop-off Grace Period'}
+              </Text>
+              <Text style={styles.otpModalSubtitle}>
+                {isLeaveWithGuard
+                  ? `The sender pre-authorized leaving this package with "${fallbackRecipient}" if the receiver is unavailable.`
+                  : 'Contact the receiver or sender below. If the receiver arrives, close this modal and tap "Complete".'}
+              </Text>
+
+              {/* Show immediate green banner for Option B, or 10-minute timer for Option A */}
+              {isLeaveWithGuard ? (
+                <View style={{ alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, backgroundColor: colors.successBg, borderRadius: 16, marginBottom: 14 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '900', color: colors.success, textAlign: 'center' }}>
+                    ✓ NO 10-MINUTE WAIT REQUIRED
+                  </Text>
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: colors.textSecondary, marginTop: 4, textAlign: 'center' }}>
+                    Hand the package to {fallbackRecipient} and take a live stamped photo below to complete the delivery.
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ alignItems: 'center', paddingVertical: 14, backgroundColor: colors.background, borderRadius: 16, marginBottom: 14 }}>
+                  <Text style={{ fontSize: 34, fontWeight: '900', color: graceRemainingSec === 0 ? colors.error : ORANGE }}>
+                    {mins}:{secs}
+                  </Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginTop: 4 }}>
+                    {graceRemainingSec > 0 ? 'WAITING FOR RECEIVER AT DROP-OFF PIN' : 'GRACE PERIOD EXPIRED — FALLBACK UNLOCKED'}
+                  </Text>
+                </View>
+              )}
+
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.call && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('call')}
+                >
+                  <Ionicons name="call" size={15} color={contactLogs.call ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.call && { color: colors.success }]}>Call Rcvr</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.sms && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('sms')}
+                >
+                  <Ionicons name="chatbox-ellipses" size={15} color={contactLogs.sms ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.sms && { color: colors.success }]}>SMS Rcvr</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, contactLogs.chat && { borderColor: colors.success, borderWidth: 1.5 }]}
+                  onPress={() => logProviderContactAttempt('chat')}
+                >
+                  <Ionicons name="person" size={15} color={contactLogs.chat ? colors.success : ORANGE} />
+                  <Text style={[styles.mSoftText, contactLogs.chat && { color: colors.success }]}>Msg Sender</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.otpInfoBox}>
+                <Ionicons name="shield-checkmark-outline" size={18} color={ORANGE} />
+                <Text style={styles.otpInfoText}>
+                  {isLeaveWithGuard
+                    ? `Sender Pre-Authorized Option B: Leave package with "${fallbackRecipient}" and take a live photo.`
+                    : `Sender Pre-Authorized Option A: Return package to "${info.pickup.main}". You will earn the full fare + return deposit.`}
+                </Text>
+              </View>
+
+              {failurePhotoUri ? (
+                <View style={{ marginBottom: 12, borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
+                  <Image source={{ uri: failurePhotoUri }} style={{ width: '100%', height: 130 }} resizeMode="cover" />
+                  <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.65)', padding: 6 }}>
+                    <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '700' }}>
+                      GPS: {failureCoords?.lat.toFixed(5)}, {failureCoords?.lng.toFixed(5)} • {failureTimestamp}
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.mSoftBtn,
+                    { flex: 0, marginBottom: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: ORANGE },
+                    !canMarkUnavailable && { opacity: 0.45 },
+                  ]}
+                  disabled={!canMarkUnavailable}
+                  onPress={() => setFailureCameraOpen(true)}
+                >
+                  <Ionicons name="camera" size={18} color={ORANGE} />
+                  <Text style={styles.mSoftText}>
+                    {canMarkUnavailable ? 'Open Live Camera for Proof' : 'Wait 10m & Tap 1 Contact Button First'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={[
+                  styles.otpVerifyButton,
+                  { backgroundColor: isLeaveWithGuard ? colors.success : RED },
+                  (!canMarkUnavailable || !failurePhotoUri || submittingFailure) && styles.otpVerifyButtonDisabled,
+                ]}
+                disabled={!canMarkUnavailable || !failurePhotoUri || submittingFailure}
+                onPress={executeFallbackProtocol}
+              >
+                {submittingFailure ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name={isLeaveWithGuard ? 'checkmark-circle' : 'alert-circle'} size={18} color="#FFF" />
+                    <Text style={styles.otpVerifyButtonText}>
+                      {isLeaveWithGuard
+                        ? `Confirm Left with ${fallbackRecipient}`
+                        : 'Confirm Unavailable & Return to Sender'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </Modal>
+    );
+  };
   if (loading) {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading tasks...</Text>
       </View>
     );
@@ -1723,84 +2725,89 @@ export default function TaskScreen() {
       {renderPhotoModal()}
       {renderPkgModal()}
       {renderDeliveryOTPModal()}
+      {renderGracePeriodModal()}
     </View>
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-  loadingText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' },
+  loadingText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
 
   headerSection: {
     paddingHorizontal: 20, paddingBottom: 16,
-    backgroundColor: c.card,
-    borderBottomWidth: 1, borderBottomColor: c.border,
+    backgroundColor: c.background,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  pageTitle: { fontSize: 28, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  tabBarScroll: { gap: 8, paddingTop: 14 },
+  pageTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  tabBarScroll: { gap: 8, paddingTop: 16 },
   tabItem: {
-    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, gap: 6,
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
+    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
   },
-  tabItemActive: { backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1.5 },
-  tabText: { fontSize: 13, fontWeight: '700', color: c.textSecondary },
-  tabTextActive: { color: ORANGE },
+  tabItemActive: { backgroundColor: c.accentSoft, borderColor: c.accent, borderWidth: 1 },
+  tabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   tabCountBadge: { minWidth: 20, height: 20, borderRadius: 10, backgroundColor: c.divider, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  tabCountBadgeActive: { backgroundColor: 'rgba(255, 117, 31, 0.18)' },
-  tabCountText: { fontSize: 11, fontWeight: '800', color: c.textSecondary },
-  tabCountTextActive: { color: ORANGE },
+  tabCountBadgeActive: { backgroundColor: 'rgba(242,112,36,0.18)' },
+  tabCountText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
+  tabCountTextActive: { color: c.accent },
 
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 60 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
-  emptyIconCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center', marginBottom: 14, borderWidth: 1, borderColor: c.border },
-  emptyTitle: { fontSize: 17, fontWeight: '800', color: c.textPrimary },
-  emptySubtext: { fontSize: 13, color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 19 },
+  emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 20 },
 
   actionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: ORANGE,
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,
     paddingHorizontal: 16, paddingVertical: 11, borderRadius: 12,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 3,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
-  actionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  actionBtnText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 13 },
 
-  eyebrow: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1 },
+  eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
 
   cancelBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error,
-    borderRadius: 20, padding: 16, marginBottom: 14,
+    borderRadius: 12, padding: 16, marginBottom: 14,
   },
   cancelBannerIcon: {
     width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
   },
-  cancelBannerTitle: { fontSize: 15, fontWeight: '800', color: c.error },
-  cancelBannerSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  cancelBannerTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.error },
+  cancelBannerSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 18, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: c.divider },
+  stepper: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 6, marginBottom: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
   stepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  stepDotDone: { backgroundColor: ORANGE, borderColor: ORANGE },
-  stepDotCurrent: { borderColor: ORANGE },
-  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: ORANGE },
-  stepLabel: { fontSize: 10, fontWeight: '700', color: c.textMuted, marginTop: 6, textAlign: 'center' },
+  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  stepDotCurrent: { borderColor: c.accent },
+  stepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
+  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
-  mCancelledText: { fontSize: 12, color: c.error, fontWeight: '700', marginTop: 8 },
-  mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, paddingVertical: 13, borderRadius: 14 },
-  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
-  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 12, borderRadius: 14 },
-  mSoftText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  mCancelledText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.error, marginTop: 8 },
+  mPrimaryBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: c.accent, paddingVertical: 14, borderRadius: 14,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1
+  },
+  mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 14 },
+  mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
 
-  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  svcPillText: { fontSize: 12, fontWeight: '800', color: BLUE },
+  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  svcPillText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.info },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
   stDot: { width: 7, height: 7, borderRadius: 4 },
-  stPillText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
+
   rtRow: { flexDirection: 'row', gap: 14 },
   rtRail: { alignItems: 'center', width: 26 },
   rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
@@ -1808,118 +2815,124 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, color: c.textSecondary, marginTop: 2 },
-  oCard: { backgroundColor: c.card, borderRadius: 22, marginBottom: 14, borderWidth: 1, borderColor: c.border, overflow: 'hidden' },
+  rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 2 },
+  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+
+  oCard: {
+    backgroundColor: c.card,
+    borderRadius: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
   oPad: { padding: 16 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  oContacts: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontWeight: '900' },
-  mcRole: { fontSize: 9, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  mcName: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
-  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider },
-  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
-  oChipText: { fontSize: 13, fontWeight: '700', color: c.textPrimary },
-  oPrice: { fontSize: 20, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
-  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: c.divider },
+
+  oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 14 },
+  mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  mcAvatarSmall: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
+  mcAvatarTextSmall: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_700Bold' },
+  mcRoleSmall: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  mcNameSmall: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  mcCallSmall: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+
+  oFooter: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  oChip: { flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
+  oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  oPrice: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
+  oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
-  oChatText: { color: ORANGE, fontSize: 14, fontWeight: '800' },
-  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: ORANGE, borderRadius: 14, paddingVertical: 14 },
-  oRouteText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },
+  oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+
   dMap: { overflow: 'hidden' },
-  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 6, zIndex: 10 },
-  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
+  dRoundBtn: { position: 'absolute', width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 5, elevation: 1, zIndex: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingBottom: 24, minHeight: 500 },
   dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  dCode: { fontSize: 26, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontWeight: '700', color: ORANGE, marginTop: 2 },
-  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 10 },
-  dHintText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '600', color: c.textPrimary },
-  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 22, marginBottom: 12 },
-  dSecTitle: { fontSize: 16, fontWeight: '900', color: c.textPrimary },
-  dPhoto: { width: 92, height: 92, borderRadius: 14, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 13, color: c.textSecondary, lineHeight: 18, marginTop: 1 },
-  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  dItemTitle: { fontSize: 14, fontWeight: '800', color: c.textPrimary },
+  dCode: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+  dWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
+  dHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 14, marginTop: 4 },
+  dHintText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, color: c.textPrimary },
+  dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
+  dSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontWeight: '900', color: c.textSecondary },
+  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  pkgCard: { backgroundColor: c.card, borderRadius: 22, padding: 20 },
-  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  pkgTitle: { fontSize: 18, fontWeight: '900', color: c.textPrimary, letterSpacing: -0.3 },
-  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.divider },
-  pkgName: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  pkgSub: { fontSize: 12, color: c.textSecondary, marginTop: 1 },
-  pkgQty: { fontSize: 20, fontWeight: '900', color: c.textPrimary },
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 14, padding: 14 },
-  tileLabel: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 16, fontWeight: '900', color: c.textPrimary, marginTop: 4 },
-  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 12, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: c.divider },
-  dBarIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  pkgCard: { backgroundColor: c.card, borderRadius: 24, padding: 24 },
+  pkgHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  pkgTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  pkgRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.divider },
+  pkgName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  pkgSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
+  tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 6 },
+  dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  dBarIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
 
-  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  trackTextCopyLabel: { fontSize: 12, fontWeight: '800', color: ORANGE },
+  trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  trackTextCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
   doneCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: c.successBg,
-    borderWidth: 1, borderColor: c.success, borderRadius: 20, padding: 16, marginBottom: 14,
+    borderWidth: 1, borderColor: c.success, borderRadius: 12, padding: 16, marginBottom: 16,
   },
   doneIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
-  doneTitle: { fontSize: 15, fontWeight: '800', color: c.success },
-  doneSub: { fontSize: 12, color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  doneTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.success },
+  doneSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
 
-  sdMap: { width: '100%', height: 120, backgroundColor: '#F3F4F6' },
-  mapTapHint: {
-    position: 'absolute', top: 10, right: 10, flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: 'rgba(17,24,39,0.75)', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
-  },
-  mapTapHintText: { fontSize: 10, fontWeight: '700', color: '#FFFFFF' },
-  sdRoutePad: { padding: 18 },
-  sdRouteRow: { flexDirection: 'row', alignItems: 'flex-start' },
-  sdRouteRail: { width: 22, alignItems: 'center', marginRight: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: ORANGE, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 2 },
-  sdPinLetter: { fontSize: 10, fontWeight: '900', color: '#FFFFFF' },
-  sdRailLine: { width: 2, flex: 1, minHeight: 28, backgroundColor: c.border, marginVertical: 3, borderRadius: 1 },
-  sdRouteText: { flex: 1, paddingBottom: 16 },
-  sdRouteMain: { fontSize: 14, fontWeight: '800', color: c.textPrimary, marginTop: 3 },
-  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: 'rgba(255,117,31,0.10)', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
-  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontWeight: '600' },
+  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 3, elevation: 1 },
+  sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  sdRouteMain: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 3 },
+  sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  sdNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
-  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+  contactDivider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 16 },
 
   mapCloseBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     alignItems: 'center', justifyContent: 'center',
     shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.18 : 0.5,
-    shadowRadius: 8, elevation: 6,
-    borderWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.04,
+    shadowRadius: 6, elevation: 1,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 18,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.12 : 0.4,
-    shadowRadius: 12, elevation: 12,
-    borderTopWidth: 1, borderColor: c.border,
+    shadowOpacity: 0.04,
+    shadowRadius: 12, elevation: 1,
+    borderTopWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
   },
 
   scannerRoot: { flex: 1, backgroundColor: '#000' },
-  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: ORANGE, shadowColor: ORANGE, shadowOpacity: 1, shadowRadius: 8 },
+  scanLine: { position: 'absolute', left: 0, right: 0, height: 2, backgroundColor: c.accent, shadowColor: c.accent, shadowOpacity: 1, shadowRadius: 8 },
   corner: { position: 'absolute', width: 40, height: 40, borderColor: '#FFFFFF' },
   cornerTL: { top: 0, left: 0, borderTopWidth: 5, borderLeftWidth: 5, borderTopLeftRadius: 16 },
   cornerTR: { top: 0, right: 0, borderTopWidth: 5, borderRightWidth: 5, borderTopRightRadius: 16 },
@@ -1938,30 +2951,30 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   scannerBottomSheet: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     backgroundColor: c.card,
-    borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
     paddingHorizontal: 24, paddingTop: 12,
   },
   sheetHandle: {
     alignSelf: 'center', width: 40, height: 5, borderRadius: 3,
     backgroundColor: c.border, marginBottom: 18,
   },
-  sheetHeading: { fontSize: 18, fontWeight: '800', color: c.textPrimary, marginBottom: 4 },
-  sheetSubheading: { fontSize: 13, color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
+  sheetHeading: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4 },
+  sheetSubheading: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 16, lineHeight: 18 },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginVertical: 16 },
   orLine: { flex: 1, height: 1, backgroundColor: c.border },
-  orText: { fontSize: 10, fontWeight: '800', color: c.textMuted, letterSpacing: 1.2 },
+  orText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1.2 },
   pinRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinInput: {
-    flex: 1, borderWidth: 1.5, borderColor: c.border, borderRadius: 14,
+    flex: 1, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12,
     paddingHorizontal: 16, paddingVertical: 14, fontSize: 18, letterSpacing: 6,
-    color: c.textPrimary, fontWeight: '700', textAlign: 'center', backgroundColor: c.background,
+    color: c.textPrimary, fontFamily: 'Poppins_700Bold', textAlign: 'center', backgroundColor: c.background,
   },
   pinBtn: {
-    backgroundColor: ORANGE, paddingHorizontal: 24, justifyContent: 'center',
-    borderRadius: 14, alignItems: 'center', minWidth: 100,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 6, elevation: 3,
+    backgroundColor: c.accent, paddingHorizontal: 24, justifyContent: 'center',
+    borderRadius: 12, alignItems: 'center', minWidth: 100,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
-  pinBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+  pinBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   otpModalOverlay: {
     flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
@@ -1970,44 +2983,44 @@ const makeStyles = (c: ThemeColors) => StyleSheet.create({
   otpModalCard: {
     width: '100%', maxWidth: 380,
     backgroundColor: c.card, borderRadius: 24, padding: 24,
-    borderWidth: 1, borderColor: c.border,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   otpModalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'center', marginBottom: 16,
   },
   otpModalIconBox: {
-    width: 48, height: 48, borderRadius: 14, backgroundColor: c.successBg,
+    width: 48, height: 48, borderRadius: 12, backgroundColor: c.successBg,
     justifyContent: 'center', alignItems: 'center',
   },
-  otpModalTitle: { fontSize: 20, fontWeight: '800', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
-  otpModalSubtitle: { fontSize: 13, color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
+  otpModalTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.3 },
+  otpModalSubtitle: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 19, marginBottom: 20 },
   otpInputContainer: { marginBottom: 16 },
   otpInput: {
-    borderWidth: 2, borderColor: c.border, borderRadius: 16,
+    borderWidth: 1, borderColor: c.border, borderRadius: 12,
     paddingHorizontal: 20, paddingVertical: 18,
     fontSize: 28, letterSpacing: 12, color: c.textPrimary,
-    fontWeight: '800', textAlign: 'center', backgroundColor: c.background,
+    fontFamily: 'Poppins_800ExtraBold', textAlign: 'center', backgroundColor: c.background,
   },
   otpInfoBox: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: c.divider, paddingHorizontal: 12,
-    paddingVertical: 10, borderRadius: 10, marginBottom: 20,
+    paddingVertical: 10, borderRadius: 12, marginBottom: 20,
   },
-  otpInfoText: { flex: 1, fontSize: 11, color: c.textSecondary, fontWeight: '500' },
+  otpInfoText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
   otpPayoutRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.border,
+    backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
   },
-  otpPayoutLabel: { fontSize: 12, color: c.textSecondary, fontWeight: '600' },
+  otpPayoutLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   otpVerifyButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: c.success, borderRadius: 16,
+    backgroundColor: c.accent, borderRadius: 14,
     paddingVertical: 16, gap: 8, marginBottom: 12,
-    shadowColor: c.success, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   otpVerifyButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
-  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  otpVerifyButtonText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 });

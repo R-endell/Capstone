@@ -1,15 +1,14 @@
 // src/components/ProofOfDeliveryModal.tsx
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   Modal, View, Text, Image, TouchableOpacity, StyleSheet,
   ActivityIndicator, Dimensions,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../utils/supabase';
-import { useTheme } from '../utils/themeContext';
+import { useTheme, ThemeColors } from '../utils/themeContext';
 import { formatDateTime } from '../utils/dateUtils';
+import { SolarIcon } from './ui/SolarIcon';
 
-const ORANGE = '#FF751F';
 const { width: SCREEN_W } = Dimensions.get('window');
 
 interface UnseenPodDelivery {
@@ -29,7 +28,9 @@ export default function ProofOfDeliveryModal({
   isSenderMode: boolean;
   onViewDetails?: (requestId: number) => void;
 }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
+  
   const [senderId, setSenderId] = useState<number | null>(null);
   const [podItem, setPodItem] = useState<UnseenPodDelivery | null>(null);
   const [acknowledging, setAcknowledging] = useState(false);
@@ -196,27 +197,27 @@ export default function ProofOfDeliveryModal({
   return (
     <Modal visible transparent animationType="fade" onRequestClose={() => handleDismiss(false)}>
       <View style={styles.overlay}>
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}>
           <View style={[styles.badgeRow, { backgroundColor: colors.successBg }]}>
-            <Ionicons name="checkmark-done-circle" size={20} color={colors.success} />
+            <SolarIcon name="CheckCircle" variant="duotone" size={20} color={colors.success} />
             <Text style={[styles.badgeText, { color: colors.success }]}>PROOF OF DELIVERY</Text>
           </View>
 
           <Text style={[styles.title, { color: colors.textPrimary }]}>Package Delivered! 🎉</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            Shipment <Text style={{ fontWeight: '800', color: ORANGE }}>#{code}</Text> was delivered by {podItem.provider_name}.
+            Shipment <Text style={{ fontFamily: 'Poppins_800ExtraBold', color: colors.accent }}>#{code}</Text> was delivered by {podItem.provider_name}.
           </Text>
 
-          <View style={[styles.photoBox, { borderColor: colors.border, backgroundColor: colors.background }]}>
+          <View style={[styles.photoBox, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: colors.background }]}>
             <Image source={{ uri: podItem.pod_photo_url }} style={styles.photo} resizeMode="cover" />
             <View style={styles.photoCaption}>
-              <Ionicons name="time-outline" size={13} color="#FFFFFF" />
+              <SolarIcon name="Clock" variant="linear" size={13} color="#FFFFFF" />
               <Text style={styles.photoCaptionText}>{formatDateTime(podItem.completed_at)}</Text>
             </View>
           </View>
 
-          <View style={[styles.infoTile, { backgroundColor: colors.background, borderColor: colors.divider }]}>
-            <Ionicons name="location" size={18} color={ORANGE} />
+          <View style={[styles.infoTile, { backgroundColor: colors.background, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}>
+            <SolarIcon name="MapPoint" variant="linear" size={18} color={colors.accent} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.infoLabel, { color: colors.textMuted }]}>DROPPED OFF AT</Text>
               <Text style={[styles.infoValue, { color: colors.textPrimary }]} numberOfLines={2}>
@@ -232,11 +233,11 @@ export default function ProofOfDeliveryModal({
               disabled={acknowledging}
               activeOpacity={0.85}
             >
-              <Text style={styles.secondaryBtnText}>View in Completed</Text>
+              <Text style={[styles.secondaryBtnText, { color: colors.accent }]}>View in Completed</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.primaryBtn}
+              style={[styles.primaryBtn, { backgroundColor: colors.accent }]}
               onPress={() => handleDismiss(false)}
               disabled={acknowledging}
               activeOpacity={0.9}
@@ -254,10 +255,10 @@ export default function ProofOfDeliveryModal({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
+    backgroundColor: 'rgba(17,24,39,0.72)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
@@ -265,10 +266,15 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxWidth: Math.min(SCREEN_W - 36, 390),
-    borderRadius: 26,
+    borderRadius: 16,
     padding: 22,
     borderWidth: 1,
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 5,
   },
   badgeRow: {
     flexDirection: 'row',
@@ -279,13 +285,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     marginBottom: 12,
   },
-  badgeText: { fontSize: 11, fontWeight: '900', letterSpacing: 0.6 },
-  title: { fontSize: 22, fontWeight: '900', letterSpacing: -0.4, textAlign: 'center' },
-  subtitle: { fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 6, marginBottom: 16 },
+  badgeText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.6 },
+  title: { fontSize: 22, fontFamily: 'Poppins_700Bold', letterSpacing: -0.4, textAlign: 'center' },
+  subtitle: { fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, textAlign: 'center', marginTop: 6, marginBottom: 16 },
   photoBox: {
     width: '100%',
     height: 230,
-    borderRadius: 18,
+    borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
     marginBottom: 14,
@@ -303,19 +309,19 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 10,
   },
-  photoCaptionText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+  photoCaptionText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
   infoTile: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     padding: 12,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
     marginBottom: 18,
   },
-  infoLabel: { fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
-  infoValue: { fontSize: 13, fontWeight: '800', marginTop: 2 },
+  infoLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
+  infoValue: { fontSize: 13, fontFamily: 'Poppins_700Bold', marginTop: 2 },
   btnRow: { flexDirection: 'row', width: '100%', gap: 10 },
   secondaryBtn: {
     flex: 1,
@@ -324,14 +330,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  secondaryBtnText: { color: ORANGE, fontSize: 13, fontWeight: '800' },
+  secondaryBtnText: { fontSize: 13, fontFamily: 'Poppins_700Bold' },
   primaryBtn: {
     flex: 1.1,
-    backgroundColor: ORANGE,
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primaryBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  primaryBtnText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 });

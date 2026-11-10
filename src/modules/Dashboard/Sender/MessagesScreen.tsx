@@ -6,11 +6,10 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   Platform, ActivityIndicator, Alert, Image, RefreshControl,
   Animated, Easing, StatusBar, Keyboard, KeyboardAvoidingView, BackHandler,
-  Modal, Pressable, Linking, ScrollView,
+  Modal, Pressable, Linking,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute, useIsFocused } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../../../utils/supabase';
@@ -18,8 +17,12 @@ import { formatDate } from '../../../utils/dateUtils';
 import NotificationsList from '../Disputes/NotificationsList';
 import { notifyUser } from '../../../services/pushService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
-const ORANGE = '#FF751F';
+const CHAT_ICON = require('../../../../assets/empty-state-chathead-icon.png');
+const ARCHIVED_ICON = require('../../../../assets/empty-state-archived-icon.png');
+const NOTIFICATION_ICON = require('../../../../assets/empty-state-notification-bell-icon.png');
+
 const PAGE_SIZE = 30;
 const CHAT_ATTACHMENT_BUCKET = 'chat-attachments';
 const IMG_MARKER_START = '[img]';
@@ -56,11 +59,8 @@ type ChatMessage = {
   _temp_id?: number;
 };
 
-// --- Image marker helpers ---
 const isImageMessage = (text: string) =>
-  typeof text === 'string' &&
-  text.startsWith(IMG_MARKER_START) &&
-  text.endsWith(IMG_MARKER_END);
+  typeof text === 'string' && text.startsWith(IMG_MARKER_START) && text.endsWith(IMG_MARKER_END);
 
 const extractImageUrl = (text: string) =>
   text.slice(IMG_MARKER_START.length, text.length - IMG_MARKER_END.length);
@@ -71,7 +71,6 @@ const formatChatTime = (timestamp: string) => {
   const date = new Date(timestamp);
   const now = new Date();
   const diff = now.getTime() - date.getTime();
-
   if (diff < 60000) return 'Just now';
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m`;
   if (diff < 86400000) return formatDate(timestamp, 'h:mm a');
@@ -81,19 +80,15 @@ const formatChatTime = (timestamp: string) => {
 
 const shouldShowDateSeparator = (current: ChatMessage, previous: ChatMessage | null) => {
   if (!previous) return true;
-  const currDay = formatDate(current.sent_at, 'yyyy-MM-dd');
-  const prevDay = formatDate(previous.sent_at, 'yyyy-MM-dd');
-  return currDay !== prevDay;
+  return formatDate(current.sent_at, 'yyyy-MM-dd') !== formatDate(previous.sent_at, 'yyyy-MM-dd');
 };
 
 const formatDateSeparator = (timestamp: string) => {
   const day = formatDate(timestamp, 'yyyy-MM-dd');
   const today = formatDate(new Date().toISOString(), 'yyyy-MM-dd');
-
   const y = new Date();
   y.setDate(y.getDate() - 1);
   const yesterday = formatDate(y.toISOString(), 'yyyy-MM-dd');
-
   if (day === today) return 'Today';
   if (day === yesterday) return 'Yesterday';
   return formatDate(timestamp, 'EEEE, MMM d');
@@ -129,10 +124,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const route = useRoute<any>();
   const isFocused = useIsFocused();
   const { colors, isDark } = useTheme();
-  const styles = makeStyles(colors);
+  const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const openRoomIdParam: number | undefined =
-    propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
+  const openRoomIdParam: number | undefined = propsRoute?.params?.openRoomId ?? route.params?.openRoomId;
 
   const [activeTab, setActiveTab] = useState<'messages' | 'notification'>('messages');
   const [messagesView, setMessagesView] = useState<'inbox' | 'archived'>('inbox');
@@ -147,7 +141,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const [loadMore, setLoadMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  // Attachment state
   const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [sendingImage, setSendingImage] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -174,20 +167,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const detailAnim = useRef(new Animated.Value(0)).current;
   const inputAnim = useRef(new Animated.Value(0)).current;
 
-  const navigationRef = useRef(navigation);
-  navigationRef.current = navigation;
-
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-  // Back handler
   useEffect(() => {
     const backAction = () => {
       if (previewImage) { setPreviewImage(null); return true; }
       if (attachSheetOpen) { setAttachSheetOpen(false); return true; }
-      if (selectedRoom) {
-        closeConversation();
-        return true;
-      }
+      if (selectedRoom) { closeConversation(); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
@@ -203,7 +189,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         setChatLoading(false);
       }
       fetchConversations();
-
       return () => {
         if (subscription.current) {
           supabase.removeChannel(subscription.current);
@@ -216,28 +201,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   useLayoutEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 400) =>
-      Animated.timing(value, {
-        toValue: 1, duration, delay,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      });
+      Animated.timing(value, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
 
     if (!selectedRoom) {
       listHeaderAnim.setValue(0);
       listAnim.setValue(0);
-      Animated.parallel([
-        animate(listHeaderAnim, 0),
-        animate(listAnim, 150),
-      ]).start();
+      Animated.parallel([animate(listHeaderAnim, 0), animate(listAnim, 150)]).start();
     } else {
       detailHeaderAnim.setValue(0);
       detailAnim.setValue(0);
       inputAnim.setValue(0);
-      Animated.parallel([
-        animate(detailHeaderAnim, 0),
-        animate(detailAnim, 100),
-        animate(inputAnim, 150),
-      ]).start();
+      Animated.parallel([animate(detailHeaderAnim, 0), animate(detailAnim, 100), animate(inputAnim, 150)]).start();
     }
   }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
 
@@ -249,13 +223,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const getCurrentUserId = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return null;
-
     const { data: userRecord } = await supabase
       .from('users')
       .select('user_id, first_name, last_name')
       .eq('auth_id', user.id)
       .single();
-
     if (userRecord) {
       currentUserName.current = [userRecord.first_name, userRecord.last_name].filter(Boolean).join(' ') || 'Someone';
     }
@@ -426,24 +398,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    fetchConversations();
-  };
+  const handleRefresh = () => { setRefreshing(true); fetchConversations(); };
 
   const fetchMessages = async (roomIds: number[], olderThan?: string) => {
-    let query = supabase
-      .from('chat_messages')
-      .select('*')
-      .in('room_id', roomIds)
-      .order('sent_at', { ascending: false })
-      .limit(PAGE_SIZE);
+    let query = supabase.from('chat_messages').select('*').in('room_id', roomIds).order('sent_at', { ascending: false }).limit(PAGE_SIZE);
     if (olderThan) query = query.lt('sent_at', olderThan);
     const { data, error } = await query;
     if (error) { console.error(error); return []; }
-    return (data || [])
-      .map((m: any) => ({ ...m, _temp_id: undefined }))
-      .reverse() as ChatMessage[];
+    return (data || []).map((m: any) => ({ ...m, _temp_id: undefined })).reverse() as ChatMessage[];
   };
 
   const subscribeToRoom = (roomIds: number[]) => {
@@ -453,10 +415,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
         const incoming = payload.new as ChatMessage;
         if (!roomIds.includes(incoming.room_id)) return;
-
         const isMine = incoming.sender_id === currentUserId.current;
         const newMsg: ChatMessage = isMine ? incoming : { ...incoming, is_read: true };
-
         setMessages(prev => {
           if (prev.some(m => m._temp_id === undefined && m.message_id === newMsg.message_id)) return prev;
           const tempIdx = prev.findIndex(m => m._temp_id !== undefined && m.sender_id === newMsg.sender_id && m.message === newMsg.message);
@@ -467,32 +427,17 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           }
           return [...prev, newMsg];
         });
-
         setConversations(prev =>
-          sortByLatest(
-            prev.map(c =>
-              c.all_room_ids.includes(newMsg.room_id)
-                ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at }
-                : c
-            )
-          )
+          sortByLatest(prev.map(c => c.all_room_ids.includes(newMsg.room_id) ? { ...c, latest_message: newMsg.message, latest_sent_at: newMsg.sent_at } : c))
         );
-
         if (!isMine) {
-          supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id)
-            .then(() => {}, (e: any) => console.warn('Mark read error:', e));
+          supabase.from('chat_messages').update({ is_read: true }).eq('message_id', newMsg.message_id).then(() => {}, (e: any) => console.warn('Mark read error:', e));
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, (payload) => {
         const updated = payload.new as ChatMessage;
         if (!roomIds.includes(updated.room_id)) return;
-        setMessages(prev =>
-          prev.map(m =>
-            m._temp_id === undefined && m.message_id === updated.message_id
-              ? { ...m, is_read: updated.is_read }
-              : m
-          )
-        );
+        setMessages(prev => prev.map(m => m._temp_id === undefined && m.message_id === updated.message_id ? { ...m, is_read: updated.is_read } : m));
       })
       .subscribe();
   };
@@ -517,12 +462,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
     if (currentUserId.current) {
       try {
-        await supabase
-          .from('chat_messages')
-          .update({ is_read: true })
-          .in('room_id', room.all_room_ids)
-          .neq('sender_id', currentUserId.current)
-          .eq('is_read', false);
+        await supabase.from('chat_messages').update({ is_read: true }).in('room_id', room.all_room_ids).neq('sender_id', currentUserId.current).eq('is_read', false);
       } catch (e) { console.warn('Mark read error:', e); }
       if (token !== openToken.current) return;
       setConversations(prev => prev.map(c => (c.room_id === room.room_id ? { ...c, unread_count: 0 } : c)));
@@ -544,7 +484,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (loadingOlder.current || !hasMore || !selectedRoom || chatLoading) return;
     const oldest = messages.find(m => m._temp_id === undefined);
     if (!oldest) return;
-
     loadingOlder.current = true;
     setLoadMore(true);
     const older = await fetchMessages(selectedRoom.all_room_ids, oldest.sent_at);
@@ -574,50 +513,25 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     setTimeout(() => scrollToLatest(true), 50);
 
     try {
-      const { data, error } = await supabase.from('chat_messages').insert({
-        message: trimmed, room_id: roomId, sender_id: currentUserId.current,
-      }).select('*').single();
+      const { data, error } = await supabase.from('chat_messages').insert({ message: trimmed, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
-
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(
-          allRoomIds.map(id => ({
-            room_id: id,
-            user_id: currentUserId.current,
-            is_archived: false,
-            is_deleted: false,
-          }))
-        );
+        await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
       }
-
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
         if (hasReal) return prev.filter(m => m._temp_id !== tempId);
         return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
       });
       setConversations(prev =>
-        sortByLatest(
-          prev.map(c =>
-            c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false }
-              : c
-          )
-        )
+        sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: trimmed, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-
       if (!selectedRoom.is_support && selectedRoom.other.user_id) {
         const senderLabel = currentUserName.current || 'Someone';
         const preview = trimmed.length > 60 ? `${trimmed.slice(0, 60)}...` : trimmed;
         try {
-          await notifyUser(
-            selectedRoom.other.user_id,
-            `💬 ${senderLabel}`,
-            preview,
-            { type: 'chat', roomId, senderId: currentUserId.current },
-          );
-        } catch (notifErr) {
-          console.warn('[Chat] push notify failed:', notifErr);
-        }
+          await notifyUser(selectedRoom.other.user_id, `💬 ${senderLabel}`, preview, { type: 'chat', roomId, senderId: currentUserId.current });
+        } catch (notifErr) { console.warn('[Chat] push notify failed:', notifErr); }
       }
     } catch (error: any) {
       console.error('Send error:', error);
@@ -627,53 +541,33 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  // ---------------- Image upload ----------------
   const uploadChatImage = async (uri: string): Promise<string> => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('No user');
-
     const rawExt = uri.split('.').pop()?.toLowerCase() || 'jpg';
     const fileExt = ['jpg', 'jpeg', 'png', 'webp'].includes(rawExt) ? rawExt : 'jpg';
     const contentType = `image/${fileExt}`;
     const fileName = `${user.id}/chat_${Date.now()}.${fileExt}`;
-
-    const base64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
     const binaryString = atob(base64);
     const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    const { error: uploadError } = await supabase.storage
-      .from(CHAT_ATTACHMENT_BUCKET)
-      .upload(fileName, bytes, { contentType, upsert: true });
+    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+    const { error: uploadError } = await supabase.storage.from(CHAT_ATTACHMENT_BUCKET).upload(fileName, bytes, { contentType, upsert: true });
     if (uploadError) throw new Error(uploadError.message);
-
-    const { data: urlData } = supabase.storage
-      .from(CHAT_ATTACHMENT_BUCKET)
-      .getPublicUrl(fileName);
+    const { data: urlData } = supabase.storage.from(CHAT_ATTACHMENT_BUCKET).getPublicUrl(fileName);
     if (!urlData?.publicUrl) throw new Error('No public URL');
     return urlData.publicUrl;
   };
 
   const sendImage = async (uri: string) => {
     if (!selectedRoom || !currentUserId.current) return;
-
     const roomId = selectedRoom.room_id;
     const allRoomIds = selectedRoom.all_room_ids;
     const tempId = Date.now();
     const optimistic: ChatMessage = {
-      message_id: tempId,
-      room_id: roomId,
-      message: buildImageMessage(uri),
-      sent_at: new Date().toISOString(),
-      sender_id: currentUserId.current,
-      is_read: false,
-      _temp_id: tempId,
+      message_id: tempId, room_id: roomId, message: buildImageMessage(uri), sent_at: new Date().toISOString(),
+      sender_id: currentUserId.current, is_read: false, _temp_id: tempId,
     };
-
     setMessages(prev => [...prev, optimistic]);
     setSendingImage(true);
     setTimeout(() => scrollToLatest(true), 50);
@@ -681,52 +575,24 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     try {
       const remoteUrl = await uploadChatImage(uri);
       const text = buildImageMessage(remoteUrl);
-
-      const { data, error } = await supabase.from('chat_messages').insert({
-        message: text,
-        room_id: roomId,
-        sender_id: currentUserId.current,
-      }).select('*').single();
+      const { data, error } = await supabase.from('chat_messages').insert({ message: text, room_id: roomId, sender_id: currentUserId.current }).select('*').single();
       if (error) throw error;
-
       if (!selectedRoom.is_support) {
-        await supabase.from('chat_room_states').upsert(
-          allRoomIds.map(id => ({
-            room_id: id,
-            user_id: currentUserId.current,
-            is_archived: false,
-            is_deleted: false,
-          }))
-        );
+        await supabase.from('chat_room_states').upsert(allRoomIds.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: false, is_deleted: false })));
       }
-
       setMessages(prev => {
         const hasReal = prev.some(m => m._temp_id === undefined && m.message_id === data.message_id);
         if (hasReal) return prev.filter(m => m._temp_id !== tempId);
         return prev.map(m => (m._temp_id === tempId ? { ...data, _temp_id: undefined } : m));
       });
       setConversations(prev =>
-        sortByLatest(
-          prev.map(c =>
-            c.all_room_ids.includes(roomId)
-              ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false }
-              : c
-          )
-        )
+        sortByLatest(prev.map(c => c.all_room_ids.includes(roomId) ? { ...c, latest_message: text, latest_sent_at: data.sent_at, is_archived: false } : c))
       );
-
       if (!selectedRoom.is_support && selectedRoom.other.user_id) {
         const senderLabel = currentUserName.current || 'Someone';
         try {
-          await notifyUser(
-            selectedRoom.other.user_id,
-            `💬 ${senderLabel}`,
-            '📷 Photo',
-            { type: 'chat', roomId, senderId: currentUserId.current },
-          );
-        } catch (notifErr) {
-          console.warn('[Chat] image push notify failed:', notifErr);
-        }
+          await notifyUser(selectedRoom.other.user_id, `💬 ${senderLabel}`, '📷 Photo', { type: 'chat', roomId, senderId: currentUserId.current });
+        } catch (notifErr) { console.warn('[Chat] image push notify failed:', notifErr); }
       }
     } catch (e: any) {
       console.error('Send image error:', e);
@@ -737,51 +603,42 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     }
   };
 
-  const openAttachmentSheet = () => {
-    if (!selectedRoom) return;
-    setAttachSheetOpen(true);
-  };
+  const openAttachmentSheet = () => { if (!selectedRoom) return; setAttachSheetOpen(true); };
 
   const pickFromLibrary = async () => {
     setAttachSheetOpen(false);
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow photo access to send photos.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
-        allowsEditing: false,
-        quality: 0.85,
-      });
-      if (!result.canceled && result.assets.length > 0) {
-        await sendImage(result.assets[0].uri);
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to open library.');
-    }
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow photo access to send photos.'); return; }
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.85 });
+      if (!result.canceled && result.assets.length > 0) await sendImage(result.assets[0].uri);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed to open library.'); }
   };
 
   const pickFromCamera = async () => {
     setAttachSheetOpen(false);
     try {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please allow camera access to take a photo.');
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ['images'],
-        allowsEditing: false,
-        quality: 0.85,
-      });
-      if (!result.canceled && result.assets.length > 0) {
-        await sendImage(result.assets[0].uri);
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to open camera.');
+      if (status !== 'granted') { Alert.alert('Permission Required', 'Please allow camera access to take a photo.'); return; }
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 0.85 });
+      if (!result.canceled && result.assets.length > 0) await sendImage(result.assets[0].uri);
+    } catch (e: any) { Alert.alert('Error', e?.message || 'Failed to open camera.'); }
+  };
+
+  const handleCallPress = () => {
+    if (!selectedRoom) return;
+    if (selectedRoom.is_support) {
+      Alert.alert('Call unavailable', 'Pack-N-Ship System does not accept voice calls. Please send a message in chat instead.');
+      return;
     }
+    const fullName = `${selectedRoom.other.first_name || ''} ${selectedRoom.other.last_name || ''}`.trim() || 'User';
+    promptCallChoice({
+      name: fullName,
+      role: selectedRoom.role === 'sender' ? 'COURIER' : 'SENDER',
+      calleeId: selectedRoom.other.user_id,
+      phone: selectedRoom.other?.phone_number?.trim() || null,
+      deliveryId: selectedRoom.delivery_id || null,
+    });
   };
 
   const openChatOptions = (room: ChatRoom) => {
@@ -789,9 +646,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       Alert.alert('System conversation', 'This is an official conversation with Pack-N-Ship. You can\'t archive or delete it.');
       return;
     }
-
     const isArchived = room.is_archived;
-
     Alert.alert(
       'Conversation Options',
       `Manage chat with ${room.other.first_name}`,
@@ -806,10 +661,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const toggleArchiveChat = async (room: ChatRoom, archive: boolean) => {
     setConversations(prev => prev.map(c => c.room_id === room.room_id ? { ...c, is_archived: archive } : c));
     try {
-      const payloads = room.all_room_ids.map(id => ({
-        room_id: id, user_id: currentUserId.current,
-        is_archived: archive, is_deleted: false,
-      }));
+      const payloads = room.all_room_ids.map(id => ({ room_id: id, user_id: currentUserId.current, is_archived: archive, is_deleted: false }));
       await supabase.from('chat_room_states').upsert(payloads);
     } catch (error) {
       console.error('Error toggling archive:', error);
@@ -825,10 +677,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         onPress: async () => {
           setConversations(prev => prev.filter(c => c.room_id !== room.room_id));
           try {
-            const payloads = room.all_room_ids.map(id => ({
-              room_id: id, user_id: currentUserId.current,
-              is_deleted: true, is_archived: false,
-            }));
+            const payloads = room.all_room_ids.map(id => ({ room_id: id, user_id: currentUserId.current, is_deleted: true, is_archived: false }));
             await supabase.from('chat_room_states').upsert(payloads);
           } catch (error) {
             console.error('Error deleting chat:', error);
@@ -840,14 +689,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   };
 
   useEffect(() => {
-    if (!openRoomIdParam) {
-      autoOpenHandled.current = null;
-      autoOpenFetched.current = null;
-      return;
-    }
+    if (!openRoomIdParam) { autoOpenHandled.current = null; autoOpenFetched.current = null; return; }
     if (loading) return;
     if (autoOpenHandled.current === openRoomIdParam) return;
-
     const target = conversations.find(c => c.all_room_ids.includes(openRoomIdParam));
     if (target) {
       autoOpenHandled.current = openRoomIdParam;
@@ -855,7 +699,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       openConversation(target);
       return;
     }
-
     if (autoOpenFetched.current !== openRoomIdParam) {
       autoOpenFetched.current = openRoomIdParam;
       fetchConversations();
@@ -868,43 +711,21 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_rooms' }, () => fetchConversations())
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, async (payload) => {
         fetchConversations();
-
         const incoming = payload.new as ChatMessage;
         const myId = currentUserId.current;
         if (!incoming || !myId || incoming.sender_id === myId) return;
         if (notifiedMsgIds.current.has(incoming.message_id)) return;
-
         const activeRoom = selectedRoomRef.current;
         if (activeRoom && activeRoom.all_room_ids.includes(incoming.room_id)) return;
-
         try {
-          const { data: roomRow } = await supabase
-            .from('chat_rooms')
-            .select('room_id, is_support, participant_a, participant_b')
-            .eq('room_id', incoming.room_id)
-            .maybeSingle();
-
-          if (
-            roomRow &&
-            roomRow.is_support &&
-            (roomRow.participant_a === myId || roomRow.participant_b === myId)
-          ) {
+          const { data: roomRow } = await supabase.from('chat_rooms').select('room_id, is_support, participant_a, participant_b').eq('room_id', incoming.room_id).maybeSingle();
+          if (roomRow && roomRow.is_support && (roomRow.participant_a === myId || roomRow.participant_b === myId)) {
             notifiedMsgIds.current.add(incoming.message_id);
-            const rawPreview = isImageMessage(incoming.message)
-              ? '📷 Sent you a photo'
-              : incoming.message;
+            const rawPreview = isImageMessage(incoming.message) ? '📷 Sent you a photo' : incoming.message;
             const preview = rawPreview.length > 80 ? `${rawPreview.slice(0, 80)}...` : rawPreview;
-
-            await notifyUser(
-              myId,
-              '💬 Pack-N-Ship',
-              `Pack-N-Ship messaged you: ${preview}`,
-              { type: 'chat', roomId: incoming.room_id, senderId: incoming.sender_id, isSystem: true },
-            );
+            await notifyUser(myId, '💬 Pack-N-Ship', `Pack-N-Ship messaged you: ${preview}`, { type: 'chat', roomId: incoming.room_id, senderId: incoming.sender_id, isSystem: true });
           }
-        } catch (err) {
-          console.warn('[Chat] system message notify error:', err);
-        }
+        } catch (err) { console.warn('[Chat] system message notify error:', err); }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'chat_messages' }, () => fetchConversations())
       .subscribe();
@@ -920,15 +741,15 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     return (
       <View style={{ width: size, height: size, position: 'relative' }}>
         {party.profile_photo ? (
-          <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE }} />
+          <Image source={{ uri: party.profile_photo }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent }} />
         ) : (
-          <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.accent, justifyContent: 'center', alignItems: 'center' }}>
             <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: size * 0.45 }}>{initial}</Text>
           </View>
         )}
         {badgeColor && (
           <View style={[styles.avatarBadge, { backgroundColor: badgeColor }]}>
-            <Ionicons name="checkmark" size={size * 0.25} color="#FFFFFF" />
+            <SolarIcon name="Check" variant="bold" size={size * 0.25} color="#FFFFFF" />
           </View>
         )}
       </View>
@@ -945,7 +766,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <TouchableOpacity style={styles.chatRow} onPress={() => openConversation(item)} activeOpacity={0.7}>
           <View style={styles.avatarWrapper}>
             {isSupport ? (
-              <View style={styles.supportAvatar}><Ionicons name="headset" size={22} color="#FFFFFF" /></View>
+              <View style={styles.supportAvatar}>
+                <SolarIcon name="HeadphonesRound" variant="duotone" size={24} />
+              </View>
             ) : item.other.profile_photo ? (
               <Image source={{ uri: item.other.profile_photo }} style={styles.avatarImage} />
             ) : (
@@ -982,7 +805,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.optionsButton} onPress={() => openChatOptions(item)} activeOpacity={0.6}>
-          <Ionicons name="ellipsis-vertical" size={18} color={colors.textMuted} />
+          <SolarIcon name="MenuDots" variant="linear" size={22} color={colors.textMuted} />
         </TouchableOpacity>
       </View>
     );
@@ -994,7 +817,6 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     const showDateSeparator = shouldShowDateSeparator(item, older);
     const olderSameSender = older && older.sender_id === item.sender_id;
     const showAvatar = !isMe && !olderSameSender;
-
     const isImage = isImageMessage(item.message);
     const imageUrl = isImage ? extractImageUrl(item.message) : null;
 
@@ -1013,7 +835,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             <View style={styles.msgAvatarSlot}>
               {showAvatar ? (
                 selectedRoom?.is_support ? (
-                  <View style={styles.supportMsgAvatar}><Ionicons name="headset" size={14} color="#FFFFFF" /></View>
+                  <View style={styles.supportMsgAvatar}>
+                    <SolarIcon name="HeadphonesRound" variant="duotone" size={16} color="#FFFFFF" />
+                  </View>
                 ) : (
                   renderAvatar(selectedRoom!.other, 32)
                 )
@@ -1030,11 +854,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.msgMeta}>
                   <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
                   {isMe && (
-                    <Ionicons
-                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
-                      size={12}
-                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
-                      style={{ marginLeft: 4 }}
+                    <SolarIcon
+                      name="Check"
+                      variant={item.is_read ? 'bold' : 'linear'}
+                      size={14}
+                      color={item.is_read ? '#FFFFFF' : 'rgba(255,255,255,0.6)'}
                     />
                   )}
                 </View>
@@ -1045,11 +869,11 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 <View style={styles.msgMeta}>
                   <Text style={[styles.msgTime, isMe && styles.myMsgTime]}>{formatDate(item.sent_at, 'h:mm a')}</Text>
                   {isMe && (
-                    <Ionicons
-                      name={item.is_read ? 'checkmark-done' : 'checkmark'}
-                      size={12}
-                      color={item.is_read ? '#93C5FD' : 'rgba(255,255,255,0.7)'}
-                      style={{ marginLeft: 4 }}
+                    <SolarIcon
+                      name="Check"
+                      variant={item.is_read ? 'bold' : 'linear'}
+                      size={14}
+                      color={item.is_read ? '#FFFFFF' : 'rgba(255,255,255,0.6)'}
                     />
                   )}
                 </View>
@@ -1101,12 +925,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   );
 
   const renderAttachmentSheet = () => (
-    <Modal
-      visible={attachSheetOpen}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setAttachSheetOpen(false)}
-    >
+    <Modal visible={attachSheetOpen} transparent animationType="fade" onRequestClose={() => setAttachSheetOpen(false)}>
       <Pressable style={styles.attachBackdrop} onPress={() => setAttachSheetOpen(false)}>
         <Pressable style={styles.attachSheet} onPress={() => {}}>
           <View style={styles.attachHandle} />
@@ -1114,31 +933,27 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromCamera} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <Ionicons name="camera" size={20} color={ORANGE} />
+              <SolarIcon name="Camera" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Take a photo</Text>
               <Text style={styles.attachRowSub}>Open camera and capture</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.attachRow} onPress={pickFromLibrary} activeOpacity={0.8}>
             <View style={[styles.attachIcon, { backgroundColor: colors.accentSoft }]}>
-              <Ionicons name="images" size={20} color={ORANGE} />
+              <SolarIcon name="Gallery" variant="duotone" size={20} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.attachRowTitle}>Choose from gallery</Text>
               <Text style={styles.attachRowSub}>Pick an existing image</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.attachCancel}
-            onPress={() => setAttachSheetOpen(false)}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.attachCancel} onPress={() => setAttachSheetOpen(false)} activeOpacity={0.8}>
             <Text style={styles.attachCancelText}>Cancel</Text>
           </TouchableOpacity>
         </Pressable>
@@ -1152,12 +967,8 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         {previewImage && (
           <Image source={{ uri: previewImage }} style={styles.previewImage} resizeMode="contain" />
         )}
-        <TouchableOpacity
-          style={[styles.previewClose, { top: insets.top + 12 }]}
-          onPress={() => setPreviewImage(null)}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="close" size={24} color="#FFFFFF" />
+        <TouchableOpacity style={[styles.previewClose, { top: insets.top + 12 }]} onPress={() => setPreviewImage(null)} activeOpacity={0.85}>
+          <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     </Modal>
@@ -1168,10 +979,10 @@ export default function MessagesScreen({ route: propsRoute }: any) {
       <View style={styles.detailContainer}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-        <SafeAreaView edges={['top']} style={{ backgroundColor: ORANGE }}>
+        <SafeAreaView edges={['top']} style={{ backgroundColor: colors.accent }}>
           <Animated.View style={[styles.chatHeaderFlat, fadeUp(detailHeaderAnim, -10)]}>
             <TouchableOpacity onPress={closeConversation} style={styles.backBtnFlat} activeOpacity={0.7}>
-              <Ionicons name="chevron-back" size={28} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="bold" size={22} color="#FFFFFF" />
             </TouchableOpacity>
 
             <View style={styles.chatHeaderInfo}>
@@ -1179,11 +990,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 {selectedRoom.is_support ? 'Pack-N-Ship' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
               <Text style={styles.chatHeaderSubtitle}>
-                {selectedRoom.is_support
-                  ? 'System'
-                  : selectedRoom.role === 'sender'
-                  ? 'Provider'
-                  : 'Sender'}
+                {selectedRoom.is_support ? 'System' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
               </Text>
             </View>
           </Animated.View>
@@ -1197,7 +1004,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           <Animated.View style={[styles.flex, { opacity: detailAnim, backgroundColor: colors.background }]}>
             {chatLoading ? (
               <View style={styles.centerLoader}>
-                <ActivityIndicator size="small" color={ORANGE} />
+                <ActivityIndicator size="small" color={colors.accent} />
               </View>
             ) : (
               <FlatList
@@ -1214,7 +1021,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
                 onEndReachedThreshold={0.2}
                 ListFooterComponent={
                   loadMore ? (
-                    <View style={styles.loadingMore}><ActivityIndicator size="small" color={ORANGE} /></View>
+                    <View style={styles.loadingMore}><ActivityIndicator size="small" color={colors.accent} /></View>
                   ) : null
                 }
               />
@@ -1223,19 +1030,14 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
           {sendingImage && (
             <View style={styles.uploadingBanner}>
-              <ActivityIndicator size="small" color={ORANGE} />
+              <ActivityIndicator size="small" color={colors.accent} />
               <Text style={styles.uploadingText}>Sending photo…</Text>
             </View>
           )}
 
           <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
-            <TouchableOpacity
-              style={styles.attachBtnFlat}
-              activeOpacity={0.7}
-              onPress={openAttachmentSheet}
-              disabled={sendingImage}
-            >
-              <Ionicons name="add-circle" size={32} color={colors.textMuted} />
+            <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7} onPress={openAttachmentSheet} disabled={sendingImage}>
+              <SolarIcon name="AddCircle" variant="duotone" size={32} />
             </TouchableOpacity>
 
             <View style={styles.inputWrapperFlat}>
@@ -1257,7 +1059,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               disabled={!newMessage.trim()}
               activeOpacity={0.7}
             >
-              <Ionicons name="send" size={24} color={ORANGE} />
+              <SolarIcon name="PaperPlane" variant="bold" size={26} color={newMessage.trim() ? colors.accent : colors.textMuted} />
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
@@ -1276,18 +1078,27 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
       {loading ? (
         <View style={styles.centerLoader}>
-          <ActivityIndicator size="large" color={ORANGE} />
+          <ActivityIndicator size="large" color={colors.accent} />
         </View>
       ) : activeTab === 'notification' ? (
         <View style={{ flex: 1 }}>
-          <NotificationsList embedded />
+          <NotificationsList
+            embedded
+            ListEmptyComponent={
+              <View style={styles.emptyContainer}>
+                <Image source={NOTIFICATION_ICON} style={{ width: 140, height: 140, marginBottom: 20 }} resizeMode="contain" />
+                <Text style={styles.emptyTitle}>No notifications yet</Text>
+                <Text style={styles.emptySubtext}>Updates about your reports and disputes will appear here.</Text>
+              </View>
+            }
+          />
         </View>
       ) : filteredConversations.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons
-            name={messagesView === 'inbox' ? 'chatbubbles-outline' : 'archive-outline'}
-            size={48}
-            color={colors.textMuted}
+          <Image
+            source={messagesView === 'archived' ? ARCHIVED_ICON : CHAT_ICON}
+            style={{ width: 140, height: 140, marginBottom: 20 }}
+            resizeMode="contain"
           />
           <Text style={styles.emptyTitle}>
             {messagesView === 'inbox' ? 'No messages yet' : 'No archived chats'}
@@ -1306,7 +1117,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             renderItem={renderConversationItem}
             contentContainerStyle={styles.listContentFlat}
             showsVerticalScrollIndicator={false}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={ORANGE} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.accent} />}
           />
         </View>
       )}
@@ -1314,170 +1125,162 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   );
 }
 
-const makeStyles = (c: ThemeColors) => StyleSheet.create({
+const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   flex: { flex: 1 },
 
   listHeaderFlat: {
-    backgroundColor: c.card,
-    paddingHorizontal: 20, paddingTop: 24, paddingBottom: 16,
+    backgroundColor: c.background,
+    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
   headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
-  mainTitle: { fontSize: 26, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.5 },
-  tabContainer: {
-    flexDirection: 'row', backgroundColor: c.divider,
-    borderRadius: 16, padding: 4,
+
+  mainTitle: {
+    fontSize: 26,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    letterSpacing: -0.3
   },
-  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 12 },
-  tabText: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
+
+  tabContainer: { flexDirection: 'row', backgroundColor: c.divider, borderRadius: 12, padding: 4 },
+  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
+  tabText: { color: c.textSecondary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   tabButtonActive: {
     backgroundColor: c.card,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.08 : 0.4,
+    shadowOpacity: isDark ? 0.4 : 0.08,
     shadowRadius: 4, elevation: 2,
   },
-  tabTextActive: { color: ORANGE, fontWeight: '800' },
+  tabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
 
   centerLoader: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textPrimary, marginTop: 16, letterSpacing: -0.2 },
-  emptySubtext: { fontSize: 14, color: c.textSecondary, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  emptyTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8, letterSpacing: -0.3 },
+  emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 10, lineHeight: 20 },
 
-  listContentFlat: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+  listContentFlat: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 20 },
 
   chatRowWrapper: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, marginBottom: 6, borderRadius: 16,
-    borderWidth: 1, borderColor: c.divider,
+    backgroundColor: c.card, marginBottom: 12, borderRadius: 12,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.03 : 0.3,
-    shadowRadius: 6, elevation: 1,
+    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
-  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 12 },
-  optionsButton: { paddingHorizontal: 16, paddingVertical: 14, justifyContent: 'center', alignItems: 'center' },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 18, paddingLeft: 16 },
+  optionsButton: { paddingHorizontal: 16, paddingVertical: 18, justifyContent: 'center', alignItems: 'center' },
 
   avatarWrapper: { position: 'relative', marginRight: 14 },
-  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center' },
+  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
   avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.divider },
-  avatarText: { fontSize: 18, fontWeight: '800', color: '#FFFFFF' },
+  avatarText: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   supportAvatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: c.success, borderWidth: 2.5, borderColor: c.card },
 
   chatInfo: { flex: 1, marginRight: 8 },
-  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  chatName: { fontSize: 15, fontWeight: '800', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
-  chatTime: { fontSize: 11, color: c.textMuted, fontWeight: '600' },
-  chatTimeUnread: { color: ORANGE, fontWeight: '800' },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+
+  chatName: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatTime: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+  chatTimeUnread: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  chatLastMsg: { fontSize: 13, color: c.textSecondary, flex: 1, fontWeight: '500' },
-  chatLastMsgUnread: { color: c.textPrimary, fontWeight: '700' },
+
+  chatLastMsg: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, flex: 1 },
+  chatLastMsgUnread: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
+
   supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
-  supportTagText: { color: c.card, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
-  unreadBadge: { backgroundColor: ORANGE, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
-  unreadBadgeText: { color: '#FFFFFF', fontWeight: '800', fontSize: 11 },
+  supportTagText: { color: c.card, fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
+  unreadBadge: { backgroundColor: c.accent, borderRadius: 10, minWidth: 20, height: 20, paddingHorizontal: 6, justifyContent: 'center', alignItems: 'center' },
+  unreadBadgeText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 11 },
 
   detailContainer: { flex: 1, backgroundColor: c.background },
   chatHeaderFlat: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: ORANGE,
-    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16,
-    borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
-    shadowColor: ORANGE, shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2, shadowRadius: 10, elevation: 5,
+    flexDirection: 'row', alignItems: 'center', backgroundColor: c.accent,
+    paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20,
+    borderBottomLeftRadius: 16, borderBottomRightRadius: 16,
+    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
   },
-  backBtnFlat: { padding: 4, marginRight: 8, marginLeft: -8 },
+  backBtnFlat: { padding: 8, marginRight: 12, marginLeft: -8, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20 },
   chatHeaderInfo: { flex: 1 },
-  chatHeaderName: { fontSize: 17, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.2 },
-  chatHeaderSubtitle: { fontSize: 13, color: '#FFE4D2', marginTop: 2, fontWeight: '500' },
 
-  chatContentArea: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 32 },
-  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 16, paddingHorizontal: 24, gap: 10 },
+  chatHeaderName: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
+  chatHeaderSubtitle: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+
+  callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 1 },
+
+  chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, paddingHorizontal: 24, gap: 10 },
   dateSeparatorLine: { flex: 1, height: 1, backgroundColor: c.border },
-  dateSeparatorText: { fontSize: 11, color: c.textMuted, fontWeight: '700', letterSpacing: 0.3 },
+  dateSeparatorText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, letterSpacing: 0.3 },
 
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 4, paddingHorizontal: 4 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
   msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
   supportMsgAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
-  msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 20 },
   imageBubble: { padding: 4, overflow: 'hidden' },
-  myMsg: { backgroundColor: ORANGE, borderBottomRightRadius: 6, shadowColor: ORANGE, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 4, elevation: 2 },
-  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: c.divider, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: c.statusBarStyle === 'dark-content' ? 0.05 : 0.35, shadowRadius: 4, elevation: 1 },
-  msgText: { fontSize: 14.5, color: c.textPrimary, lineHeight: 20, fontWeight: '500' },
+  myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6, shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2 },
+  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 2, elevation: 0 },
+
+  msgText: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 22 },
   myMsgText: { color: '#FFFFFF' },
+
   chatImage: { width: 220, height: 220, borderRadius: 16 },
-  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 4, paddingHorizontal: 4 },
-  msgTime: { fontSize: 10, color: c.textMuted, fontWeight: '600' },
-  myMsgTime: { color: 'rgba(255,255,255,0.85)' },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 6, paddingHorizontal: 4, gap: 4 },
+  msgTime: { fontSize: 10, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+  myMsgTime: { color: 'rgba(255,255,255,0.8)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
   inputContainerFlat: {
     flexDirection: 'row', alignItems: 'flex-end',
-    backgroundColor: c.card, paddingHorizontal: 12, paddingTop: 10,
-    borderTopWidth: 1, borderTopColor: c.border,
+    backgroundColor: c.card, paddingHorizontal: 16, paddingTop: 12,
+    borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  attachBtnFlat: { paddingBottom: 8, marginRight: 8 },
+  attachBtnFlat: { paddingBottom: 8, marginRight: 10 },
   inputWrapperFlat: {
-    flex: 1, backgroundColor: c.divider, borderRadius: 20,
+    flex: 1, backgroundColor: c.background, borderRadius: 16,
     paddingHorizontal: 16, marginBottom: 8,
-    minHeight: 40, maxHeight: 120, justifyContent: 'center',
+    minHeight: 44, maxHeight: 120, justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   textInputFlat: {
-    flex: 1, fontSize: 15, color: c.textPrimary,
-    paddingTop: Platform.OS === 'ios' ? 10 : 8,
-    paddingBottom: Platform.OS === 'ios' ? 10 : 8,
+    flex: 1, fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
+    paddingTop: Platform.OS === 'ios' ? 12 : 10,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 10,
   },
   sendBtnFlat: { paddingBottom: 10, paddingLeft: 12, paddingRight: 4 },
 
   uploadingBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, paddingVertical: 8, backgroundColor: c.accentSoft,
+    gap: 8, paddingVertical: 10, backgroundColor: c.accentSoft,
     borderTopWidth: 1, borderTopColor: c.border,
   },
-  uploadingText: { fontSize: 12, fontWeight: '600', color: ORANGE },
+  uploadingText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
-  attachBackdrop: {
-    flex: 1, backgroundColor: 'rgba(17,24,39,0.45)',
-    justifyContent: 'flex-end',
-  },
+  attachBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', justifyContent: 'flex-end' },
   attachSheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 10, paddingBottom: 24,
+    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 32,
   },
-  attachHandle: {
-    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
-    backgroundColor: c.border, marginBottom: 12,
-  },
-  attachTitle: {
-    fontSize: 17, fontWeight: '800', color: c.textPrimary, marginBottom: 12,
-  },
-  attachRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 14, borderRadius: 14,
-  },
-  attachIcon: {
-    width: 44, height: 44, borderRadius: 22,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  attachRowTitle: { fontSize: 15, fontWeight: '800', color: c.textPrimary },
-  attachRowSub: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
-  attachCancel: {
-    marginTop: 8, paddingVertical: 14, borderRadius: 14,
-    alignItems: 'center', backgroundColor: c.divider,
-  },
-  attachCancelText: { fontSize: 14, fontWeight: '700', color: c.textSecondary },
+  attachHandle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
+  attachTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16 },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderRadius: 16 },
+  attachIcon: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+  attachRowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  attachRowSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
+  attachCancel: { marginTop: 16, paddingVertical: 16, borderRadius: 16, alignItems: 'center', backgroundColor: c.divider },
+  attachCancelText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
-  previewOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
-    alignItems: 'center', justifyContent: 'center',
-  },
+  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImage: { width: '100%', height: '80%' },
   previewClose: {
-    position: 'absolute', right: 16, width: 44, height: 44, borderRadius: 22,
+    position: 'absolute', right: 20, width: 44, height: 44, borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center', justifyContent: 'center',
   },
