@@ -19,6 +19,7 @@ import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon'; 
 import { Ionicons } from '@expo/vector-icons';
 import { PhIcon } from '../../../components/ui/PhIcon'; // Kept for specific double-check receipts
+import { createTicket } from '../../../services/ticketService';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -1147,10 +1148,11 @@ export default function ActivityScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await supabase.rpc('settle_delivery_escrow', {
+              const { error: freezeErr } = await supabase.rpc('settle_delivery_escrow', {
                 p_delivery_id: deliveryId,
                 p_outcome: 'freeze_dispute',
               });
+              if (freezeErr) throw freezeErr;
 
               const del: any = item.deliveryData || {};
               const raw: any = item.rawData || {};
@@ -1165,29 +1167,45 @@ export default function ActivityScreen() {
                 `Proof Photo URL: ${del.failure_photo_url || del.pod_photo_url || 'None'}`,
               ].join('\n');
 
-              const { data: ticket, error: tErr } = await supabase
-                .from('support_tickets')
-                .insert({
+              let createdTicketId: number | null = null;
+              try {
+                const ticket = await createTicket({
                   type: 'dispute',
-                  category: 'Delivery Issue',
-                  sub_issue: 'Package Missing / Fallback Dispute',
+                  category: 'Problem with my package',
+                  subIssue: 'Marked delivered, but not received',
                   description: telemetrySummary,
-                  requested_resolution: 'Full Refund (Escrow Frozen)',
-                  status: 'Open',
-                  reporter_id: userId,
-                  reporter_role: 'sender',
-                  counterparty_id: item.provider_id ?? null,
-                  delivery_id: deliveryId,
-                  request_id: item.request_id,
-                })
-                .select('ticket_id')
-                .single();
-
-              if (tErr) throw tErr;
+                  role: 'sender',
+                  deliveryId,
+                  requestedResolution: 'Refund',
+                  legacyIssueType: 'Not received',
+                });
+                createdTicketId = ticket.ticket_id;
+              } catch {
+                // Fallback direct insert if create_ticket RPC isn't present
+                const { data: fallbackTicket, error: tErr } = await supabase
+                  .from('support_tickets')
+                  .insert({
+                    type: 'dispute',
+                    category: 'Problem with my package',
+                    sub_issue: 'Marked delivered, but not received',
+                    description: telemetrySummary,
+                    requested_resolution: 'Refund',
+                    status: 'Open',
+                    reporter_id: userId,
+                    reporter_role: 'sender',
+                    counterparty_id: item.provider_id ?? null,
+                    delivery_id: deliveryId,
+                    request_id: item.request_id,
+                  })
+                  .select('ticket_id')
+                  .single();
+                if (tErr) throw tErr;
+                createdTicketId = fallbackTicket.ticket_id;
+              }
 
               Alert.alert(
                 '🔒 Escrow Frozen & Dispute Filed',
-                `Support Ticket #${ticket.ticket_id} has been created. Admin will review the courier's 10-minute GPS logs, contact logs, and stamped photo.`
+                `Support Ticket #${createdTicketId} has been created. Admin will review the courier's 10-minute GPS logs, contact logs, and stamped photo.`
               );
               fetchData();
             } catch (e: any) {
@@ -1197,7 +1215,6 @@ export default function ActivityScreen() {
         },
       ]
     );
-  };
 
   /* --------------------------- Stage & Status --------------------------- */
   const stageOf = (item: MappedDelivery): 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled' => {
@@ -2865,4 +2882,4 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1.5, borderColor: c.accent, marginBottom: 4,
   },
   otpCopyBtnText: { color: c.accent, fontFamily: 'Poppins_600SemiBold', fontSize: 14 },
-});
+})};

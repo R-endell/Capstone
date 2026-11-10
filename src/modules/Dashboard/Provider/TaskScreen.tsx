@@ -45,7 +45,7 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
-const GEOFENCE_RADIUS_M = 1000;
+const GEOFENCE_RADIUS_M = __DEV__ ? 999999 : 150;
 
 const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371000;
@@ -767,20 +767,23 @@ const handleAcceptPendingMatch = async (m: any) => {
       if (isReturning) {
         // PHASE 4 (Option A): Verify Return back to Sender & Release Full Escrow (Base + Return Deposit)
         const now = new Date().toISOString();
-        await supabase
+        const { error: retQrErr } = await supabase
           .from('qr_verifications')
           .update({ return_verified: true, return_verified_at: now })
           .eq('delivery_id', deliveryId);
+        if (retQrErr) throw retQrErr;
 
-        await supabase
+        const { error: retDelErr } = await supabase
           .from('deliveries')
           .update({ returned_at: now, completed_at: now })
           .eq('delivery_id', deliveryId);
+        if (retDelErr) throw retDelErr;
 
-        await supabase.rpc('settle_delivery_escrow', {
+        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
           p_delivery_id: deliveryId,
           p_outcome: 'returned_to_sender',
         });
+        if (settleErr) throw settleErr;
 
         const senderId = (verifyTarget?.delivery_requests as any)?.sender_id;
         if (senderId) {
@@ -1068,11 +1071,12 @@ const handleAcceptPendingMatch = async (m: any) => {
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
-      // Settle Escrow (Release Base Fare to Provider)
-      await supabase.rpc('settle_delivery_escrow', {
+      // In completeDelivery:
+      const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
         p_delivery_id: deliveryId,
         p_outcome: 'completed_normal',
       });
+      if (settleErr) throw settleErr;
 
       // Refund 50% Return Deposit to Sender if Option A was selected
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
@@ -1298,10 +1302,11 @@ const handleAcceptPendingMatch = async (m: any) => {
           })
           .eq('delivery_id', deliveryId);
 
-        await supabase.rpc('settle_delivery_escrow', {
+        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
           p_delivery_id: deliveryId,
           p_outcome: 'completed_safe_drop',
         });
+        if (settleErr) throw settleErr;
 
         if (req.sender_id) {
           await notifyUser(
@@ -1400,12 +1405,12 @@ const handleAcceptPendingMatch = async (m: any) => {
   const isPickupVerified = (delivery: any) => {
     const qr = delivery?.qr_verifications;
     if (qr) {
-      if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
-      else if (qr.pickup_verified) return true;
+    if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
+    else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Completed';
-  };
+    return status === 'In Transit' || status === 'Returning' || status === 'Completed' || status === 'Returned';
+    };
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
