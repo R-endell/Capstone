@@ -18,6 +18,9 @@ import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 import { GOOGLE_MAP_ID } from '../../utils/mapConfig';
+import TermsModal from '../../components/terms/TermsModal';
+import { recordTermsAcceptance } from '../../services/termsService';
+import { POLICY_VERSION } from '../Settings/policyContent';
 
 const ORANGE = '#F27024';
 const GREEN = '#16A34A';
@@ -310,6 +313,9 @@ export default function RegisterScreen() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [focusedInput, setFocusedInput] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [termsError, setTermsError] = useState('');
+  const [termsOpen, setTermsOpen] = useState(false);
 
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -683,6 +689,8 @@ export default function RegisterScreen() {
 
   const pendingFinalizeRef = useRef<Promise<void> | null>(null);
   const profileLinkRef = useRef<{ authUserId: string; update: Record<string, unknown> } | null>(null);
+  // true = the sign-up acceptance still has to be saved (no session / profile row yet when we tried)
+  const termsPendingRef = useRef(false);
 
   const handleSignUp = async () => {
     const firstNameValidation = validateName(firstName, 'First name');
@@ -700,6 +708,10 @@ export default function RegisterScreen() {
     if (addressValidation) { setAddressError(addressValidation); return; }
     if (passwordValidation) { setPasswordError(passwordValidation); return; }
     if (confirmValidation) { setConfirmPasswordError(confirmValidation); return; }
+    if (!agreedToTerms) {
+      setTermsError('Please agree to the Terms and Policies to create your account.');
+      return;
+    }
 
     if (lat === null || lng === null) {
       Alert.alert('Location Required', 'Please select your home address on the map.');
@@ -709,6 +721,7 @@ export default function RegisterScreen() {
     setLoading(true);
     pendingFinalizeRef.current = null;
     profileLinkRef.current = null;
+    termsPendingRef.current = false;
     const t0 = Date.now();
     const lap = (label: string) => {
       if (__DEV__) console.log(`[signup] ${label}: ${Date.now() - t0}ms`);
@@ -740,6 +753,8 @@ export default function RegisterScreen() {
             last_name: lastName.trim(),
             phone: cleanedPhone,
             avatar_url: '',
+            terms_version: POLICY_VERSION,
+            terms_accepted_at: new Date().toISOString(),
           },
         },
       });
@@ -828,6 +843,18 @@ export default function RegisterScreen() {
           profileLinkRef.current = { authUserId, update: profileUpdate };
         }
 
+        // Record the agreement (Terms Section 13). Needs the users row, so it waits for profileLinked.
+        if (profileLinked) {
+          try {
+            await recordTermsAcceptance('signup');
+          } catch (e) {
+            console.warn('Could not record terms acceptance yet; will retry after verification:', e);
+            termsPendingRef.current = true;
+          }
+        } else {
+          termsPendingRef.current = true;
+        }
+
         await authMetaPromise;
         await supabase.auth.signOut({ scope: 'local' });
       };
@@ -896,6 +923,16 @@ export default function RegisterScreen() {
           .update(pendingLink.update)
           .eq('auth_id', pendingLink.authUserId);
         if (linkError) console.warn('Could not link profile after verification:', linkError);
+      }
+
+      if (termsPendingRef.current) {
+        try {
+          await recordTermsAcceptance('signup');
+          termsPendingRef.current = false;
+        } catch (e) {
+          // The app asks again on first login if this record is missing (TermsGate).
+          console.warn('Could not record terms acceptance after verification:', e);
+        }
       }
 
       await supabase.auth.signOut({ scope: 'local' });
@@ -1289,7 +1326,24 @@ export default function RegisterScreen() {
                     {confirmPasswordError ? <Text style={styles.errorText}>{confirmPasswordError}</Text> : null}
                   </View>
 
-                  <TouchableOpacity style={[styles.button, loading && styles.buttonDisabled]} onPress={handleSignUp} disabled={loading}>
+                  <TouchableOpacity
+                    style={styles.termsRow}
+                    onPress={() => { setAgreedToTerms(a => !a); setTermsError(''); }}
+                    activeOpacity={0.8}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: agreedToTerms }}
+                  >
+                    <View style={[styles.termsBox, agreedToTerms && styles.termsBoxOn]}>
+                      {agreedToTerms && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                    </View>
+                    <Text style={styles.termsText}>
+                      I have read and agree to the{' '}
+                      <Text style={styles.termsLink} onPress={() => setTermsOpen(true)}>Terms and Policies</Text>.
+                    </Text>
+                  </TouchableOpacity>
+                  {termsError ? <Text style={[styles.errorText, { marginTop: 0 }]}>{termsError}</Text> : null}
+
+                  <TouchableOpacity style={[styles.button, (loading || !agreedToTerms) && styles.buttonDisabled]} onPress={handleSignUp} disabled={loading}>
                     {loading ? (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                         <ActivityIndicator color="#FFFFFF" size="small" />
@@ -1299,6 +1353,8 @@ export default function RegisterScreen() {
                       <Text style={styles.buttonText}>Create Account</Text>
                     )}
                   </TouchableOpacity>
+
+                  <TermsModal visible={termsOpen} variant="general" mode="read" onClose={() => setTermsOpen(false)} />
 
                   <TouchableOpacity onPress={() => navigation.navigate('Login')} style={styles.linkContainer}>
                     <Text style={styles.link}>
@@ -1627,6 +1683,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       alignItems: 'center', justifyContent: 'center', width: '100%', marginBottom: 20,
     },
     buttonDisabled: { opacity: 0.7 },
+    termsRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, marginBottom: 6 },
+    termsBox: { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
+    termsBoxOn: { backgroundColor: ORANGE, borderColor: ORANGE },
+    termsText: { flex: 1, fontSize: 13, lineHeight: 19, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
+    termsLink: { color: ORANGE, fontFamily: 'Poppins_700Bold', textDecorationLine: 'underline' },
     buttonText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 16 },
 
     linkContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },

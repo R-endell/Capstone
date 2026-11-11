@@ -2013,7 +2013,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     const H = Dimensions.get('window').height;
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
-    const photos = items.filter((it: any) => !!it.photo && !failedPhotos[it.photo]);
     const hintText = stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
       : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
@@ -2210,40 +2209,36 @@ const handleAcceptPendingMatch = async (m: any) => {
               </>
             )}
 
-            {photos.length > 0 && (
-              <>
-                <View style={styles.dSecHead}>
-                  <SolarIcon name="Gallery" variant="duotone" size={17} color={colors.accent} />
-                  <Text style={styles.dSecTitle}>Package Photos</Text>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {photos.map((it: any, i: number) => (
-                    <TouchableOpacity key={i} activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)}>
-                      <Image
-                        source={{ uri: it.photo }}
-                        style={styles.dPhoto}
-                        resizeMode="cover"
-                        onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
-                      />
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
             <View style={styles.dSecHead}>
               <SolarIcon name="Package" variant="duotone" size={17} color={colors.accent} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
-            {items.some((it: any) => !!it.description) && (
+            {items.some((it: any) => !!it.description || !!it.photo) && (
               <View style={{ gap: 8, marginBottom: 12 }}>
                 {items.map((it: any, i: number) => {
                   const meta = it.size ? SIZE_META[it.size] : null;
                   return (
                     <View key={i} style={styles.dItemRow}>
-                      <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
-                        <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
-                      </View>
+                      {!!it.photo && !failedPhotos[it.photo] ? (
+                        <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)} style={styles.dItemPhotoWrap}>
+                          <Image
+                            source={{ uri: it.photo }}
+                            style={styles.dItemPhoto}
+                            resizeMode="cover"
+                            onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
+                          />
+                          {meta && (
+                            <View style={[styles.dItemPhotoTag, { backgroundColor: meta.bg }]}>
+                              <Text style={[styles.dItemPhotoTagText, { color: meta.color }]}>{meta.letter}</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      ) : (
+                        // no picture (or it failed to load): show the size letter instead
+                        <View style={[styles.dItemPhotoWrap, styles.dItemPhotoEmpty, meta && { backgroundColor: meta.bg }]}>
+                          <Text style={[styles.dItemPhotoEmptyText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.dItemTitle} numberOfLines={2}>
                           {items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
@@ -3130,6 +3125,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
   dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
   dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  dItemPhotoWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider },
+  dItemPhoto: { width: '100%', height: '100%' },
+  dItemPhotoTag: { position: 'absolute', right: 4, bottom: 4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoTagText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+  dItemPhotoEmpty: { alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoEmptyText: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
   sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },

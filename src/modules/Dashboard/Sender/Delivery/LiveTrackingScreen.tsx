@@ -227,7 +227,6 @@ export default function LiveTrackingScreen() {
   const pulse = useRef(new Animated.Value(0)).current;
 
   const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
-  // The whole trip: sender's pickup -> drop-off. Drawn under the live leg so the sender always sees it.
   const [fullRoute, setFullRoute] = useState<LatLng[]>([]);
   const lastRoute = useRef<{ at: number; from: LatLng | null; tKey: string }>({ at: 0, from: null, tKey: '' });
   const lastFitKey = useRef('');
@@ -567,6 +566,7 @@ export default function LiveTrackingScreen() {
   const step = currentStep(data);
   const headingTo = data.completedAt ? 'Delivered' : targetIsDropoff ? 'Heading to drop-off' : 'Heading to pickup';
   const etaLabel = data.completedAt ? 'Delivered' : navInfo ? fmtDuration(navInfo.durationS) : '—';
+  const distLabel = data.completedAt ? '—' : navInfo ? fmtDistance(navInfo.distanceM) : '—';
   const arrivalClock = !data.completedAt && navInfo
     ? new Date(Date.now() + navInfo.durationS * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null;
@@ -574,11 +574,13 @@ export default function LiveTrackingScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Force light map basemap even in dark theme — matches LocationSelectScreen */}
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
       <MapView
         ref={mapRef}
         {...MAP_PROPS}
+        userInterfaceStyle="light"
         style={StyleSheet.absoluteFill}
         initialRegion={{
           latitude: data.pickup.latitude,
@@ -660,212 +662,231 @@ export default function LiveTrackingScreen() {
         </Animated.View>
       )}
 
+      {/* ============================================================ */}
+      {/* Redesigned bottom sheet — the "what's happening now" surface */}
+      {/* ============================================================ */}
       <View
-        style={[styles.sheet, { paddingBottom: 12 }]}
+        style={[styles.sheet, expanded && styles.sheetExpanded, { paddingBottom: 12 }]}
         onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
       >
         <TouchableOpacity activeOpacity={0.8} onPress={() => setExpanded(x => !x)} style={styles.grabberWrap} hitSlop={{ top: 8, bottom: 8 }}>
           <View style={styles.grabber} />
         </TouchableOpacity>
 
-        <ScrollView showsVerticalScrollIndicator={false} bounces={false} scrollEnabled={expanded} contentContainerStyle={{ paddingBottom: 4 }}>
-          {!isProviderMode && (
-            <View style={styles.stepper}>
-              {STEPS.map((label, i) => {
-                const done = i < step;
-                const current = i === step;
-                return (
-                  <View key={label} style={styles.stepCol}>
-                    <View style={styles.stepTrack}>
-                      <View style={[styles.stepLine, i === 0 && { opacity: 0 }, (done || current) && styles.stepLineOn]} />
-                      <View style={[styles.stepDot, done && styles.stepDotDone, current && styles.stepDotCurrent]}>
-                        {done
-                          ? <SolarIcon name="Check" variant="bold" size={11} color="#FFFFFF" />
-                          : current ? <View style={styles.stepDotCore} /> : null}
-                      </View>
-                      <View style={[styles.stepLine, i === STEPS.length - 1 && { opacity: 0 }, done && styles.stepLineOn]} />
+        {/* --- PRIMARY (always visible): step → headline → driver → ETA --- */}
+        {!isProviderMode && (
+          <View style={styles.stepper}>
+            {STEPS.map((label, i) => {
+              const done = i < step;
+              const cur = i === step;
+              return (
+                <View key={label} style={styles.stepCol}>
+                  <View style={styles.stepTrack}>
+                    <View style={[styles.stepLine, i === 0 && { opacity: 0 }, (done || cur) && styles.stepLineOn]} />
+                    <View style={[styles.stepDot, done && styles.stepDotDone, cur && styles.stepDotCurrent]}>
+                      {done
+                        ? <SolarIcon name="Check" variant="bold" size={11} color="#FFFFFF" />
+                        : cur ? <View style={styles.stepDotCore} /> : null}
                     </View>
-                    <Text style={[styles.stepLabel, (done || current) && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
+                    <View style={[styles.stepLine, i === STEPS.length - 1 && { opacity: 0 }, done && styles.stepLineOn]} />
                   </View>
-                );
-              })}
-            </View>
-          )}
-
-          {/* PHASE 2: SENDER PROMPT TO NOTIFY RECEIVER */}
-          {!isProviderMode && !data.completedAt && !data.receiverNotified && (
-            <View style={{
-              backgroundColor: colors.accentSoft, borderColor: ORANGE, borderWidth: 1,
-              borderRadius: 14, padding: 12, marginBottom: 12,
-            }}>
-              <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
-                🚚 Courier is on the way{data.providerEtaMins ? ` (~${data.providerEtaMins} mins)` : ''}!
-              </Text>
-              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
-                Have you notified the receiver? Please call or message them now so they are ready.
-              </Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                <TouchableOpacity
-                  style={{
-                    flex: 1, backgroundColor: ORANGE, paddingVertical: 9, borderRadius: 10,
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  }}
-                  onPress={async () => {
-                    await supabase
-                      .from('deliveries')
-                      .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
-                      .eq('delivery_id', data.deliveryId);
-                    if (data.receiverPhone) Linking.openURL(`tel:${data.receiverPhone}`);
-                    loadStatic();
-                  }}
-                >
-                  <Ionicons name="call" size={14} color="#FFF" />
-                  <Text style={{ color: '#FFF', fontSize: 12, fontWeight: '800' }}>Call Receiver</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={{
-                    flex: 1, backgroundColor: colors.card, borderColor: ORANGE, borderWidth: 1,
-                    paddingVertical: 9, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-                  }}
-                  onPress={async () => {
-                    await supabase
-                      .from('deliveries')
-                      .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
-                      .eq('delivery_id', data.deliveryId);
-                    loadStatic();
-                  }}
-                >
-                  <Text style={{ color: ORANGE, fontSize: 12, fontWeight: '800' }}>I've Notified Them ✓</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {/* PHASE 3: 10-MINUTE DROP-OFF GRACE PERIOD WARNING */}
-          {!isProviderMode && !data.completedAt && !!data.dropoffArrivedAt && data.deliveryStatus !== 'Returning' && (
-            <View style={{
-              backgroundColor: colors.errorBg, borderColor: colors.error, borderWidth: 1,
-              borderRadius: 14, padding: 12, marginBottom: 12,
-            }}>
-              <Text style={{ fontSize: 13, fontWeight: '800', color: colors.error }}>
-                ⚠️ Courier is waiting at Drop-off (10-Min Grace Period)
-              </Text>
-              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
-                Please contact your receiver immediately so they can receive the package before the 10-minute timer expires.
-              </Text>
-            </View>
-          )}
-
-          <View style={styles.providerRow}>
-            <View style={styles.avatar}>
-              {provider?.profile_photo ? (
-                <Image source={{ uri: provider.profile_photo }} style={styles.avatarImg} />
-              ) : (
-                <Text style={styles.avatarText}>{initials}</Text>
-              )}
-              <View style={styles.verifiedDot}>
-                <SolarIcon name="Check" variant="bold" size={9} color="#FFFFFF" />
-              </View>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.providerName} numberOfLines={1}>{providerName}</Text>
-              <Text style={styles.providerSub} numberOfLines={1}>
-                {vehicle?.vehicle_type ?? 'Courier'} · {vehicle?.plate_number ?? '—'}
-              </Text>
-            </View>
-            <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.85}>
-              <SolarIcon name="Phone" variant="bold" size={17} color={colors.accent} />
-            </TouchableOpacity>
+                  <Text style={[styles.stepLabel, (done || cur) && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
+                </View>
+              );
+            })}
           </View>
+        )}
 
-          <View style={styles.stats}>
-            <View style={styles.statBox}>
-              <Text style={styles.statLabel}>ETA</Text>
-              <Text style={[styles.statValue, { color: colors.accent }]} numberOfLines={1}>{etaLabel}</Text>
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statBox}>
-              <Text style={styles.statLabel}>DISTANCE</Text>
-              <Text style={styles.statValue} numberOfLines={1}>
-                {data.completedAt ? '—' : navInfo ? fmtDistance(navInfo.distanceM) : '—'}
-              </Text>
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statBox}>
-              <Text style={styles.statLabel}>STATUS</Text>
-              <Text style={[styles.statValue, { color: data.completedAt || !isStale ? colors.success : colors.warning }]} numberOfLines={1}>
-                {data.completedAt ? 'Done' : isStale ? 'Stale' : 'Live'}
-              </Text>
+        {/* Headline: what's happening right now, big. */}
+        <View style={styles.headlineRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headlineEyebrow}>
+              {data.completedAt
+                ? 'COMPLETED'
+                : data.pickupVerified
+                  ? 'ON THE WAY TO DROP-OFF'
+                  : data.acceptedAt
+                    ? 'ON THE WAY TO PICKUP'
+                    : 'WAITING FOR COURIER'}
+            </Text>
+            <Text style={styles.headlineText} numberOfLines={1}>
+              {data.completedAt
+                ? 'Delivered'
+                : data.pickupVerified
+                  ? data.dropoff.address.split(',')[0]
+                  : data.pickup.address.split(',')[0]}
+            </Text>
+            <Text style={styles.headlineSub} numberOfLines={1}>
+              {data.completedAt
+                ? formatLastSeen(fix?.updated_at)
+                : `${headingTo}${arrivalClock ? ` · arriving ${arrivalClock}` : ''} · ${formatLastSeen(fix?.updated_at)}`}
+            </Text>
+          </View>
+          <View style={styles.etaBigBox}>
+            <Text style={styles.etaBigLabel}>ETA</Text>
+            <Text style={styles.etaBigValue} numberOfLines={1}>{etaLabel}</Text>
+            <Text style={styles.etaBigSub} numberOfLines={1}>{distLabel}</Text>
+          </View>
+        </View>
+
+        {/* Driver row — always visible, since the sender may want to call early. */}
+        <View style={styles.providerRow}>
+          <View style={styles.avatar}>
+            {provider?.profile_photo ? (
+              <Image source={{ uri: provider.profile_photo }} style={styles.avatarImg} />
+            ) : (
+              <Text style={styles.avatarText}>{initials}</Text>
+            )}
+            <View style={styles.verifiedDot}>
+              <SolarIcon name="Check" variant="bold" size={9} color="#FFFFFF" />
             </View>
           </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.providerName} numberOfLines={1}>{providerName}</Text>
+            <Text style={styles.providerSub} numberOfLines={1}>
+              {vehicle?.vehicle_type ?? 'Courier'} · {vehicle?.plate_number ?? '—'}
+            </Text>
+          </View>
+          <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.85}>
+            <SolarIcon name="Phone" variant="bold" size={17} color={colors.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.detailsBtn} onPress={() => setExpanded(x => !x)} activeOpacity={0.85}>
+            <Text style={styles.detailsBtnText}>{expanded ? 'Less' : 'Details'}</Text>
+            <SolarIcon name={expanded ? 'AltArrowUp' : 'AltArrowDown'} variant="bold" size={12} color={colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
 
-          <Text style={styles.updated}>
-            {headingTo}{arrivalClock ? ` · arriving ${arrivalClock}` : ''} · {formatLastSeen(fix?.updated_at)}
-          </Text>
+        {/* --- Alerts: keep these above the fold, they demand action --- */}
+        {!isProviderMode && !data.completedAt && !data.receiverNotified && (
+          <View style={styles.alertCard}>
+            <Text style={styles.alertTitle}>
+              🚚 Courier is on the way{data.providerEtaMins ? ` (~${data.providerEtaMins} mins)` : ''}!
+            </Text>
+            <Text style={styles.alertBody}>
+              Have you notified the receiver? Please call or message them now so they are ready.
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+              <TouchableOpacity
+                style={styles.alertPrimary}
+                onPress={async () => {
+                  await supabase
+                    .from('deliveries')
+                    .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
+                    .eq('delivery_id', data.deliveryId);
+                  if (data.receiverPhone) Linking.openURL(`tel:${data.receiverPhone}`);
+                  loadStatic();
+                }}
+              >
+                <Ionicons name="call" size={14} color="#FFF" />
+                <Text style={styles.alertPrimaryText}>Call Receiver</Text>
+              </TouchableOpacity>
 
-          {!isProviderMode && pkgTotal > 0 && (
-            <TouchableOpacity style={styles.pkgChip} onPress={() => setPkgOpen(true)} activeOpacity={0.85}>
-              <SolarIcon name="Package" variant="linear" size={15} color={colors.accent} />
-              <Text style={styles.pkgChipText}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'}</Text>
-              <View style={{ flex: 1 }} />
-              <Text style={styles.pkgChipHint}>See sizes</Text>
-              <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} />
-            </TouchableOpacity>
-          )}
+              <TouchableOpacity
+                style={styles.alertSecondary}
+                onPress={async () => {
+                  await supabase
+                    .from('deliveries')
+                    .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
+                    .eq('delivery_id', data.deliveryId);
+                  loadStatic();
+                }}
+              >
+                <Text style={styles.alertSecondaryText}>I've Notified Them ✓</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
-          {expanded && (
-            <View style={{ marginTop: 14 }}>
-              <View style={styles.routeCard}>
-                <View style={styles.routeRow}>
-                  <View style={[styles.routePin, !targetIsDropoff && !data.completedAt && styles.routePinActive]}>
-                    <Text style={mk.pinLetter}>P</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.routeLabel}>PICKUP</Text>
-                    <Text style={styles.routeAddr} numberOfLines={2}>{data.pickup.address}</Text>
-                  </View>
-                  {data.pickupVerified && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
+        {!isProviderMode && !data.completedAt && !!data.dropoffArrivedAt && data.deliveryStatus !== 'Returning' && (
+          <View style={styles.warningCard}>
+            <Text style={styles.warningTitle}>⚠️ Courier is waiting at Drop-off (10-Min Grace Period)</Text>
+            <Text style={styles.warningBody}>
+              Please contact your receiver immediately so they can receive the package before the 10-minute timer expires.
+            </Text>
+          </View>
+        )}
+
+        {/* --- EXPANDED: addresses, packages, stat boxes --- */}
+        {expanded && (
+          <ScrollView showsVerticalScrollIndicator={false} bounces={false} contentContainerStyle={{ paddingTop: 4, paddingBottom: 4 }}>
+            <View style={styles.routeCard}>
+              <View style={styles.routeRow}>
+                <View style={[styles.routePin, !targetIsDropoff && !data.completedAt && styles.routePinActive]}>
+                  <Text style={mk.pinLetter}>P</Text>
                 </View>
-                <View style={styles.routeLink} />
-                <View style={styles.routeRow}>
-                  <View style={[styles.routePin, targetIsDropoff && !data.completedAt && styles.routePinActive]}>
-                    <SolarIcon name="User" variant="bold" size={14} color="#000000" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.routeLabel}>DROP-OFF</Text>
-                    <Text style={styles.routeAddr} numberOfLines={2}>{data.dropoff.address}</Text>
-                  </View>
-                  {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.routeLabel}>PICKUP</Text>
+                  <Text style={styles.routeAddr} numberOfLines={2}>{data.pickup.address}</Text>
                 </View>
+                {data.pickupVerified && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
               </View>
+              <View style={styles.routeLink} />
+              <View style={styles.routeRow}>
+                <View style={[styles.routePin, targetIsDropoff && !data.completedAt && styles.routePinActive]}>
+                  <SolarIcon name="User" variant="bold" size={14} color="#000000" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.routeLabel}>DROP-OFF</Text>
+                  <Text style={styles.routeAddr} numberOfLines={2}>{data.dropoff.address}</Text>
+                </View>
+                {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
+              </View>
+            </View>
 
-              {data.items.length > 0 && (
-                <>
-                  <Text style={styles.sectionLabel}>YOUR PACKAGES</Text>
-                  <View style={{ gap: 8 }}>
-                    {data.items.map((it, i) => {
-                      const meta = it.size ? SIZE_META[it.size] : null;
-                      return (
-                        <View key={i} style={styles.itemRow}>
-                          <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
-                            <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.itemTitle} numberOfLines={1}>
-                              {data.items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
-                            </Text>
-                            <Text style={styles.itemSub} numberOfLines={2}>{it.name}</Text>
-                          </View>
+            <View style={styles.stats}>
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>ETA</Text>
+                <Text style={[styles.statValue, { color: colors.accent }]} numberOfLines={1}>{etaLabel}</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>DISTANCE</Text>
+                <Text style={styles.statValue} numberOfLines={1}>{distLabel}</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>STATUS</Text>
+                <Text style={[styles.statValue, { color: data.completedAt || !isStale ? colors.success : colors.warning }]} numberOfLines={1}>
+                  {data.completedAt ? 'Done' : isStale ? 'Stale' : 'Live'}
+                </Text>
+              </View>
+            </View>
+
+            {pkgTotal > 0 && (
+              <TouchableOpacity style={styles.pkgChip} onPress={() => setPkgOpen(true)} activeOpacity={0.85}>
+                <SolarIcon name="Package" variant="linear" size={15} color={colors.accent} />
+                <Text style={styles.pkgChipText}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'}</Text>
+                <View style={{ flex: 1 }} />
+                <Text style={styles.pkgChipHint}>See sizes</Text>
+                <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+
+            {data.items.length > 0 && (
+              <>
+                <Text style={styles.sectionLabel}>YOUR PACKAGES</Text>
+                <View style={{ gap: 8 }}>
+                  {data.items.map((it, i) => {
+                    const meta = it.size ? SIZE_META[it.size] : null;
+                    return (
+                      <View key={i} style={styles.itemRow}>
+                        <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
+                          <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
                         </View>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-            </View>
-          )}
-        </ScrollView>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.itemTitle} numberOfLines={1}>
+                            {data.items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
+                          </Text>
+                          <Text style={styles.itemSub} numberOfLines={2}>{it.name}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+          </ScrollView>
+        )}
       </View>
 
       <Modal visible={pkgOpen} transparent animationType="fade" onRequestClose={() => setPkgOpen(false)}>
@@ -953,10 +974,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     position: 'absolute', left: 0, right: 0, bottom: 0,
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 4, maxHeight: '62%',
+    paddingHorizontal: 20, paddingTop: 4, maxHeight: '78%',
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
   },
+  sheetExpanded: { maxHeight: '82%' },
   grabberWrap: { alignItems: 'center', paddingVertical: 8 },
   grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
 
@@ -975,7 +997,24 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
   stepLabelOn: { color: c.textPrimary },
 
-  providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  // Big headline the sender sees first
+  headlineRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: c.background, borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  headlineEyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
+  headlineText: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4, marginTop: 2 },
+  headlineSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
+  etaBigBox: {
+    alignItems: 'flex-end', justifyContent: 'center',
+    paddingLeft: 14, borderLeftWidth: 1, borderLeftColor: c.border, minWidth: 92,
+  },
+  etaBigLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+  etaBigValue: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.accent, letterSpacing: -0.4, marginTop: 2 },
+  etaBigSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+
+  providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14 },
   avatar: {
     width: 48, height: 48, borderRadius: 24, backgroundColor: c.accent,
     alignItems: 'center', justifyContent: 'center',
@@ -995,6 +1034,35 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 40, height: 40, borderRadius: 20, backgroundColor: c.accentSoft,
     alignItems: 'center', justifyContent: 'center',
   },
+  detailsBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: c.divider, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10,
+  },
+  detailsBtnText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+
+  alertCard: {
+    marginTop: 14, padding: 12, borderRadius: 14,
+    backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1,
+  },
+  alertTitle: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary },
+  alertBody: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  alertPrimary: {
+    flex: 1, backgroundColor: ORANGE, paddingVertical: 9, borderRadius: 10,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+  },
+  alertPrimaryText: { color: '#FFF', fontSize: 12, fontFamily: 'Poppins_800ExtraBold' },
+  alertSecondary: {
+    flex: 1, backgroundColor: c.card, borderColor: ORANGE, borderWidth: 1,
+    paddingVertical: 9, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
+  },
+  alertSecondaryText: { color: ORANGE, fontSize: 12, fontFamily: 'Poppins_800ExtraBold' },
+
+  warningCard: {
+    marginTop: 14, padding: 12, borderRadius: 14,
+    backgroundColor: c.errorBg, borderColor: c.error, borderWidth: 1,
+  },
+  warningTitle: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.error },
+  warningBody: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
 
   stats: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
@@ -1006,8 +1074,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   statValue: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
   statDivider: { width: 1, height: 26, backgroundColor: c.border },
 
-  updated: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 10, textAlign: 'center' },
-
   pkgChip: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12,
     backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
@@ -1016,7 +1082,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pkgChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   pkgChipHint: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textMuted },
 
-  routeCard: { backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  routeCard: { backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12, marginTop: 14 },
   routeRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   routePin: {
     width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF',
