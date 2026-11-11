@@ -33,6 +33,12 @@ export default function AccountScreen() {
   const [userId, setUserId] = useState<number | null>(null);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
+  // --- NEW: guards that stop "Tap → Register-as-Provider" while state is unresolved.
+  const providerStateReadyRef = useRef(false);            // true once fetchUserData has resolved this cycle
+  const lastResolvedRef = useRef<{ userId: number; state: ProviderState } | null>(null);
+  const pendingTapRef = useRef(false);                    // a tap that arrived while unresolved
+  const [providerStateReady, setProviderStateReady] = useState(false);
+
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const avatarPulse = useRef(new Animated.Value(0)).current;
@@ -93,11 +99,30 @@ export default function AccountScreen() {
     []
   );
 
+  /**
+   * Atomic helper: set both providerState and the ready flag so we never
+   * render / interact with a stale "none" between the query start and finish.
+   */
+  const commitProviderState = useCallback((next: ProviderState) => {
+    setProviderState(next);
+    providerStateReadyRef.current = true;
+    setProviderStateReady(true);
+    if (userId != null) lastResolvedRef.current = { userId, state: next };
+  }, [userId]);
+
   const fetchUserData = useCallback(async () => {
     try {
       setImgKey(Date.now());
+      // Mark unresolved BEFORE the query so the row handler can't act on stale state.
+      providerStateReadyRef.current = false;
+      setProviderStateReady(false);
+
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        // No session — don't pretend we know anything.
+        commitProviderState('none');
+        return;
+      }
 
       if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
       if (user.user_metadata?.last_name) setLastName(user.user_metadata.last_name);
@@ -113,8 +138,20 @@ export default function AccountScreen() {
         .eq('auth_id', user.id)
         .maybeSingle();
 
-      if (userError || !userData) return;
+      if (userError || !userData) {
+        commitProviderState('none');
+        return;
+      }
       setUserId(userData.user_id);
+
+      // Fast path: we already resolved this user's provider state on a previous
+      // focus and no realtime event has changed it. Show it immediately, keep
+      // querying in the background — but the row is already correct on tap.
+      const cached = lastResolvedRef.current;
+      if (cached && cached.userId === userData.user_id) {
+        setProviderState(cached.state);
+        // Don't flip `providerStateReady` yet — the query below confirms/updates.
+      }
 
       if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
       if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
@@ -128,7 +165,10 @@ export default function AccountScreen() {
         .select(`role_id, roles!inner (role_name)`)
         .eq('user_id', userData.user_id);
 
-      if (rolesError) return;
+      if (rolesError) {
+        commitProviderState('none');
+        return;
+      }
 
       const hasProviderRole = (userRoles || []).some(
         (ur: any) => ur.roles?.role_name === 'Provider'
@@ -143,37 +183,40 @@ export default function AccountScreen() {
         .maybeSingle();
 
       if (!hasProviderRole && !verif) {
-        setProviderState('none');
         setRejectionReason(null);
+        commitProviderState('none');
         return;
       }
 
       if (verifError || !verif) {
-        setProviderState('pending');
         setRejectionReason(null);
+        commitProviderState('pending');
         return;
       }
 
       const status = (verif.verification_status || '').toLowerCase();
       if (status === 'approved' || status === 'verified') {
-        setProviderState('approved');
         setRejectionReason(null);
+        commitProviderState('approved');
       } else if (status === 'rejected') {
         const reason = verif.rejection_reason?.trim() || null;
-        setProviderState('rejected');
         setRejectionReason(reason);
+        commitProviderState('rejected');
         await checkAndShowRejectionAutoModal(userData.user_id, verif.verification_id ?? null, reason);
       } else {
-        setProviderState('pending');
         setRejectionReason(null);
+        commitProviderState('pending');
       }
     } catch (error) {
       console.error('Error fetching user data:', error);
+      // Safety: don't leave the row stuck as unresolved on a network blip.
+      commitProviderState('none');
     }
-  }, [checkAndShowRejectionAutoModal]);
+  }, [checkAndShowRejectionAutoModal, commitProviderState]);
 
   useFocusEffect(useCallback(() => { fetchUserData(); }, [fetchUserData]));
 
+  // Realtime updates keep the cached state honest as support approves/rejects.
   useEffect(() => {
     if (!userId) return;
     const channel = supabase
@@ -187,23 +230,23 @@ export default function AccountScreen() {
           const status = String(updated.verification_status || '').toLowerCase();
           if (status === 'rejected') {
             const reason = updated.rejection_reason?.trim() || null;
-            setProviderState('rejected');
             setRejectionReason(reason);
+            commitProviderState('rejected');
             setRejectionModalVisible(true);
           } else if (status === 'approved' || status === 'verified') {
-            setProviderState('approved');
             setRejectionReason(null);
+            commitProviderState('approved');
             setRejectionModalVisible(false);
           } else if (status === 'pending') {
-            setProviderState('pending');
             setRejectionReason(null);
+            commitProviderState('pending');
             setRejectionModalVisible(false);
           }
         }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [userId]);
+  }, [userId, commitProviderState]);
 
   const handleLogoutConfirm = () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [
@@ -225,13 +268,18 @@ export default function AccountScreen() {
     navigation.navigate('RegisterProvider');
   };
 
-  const handleSwitchToProvider = async () => {
+  /**
+   * Runs the actual navigation for whatever the resolved provider state is.
+   * Extracted so the deferred-tap path below can re-invoke it once state lands.
+   */
+  const performProviderNavigation = useCallback(() => {
     if (providerState === 'approved') {
-      await setLastMode('provider');
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'ProviderTabs', params: { screen: 'Jobs' } }],
-      } as any);
+      setLastMode('provider').then(() => {
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'ProviderTabs', params: { screen: 'Jobs' } }],
+        } as any);
+      });
       return;
     }
     if (providerState === 'pending') {
@@ -242,8 +290,28 @@ export default function AccountScreen() {
       setRejectionModalVisible(true);
       return;
     }
+    // Only legitimate path for 'none' — the user genuinely has no provider role yet.
     navigation.navigate('RegisterProvider');
-  };
+  }, [providerState, navigation]);
+
+  const handleSwitchToProvider = useCallback(() => {
+    // If the state hasn't resolved for this focus cycle yet, remember the tap
+    // and replay it as soon as providerStateReady flips true. This is the whole
+    // bug fix: we no longer let a tap race the fetch and fall through to 'none'.
+    if (!providerStateReadyRef.current) {
+      pendingTapRef.current = true;
+      return;
+    }
+    performProviderNavigation();
+  }, [performProviderNavigation]);
+
+  // When the state becomes ready, if the user tapped while waiting, act now.
+  useEffect(() => {
+    if (!providerStateReady) return;
+    if (!pendingTapRef.current) return;
+    pendingTapRef.current = false;
+    performProviderNavigation();
+  }, [providerStateReady, performProviderNavigation]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -262,6 +330,11 @@ export default function AccountScreen() {
   })();
 
   const providerMenuSubtext = (() => {
+    // While resolving, show a neutral subtext so the row doesn't visually flip
+    // to "Register as a Provider" between focus events.
+    if (!providerStateReady && providerState === 'none') {
+      return 'Checking your provider status…';
+    }
     switch (providerState) {
       case 'approved': return 'Manage delivery tasks';
       case 'pending':  return 'Tap to track your application';

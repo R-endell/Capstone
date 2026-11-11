@@ -69,6 +69,7 @@ import DisputeDetailScreen from './src/modules/Dashboard/Disputes/DisputeDetailS
 
 // Provider Screens
 import ProviderAccountScreen from './src/modules/Dashboard/Provider/AccountScreen';
+import AccountHealthScreen from './src/modules/Dashboard/Provider/AccountHealthScreen';
 import JobsScreen from './src/modules/Dashboard/Provider/JobsScreen';
 import EarningsScreen from './src/modules/Dashboard/Provider/EarningsScreen';
 import CashoutScreen from './src/modules/Dashboard/Provider/CashoutScreen';
@@ -136,16 +137,17 @@ export type RootStackParamList = {
   EditProfile: undefined;
   Settings: undefined;
   DisputeCenter: { mode?: 'provider'; role?: 'sender' | 'provider' } | undefined;
-  Support: { role?: 'sender' | 'provider' } | undefined;
+  Support: { role?: 'sender' | 'provider'; focus?: 'againstMe' | 'tickets' } | undefined;
   ReportIssue: { role?: 'sender' | 'provider'; deliveryId?: number; requestId?: number } | undefined;
-  TicketDetail: { ticketId?: number; disputeId?: number };
+  TicketDetail: { ticketId?: number; disputeId?: number; source?: 'reportAgainstMe' };
   DisputeDetail: { disputeId: number };
   LegalPolicies: undefined;
   PolicyDetail: { policyId: string };
   RegisterProvider: undefined;
   ProviderApplicationStatus: undefined;
+  AccountHealth: undefined;
   SendNowIntro: undefined;
-  ScheduleIntro: undefined; 
+  ScheduleIntro: undefined;
   DropoffType: { mode: 'sendNow' | 'schedule'; editData?: any };
   ShipmentSize: undefined;
   AddItem: { size: 'Small' | 'Medium' | 'Large' };
@@ -710,7 +712,10 @@ function AppInner() {
         return;
       }
       if (payload?.type === 'ticket' && payload.ticketId && navigationRef.isReady?.()) {
-        navigationRef.navigate('TicketDetail', { ticketId: Number(payload.ticketId) });
+        navigationRef.navigate('TicketDetail', {
+          ticketId: Number(payload.ticketId),
+          source: payload.source === 'reportAgainstMe' ? 'reportAgainstMe' : undefined,
+        });
         return;
       }
 
@@ -747,6 +752,7 @@ function AppInner() {
         <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
         <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
         <Stack.Screen name="ProviderApplicationStatus" component={ProviderApplicationStatusScreen} />
+        <Stack.Screen name="AccountHealth" component={AccountHealthScreen} />
         <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
         <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
         <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
