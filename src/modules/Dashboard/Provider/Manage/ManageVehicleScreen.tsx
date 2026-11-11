@@ -252,16 +252,23 @@ export default function ManageVehicleScreen() {
         cargo_width_cm: parseFloat(cargoWidth),
         cargo_height_cm: parseFloat(cargoHeight),
         provider_id: userId,
-        verification_status: 'Pending',
         vehicle_doc: vehicleDoc,
       };
 
       let error;
       if (editingVehicle) {
-        const { error: updateError } = await supabase.from('vehicles').update(vehicleData).eq('vehicle_id', editingVehicle.vehicle_id);
+        // Editing keeps the current verification status (a verified vehicle stays verified).
+        // Only a REJECTED vehicle goes back to review when the provider fixes and resubmits it.
+        const updatePayload: Record<string, any> = { ...vehicleData };
+        if (editingVehicle.verification_status === 'Rejected') {
+          updatePayload.verification_status = 'Pending';
+          updatePayload.rejection_reason = null;
+        }
+        const { error: updateError } = await supabase.from('vehicles').update(updatePayload).eq('vehicle_id', editingVehicle.vehicle_id);
         error = updateError;
       } else {
-        const { error: insertError } = await supabase.from('vehicles').insert(vehicleData);
+        // A brand-new vehicle always starts in the admin review queue.
+        const { error: insertError } = await supabase.from('vehicles').insert({ ...vehicleData, verification_status: 'Pending' });
         error = insertError;
       }
       if (error) throw error;

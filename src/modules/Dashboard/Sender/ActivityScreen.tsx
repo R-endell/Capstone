@@ -298,6 +298,8 @@ interface Delivery {
   accepted_at: string;
   pod_photo_url?: string | null;
   pod_seen_by_sender?: boolean;
+  pickup_photo_url?: string | null;
+  pickup_photo_taken_at?: string | null;
   provider?: any;
   vehicle?: any;
 }
@@ -1450,6 +1452,34 @@ export default function ActivityScreen() {
 
           {renderRoute(item)}
 
+          {/* Proof of Pickup Banner (shown as soon as the courier has collected the package) */}
+          {!!item.deliveryData?.pickup_photo_url && (
+            <TouchableOpacity
+              style={[styles.cardPodBanner, { marginBottom: 8 }]}
+              onPress={(e) => {
+                e.stopPropagation();
+                setPhotoPreview(item.deliveryData?.pickup_photo_url || null);
+              }}
+              activeOpacity={0.85}
+            >
+              <Image
+                source={{ uri: item.deliveryData.pickup_photo_url }}
+                style={styles.cardPodThumb}
+                resizeMode="cover"
+              />
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <SolarIcon name="Camera" variant="duotone" size={14} color={colors.accent} />
+                  <Text style={styles.cardPodTitle}>Pickup Photo Attached</Text>
+                </View>
+                <Text style={styles.cardPodSub} numberOfLines={1}>
+                  Tap photo to enlarge or tap card for full details
+                </Text>
+              </View>
+              <SolarIcon name="Maximize" variant="linear" size={16} color={colors.accent} />
+            </TouchableOpacity>
+          )}
+
           {/* Proof of Delivery Banner on Completed Shipment Cards */}
           {stage === 'done' && !!item.deliveryData?.pod_photo_url && (
             <TouchableOpacity
@@ -1507,6 +1537,12 @@ export default function ActivityScreen() {
             <View style={styles.oChip}>
               <SolarIcon name="Star" variant="duotone" size={14} color={colors.accent} />
               <Text style={styles.oChipText} numberOfLines={1}>Fragile</Text>
+            </View>
+          )}
+          {!!item.deliveryData?.pickup_photo_url && (
+            <View style={[styles.oChip, { borderColor: colors.accent }]}>
+              <SolarIcon name="Camera" variant="duotone" size={14} color={colors.accent} />
+              <Text style={[styles.oChipText, { color: colors.accent }]} numberOfLines={1}>Pickup</Text>
             </View>
           )}
           {!!item.deliveryData?.pod_photo_url && (
@@ -1686,6 +1722,7 @@ export default function ActivityScreen() {
     const photos = packagePhotosOf(d).filter(ph => !failedPhotos[ph.url]);
     const vehicle: any = d.deliveryData?.vehicle;
     const podPhotoUrl = d.deliveryData?.pod_photo_url || null;
+    const pickupPhotoUrl = (d.deliveryData as any)?.pickup_photo_url || null;
 
     const escrowStatus = String(escrowRow?.escrow_status || escrowRow?.status || d.rawData?.escrow_status || '');
     const released = isCompleted || /complet|releas/i.test(escrowStatus);
@@ -1856,6 +1893,36 @@ export default function ActivityScreen() {
                   <Text style={styles.tileValue}>{vehicle.plate_number || '—'}</Text>
                 </View>
               </View>
+            )}
+
+            {/* Proof of Pickup Section */}
+            {!!pickupPhotoUrl && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Camera" variant="duotone" size={18} color={colors.accent} />
+                  <Text style={styles.dSecTitle}>Proof of Pickup</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.podPhotoCard}
+                  activeOpacity={0.9}
+                  onPress={() => setPhotoPreview(pickupPhotoUrl)}
+                >
+                  <Image
+                    source={{ uri: pickupPhotoUrl }}
+                    style={styles.podPhotoImg}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.podPhotoOverlay}>
+                    <View style={styles.podPhotoBadge}>
+                      <SolarIcon name="Maximize" variant="linear" size={13} color="#FFFFFF" />
+                      <Text style={styles.podPhotoBadgeText}>Tap to view full photo</Text>
+                    </View>
+                    {!!(d.deliveryData as any)?.pickup_photo_taken_at && (
+                      <Text style={styles.podPhotoTime}>{formatDateTime((d.deliveryData as any).pickup_photo_taken_at)}</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              </>
             )}
 
             {/* Proof of Delivery Section */}

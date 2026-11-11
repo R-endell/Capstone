@@ -1,432 +1,520 @@
-// src/modules/Dashboard/Sender/ProviderTrackModal.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity, Modal, Image, StatusBar, ScrollView,
+// src/modules/Dashboard/Provider/ProviderNavigationScreen.tsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { 
+  View, Text, StyleSheet, TouchableOpacity, StatusBar, ActivityIndicator, 
+  Switch, Alert, Animated, PanResponder, Dimensions, ScrollView, Share, Linking
 } from 'react-native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import NavigationMap, { NavInfo, NavStatus, NavigationMapHandle } from '../../../components/map/NavigationMap';
+import { fmtDistance, fmtDuration } from '../../../components/map/directions';
 import { supabase } from '../../../utils/supabase';
+import { getProviderDeliveries } from '../../../services/matchingService';
+import { setNavigationSession, clearNavigationSession } from '../../../services/navigationSessionStore';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { LiveFix, isFixFresh } from '../../../services/providerLiveService';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 
-import { GOOGLE_MAP_ID } from '../../../utils/mapConfig';
+const { height: SCREEN_H } = Dimensions.get('window');
 
-const AVG_CITY_SPEED_KMH = 22;
+// Panel heights for the resizable bottom sheet
+const COLLAPSED_HEIGHT = 200; 
+const EXPANDED_HEIGHT = SCREEN_H * 0.72; 
+const SNAP_THRESHOLD = 100;
 
-export type TrackTrip = {
-  routeId: number;
-  providerId: number;
-  name: string;
-  vehicleType: string;
-  pickup: string;
-  dropoff: string;
-  pickupCoords: { lat: number; lng: number };
-  dropoffCoords: { lat: number; lng: number };
-  timeLabel: string;
-  departureTime: Date;
-  rating: number;
+type Phase = 'loading' | 'ready' | 'not-found' | 'cancelled' | 'done' | 'no-coords' | 'error';
+type Stage = 'pickup' | 'transit';
+type Point = { lat: number; lng: number; main: string; sub: string };
+type Order = { requestId: number | null; code: string; stage: Stage; target: Point; other: Point | null; note: string };
+
+const trackingCode = (id: any) => `PNS-${String(id).padStart(4, '0')}`;
+
+const splitAddress = (full?: string | null) => {
+  if (!full) return { main: 'Selected location', sub: '' };
+  const parts = full.split(', ');
+  return { main: parts[0], sub: parts.slice(1).join(', ') };
 };
 
-type Props = {
-  visible: boolean;
-  trip: TrackTrip | null;
-  fix: LiveFix | null;
-  myCoords: { lat: number; lng: number } | null;
-  onClose: () => void;
-  onRequest: (trip: TrackTrip) => void;
+const toPoint = (loc: any): Point | null => {
+  const lat = Number(loc?.latitude);
+  const lng = Number(loc?.longitude);
+  if (loc?.latitude == null || loc?.longitude == null || !isFinite(lat) || !isFinite(lng)) return null;
+  return { lat, lng, ...splitAddress(loc?.street_address) };
 };
 
-const toRad = (d: number) => (d * Math.PI) / 180;
-const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => {
-  const R = 6371;
-  const dLat = toRad(bLat - aLat);
-  const dLng = toRad(bLng - aLng);
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-};
-const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
-
-const formatLastSeen = (iso?: string | null) => {
-  if (!iso) return 'Waiting for the provider’s GPS…';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 5_000) return 'Updated just now';
-  if (ms < 60_000) return `Updated ${Math.floor(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `Updated ${Math.floor(ms / 60_000)}m ago`;
-  return `Last seen ${new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-};
-
-const fetchRoadCoords = async (
-  a: { lat: number; lng: number },
-  b: { lat: number; lng: number },
-): Promise<{ latitude: number; longitude: number }[]> => {
-  const fallback = [
-    { latitude: a.lat, longitude: a.lng },
-    { latitude: b.lat, longitude: b.lng },
-  ];
-  try {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
-        latitude: c[1],
-        longitude: c[0],
-      }));
-    }
-  } catch { /* fall through */ }
-  return fallback;
-};
-
-export default function ProviderTrackModal({ visible, trip, fix, myCoords, onClose, onRequest }: Props) {
+export default function ProviderNavigationScreen() {
+  const navigation = useNavigation<any>();
+  const route = useRoute<any>();
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const mapRef = useRef<MapView>(null);
+  const deliveryId: number | null = route.params?.deliveryId != null ? Number(route.params.deliveryId) : null;
 
-  const [sheetHeight, setSheetHeight] = useState(330);
-  const [profile, setProfile] = useState<{ photo: string | null } | null>(null);
-  const [, setTick] = useState(0);
+  const [phase, setPhase] = useState<Phase>('loading');
+  const [order, setOrder] = useState<Order | null>(null);
+  const [info, setInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
+  const [status, setStatus] = useState<NavStatus>('locating');
+  const [checks, setChecks] = useState<Record<string, boolean>>({});
+  const [voiceOn, setVoiceOn] = useState(true);
+  const [avoidTolls, setAvoidTolls] = useState(false);
+  const [stopAfter, setStopAfter] = useState(false);
+  const mapHandle = useRef<NavigationMapHandle>(null);
+  const readyRef = useRef(false);
+  const aliveRef = useRef(true);
 
-  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
-  const lastRouteKey = useRef('');
-  const lastFitKey = useRef('');
+  // --- Bottom Panel Drag Logic ---
+  const panAnim = useRef(new Animated.Value(COLLAPSED_HEIGHT)).current;
+  const currentHeight = useRef(COLLAPSED_HEIGHT);
 
-  useEffect(() => {
-    if (!visible) return;
-    const t = setInterval(() => setTick((x) => x + 1), 10_000);
-    return () => clearInterval(t);
-  }, [visible]);
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, gestureState) => {
+        const newHeight = currentHeight.current - gestureState.dy;
+        if (newHeight >= COLLAPSED_HEIGHT - 20 && newHeight <= EXPANDED_HEIGHT + 50) {
+          panAnim.setValue(newHeight);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        const newHeight = currentHeight.current - gestureState.dy;
+        let snapTo = COLLAPSED_HEIGHT;
 
-  useEffect(() => {
-    if (!visible || !trip) { setProfile(null); return; }
-    let active = true;
-    (async () => {
-      try {
-        const { data } = await supabase
-          .from('users').select('profile_photo').eq('user_id', trip.providerId).maybeSingle();
-        if (active) setProfile({ photo: (data as any)?.profile_photo ?? null });
-      } catch { if (active) setProfile({ photo: null }); }
-    })();
-    return () => { active = false; };
-  }, [visible, trip?.providerId]);
+        if (newHeight > COLLAPSED_HEIGHT + SNAP_THRESHOLD) {
+          snapTo = EXPANDED_HEIGHT;
+        }
+        
+        currentHeight.current = snapTo;
+        Animated.spring(panAnim, {
+          toValue: snapTo,
+          useNativeDriver: false,
+          bounciness: 4,
+        }).start();
+      },
+    })
+  ).current;
 
-  const live = isFixFresh(fix);
-  const providerPos = fix ? { lat: fix.latitude, lng: fix.longitude } : null;
-
-  const distanceKm = useMemo(() => {
-    if (!myCoords || !trip) return null;
-    const p = providerPos ?? trip.pickupCoords;
-    if (!p.lat && !p.lng) return null;
-    return haversineKm(myCoords.lat, myCoords.lng, p.lat, p.lng);
-  }, [myCoords, providerPos?.lat, providerPos?.lng, trip]);
-
-  const etaMin = distanceKm != null && live ? Math.max(1, Math.round((distanceKm / AVG_CITY_SPEED_KMH) * 60)) : null;
-
-  useEffect(() => {
-    if (!visible || !trip) { setRouteCoords([]); lastRouteKey.current = ''; return; }
-    const from = providerPos ?? trip.pickupCoords;
-    if (!from.lat && !from.lng) return;
-    const key = `${from.lat.toFixed(4)},${from.lng.toFixed(4)}->${trip.dropoffCoords.lat.toFixed(4)},${trip.dropoffCoords.lng.toFixed(4)}`;
-    if (key === lastRouteKey.current) return;
-    lastRouteKey.current = key;
-
-    let cancelled = false;
-    (async () => {
-      const coords = await fetchRoadCoords(
-        { lat: from.lat, lng: from.lng },
-        { lat: trip.dropoffCoords.lat, lng: trip.dropoffCoords.lng },
-      );
-      if (!cancelled) setRouteCoords(coords);
-    })();
-    return () => { cancelled = true; };
-  }, [visible, trip?.routeId, providerPos?.lat, providerPos?.lng]);
-
-  useEffect(() => {
-    if (!visible || !trip) return;
-    const key = `${trip.routeId}-${sheetHeight}-${routeCoords.length > 0 ? 'r' : 'n'}`;
-    if (key === lastFitKey.current) return;
-    lastFitKey.current = key;
-
-    const pts: { latitude: number; longitude: number }[] = [
-      { latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng },
-      { latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng },
-    ];
-    if (providerPos) pts.push({ latitude: providerPos.lat, longitude: providerPos.lng });
-    if (myCoords) pts.push({ latitude: myCoords.lat, longitude: myCoords.lng });
-
-    const t = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(pts, {
-        edgePadding: { top: 140, right: 50, bottom: sheetHeight + insets.bottom + 40, left: 50 },
-        animated: true,
-      });
-    }, 200);
-    return () => clearTimeout(t);
-  }, [visible, trip?.routeId, sheetHeight, routeCoords.length, providerPos?.lat, providerPos?.lng]);
-
-  const recenterMap = () => {
-    if (!trip) return;
-    const pts: { latitude: number; longitude: number }[] = [
-      { latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng },
-      { latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng },
-    ];
-    if (providerPos) pts.push({ latitude: providerPos.lat, longitude: providerPos.lng });
-    mapRef.current?.fitToCoordinates(pts, {
-      edgePadding: { top: 140, right: 50, bottom: sheetHeight + insets.bottom + 40, left: 50 },
-      animated: true,
-    });
+  const togglePanel = () => {
+    const snapTo = currentHeight.current === COLLAPSED_HEIGHT ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
+    currentHeight.current = snapTo;
+    Animated.spring(panAnim, {
+      toValue: snapTo,
+      useNativeDriver: false,
+      bounciness: 4,
+    }).start();
   };
 
-  if (!trip) return null;
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
 
-  const initials = trip.name.split(' ').filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase()).join('') || 'P';
-  const onTheRoad = trip.departureTime.getTime() <= Date.now();
-  const statusText = live ? 'Live' : fix ? 'Stale' : 'Not shared';
-  const statusColor = live ? colors.success : colors.warning;
+  const loadOrder = useCallback(async () => {
+    if (deliveryId == null || !isFinite(deliveryId)) { setPhase('not-found'); return; }
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { if (aliveRef.current) setPhase('not-found'); return; }
+
+      const { data: me, error: meErr } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
+      if (meErr || !me) throw meErr || new Error('No profile');
+
+      const list: any[] = (await getProviderDeliveries(me.user_id)) || [];
+      const d = list.find(x => Number(x?.delivery_id) === deliveryId);
+      if (!aliveRef.current) return;
+      
+      if (!d) {
+        setOrder(null); setPhase('not-found'); readyRef.current = false;
+        return;
+      }
+
+      const req = d.delivery_requests || {};
+      const reqStatus = String(req.delivery_status || '').toLowerCase();
+      if (reqStatus === 'cancelled' || reqStatus === 'canceled' || d.completed_at) {
+        setPhase(d.completed_at ? 'done' : 'cancelled'); readyRef.current = false; return;
+      }
+
+      const stage: Stage = reqStatus === 'in transit' ? 'transit' : 'pickup';
+      const pickup = toPoint(req.pickup_location);
+      const dropoff = toPoint(req.dropoff_location);
+      const target = stage === 'pickup' ? pickup : dropoff;
+      
+      if (!target) { setOrder(null); setPhase('no-coords'); readyRef.current = false; return; }
+
+      setOrder({
+        requestId: d.request_id != null ? Number(d.request_id) : null,
+        code: trackingCode(d.request_id ?? d.delivery_id),
+        stage,
+        target,
+        other: stage === 'pickup' ? dropoff : pickup,
+        note: String((stage === 'pickup' ? req.pickup_note : req.dropoff_note) || '').trim(),
+      });
+      setPhase('ready');
+      readyRef.current = true;
+    } catch (e) {
+      if (aliveRef.current && !readyRef.current) setPhase('error');
+    }
+  }, [deliveryId]);
+
+  useEffect(() => { void loadOrder(); }, [loadOrder]);
+
+  const requestId = order?.requestId ?? null;
+  useEffect(() => {
+    if (deliveryId == null) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { void loadOrder(); }, 400);
+    };
+    let ch = supabase
+      .channel(`provider-nav-${deliveryId}-${Date.now()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications', filter: `delivery_id=eq.${deliveryId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `delivery_id=eq.${deliveryId}` }, refresh);
+    if (requestId != null) {
+      ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `request_id=eq.${requestId}` }, refresh);
+    }
+    ch.subscribe();
+    return () => {
+      if (timer) clearTimeout(timer);
+      supabase.removeChannel(ch);
+    };
+  }, [deliveryId, requestId, loadOrder]);
+
+  const stageNow = order?.stage ?? null;
+  useEffect(() => {
+    if (deliveryId == null || phase !== 'ready' || stageNow !== 'pickup') return;
+    setNavigationSession(deliveryId);
+    return () => clearNavigationSession(deliveryId);
+  }, [deliveryId, phase, stageNow]);
+
+  const etaClock = info.durationS != null
+    ? new Date(Date.now() + info.durationS * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—';
+
+  const close = () => navigation.goBack();
+
+  if (phase !== 'ready' || !order) {
+    return (
+      <View style={[styles.container, styles.center]}>
+        <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
+        {phase === 'loading' ? (
+          <ActivityIndicator size="large" color={colors.accent} />
+        ) : (
+          <View style={styles.stateCard}>
+            <SolarIcon name="DangerCircle" variant="duotone" size={40} color={colors.warning} style={{ marginBottom: 12 }} />
+            <Text style={styles.stateTitle}>Navigation unavailable</Text>
+            <TouchableOpacity style={styles.btn} onPress={close}>
+              <Text style={styles.btnText}>Go back</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  const isPickup = order.stage === 'pickup';
+  const arrived = status === 'arrived';
+
+  const who = isPickup ? 'sender' : 'receiver';
+  const checklist = isPickup
+    ? ['Package matches the description', 'Packed securely / sealed', 'Take a photo of the package', 'Ask the sender for their QR or 4-digit PIN']
+    : ['Confirm the receiver’s name', 'Hand over the package carefully', 'Take a photo at hand-over', 'Ask for the 6-digit OTP'];
+  const doneCount = checklist.filter((_, i) => checks[`${order.stage}:${i}`]).length;
+
+  const handleCall = () => Alert.alert(`Call ${who}`, 'Demo: this will dial the ' + who + '’s number.');
+  const handleMessage = () => Alert.alert(`Message ${who}`, 'Demo: opens the in-app chat with the ' + who + '.');
+  const handlePing = () => Alert.alert('On my way', `Demo: the ${who} gets a notification that you are on your way (${etaClock}).`);
+  const handleShare = () => {
+    Share.share({ message: `Pack-N-Ship ${order.code} — arriving ${etaClock} (${fmtDuration(info.durationS)} away).` }).catch(() => {});
+  };
+  const handleReport = () => {
+    const sent = (what: string) => Alert.alert('Report sent', `Demo: “${what}” was reported to Pack-N-Ship support.`);
+    Alert.alert('Report a problem', 'What happened?', [
+      { text: `Can’t reach the ${who}`, onPress: () => sent(`Can’t reach the ${who}`) },
+      { text: 'Wrong or unclear address', onPress: () => sent('Wrong or unclear address') },
+      { text: 'Package damaged / not as described', onPress: () => sent('Package damaged / not as described') },
+      { text: 'Vehicle problem', onPress: () => sent('Vehicle problem') },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+  const handleSOS = () => {
+    Alert.alert('Emergency', 'Call emergency services (911)?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Call 911', style: 'destructive', onPress: () => Linking.openURL('tel:911').catch(() => {}) },
+    ]);
+  };
+
+  const quick = [
+    { icon: 'Phone', label: 'Call', onPress: handleCall },
+    { icon: 'ChatCircleText', label: 'Message', onPress: handleMessage },
+    { icon: 'Bell', label: 'On my way', onPress: handlePing },
+    { icon: 'PaperPlane', label: 'Share ETA', onPress: handleShare },
+  ];
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
-      <View style={styles.container}>
-        <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
 
-        <MapView
-          ref={mapRef}
-          provider={PROVIDER_GOOGLE}
-          style={StyleSheet.absoluteFill}
-          googleMapId={GOOGLE_MAP_ID}
-          userInterfaceStyle="light"
-          initialRegion={{
-            latitude: trip.pickupCoords.lat || 10.3157,
-            longitude: trip.pickupCoords.lng || 123.8854,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
-          }}
-          showsUserLocation={false}
-          showsMyLocationButton={false}
-          showsCompass={false}
-          toolbarEnabled={false}
+      <NavigationMap
+        ref={mapHandle}
+        target={{ latitude: order.target.lat, longitude: order.target.lng }}
+        targetLabel={isPickup ? 'P' : 'D'}
+        secondary={order.other ? { coordinate: { latitude: order.other.lat, longitude: order.other.lng }, label: isPickup ? 'D' : 'P' } : null}
+        interactive
+        onInfo={setInfo}
+        onStatusChange={setStatus}
+        style={{ bottom: 0 }}
+        bannerTop={insets.top}
+        padTop={0}
+        padBottom={24}
+        controlsBottom={260}
+      />
+
+      {/* Floating Map Tools */}
+      <View style={styles.mapTools}>
+        <TouchableOpacity 
+          style={styles.iconBtnMap} 
+          onPress={() => mapHandle.current?.recenter()}
+          activeOpacity={0.85}
         >
-          <Marker
-            coordinate={{ latitude: trip.pickupCoords.lat, longitude: trip.pickupCoords.lng }}
-            anchor={{ x: 0.5, y: 0.5 }}
-            tracksViewChanges={false}
-          >
-            <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.accent, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFF' }}>S</Text>
-            </View>
-          </Marker>
+          <SolarIcon name="MapPoint" variant="linear" size={24} color={colors.accent} />
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={styles.iconBtnMap} 
+          onPress={() => mapHandle.current?.overview()}
+          activeOpacity={0.85}
+        >
+          <SolarIcon name="Maximize" variant="linear" size={24} color={colors.accent} />
+        </TouchableOpacity>
+      </View>
 
-          <Marker
-            coordinate={{ latitude: trip.dropoffCoords.lat, longitude: trip.dropoffCoords.lng }}
-            anchor={{ x: 0.5, y: 0.5 }}
-            tracksViewChanges={false}
-          >
-            <View style={{ width: 26, height: 26, borderRadius: 13, backgroundColor: colors.textPrimary, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFF' }}>D</Text>
-            </View>
-          </Marker>
-
-          {routeCoords.length > 1 && (
-            <Polyline coordinates={routeCoords} strokeColor={colors.accent} strokeWidth={5} />
-          )}
-
-          {myCoords && (
-            <Marker
-              coordinate={{ latitude: myCoords.lat, longitude: myCoords.lng }}
-              anchor={{ x: 0.5, y: 0.5 }}
-              tracksViewChanges={false}
-            >
-              <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: colors.info, borderWidth: 3, borderColor: '#FFF' }} />
-            </Marker>
-          )}
-
-          {providerPos && (
-            <Marker
-              coordinate={{ latitude: providerPos.lat, longitude: providerPos.lng }}
-              anchor={{ x: 0.5, y: 0.5 }}
-            >
-              <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.success, borderWidth: 3, borderColor: '#FFF', alignItems: 'center', justifyContent: 'center' }}>
-                <SolarIcon name="Car" variant="bold" size={18} color="#FFF" />
-              </View>
-            </Marker>
-          )}
-        </MapView>
-
-        <View style={[styles.topBar, { top: insets.top + 10 }]}>
-          <TouchableOpacity style={styles.circleBtn} onPress={onClose} activeOpacity={0.85}>
-            <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
+      {/* Animated Resizable Bottom Panel */}
+      <Animated.View style={[styles.bottomPanel, { height: panAnim }]}>
+        
+        {/* Draggable Header Area */}
+        <View {...panResponder.panHandlers} style={styles.panelHeader}>
+          <TouchableOpacity activeOpacity={1} onPress={togglePanel} style={styles.dragHandleWrap}>
+            <View style={styles.dragHandle} />
           </TouchableOpacity>
-          <View style={[styles.livePill, !live && styles.livePillStale]}>
-            <View style={[styles.liveDot, { backgroundColor: statusColor }]} />
-            <Text style={styles.liveText}>{live ? 'Live' : fix ? 'Stale' : 'No live GPS'}</Text>
+
+          {/* Balanced Stats Row */}
+          <View style={styles.statsRow}>
+            <View style={styles.statsLeft}>
+              <Text style={styles.etaText} maxFontSizeMultiplier={1.15} numberOfLines={1}>
+                {arrived ? 'Arrived' : fmtDuration(info.durationS)}
+              </Text>
+              <Text style={styles.etaLabel} maxFontSizeMultiplier={1.15}>ETA</Text>
+            </View>
+
+            <View style={styles.statsRight}>
+              <Text style={styles.distanceText} maxFontSizeMultiplier={1.15} numberOfLines={1}>
+                {fmtDistance(info.distanceM)}
+              </Text>
+              <Text style={styles.distanceLabel} maxFontSizeMultiplier={1.15} numberOfLines={1}>Arriving {etaClock}</Text>
+            </View>
+
+            <TouchableOpacity style={styles.exitBtn} onPress={close} activeOpacity={0.8}>
+              <Text style={styles.exitText}>Exit</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
-        <TouchableOpacity
-          style={[styles.fab, { bottom: sheetHeight + insets.bottom + 12 }]}
-          onPress={recenterMap}
-          activeOpacity={0.85}
-        >
-          <SolarIcon name="MapPoint" variant="linear" size={20} color={colors.accent} />
-        </TouchableOpacity>
+        <View style={styles.divider} />
 
-        <View
-          style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-          onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
-        >
-          <View style={styles.grabber} />
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 6 }}>
-            <View style={styles.providerRow}>
-              <View style={styles.avatar}>
-                {profile?.photo ? (
-                  <Image source={{ uri: profile.photo }} style={styles.avatarImg} />
-                ) : (
-                  <Text style={styles.avatarText}>{initials}</Text>
-                )}
-                <View style={styles.verifiedDot}><SolarIcon name="Check" variant="bold" size={9} color="#FFFFFF" /></View>
-              </View>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 28 }}>
+          {/* destination */}
+          <View style={styles.destChipRow}>
+            <View style={styles.destChip}>
+              <SolarIcon name={isPickup ? 'Package' : 'Home'} variant="duotone" size={12} color="#FFFFFF" />
+              <Text style={styles.destChipText}>{isPickup ? 'PICKUP' : 'DROP-OFF'}</Text>
+            </View>
+            <Text style={styles.orderCode}>#{order.code}</Text>
+          </View>
+          <Text style={styles.destTitle} numberOfLines={2}>{order.target.main}</Text>
+          {!!order.target.sub && <Text style={styles.destAddress} numberOfLines={2}>{order.target.sub}</Text>}
+
+          {!!order.note && (
+            <View style={styles.noteBox}>
+              <SolarIcon name="ChatCircleText" variant="duotone" size={16} color={colors.accent} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.providerName} numberOfLines={1}>{trip.name}</Text>
-                <View style={styles.subRow}>
-                  <Text style={styles.providerSub}>{trip.vehicleType}</Text>
-                  <SolarIcon name="Star" variant="boldDuotone" size={12} color={colors.warning} />
-                  <Text style={styles.providerSub}>{trip.rating}</Text>
+                <Text style={styles.noteLabel}>NOTE FROM {who.toUpperCase()}</Text>
+                <Text style={styles.noteText}>{order.note}</Text>
+              </View>
+            </View>
+          )}
+
+          {/* quick actions */}
+          <View style={styles.quickRow}>
+            {quick.map(q => (
+              <TouchableOpacity key={q.label} style={styles.quickItem} onPress={q.onPress} activeOpacity={0.8}>
+                <View style={styles.quickCircle}>
+                  <SolarIcon name={q.icon as any} variant="linear" size={22} color={colors.accent} />
                 </View>
-              </View>
-              <View style={[styles.whenPill, { backgroundColor: onTheRoad ? colors.successBg : colors.warningBg }]}>
-                <Text style={[styles.whenPillText, { color: onTheRoad ? colors.success : colors.warning }]}>
-                  {onTheRoad ? 'On the way' : 'Leaving soon'}
-                </Text>
-              </View>
-            </View>
+                <Text style={styles.quickLabel}>{q.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-            <View style={styles.routeBox}>
-              <View style={styles.routeRow}>
-                <View style={styles.dotOrange} />
-                <Text style={styles.routeText} numberOfLines={1}>{trip.pickup}</Text>
-              </View>
-              <View style={styles.routeLine} />
-              <View style={styles.routeRow}>
-                <View style={styles.dotDark} />
-                <Text style={styles.routeText} numberOfLines={1}>{trip.dropoff}</Text>
-              </View>
-            </View>
+          {/* checklist */}
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionTitle}>{isPickup ? 'Pickup checklist' : 'Delivery checklist'}</Text>
+            <Text style={styles.sectionCount}>{doneCount}/{checklist.length}</Text>
+          </View>
+          {checklist.map((t, i) => {
+            const k = `${order.stage}:${i}`;
+            const on = !!checks[k];
+            return (
+              <TouchableOpacity key={k} style={styles.checkRow} activeOpacity={0.7} onPress={() => setChecks(p => ({ ...p, [k]: !p[k] }))}>
+                <SolarIcon 
+                  name="CheckCircle" 
+                  variant={on ? 'duotone' : 'linear'}
+                  size={24} 
+                  color={on ? colors.accent : colors.textMuted} 
+                />
+                <Text style={[styles.checkText, on && styles.checkTextDone]}>{t}</Text>
+              </TouchableOpacity>
+            );
+          })}
 
-            <View style={styles.stats}>
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>FROM YOU</Text>
-                <Text style={styles.statValue}>{distanceKm != null ? formatKm(distanceKm) : '—'}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>REACHES YOU</Text>
-                <Text style={styles.statValue}>{etaMin != null ? `~${etaMin} min` : '—'}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>GPS</Text>
-                <Text style={[styles.statValue, { color: statusColor }]}>{statusText}</Text>
-              </View>
-            </View>
-            <Text style={styles.updated}>
-              {fix ? formatLastSeen(fix.updated_at) : `${trip.timeLabel} · live GPS appears once the provider is on the road`}
-            </Text>
+          <View style={styles.divider} />
 
-            <TouchableOpacity style={styles.requestBtn} onPress={() => onRequest(trip)} activeOpacity={0.9}>
-              <SolarIcon name="PaperPlane" variant="linear" size={16} color="#FFFFFF" />
-              <Text style={styles.requestBtnText}>Request Delivery Along This Route</Text>
-            </TouchableOpacity>
-            <Text style={styles.privacyNote}>
-              Your pickup will be your current location. Package details are only shared once you send a request.
-            </Text>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
+          {/* settings */}
+          <TouchableOpacity style={styles.listRow} onPress={() => mapHandle.current?.overview()}>
+            <SolarIcon name="Map" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
+            <Text style={styles.listText}>Route overview</Text>
+            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.listRow}>
+            <SolarIcon name="VolumeHigh" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
+            <Text style={styles.listText}>Voice guidance</Text>
+            <Switch value={voiceOn} onValueChange={setVoiceOn} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
+          </View>
+          <View style={styles.listRow}>
+            <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
+            <Text style={styles.listText}>Avoid tolls</Text>
+            <Switch value={avoidTolls} onValueChange={setAvoidTolls} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
+          </View>
+          <View style={styles.listRow}>
+            <SolarIcon name="Hourglass" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
+            <Text style={styles.listText}>Stop orders after this delivery</Text>
+            <Switch value={stopAfter} onValueChange={setStopAfter} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
+          </View>
+
+          <View style={styles.divider} />
+
+          <TouchableOpacity style={styles.listRow} onPress={handleReport}>
+            <SolarIcon name="Flag" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
+            <Text style={styles.listText}>Report a problem</Text>
+            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sosBtn} onPress={handleSOS} activeOpacity={0.85}>
+            <SolarIcon name="ShieldWarning" variant="linear" size={20} color="#FFFFFF" />
+            <Text style={styles.sosText}>Emergency SOS</Text>
+          </TouchableOpacity>
+        </ScrollView>
+
+      </Animated.View>
+    </View>
   );
 }
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
-  topBar: {
-    position: 'absolute', left: 16, right: 16, flexDirection: 'row',
-    justifyContent: 'space-between', alignItems: 'center', zIndex: 20,
+  center: { alignItems: 'center', justifyContent: 'center', padding: 24 },
+
+  // Floating Map Tools — Atome-flat shadow (was elevation: 5 / opacity: 0.15–0.4)
+  mapTools: {
+    position: 'absolute',
+    right: 16,
+    top: '45%',
+    gap: 12,
   },
-  circleBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center', 
+  iconBtnMap: {
+    width: 48, height: 48, borderRadius: 14, 
+    backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, 
+    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
-  livePill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.card,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', 
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
-  },
-  livePillStale: { borderColor: c.warning },
-  liveDot: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.4 },
-  fab: {
-    position: 'absolute', right: 16, width: 46, height: 46, borderRadius: 14, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center', 
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', zIndex: 15,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
-  },
-  sheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, maxHeight: '62%',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
-  },
-  grabber: { width: 36, height: 4, borderRadius: 2, backgroundColor: c.border, alignSelf: 'center', marginBottom: 12 },
 
-  providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatar: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: isDark ? '#3A2411' : '#FFE4D2', overflow: 'hidden',
+  // Resizable Bottom Panel — Atome-flat shadow + 1px top border for legibility on map
+  bottomPanel: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    borderTopWidth: 1,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: isDark ? 0.05 : 0.04, shadowRadius: 12, elevation: 1,
   },
-  avatarImg: { width: '100%', height: '100%' },
-  avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 16 },
-  verifiedDot: {
-    position: 'absolute', right: -1, bottom: -1, width: 16, height: 16, borderRadius: 8,
-    backgroundColor: c.success, borderWidth: 2, borderColor: c.card, alignItems: 'center', justifyContent: 'center',
+  
+  panelHeader: {
+    paddingTop: 10,
+    paddingBottom: 4,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
   },
-  providerName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  subRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 1 },
-  providerSub: { fontSize: 12, color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
-  whenPill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  whenPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold' },
+  dragHandleWrap: {
+    alignItems: 'center',
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  dragHandle: {
+    width: 40, height: 4, backgroundColor: c.border, borderRadius: 2,
+  },
+  
+  // Balanced Stats Layout
+  statsRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+  },
+  statsLeft: { 
+    flexDirection: 'column', flex: 1, alignItems: 'flex-start' 
+  },
+  statsRight: { 
+    flexDirection: 'column', flex: 1, alignItems: 'flex-start', marginLeft: 20
+  },
+  
+  // Type scale (Poppins): every style has an explicit lineHeight (~1.35x) so Android never clips
+  // Poppins' tall ascenders/descenders, and ExtraBold (800) is gone - at small sizes it smeared.
+  etaText: { color: c.accent, fontSize: 26, lineHeight: 34, fontFamily: 'Poppins_700Bold' },
+  etaLabel: { color: c.textMuted, fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.5, textTransform: 'uppercase' },
 
-  routeBox: {
-    backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
-    marginTop: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  routeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  routeLine: { width: 2, height: 10, backgroundColor: c.border, marginLeft: 3, marginVertical: 3 },
-  routeText: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, flex: 1 },
-  dotOrange: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
-  dotDark: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.textPrimary },
+  // Same size + lineHeight as etaText so the two columns share one baseline.
+  distanceText: { color: c.textPrimary, fontSize: 26, lineHeight: 34, fontFamily: 'Poppins_700Bold' },
+  distanceLabel: { color: c.textSecondary, fontSize: 13, lineHeight: 18, fontFamily: 'Poppins_500Medium' },
 
-  stats: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background, borderRadius: 12,
-    paddingVertical: 12, marginTop: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  exitBtn: {
+    backgroundColor: c.textPrimary,
+    paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14,
+    marginLeft: 12,
   },
-  statBox: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
-  statLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  statValue: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
-  statDivider: { width: 1, height: 26, backgroundColor: c.border },
-  updated: { fontSize: 11, color: c.textSecondary, fontFamily: 'Poppins_500Medium', marginTop: 10, textAlign: 'center' },
+  exitText: { color: c.card, fontSize: 15, lineHeight: 22, fontFamily: 'Poppins_600SemiBold' },
 
-  requestBtn: {
-    marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 15,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4,
-  },
-  requestBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
-  privacyNote: { marginTop: 10, fontSize: 11, color: c.textMuted, textAlign: 'center', lineHeight: 16, fontFamily: 'Poppins_400Regular' },
+  divider: { height: 1, backgroundColor: c.divider, marginVertical: 14 },
+
+  destChipRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+  destChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.accent, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  destChipText: { color: '#FFFFFF', fontSize: 11, lineHeight: 16, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.6 },
+  orderCode: { color: c.textMuted, fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold' },
+  destTitle: { color: c.textPrimary, fontSize: 20, lineHeight: 28, fontFamily: 'Poppins_700Bold' },
+  destAddress: { color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_400Regular', marginTop: 2, lineHeight: 20 },
+  noteBox: { flexDirection: 'row', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 12, marginTop: 12 },
+  noteLabel: { color: c.accent, fontSize: 11, lineHeight: 16, fontFamily: 'Poppins_600SemiBold', letterSpacing: 0.6 },
+  noteText: { color: c.textPrimary, fontSize: 14, lineHeight: 20, fontFamily: 'Poppins_400Regular', marginTop: 2 },
+  quickRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
+  quickItem: { alignItems: 'center', flex: 1 },
+  quickCircle: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  quickLabel: { color: c.textSecondary, fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', marginTop: 6, textAlign: 'center' },
+  sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 6 },
+  sectionTitle: { color: c.textPrimary, fontSize: 16, lineHeight: 24, fontFamily: 'Poppins_700Bold' },
+  sectionCount: { color: c.accent, fontSize: 13, lineHeight: 18, fontFamily: 'Poppins_600SemiBold' },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9 },
+  checkText: { flex: 1, color: c.textPrimary, fontSize: 15, lineHeight: 22, fontFamily: 'Poppins_500Medium' },
+  checkTextDone: { color: c.textMuted, textDecorationLine: 'line-through' },
+  listRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },
+  listIcon: { marginRight: 14 },
+  listText: { color: c.textPrimary, fontSize: 15, lineHeight: 22, fontFamily: 'Poppins_500Medium', flex: 1 },
+  sosBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.error, borderRadius: 14, paddingVertical: 14, marginTop: 14 },
+  sosText: { color: '#FFFFFF', fontSize: 15, lineHeight: 22, fontFamily: 'Poppins_600SemiBold' },
+
+  stateCard: { alignItems: 'center' },
+  stateTitle: { color: c.textPrimary, fontSize: 18, lineHeight: 26, fontFamily: 'Poppins_700Bold', marginBottom: 20 },
+  btn: { backgroundColor: c.divider, padding: 16, borderRadius: 14 },
+  btnText: { color: c.textPrimary, fontSize: 15, lineHeight: 22, fontFamily: 'Poppins_600SemiBold' },
 });
