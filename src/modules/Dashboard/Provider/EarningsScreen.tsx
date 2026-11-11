@@ -60,8 +60,6 @@ export default function EarningsScreen() {
   const [totalEarned, setTotalEarned] = useState(0);
   const [totalPending, setTotalPending] = useState(0);
   const [completedJobs, setCompletedJobs] = useState(0);
-  const [averageRating, setAverageRating] = useState(0);
-  const [ratingCount, setRatingCount] = useState(0);
 
   const [detailRow, setDetailRow] = useState<EarningRow | null>(null);
   const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalRequest | null>(null);
@@ -141,22 +139,13 @@ export default function EarningsScreen() {
     setCompletedJobs(earned.length);
   };
 
-  const fetchAverageRating = async (pid: number) => {
-    const { data } = await supabase.from('ratings_reviews').select('rating').eq('reviewee_id', pid);
-    if (data && data.length > 0) {
-      const total = data.reduce((s: number, r: any) => s + r.rating, 0);
-      setAverageRating(Number((total / data.length).toFixed(1)));
-      setRatingCount(data.length);
-    } else { setAverageRating(0); setRatingCount(0); }
-  };
-
   const loadData = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
       const pid = providerId || (await getProviderId());
       if (!pid) return;
       if (!providerId) setProviderId(pid);
-      await Promise.all([fetchWalletAndWithdrawals(pid), fetchEarnings(pid), fetchAverageRating(pid)]);
+      await Promise.all([fetchWalletAndWithdrawals(pid), fetchEarnings(pid)]);
     } catch (e) { console.warn('[Earnings] loadData error', e); } finally { setLoading(false); setRefreshing(false); }
   };
 
@@ -305,16 +294,14 @@ export default function EarningsScreen() {
 
         <View style={styles.statsDivider} />
         <View style={styles.statsRow}>
-          <View style={styles.statBox}><Text style={styles.statValue}>{completedJobs}</Text><Text style={styles.statLabel}>Completed Jobs</Text></View>
-          <View style={styles.verticalDivider} />
-          <View style={styles.statBox}><Text style={styles.statValue} numberOfLines={1}>₱{totalEarned.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text><Text style={styles.statLabel}>Total Earned</Text></View>
+          <View style={styles.statBox}>
+            <Text style={styles.statValue}>{completedJobs}</Text>
+            <Text style={styles.statLabel}>Completed Jobs</Text>
+          </View>
           <View style={styles.verticalDivider} />
           <View style={styles.statBox}>
-            <View style={styles.ratingRow}>
-              <SolarIcon name="Star" variant="boldDuotone" size={14} color={colors.warning} />
-              <Text style={styles.statValue}>{averageRating > 0 ? averageRating.toFixed(1) : 'N/A'}</Text>
-            </View>
-            <Text style={styles.statLabel}>{ratingCount > 0 ? `${ratingCount} ratings` : 'No ratings yet'}</Text>
+            <Text style={styles.statValue} numberOfLines={1}>₱{totalEarned.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+            <Text style={styles.statLabel}>Total Earned</Text>
           </View>
         </View>
       </View>
@@ -689,7 +676,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   payoutBadgeText: { fontSize: 10, fontFamily: 'Poppins_700Bold' },
   statsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
   statBox: { alignItems: 'center', flex: 1, paddingHorizontal: 4 },
-  ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   statValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 2 },
   statLabel: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, textAlign: 'center' },
   verticalDivider: { width: 1, height: 24, backgroundColor: c.border },

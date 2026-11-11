@@ -10,7 +10,7 @@
 //   - a line written entirely inside [brackets] is shown as "to be confirmed"
 //   - `rows` shows a small two-column card (label and value) under the body
 
-export const POLICY_VERSION = '0.1-draft';
+export const POLICY_VERSION = '0.2-draft';
 
 /** Most that can be claimed for an item, by package size. Used by the policy text and the payment screen. */
 export const SIZE_LIMITS = [
@@ -19,6 +19,13 @@ export const SIZE_LIMITS = [
   { label: 'Large', amount: 2000 },
 ];
 const peso = (n: number) => `₱${n.toLocaleString('en-US')}`;
+
+/** Only items worth less than this can be booked. Senders do not declare a value; booking confirms the item is under it. */
+export const MAX_ITEM_VALUE = 5000;
+/** Proposed Security Fund rate: percent of the delivery fee, charged to the Sender and to the Provider each. Confirm before launch. */
+export const SECURITY_FUND_PERCENT = 3;
+/** Hours allowed to report a problem after delivery is complete (damage) or after the expected delivery time (lost). */
+export const REPORT_WINDOW_HOURS = { damaged: 24, lost: 48 };
 
 export type PolicyId = 'terms' | 'privacy' | 'provider' | 'guidelines' | 'payments' | 'damage';
 
@@ -60,9 +67,9 @@ export const POLICIES: Policy[] = [
       {
         heading: 'What Pack-N-Ship is',
         body: [
-          'Pack-N-Ship is a peer-to-peer delivery platform. Senders request deliveries, and verified Providers who travel common routes can accept them.',
-          'Pack-N-Ship connects Senders and Providers. Providers are independent people, not employees of the platform.',
-          'Pack-N-Ship does not carry, own, insure or guarantee packages. If something goes wrong, we help both sides settle it fairly, using the evidence in the app.',
+          'Pack-N-Ship is a technology platform that connects Senders who need a package delivered with independent, verified Providers who are already travelling along a route.',
+          'Pack-N-Ship is not a courier, carrier or delivery company. We do not take possession of, transport or deliver any package. The Provider carries out the delivery.',
+          'Pack-N-Ship does not own, insure or guarantee packages. If something goes wrong, we help both sides settle it fairly, using the evidence in the app.',
         ],
       },
       {
@@ -70,22 +77,41 @@ export const POLICIES: Policy[] = [
         body: [
           'You must give accurate information when you register and keep it up to date.',
           'You are responsible for keeping your password private and for activity under your account.',
-          'An administrator may deactivate an account that breaks these terms.',
+          'All users must follow the laws of the Philippines when using Pack-N-Ship.',
         ],
       },
       {
         heading: 'Sending a package',
         body: [
-          'Describe your package honestly, including its size and contents, and add accurate photos.',
-          'Do not send items that are illegal or that the law does not allow to be transported.',
-          'Each delivery has a tracking ID (PNS-XXXX). Use it when you contact support or report a problem.',
+          'Describe your package honestly, including its contents, and add accurate photos.',
+          'Choose the correct package size. A package larger or heavier than the size you chose may be refused at pickup, and you remain responsible for any resulting cost.',
+          `Only items worth less than ${peso(MAX_ITEM_VALUE)} can be sent through Pack-N-Ship. You do not enter a value for your package. By confirming a booking, you confirm the item is within this limit.`,
+          'Do not send items that are illegal, hazardous or that the law does not allow to be transported.',
+          'Each delivery has a tracking ID. Use it when you contact support or report a problem.',
+        ],
+      },
+      {
+        heading: 'Photo evidence',
+        body: [
+          'Clear photos of the package are required at pickup and at drop-off. Each photo carries an automatic date and time.',
+          'Photos should be taken in the app so the date and time can be verified. A pickup or drop-off cannot be completed without them.',
+          'If photos are missing, unclear or edited, Pack-N-Ship may decide a case against the person who did not provide them.',
         ],
       },
       {
         heading: 'Problems and disputes',
         body: [
           'If something goes wrong, open Help and tap Report a problem. The other party can respond, and an administrator reviews and decides.',
+          `Report a damaged package within ${REPORT_WINDOW_HOURS.damaged} hours after the delivery is complete, and a lost or undelivered package within ${REPORT_WINDOW_HOURS.lost} hours after the expected delivery time. Late reports may be declined.`,
           'Damaged or lost packages are handled under the Package Damage and Responsibility Policy.',
+        ],
+      },
+      {
+        heading: 'Security Fund',
+        body: [
+          `A small Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee is collected from the Sender and from the Provider on each delivery.`,
+          'The fund helps cover genuine events outside anyone\'s control, such as a road accident, so that the platform stays sustainable.',
+          'The Security Fund is not insurance and does not guarantee compensation. See the Package Damage and Responsibility Policy.',
         ],
       },
       {
@@ -100,7 +126,9 @@ export const POLICIES: Policy[] = [
         heading: 'Suspension and ending your account',
         body: [
           'You can stop using Pack-N-Ship at any time.',
-          'We may suspend or remove an account for breaking these terms, fraud, unsafe behavior or repeated confirmed problems. If it happens, you can contact support from Help.',
+          'We have the right to suspend or deactivate an account for fraud, such as false information, fake or altered photos, false claims, or forged identity or license documents. We may also act on unsafe behavior, harassment or repeated violations of these terms.',
+          'Pending payouts may be held while a case is under review, and unlawful conduct may be reported to the proper authorities.',
+          'You can appeal a deactivation from Help within [10 days].',
           'Amounts owed for a confirmed claim remain payable after an account is closed.',
         ],
       },
@@ -115,6 +143,7 @@ export const POLICIES: Policy[] = [
         body: [
           '[City whose courts hear disputes]',
           '[How and when these terms can change]',
+          '[Counsel to confirm the Security Fund is not treated as insurance]',
           '[Counsel to confirm how the Internet Transactions Act and the Consumer Act apply to the platform]',
         ],
       },
@@ -148,6 +177,7 @@ export const POLICIES: Policy[] = [
         body: [
           'Senders and Providers see what is needed for a delivery they share, such as names, locations and messages.',
           'Administrators can see Provider verification documents so they can approve or reject applications. They are not shown to other users.',
+          'Pickup and drop-off photos, with their date and time, are stored securely and used only to verify deliveries, resolve disputes and meet legal duties.',
           'Photos and messages you send with a report are visible only to you and the support team, apart from the original report, which the other party on that delivery also sees.',
           'Your data is stored with our cloud database provider (Supabase).',
         ],
@@ -155,7 +185,8 @@ export const POLICIES: Policy[] = [
       {
         heading: 'Your rights',
         body: [
-          'Under the Philippine Data Privacy Act you may ask to access, correct or delete your personal data, and withdraw consent, subject to the law.',
+          'Pack-N-Ship handles personal data in line with the Data Privacy Act of 2012 (Republic Act No. 10173). We collect only what is needed to run the service, keep it secure and do not sell it.',
+          'You may ask to access, correct or delete your personal data, and withdraw consent, subject to the law.',
           '[Contact email for privacy requests]',
           '[How long data and verification documents are kept]',
         ],
@@ -182,7 +213,8 @@ export const POLICIES: Policy[] = [
         body: [
           'Handle packages with care and deliver them to the agreed drop-off.',
           'Confirm pickup and drop-off using the QR code and PIN steps in the app.',
-          'Take a clear photo of the package at pickup and another at drop-off, every time. These photos protect you if a claim is made.',
+          'Take a clear photo of the package at pickup and another at drop-off, every time, in the app so the date and time are recorded. A pickup or drop-off cannot be completed without them, and they protect you if a claim is made.',
+          `Do not carry prohibited items, or items worth ${peso(MAX_ITEM_VALUE)} or more. You may refuse a package you reasonably believe is unsafe, prohibited or not as described.`,
           'Keep your location sharing on while a delivery is in progress.',
           'If the receiver cannot be reached at drop-off, wait 5 minutes, then return the package to the Sender and report it in the app.',
           'Do not skip a pickup you accepted. A no-show earns you a strike.',
@@ -194,7 +226,8 @@ export const POLICIES: Policy[] = [
           'Keep your license and vehicle documents valid, and update them when they expire.',
           'Respond to reports raised against you. Open Help to see reports that need your answer.',
           'If a package is damaged or lost while in your care, the Package Damage and Responsibility Policy applies. If you are found at fault, you may be asked to cover a share of the loss from your earnings. You are never asked to pay for damage you did not cause.',
-          'An administrator may deactivate a Provider account that breaks these terms.',
+          `A Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee applies to each delivery you carry. It is shown before you accept a trip and is not refundable once the delivery starts.`,
+          'Pack-N-Ship may deactivate a Provider account for fraud, including fake or altered evidence or forged documents, or for breaking these terms.',
         ],
       },
       {
@@ -227,6 +260,7 @@ export const POLICIES: Policy[] = [
         body: [
           'Use your real details. Describe packages and deliveries accurately.',
           'Leave ratings and reviews that reflect your real experience.',
+          'Never upload fake, edited or reused photos or documents. Fraud can lead to your account being deactivated.',
         ],
       },
       {
@@ -257,6 +291,7 @@ export const POLICIES: Policy[] = [
           'Payment for a delivery is held in escrow. It is released to the Provider after pickup and drop-off have been confirmed in the app.',
           'Providers can withdraw their earnings to a linked GCash account.',
           '[Earnings become available to withdraw 48 hours after drop-off, so any damage claim can be settled first.]',
+          `A Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee is collected from the Sender and from the Provider. It is shown before you book or accept a trip.`,
         ],
       },
       {
@@ -306,14 +341,14 @@ export const POLICIES: Policy[] = [
         heading: 'Our role',
         body: [
           'Most deliveries go smoothly. This policy is here so both Senders and Providers know what to expect if one does not.',
-          'Pack-N-Ship connects Senders with independent Providers. We are not the carrier, and we do not own, insure or guarantee any package. To the extent the law allows, Pack-N-Ship is not liable for damaged or lost items.',
+          'Pack-N-Ship is a platform that connects Senders with independent Providers. We are not the carrier, and we do not own, insure or guarantee any package. To the extent the law allows, Pack-N-Ship is not liable for damaged or lost items.',
           'What we do provide: photo records, QR and PIN handover, tracking, held payments, and a fair, evidence-based review of every report.',
         ],
       },
       {
         heading: 'How responsibility is shared',
         body: [
-          'We look at the evidence, not at who reports first. The people responsible for the loss share the cost, based on what the evidence shows.',
+          'We look at the evidence, not at who reports first. A Provider is responsible for a package that is damaged or lost while in their care if this is proven, and a Sender is equally responsible if the problem is proven to come from the Sender\'s side.',
         ],
         rows: [
           {
@@ -326,14 +361,14 @@ export const POLICIES: Policy[] = [
           },
           {
             label: 'Caused by packing, an unmarked fragile item, a wrong size, or damage that was already there at pickup',
-            value: 'Sender covers 100%. No claim against the Provider.',
+            value: 'Sender covers 100%, including any damage the package causes to the Provider\'s vehicle or belongings. No claim against the Provider.',
           },
           {
             label: 'Outside anyone\'s control, such as an accident caused by another vehicle',
-            value: 'Shared equally: [50%] Provider, [50%] Sender. The Provider receives no strike.',
+            value: '[Paid from the Security Fund, up to the limit for the package size, while the fund has enough.] The Provider receives no strike.',
           },
           {
-            label: 'Prohibited or misdeclared item',
+            label: 'Prohibited item, or an item worth ₱5,000 or more',
             value: 'No compensation.',
           },
         ],
@@ -341,9 +376,9 @@ export const POLICIES: Policy[] = [
       {
         heading: 'Compensation limits',
         body: [
-          'To keep things fair for everyone, the total value that can be claimed depends on the package size. This is the most that is counted before the shares above are applied.',
+          'To keep things fair for everyone, the most that can be claimed depends on the package size. This is the most that is counted before the shares above are applied.',
           'Compensation is based on the item\'s real worth at the time, shown by a receipt, order confirmation or screenshot. It is never more than the proven value, and not more than the limit.',
-          'Please do not send items worth more than the limit. Anything above it is the Sender\'s own risk.',
+          `Only items worth less than ${peso(MAX_ITEM_VALUE)} can be booked. Senders do not declare a value, and items at or above this amount are not covered.`,
         ],
         rows: [
           ...SIZE_LIMITS.map(l => ({ label: `${l.label} package`, value: `Up to ${peso(l.amount)}` })),
@@ -354,6 +389,14 @@ export const POLICIES: Policy[] = [
         body: [
           'When you book, you are asked to confirm that you have read the limits in this policy. Tapping Agree means you accept them for that delivery.',
           'Providers accept this policy when they join, and again in the Provider Agreement.',
+        ],
+      },
+      {
+        heading: 'Security Fund',
+        body: [
+          `Each delivery includes a small Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee from the Sender and from the Provider. It is shown before you book or accept a trip.`,
+          'The fund helps pay for events outside anyone\'s control, such as a road accident. Payouts are decided on proof and are never more than the limits above.',
+          'Contributions are not refundable once the delivery starts. The Security Fund is not insurance and does not guarantee compensation.',
         ],
       },
       {
@@ -380,6 +423,7 @@ export const POLICIES: Policy[] = [
           'Damage from poor packing, or fragile items that were not marked as fragile.',
           'Damage that already existed before pickup, as shown in the pickup photos.',
           'Prohibited items, such as weapons, illegal drugs, explosives, flammable or hazardous goods, live animals, cash and similar valuables, or anything illegal in the Philippines.',
+          `Items worth ${peso(MAX_ITEM_VALUE)} or more.`,
           'Items that differ from what was booked.',
           'Late delivery caused by events outside anyone\'s control, such as severe weather or road closures.',
           'Indirect losses, such as lost business or the cost of a missed event.',
@@ -397,9 +441,17 @@ export const POLICIES: Policy[] = [
         heading: 'Provider responsibilities',
         body: [
           'Handle the package with care from pickup to handover.',
-          'Take a pickup photo and a drop-off photo every time, and complete the QR and PIN steps.',
+          'Take a pickup photo and a drop-off photo in the app every time, and complete the QR and PIN steps.',
           'Report any accident, damage or problem right away in the app.',
           'Never open, replace or keep a package.',
+        ],
+      },
+      {
+        heading: 'Pickup and drop-off photos',
+        body: [
+          'Clear photos of the package and its packaging are required at pickup and at drop-off, so its condition is on record both times.',
+          'Every photo carries an automatic date and time. Take them in the app so these can be verified.',
+          'A pickup or drop-off cannot be completed without the photos. If they are missing, unclear or edited, we may decide against the person who did not provide them.',
         ],
       },
       {
@@ -418,7 +470,7 @@ export const POLICIES: Policy[] = [
           'Only one claim can be made per delivery, and it must match what was booked.',
           'Photos from the booking, pickup and drop-off are compared with the claim photos.',
           'Many claims in a short time [more than 3 in 30 days] are reviewed more closely, for both Senders and Providers.',
-          'False claims, edited photos or fake receipts lead to a denied claim, and can lead to suspension or removal.',
+          'False claims, edited photos or fake receipts lead to a denied claim. Pack-N-Ship has the right to deactivate the account of anyone who commits fraud.',
           'Providers are never asked to pay more than their share, or more than the limits above.',
         ],
       },
@@ -427,7 +479,7 @@ export const POLICIES: Policy[] = [
         body: [
           'Open Help, tap Report a problem, and choose the delivery. You can search by delivery ID.',
           'Select Problem with my package, describe what happened, add clear photos, and choose the outcome you want.',
-          'File within 48 hours after the delivery is marked complete.',
+          `File within ${REPORT_WINDOW_HOURS.damaged} hours after the delivery is marked complete for a damaged package, or within ${REPORT_WINDOW_HOURS.lost} hours after the expected delivery time for a lost or undelivered one. Late reports may be declined.`,
           'The other side is notified and can explain their side once. Our team then reviews both sides.',
         ],
       },
@@ -449,7 +501,7 @@ export const POLICIES: Policy[] = [
       {
         heading: 'Appeals',
         body: [
-          'Either side can appeal a decision once, within [3 days]. Open the report in Help and tap Appeal this decision. Add new details or photos if you have them.',
+          'Either side can appeal a decision once, within [5 to 7 business days]. Open the report in Help and tap Appeal this decision. Add new details or photos if you have them.',
           'Our team reviews the appeal and its result is final. An appeal cannot be appealed again.',
         ],
       },

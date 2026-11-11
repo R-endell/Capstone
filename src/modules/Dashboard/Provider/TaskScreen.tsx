@@ -374,6 +374,17 @@ export default function TaskScreen() {
   const [podPhotoUri, setPodPhotoUri] = useState<string | null>(null);
   const [podTakingPhoto, setPodTakingPhoto] = useState(false);
 
+  // --- Pickup proof photo: required after the pickup QR / PIN is verified ---
+  const pickupCameraRef = useRef<any>(null);
+  const [pickupPending, setPickupPending] = useState<{ deliveryId: number; requestId: number } | null>(null);
+  const [pickupPhotoUri, setPickupPhotoUri] = useState<string | null>(null);
+  const [pickupCoords, setPickupCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [pickupTakenAt, setPickupTakenAt] = useState<string>('');
+  const [pickupTakingPhoto, setPickupTakingPhoto] = useState(false);
+  const [pickupSubmitting, setPickupSubmitting] = useState(false);
+  // The ONE camera used for both the QR scan and the pickup photo reports ready here.
+  const [pickupCameraReady, setPickupCameraReady] = useState(false);
+
   // --- Phase 3 & 4: 10-Min Grace Period & Failure Resolution States ---
   const [graceModalVisible, setGraceModalVisible] = useState(false);
   const [graceDelivery, setGraceDelivery] = useState<any>(null);
@@ -438,7 +449,7 @@ export default function TaskScreen() {
   }, [podCameraOpen, photoPreview, mapModalVisible, selectedId]);
 
   useEffect(() => {
-    if (!verifyModalVisible) return;
+    if (!verifyModalVisible || pickupPending) return;
     scanLineAnim.setValue(0);
     const loop = Animated.loop(
       Animated.sequence([
@@ -448,7 +459,7 @@ export default function TaskScreen() {
     );
     loop.start();
     return () => loop.stop();
-  }, [verifyModalVisible, scanLineAnim]);
+  }, [verifyModalVisible, pickupPending, scanLineAnim]);
 
   const getProviderData = async () => {
     try {
@@ -745,6 +756,7 @@ const handleAcceptPendingMatch = async (m: any) => {
     setVerifyTarget(delivery);
     setScanned(false);
     setPinInput('');
+    setPickupCameraReady(false);
     setVerifyModalVisible(true);
   };
 
@@ -753,7 +765,43 @@ const handleAcceptPendingMatch = async (m: any) => {
     setVerifyTarget(null);
     setScanned(false);
     setPinInput('');
+    setPickupPending(null);
+    setPickupPhotoUri(null);
+    setPickupCoords(null);
+    setPickupTakenAt('');
+    setPickupTakingPhoto(false);
+    setPickupSubmitting(false);
+    setPickupCameraReady(false);
   };
+
+  // Safety net: if the camera never reports ready (rare), don't leave the button spinning forever.
+  useEffect(() => {
+    if (!verifyModalVisible || !pickupPending || pickupCameraReady) return;
+    const t = setTimeout(() => setPickupCameraReady(true), 3000);
+    return () => clearTimeout(t);
+  }, [verifyModalVisible, pickupPending, pickupCameraReady]);
+
+  // Leaving the Task tab (notification tap, "View on Map", etc.) must never leave a native camera
+  // modal floating on top of another screen such as Jobs.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        setVerifyModalVisible(false);
+        setVerifyTarget(null);
+        setScanned(false);
+        setPinInput('');
+        setPickupPending(null);
+        setPickupPhotoUri(null);
+        setPickupCoords(null);
+        setPickupTakenAt('');
+        setPickupTakingPhoto(false);
+        setPickupSubmitting(false);
+        setPickupCameraReady(false);
+        setPodCameraOpen(false);
+        setFailureCameraOpen(false);
+      };
+    }, [])
+  );
 
   const markPickupVerified = async (deliveryId: number, requestId: number) => {
     if (!requestId) {
@@ -893,7 +941,13 @@ const handleAcceptPendingMatch = async (m: any) => {
         return;
       }
       const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
-      await markPickupVerified(row.delivery_id, reqId);
+      if (isReturning) {
+        await markPickupVerified(row.delivery_id, reqId);
+      } else {
+        // QR is valid -> the courier must now take the pickup photo before pickup is confirmed.
+        setPickupPhotoUri(null);
+        setPickupPending({ deliveryId: row.delivery_id, requestId: reqId });
+      }
     } catch (e: any) {
       Alert.alert('Error', e.message || 'QR scan failed.', [
         { text: 'Try Again', onPress: () => setScanned(false) },
@@ -921,10 +975,106 @@ const handleAcceptPendingMatch = async (m: any) => {
         return;
       }
       const reqId = verifyTarget.request_id ?? verifyTarget.delivery_requests?.request_id;
-      await markPickupVerified(row.delivery_id, reqId);
+      if (isReturning) {
+        await markPickupVerified(row.delivery_id, reqId);
+      } else {
+        setPickupPhotoUri(null);
+        setPickupPending({ deliveryId: row.delivery_id, requestId: reqId });
+      }
     } catch (e: any) {
       Alert.alert('Verification Failed', e.message || 'Could not verify PIN.');
     } finally { setPinVerifying(false); }
+  };
+
+  // Best-effort geotag. Never blocks or fails the pickup.
+  const getPhotoCoords = async (): Promise<{ lat: number; lng: number } | null> => {
+    try {
+      const perm = await Location.getForegroundPermissionsAsync();
+      if (!perm.granted) return null;
+      const pos = await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+      ]);
+      if (pos) return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      const last = await Location.getLastKnownPositionAsync({ maxAge: 120000 });
+      if (last) return { lat: last.coords.latitude, lng: last.coords.longitude };
+    } catch { /* ignore */ }
+    return null;
+  };
+
+  const capturePickupPhoto = async () => {
+    if (pickupTakingPhoto) return;
+    if (!pickupCameraRef.current || !pickupCameraReady) {
+      Alert.alert('Camera not ready', 'Please wait a moment for the camera to start, then try again.');
+      return;
+    }
+    setPickupTakingPhoto(true);
+    try {
+      // Start GPS in parallel - the shutter is never delayed by a slow GPS fix.
+      const coordsPromise = getPhotoCoords();
+
+      let photo: any = null;
+      try {
+        photo = await pickupCameraRef.current.takePictureAsync({ quality: 0.7 });
+      } catch {
+        // Some Android devices fail the first capture while the pipeline settles: retry once,
+        // this time skipping post-processing.
+        await new Promise<void>((resolve) => setTimeout(resolve, 400));
+        photo = await pickupCameraRef.current?.takePictureAsync({ quality: 0.7, skipProcessing: true });
+      }
+      if (!photo?.uri) throw new Error('The camera did not return an image. Please try again.');
+
+      const coords = await coordsPromise;
+      setPickupCoords(coords);
+      setPickupTakenAt(new Date().toISOString());
+      setPickupPhotoUri(photo.uri);
+    } catch (e: any) {
+      Alert.alert('Camera Error', e?.message || 'Failed to capture photo.');
+    } finally {
+      setPickupTakingPhoto(false);
+    }
+  };
+
+  const uploadPickupPhoto = async (uri: string, deliveryId: number): Promise<string> => {
+    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const filePath = `pickup/delivery_${deliveryId}_${Date.now()}.${ext}`;
+    const res = await fetch(uri);
+    const arrayBuffer = await res.arrayBuffer();
+
+    const { error: upErr } = await supabase.storage
+      .from(CARGO_PHOTO_BUCKET)
+      .upload(filePath, arrayBuffer, {
+        contentType: `image/${ext === 'png' ? 'png' : 'jpeg'}`,
+        upsert: true,
+      });
+    if (upErr) throw upErr;
+
+    const { data } = supabase.storage.from(CARGO_PHOTO_BUCKET).getPublicUrl(filePath);
+    return data.publicUrl;
+  };
+
+  const confirmPickupWithPhoto = async () => {
+    if (!pickupPending || !pickupPhotoUri || pickupSubmitting) return;
+    setPickupSubmitting(true);
+    try {
+      const url = await uploadPickupPhoto(pickupPhotoUri, pickupPending.deliveryId);
+      const { error: photoErr } = await supabase
+        .from('deliveries')
+        .update({
+          pickup_photo_url: url,
+          pickup_photo_lat: pickupCoords?.lat ?? null,
+          pickup_photo_lng: pickupCoords?.lng ?? null,
+          pickup_photo_taken_at: pickupTakenAt || new Date().toISOString(),
+        })
+        .eq('delivery_id', pickupPending.deliveryId);
+      if (photoErr) throw photoErr;
+
+      await markPickupVerified(pickupPending.deliveryId, pickupPending.requestId);
+    } catch (e: any) {
+      Alert.alert('Could not save pickup photo', e?.message || 'Please try again.');
+    } finally {
+      setPickupSubmitting(false);
+    }
   };
 
   const openDeliveryOTPModal = async (delivery: any) => {
@@ -2028,6 +2178,22 @@ const handleAcceptPendingMatch = async (m: any) => {
               </TouchableOpacity>
             )}
 
+            {!!d.pickup_photo_url && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Camera" variant="duotone" size={17} color={colors.accent} />
+                  <Text style={styles.dSecTitle}>Proof of Pickup</Text>
+                </View>
+                <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(d.pickup_photo_url)}>
+                  <Image
+                    source={{ uri: d.pickup_photo_url }}
+                    style={{ width: '100%', height: 190, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              </>
+            )}
+
             {!!d.pod_photo_url && (
               <>
                 <View style={styles.dSecHead}>
@@ -2152,86 +2318,182 @@ const handleAcceptPendingMatch = async (m: any) => {
     );
   };
 
-  const renderScannerModal = () => (
-    <Modal visible={verifyModalVisible} animationType="slide" transparent={false} onRequestClose={closeVerifyModal}>
-      <View style={styles.scannerRoot}>
-        <StatusBar barStyle="light-content" backgroundColor="#000" />
-
-        {cameraPermission?.granted && (
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-            onBarcodeScanned={!scanned ? handleBarcodeScanned : undefined}
-          />
-        )}
-
-        <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
-          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-          <View style={{ flexDirection: 'row', height: frameSize }}>
-            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-            <View style={{ width: frameSize, height: frameSize, overflow: 'hidden', position: 'relative' }}>
-              <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
-              <View style={[styles.corner, styles.cornerTL]} />
-              <View style={[styles.corner, styles.cornerTR]} />
-              <View style={[styles.corner, styles.cornerBL]} />
-              <View style={[styles.corner, styles.cornerBR]} />
-            </View>
-            <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-          </View>
-          <View style={{ flex: 2.2, backgroundColor: 'rgba(0,0,0,0.7)' }} />
-        </View>
-
+  // Overlay for step 2 (photo). The camera itself is rendered once, in renderScannerModal.
+  const renderPickupPhotoStep = () => {
+    const camBusy = pickupTakingPhoto || !pickupCameraReady;
+    return !pickupPhotoUri ? (
+      <>
         <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
           <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
             <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
           </TouchableOpacity>
         </View>
-
-        <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
+        <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
           <View style={styles.sheetHandle} />
-          {(() => {
-            const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
-            return (
+          <Text style={styles.sheetHeading}>Take Pickup Photo</Text>
+          <Text style={[styles.sheetSubheading, { textAlign: 'center' }]}>
+            Code verified. Take a clear photo of the package as you collect it. The sender will see this photo.
+          </Text>
+          <TouchableOpacity
+            style={[styles.mPrimaryBtn, { width: '100%', marginTop: 8 }, camBusy && { opacity: 0.6 }]}
+            onPress={capturePickupPhoto}
+            disabled={camBusy}
+            activeOpacity={0.9}
+          >
+            {camBusy ? (
+              <ActivityIndicator color="#FFF" size="small" />
+            ) : (
               <>
-                <Text style={styles.sheetHeading}>
-                  {isReturning ? 'Scan Return QR' : 'Scan Pickup QR'}
-                </Text>
-                <Text style={styles.sheetSubheading}>
-                  {isReturning
-                    ? "Point your camera at the Sender's screen to verify the return."
-                    : "Point your camera at the Sender's screen to automatically verify pickup."}
-                </Text>
+                <SolarIcon name="Camera" variant="linear" size={20} color="#FFF" />
+                <Text style={styles.mPrimaryText}>Capture Photo</Text>
               </>
-            );
-          })()}
-
-          <View style={styles.orRow}>
-            <View style={styles.orLine} />
-            <Text style={styles.orText}>OR ENTER PIN</Text>
-            <View style={styles.orLine} />
-          </View>
-
-          <View style={styles.pinRow}>
-            <TextInput
-              style={styles.pinInput}
-              value={pinInput}
-              onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
-              keyboardType="number-pad"
-              placeholder="••••"
-              placeholderTextColor={colors.textMuted}
-              maxLength={4}
-            />
+            )}
+          </TouchableOpacity>
+        </View>
+      </>
+    ) : (
+      <>
+        <Image source={{ uri: pickupPhotoUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
+          <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal} disabled={pickupSubmitting}>
+            <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+        <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20, alignItems: 'center' }]}>
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetHeading}>Use this photo?</Text>
+          <Text style={[styles.sheetSubheading, { textAlign: 'center' }]}>
+            Make sure the package is clearly visible. Pickup is confirmed once you tap Confirm.
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 8 }}>
             <TouchableOpacity
-              style={[styles.pinBtn, (pinInput.length !== 4 || pinVerifying) && { opacity: 0.5 }]}
-              disabled={pinInput.length !== 4 || pinVerifying}
-              onPress={handlePinVerify}
+              style={{
+                flex: 1, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8,
+                paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: colors.accent,
+                opacity: pickupSubmitting ? 0.5 : 1,
+              }}
+              onPress={() => { setPickupPhotoUri(null); setPickupCoords(null); setPickupTakenAt(''); }}
+              disabled={pickupSubmitting}
+              activeOpacity={0.85}
+            >
+              <SolarIcon name="Camera" variant="linear" size={18} color={colors.accent} />
+              <Text style={{ color: colors.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' }}>Retake</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.mPrimaryBtn, { flex: 1 }, pickupSubmitting && { opacity: 0.7 }]}
+              onPress={confirmPickupWithPhoto}
+              disabled={pickupSubmitting}
               activeOpacity={0.9}
             >
-              {pinVerifying ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.pinBtnText}>Verify</Text>}
+              {pickupSubmitting ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <Text style={styles.mPrimaryText}>Confirm Pickup</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
+      </>
+    );
+  };
+
+  // Overlay for step 1 (scan QR / enter PIN).
+  const renderScanStep = () => (
+    <>
+      <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+        <View style={{ flexDirection: 'row', height: frameSize }}>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+          <View style={{ width: frameSize, height: frameSize, overflow: 'hidden', position: 'relative' }}>
+            <Animated.View style={[styles.scanLine, { transform: [{ translateY: scanLineY }] }]} />
+            <View style={[styles.corner, styles.cornerTL]} />
+            <View style={[styles.corner, styles.cornerTR]} />
+            <View style={[styles.corner, styles.cornerBL]} />
+            <View style={[styles.corner, styles.cornerBR]} />
+          </View>
+          <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+        </View>
+        <View style={{ flex: 2.2, backgroundColor: 'rgba(0,0,0,0.7)' }} />
+      </View>
+
+      <View style={[styles.scannerTopBar, { paddingTop: insets.top + 10, zIndex: 20 }]}>
+        <TouchableOpacity style={styles.scannerCloseBtn} onPress={closeVerifyModal}>
+          <SolarIcon name="CloseCircle" variant="linear" size={24} color="#FFF" />
+        </TouchableOpacity>
+      </View>
+
+      <View style={[styles.scannerBottomSheet, { paddingBottom: insets.bottom + 24, zIndex: 20 }]}>
+        <View style={styles.sheetHandle} />
+        {(() => {
+          const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
+          return (
+            <>
+              <Text style={styles.sheetHeading}>
+                {isReturning ? 'Scan Return QR' : 'Scan Pickup QR'}
+              </Text>
+              <Text style={styles.sheetSubheading}>
+                {isReturning
+                  ? "Point your camera at the Sender's screen to verify the return."
+                  : "Point your camera at the Sender's screen to automatically verify pickup."}
+              </Text>
+            </>
+          );
+        })()}
+
+        <View style={styles.orRow}>
+          <View style={styles.orLine} />
+          <Text style={styles.orText}>OR ENTER PIN</Text>
+          <View style={styles.orLine} />
+        </View>
+
+        <View style={styles.pinRow}>
+          <TextInput
+            style={styles.pinInput}
+            value={pinInput}
+            onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
+            keyboardType="number-pad"
+            placeholder="••••"
+            placeholderTextColor={colors.textMuted}
+            maxLength={4}
+          />
+          <TouchableOpacity
+            style={[styles.pinBtn, (pinInput.length !== 4 || pinVerifying) && { opacity: 0.5 }]}
+            disabled={pinInput.length !== 4 || pinVerifying}
+            onPress={handlePinVerify}
+            activeOpacity={0.9}
+          >
+            {pinVerifying ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={styles.pinBtnText}>Verify</Text>}
+          </TouchableOpacity>
+        </View>
+      </View>
+    </>
+  );
+
+  const renderScannerModal = () => (
+    <Modal visible={verifyModalVisible} animationType="slide" transparent={false} onRequestClose={closeVerifyModal}>
+      <View style={styles.scannerRoot}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
+
+        {/*
+          ONE CameraView for the whole flow (QR scan -> pickup photo -> retake).
+          Previously the scanner camera was unmounted and a second camera mounted in the same
+          frame; the first native session had not released yet, so takePictureAsync failed with
+          "Failed to capture image". Keeping a single camera mounted removes that race.
+        */}
+        {cameraPermission?.granted && (
+          <CameraView
+            ref={pickupCameraRef}
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            mode="picture"
+            onCameraReady={() => setPickupCameraReady(true)}
+            onMountError={(e: any) => console.warn('[Task] camera mount error:', e?.message)}
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            onBarcodeScanned={!scanned && !pickupPending ? handleBarcodeScanned : undefined}
+          />
+        )}
+
+        {pickupPending ? renderPickupPhotoStep() : renderScanStep()}
       </View>
     </Modal>
   );

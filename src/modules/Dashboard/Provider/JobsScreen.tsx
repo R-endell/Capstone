@@ -700,7 +700,7 @@ const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
 };
 
 const RouteLocationPickerModal = ({
-  visible, onClose, onSelect, initialCoords, title, pinColor,
+  visible, onClose, onSelect, initialCoords, title, pinColor, asOverlay = false,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -708,6 +708,12 @@ const RouteLocationPickerModal = ({
   initialCoords?: Coord | null;
   title: string;
   pinColor: string;
+  /**
+   * Render as a full-screen overlay INSIDE the parent's Modal instead of opening a second
+   * native Modal. Swapping one native Modal for another (dismiss + present at the same time)
+   * is what made the sheet flash / re-open in a loop on Android.
+   */
+  asOverlay?: boolean;
 }) => {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
@@ -719,6 +725,9 @@ const RouteLocationPickerModal = ({
   const resolveSeq = useRef(0);
   const lastResolved = useRef<Coord | null>(null);
   const lastPoiTap = useRef(0);
+  // Camera moves WE trigger (moveTo / animateToRegion) must not feed back into
+  // onRegionChangeComplete -> resolveAt -> moveTo ... (that feedback is the "loop").
+  const ignoreRegionUntil = useRef(0);
   const markerRef = useRef<Coord>(initialCoords || DEFAULT_CENTER);
 
   const [markerCoord, setMarkerCoord] = useState<Coord>(initialCoords || DEFAULT_CENTER);
@@ -748,23 +757,28 @@ const RouteLocationPickerModal = ({
 
   useEffect(() => {
     if (!visible) return;
+    let cancelled = false;
+    loadRecents();
     if (initialCoords) {
       setMarkerCoord(initialCoords);
       resolveAt(initialCoords);
       const t = setTimeout(() => {
+        ignoreRegionUntil.current = Date.now() + 600;
         mapRef.current?.animateToRegion({ ...initialCoords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 0);
       }, 50);
-      return () => clearTimeout(t);
+      return () => { cancelled = true; clearTimeout(t); };
     }
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled) return;
         if (status !== 'granted') { resolveAt(markerRef.current); return; }
         const loc = await Location.getCurrentPositionAsync({});
+        if (cancelled) return;
         moveTo({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-      } catch { resolveAt(markerRef.current); }
+      } catch { if (!cancelled) resolveAt(markerRef.current); }
     })();
-    loadRecents();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, initialCoords?.latitude, initialCoords?.longitude]);
 
@@ -847,6 +861,7 @@ const RouteLocationPickerModal = ({
 
   const moveTo = (coords: Coord, label?: Label) => {
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    ignoreRegionUntil.current = Date.now() + 900; // 450ms animation + settle margin
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
     resolveAt(coords, label);
@@ -961,8 +976,11 @@ const RouteLocationPickerModal = ({
     if (!isDraggingMap) setIsDraggingMap(true);
   };
 
-  const onRegionChangeComplete = (region: Region) => {
+  const onRegionChangeComplete = (region: Region, details?: { isGesture?: boolean }) => {
     setIsDraggingMap(false);
+    // Only react to the USER moving the map. Programmatic animations are already resolved by moveTo().
+    if (details?.isGesture === false) return;
+    if (details?.isGesture !== true && Date.now() < ignoreRegionUntil.current) return;
     const center = { latitude: region.latitude, longitude: region.longitude };
     if (lastResolved.current && metersBetween(lastResolved.current, center) < SAME_SPOT_METERS) return;
     setMarkerCoord(center);
@@ -996,8 +1014,7 @@ const RouteLocationPickerModal = ({
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
-  return (
-    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+  const body = (
       <View style={[styles.container, { paddingBottom: kbH }]}>
         <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
 
@@ -1187,6 +1204,16 @@ const RouteLocationPickerModal = ({
           </View>
         )}
       </View>
+  );
+
+  if (asOverlay) {
+    if (!visible) return null;
+    return <View style={[StyleSheet.absoluteFill, { zIndex: 100, elevation: 100 }]}>{body}</View>;
+  }
+
+  return (
+    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+      {body}
     </Modal>
   );
 };
@@ -1291,6 +1318,14 @@ export default function JobsScreen() {
   const activeRouteRef = useRef<Route | null>(null);
   const routesRef = useRef<Route[]>([]);
 
+  // --- load control: the full-screen loader is for the FIRST load only. Re-showing it on every
+  // focus/refresh replaced the whole tree, which destroyed every open native Modal (the "glitch").
+  const hasLoadedRef = useRef(false);
+  const loadInFlightRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const modalOpenRef = useRef(false);
+  const loadDataRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
   useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
   useEffect(() => { routesRef.current = routes; }, [routes]);
@@ -1375,7 +1410,7 @@ export default function JobsScreen() {
         void refreshMatches(providerIdRef.current, found, routesRef.current);
       } else {
         // A brand-new route we haven't loaded yet.
-        void loadData();
+        void loadDataRef.current(true);
       }
     });
   }, []);
@@ -1807,31 +1842,42 @@ export default function JobsScreen() {
     }
   }, []);
 
-  const loadData = useCallback(async () => {
-    // FAIL-SAFE: If a modal is open, NEVER set loading to true.
-    // This prevents the screen from unmounting and destroying the native Modals.
-    if (addRouteModalVisible || routeLocationPickerVisible) {
-      return; 
-    }
+  // Read live (not from a stale closure) so every caller sees the current modal state.
+  modalOpenRef.current = addRouteModalVisible || routeLocationPickerVisible;
 
-    setLoading(true);
-    const pid = await getProviderData();
-    if (pid) {
-      const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
-      await refreshMatches(pid, resolvedRoute, validRoutes);
-    }
-    setLoading(false);
-  }, [refreshMatches, addRouteModalVisible, routeLocationPickerVisible]);
+  const loadData = async (force = false) => {
+    // Never reload underneath an open modal.
+    if (modalOpenRef.current) return;
+    // One load at a time, and de-bounce back-to-back focus events.
+    if (loadInFlightRef.current) return;
+    if (!force && hasLoadedRef.current && Date.now() - lastLoadAtRef.current < 2000) return;
 
+    loadInFlightRef.current = true;
+    // Full-screen loader ONLY for the very first load. Later reloads update data in place,
+    // so the tree (and any native Modal in it) is never unmounted.
+    if (!hasLoadedRef.current) setLoading(true);
+    try {
+      const pid = await getProviderData();
+      if (pid) {
+        const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
+        await refreshMatches(pid, resolvedRoute, validRoutes);
+      }
+    } catch (e) {
+      console.warn('loadData error:', e);
+    } finally {
+      hasLoadedRef.current = true;
+      lastLoadAtRef.current = Date.now();
+      loadInFlightRef.current = false;
+      setLoading(false);
+    }
+  };
+  loadDataRef.current = loadData;
+
+  // Stable callback: runs when the screen actually gains focus, NOT whenever a modal opens/closes.
   useFocusEffect(
     useCallback(() => {
-      // Prevent loadData() from unmounting the screen while the location picker
-      // or add route modal is open. Unmounting destroys the native Modal and
-      // causes it to re-open in an infinite loop.
-      if (addRouteModalVisible || routeLocationPickerVisible) return;
-      
-      loadData();
-    }, [loadData, addRouteModalVisible, routeLocationPickerVisible])
+      void loadDataRef.current();
+    }, [])
   );
 
   useEffect(() => {
@@ -3409,10 +3455,14 @@ export default function JobsScreen() {
 
   const renderAddRouteModal = () => (
     <Modal
-      visible={addRouteModalVisible && !routeLocationPickerVisible}
+      visible={addRouteModalVisible}
       transparent
       animationType="slide"
-      onRequestClose={() => setAddRouteModalVisible(false)}
+      onRequestClose={() => {
+        // Hardware back closes the map picker first, then the sheet.
+        if (routeLocationPickerVisible) setRouteLocationPickerVisible(false);
+        else setAddRouteModalVisible(false);
+      }}
     >
       <View style={styles.modalOverlay}>
         <View style={[styles.addRouteSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 20 }]}>
@@ -3667,6 +3717,22 @@ export default function JobsScreen() {
             </TouchableOpacity>
           </ScrollView>
         </View>
+
+        {/* Map picker lives INSIDE this Modal as an overlay: no second native Modal, no dismiss/present race. */}
+        <RouteLocationPickerModal
+          asOverlay
+          key={routeLocationPickerType}
+          visible={routeLocationPickerVisible}
+          onClose={() => setRouteLocationPickerVisible(false)}
+          onSelect={(loc) => handleNewRouteLocationSelect(loc, routeLocationPickerType)}
+          initialCoords={
+            routeLocationPickerType === 'start'
+              ? (newRouteStart ? { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude } : undefined)
+              : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
+          }
+          title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
+          pinColor={routeLocationPickerType === 'start' ? colors.accent : colors.textPrimary}
+        />
       </View>
     </Modal>
   );
@@ -3784,19 +3850,6 @@ export default function JobsScreen() {
       </Modal>
 
       {renderAddRouteModal()}
-
-      <RouteLocationPickerModal
-        visible={routeLocationPickerVisible}
-        onClose={() => setRouteLocationPickerVisible(false)}
-        onSelect={(loc) => handleNewRouteLocationSelect(loc, routeLocationPickerType)}
-        initialCoords={
-          routeLocationPickerType === 'start'
-            ? (newRouteStart ? { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude } : undefined)
-            : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
-        }
-        title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
-        pinColor={routeLocationPickerType === 'start' ? colors.accent : colors.textPrimary}
-      />
 
       <Modal visible={!!previewPhoto} transparent animationType="fade" onRequestClose={() => setPreviewPhoto(null)}>
         <View style={styles.previewOverlay}>
