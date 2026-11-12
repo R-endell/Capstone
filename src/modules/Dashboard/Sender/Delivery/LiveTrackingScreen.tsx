@@ -2,7 +2,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image,
-  StatusBar, Linking, ScrollView, Animated, Easing, Modal, Pressable,
+  StatusBar, Linking, ScrollView, Animated, Easing, Modal, Pressable, Share,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
@@ -10,22 +11,24 @@ import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../../utils/supabase';
 import { fetchLatestFix, ProviderFix } from '../../../../services/locationService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { MAP_PROPS } from '../../../../utils/mapConfig';
-import { getNavRoute, fmtDistance, fmtDuration } from '../../../../components/map/directions';
+import { MAP_PROPS, BRAND_ORANGE } from '../../../../utils/mapConfig';
+import { getNavRoute, fmtDuration } from '../../../../components/map/directions';
+import type { NavRoute } from '../../../../components/map/directions';
+import {
+  OFF_ROUTE_M, REROUTE_MIN_GAP_MS, ROUTE_REFRESH_MS,
+  buildRouteIndex, computeProgress, getRouteCached, remainingPath,
+} from '../../../../services/navigationEngine';
+import type { RouteIndex } from '../../../../services/navigationEngine';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
 
 const STALE_MS = 45_000;
-const REROUTE_MIN_MS = 15_000;
-const REROUTE_MIN_MOVE_M = 80;
 const MIN_GLIDE_MS = 600;
 const MAX_GLIDE_MS = 2000;
 const FRAME_MS = 33;
 
-const ORANGE = '#FF751F';
-
 type LatLng = { latitude: number; longitude: number };
-type PkgItem = { size: string | null; name: string; fragile: boolean };
+type PkgItem = { size: string | null; name: string; fragile: boolean; photo?: string | null };
 
 type RouteData = {
   deliveryId: number;
@@ -34,8 +37,8 @@ type RouteData = {
   acceptedAt: string | null;
   completedAt: string | null;
   estimatedEta: string | null;
-  pickup: LatLng & { address: string };
-  dropoff: LatLng & { address: string };
+  pickup: LatLng & { address: string; name?: string | null; area?: string };
+  dropoff: LatLng & { address: string; name?: string | null; area?: string };
   pickupVerified: boolean;
   dropoffVerified: boolean;
   deliveryStatus: string;
@@ -53,30 +56,12 @@ const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg:
   Large:  { letter: 'L', kg: '~30 kg', color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
 };
 
-const STEPS = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
-
-function currentStep(r: RouteData | null): number {
-  if (!r || !r.acceptedAt) return 0;
-  if (r.completedAt) return 5;
-  if (r.pickupVerified) return 3;
-  return 1;
-}
-
 function timelineStage(r: RouteData | null): number {
   if (!r) return 0;
   if (r.completedAt) return 4;
   if (r.pickupVerified) return 3;
   if (r.acceptedAt) return 1;
   return 0;
-}
-
-function formatLastSeen(iso: string | null | undefined): string {
-  if (!iso) return 'Waiting for GPS…';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 5_000) return 'Updated just now';
-  if (ms < 60_000) return `Updated ${Math.floor(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `Updated ${Math.floor(ms / 60_000)}m ago`;
-  return `Last seen ${new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 }
 
 const buildItems = (cargo: any): PkgItem[] => {
@@ -88,6 +73,7 @@ const buildItems = (cargo: any): PkgItem[] => {
       size: it?.size ?? null,
       name: it?.description || `${it?.size || 'Standard'} package`,
       fragile: !!it?.fragile,
+      photo: it?.photo ?? it?.image ?? it?.image_url ?? it?.photo_url ?? it?.picture ?? null,
     }));
   }
   const out: PkgItem[] = [];
@@ -106,6 +92,61 @@ const haversineM = (a: LatLng, b: LatLng) => {
     Math.cos((a.latitude * Math.PI) / 180) * Math.cos((b.latitude * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 };
+
+const polylineDistanceKm = (coords: LatLng[]): number => {
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) total += haversineM(coords[i - 1], coords[i]);
+  return total / 1000;
+};
+
+const splitAddress = (a: string | null | undefined) => {
+  const s = (a ?? '').trim();
+  const i = s.indexOf(',');
+  if (i < 0) return { title: s || '—', sub: '' };
+  return { title: s.slice(0, i).trim(), sub: s.slice(i + 1).trim() };
+};
+
+const areaOf = (l: any): string =>
+  [l?.barangay, l?.city, l?.province].filter(v => v && v !== 'Unknown').join(', ');
+
+const placeParts = (l: { address: string; name?: string | null; area?: string }) => {
+  if (l.name) return { title: l.name, sub: [l.address, l.area].filter(Boolean).join(', ') };
+  const sp = splitAddress(l.address);
+  return { title: sp.title, sub: sp.sub || l.area || '' };
+};
+
+const fmtDateTime = (iso?: string | null) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())} • ${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
+};
+
+const FARE_KEYS = ['total_price', 'total_amount', 'total_fare', 'delivery_fee', 'price', 'fare', 'amount', 'estimated_price', 'final_price', 'agreed_price'];
+const METHOD_KEYS = ['payment_method', 'payment_type'];
+type PayInfo = { amount: number | null; method: string | null };
+const extractPay = (row: any): PayInfo | null => {
+  if (!row) return null;
+  let amount: number | null = null;
+  for (const k of FARE_KEYS) {
+    const v = Number(row[k]);
+    if (row[k] != null && isFinite(v) && v > 0) { amount = v; break; }
+  }
+  let method: string | null = null;
+  for (const k of METHOD_KEYS) {
+    if (typeof row[k] === 'string' && row[k]) { method = row[k]; break; }
+  }
+  return amount == null && !method ? null : { amount, method };
+};
+const findPhoto = (row: any): string | null => {
+  if (!row) return null;
+  for (const k of Object.keys(row)) {
+    if (/photo|image|picture/i.test(k) && typeof row[k] === 'string' && /^https?:/.test(row[k])) return row[k];
+  }
+  return null;
+};
+const fmtPeso = (n: number) => `₱${n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
 
 const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: ProviderFix; live: boolean }) {
   const { colors } = useTheme();
@@ -188,11 +229,39 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
   );
 });
 
-const polylineDistanceKm = (coords: LatLng[]): number => {
-  let total = 0;
-  for (let i = 1; i < coords.length; i++) total += haversineM(coords[i - 1], coords[i]);
-  return total / 1000;
-};
+type MarkerStyles = ReturnType<typeof makeMarkerStyles>;
+
+const PIN = 44, LABEL_H = 26, LABEL_GAP = 6;
+const PlaceMarker = React.memo(function PlaceMarker({
+  lat, lng, title, kind, mk,
+}: { lat: number; lng: number; title: string; kind: 'pickup' | 'dropoff'; mk: MarkerStyles }) {
+  const [track, setTrack] = useState(true);
+  useEffect(() => {
+    setTrack(true);
+    const t = setTimeout(() => setTrack(false), 700);
+    return () => clearTimeout(t);
+  }, [title]);
+
+  return (
+    <Marker
+      coordinate={{ latitude: lat, longitude: lng }}
+      anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + LABEL_H) }}
+      tracksViewChanges={track}
+      zIndex={5}
+    >
+      <View style={mk.placeWrap}>
+        {kind === 'pickup' ? (
+          <View style={mk.pickPin}><Ionicons name="cube" size={20} color="#FFFFFF" /></View>
+        ) : (
+          <View style={mk.dropPin}><Ionicons name="person" size={26} color="#000000" /></View>
+        )}
+        <View style={mk.labelPill}>
+          <Text style={mk.labelText} numberOfLines={1}>{title}</Text>
+        </View>
+      </View>
+    </Marker>
+  );
+});
 
 export default function LiveTrackingScreen() {
   const navigation = useNavigation<any>();
@@ -215,20 +284,76 @@ export default function LiveTrackingScreen() {
   const [provider, setProvider] = useState<any>(null);
   const [vehicle, setVehicle] = useState<any>(null);
   const [fix, setFix] = useState<ProviderFix | null>(null);
-  const [navInfo, setNavInfo] = useState<{ distanceM: number; durationS: number } | null>(null);
   const [tick, setTick] = useState(0);
-  const [sheetHeight, setSheetHeight] = useState(300);
+  const { height: winH } = useWindowDimensions();
+  const sheetHeight = Math.round(winH * 0.44);          // visible height when collapsed
+  const expandedH = Math.round(winH * 0.9);             // full sheet height
+  const collapsedY = expandedH - sheetHeight;           // distance the sheet travels
+
+  const scrollRef = useRef<any>(null);
+  const scrollY = useRef(new Animated.Value(0)).current;
   const [expanded, setExpanded] = useState(false);
+  const expandedRef = useRef(false);
+  const isAnimating = useRef(false); // Prevents the blink/spam
+  const [viewH, setViewH] = useState(expandedH);
+  const [pay, setPay] = useState<PayInfo | null>(null);
+  const [pkgPhoto, setPkgPhoto] = useState<string | null>(null);
+
+  const range = { inputRange: [0, collapsedY], extrapolate: 'clamp' as const };
+  const sheetTranslate = scrollY.interpolate({ ...range, outputRange: [collapsedY, 0] });
+  const contentShift = scrollY.interpolate({ ...range, outputRange: [0, collapsedY] });
+  const fabShift = scrollY.interpolate({ ...range, outputRange: [0, -collapsedY] });
+  const fabOpacity = scrollY.interpolate({ inputRange: [0, collapsedY * 0.35], outputRange: [1, 0], extrapolate: 'clamp' });
+
+  const snapSheet = useCallback((open: boolean) => {
+    isAnimating.current = true;
+    setExpanded(open);
+    expandedRef.current = open;
+    scrollRef.current?.scrollTo({ y: open ? collapsedY : 0, animated: true });
+    // Release the lock after the scroll animation finishes
+    setTimeout(() => { isAnimating.current = false; }, 400);
+  }, [collapsedY]);
+
+  const onSheetScroll = useMemo(() => Animated.event(
+    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+    {
+      useNativeDriver: true,
+      listener: (e: any) => {
+        if (isAnimating.current) return; // Ignore state changes while snapping
+        const y = e.nativeEvent.contentOffset.y;
+        const open = y > collapsedY * 0.5;
+        if (open !== expandedRef.current) {
+          expandedRef.current = open;
+          setExpanded(open);
+        }
+      },
+    },
+  ), [scrollY, collapsedY]);
+
+  // If the finger lifts half-way, finish the move.
+  const settleSheet = useCallback((e: any) => {
+    if (isAnimating.current) return;
+    const y = e.nativeEvent.contentOffset.y;
+    if (y > 1 && y < collapsedY - 1) {
+      snapSheet(y > collapsedY / 2);
+    }
+  }, [collapsedY, snapSheet]);
+
   const [follow, setFollow] = useState(false);
-  const [pkgOpen, setPkgOpen] = useState(false);
+  const [photoView, setPhotoView] = useState<string | null>(null);
   const [stageBanner, setStageBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
   const lastStageRef = useRef<number>(-1);
   const pulse = useRef(new Animated.Value(0)).current;
 
-  const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  const [navRoute, setNavRoute] = useState<{ r: NavRoute; idx: RouteIndex; tKey: string } | null>(null);
   const [fullRoute, setFullRoute] = useState<LatLng[]>([]);
-  const lastRoute = useRef<{ at: number; from: LatLng | null; tKey: string }>({ at: 0, from: null, tKey: '' });
+  const reqSeq = useRef(0);
+  const inflightKey = useRef<string | null>(null);
+  const lastReqAt = useRef(0);
+  const offCount = useRef(0);
+  const alongRef = useRef<number | undefined>(undefined);
+  const routeFromMe = useRef(false);
   const lastFitKey = useRef('');
 
   const loadProviderStatic = useCallback(async () => {
@@ -312,8 +437,8 @@ export default function LiveTrackingScreen() {
         vehicle:vehicles(vehicle_id, vehicle_type, plate_number, max_weight_kg),
         request:delivery_requests(
           request_id, delivery_status, receiver_phone,
-          pickup:locations!delivery_requests_pickup_location_id_fkey(location_id, street_address, latitude, longitude),
-          dropoff:locations!delivery_requests_dropoff_location_id_fkey(location_id, street_address, latitude, longitude),
+          pickup:locations!delivery_requests_pickup_location_id_fkey(*),
+          dropoff:locations!delivery_requests_dropoff_location_id_fkey(*),
           cargo:cargo_id(description, items_json, small_box_qty, medium_box_qty, large_box_qty, is_fragile)
         )
       `)
@@ -348,11 +473,15 @@ export default function LiveTrackingScreen() {
         latitude: pickupLoc?.latitude ?? 10.3157,
         longitude: pickupLoc?.longitude ?? 123.8854,
         address: pickupLoc?.street_address ?? 'Pickup',
+        name: pickupLoc?.place_name ?? null,
+        area: areaOf(pickupLoc),
       },
       dropoff: {
         latitude: dropoffLoc?.latitude ?? 10.3157,
         longitude: dropoffLoc?.longitude ?? 123.8854,
         address: dropoffLoc?.street_address ?? 'Drop-off',
+        name: dropoffLoc?.place_name ?? null,
+        area: areaOf(dropoffLoc),
       },
       providerOnWayAt: (d as any).provider_on_way_at ?? null,
       providerEtaMins: (d as any).provider_eta_mins ?? null,
@@ -361,6 +490,13 @@ export default function LiveTrackingScreen() {
       receiverPhone: req?.receiver_phone ?? null,
     });
     setVehicle((d as any).vehicle ?? null);
+
+    try {
+      const { data: full } = await supabase
+        .from('delivery_requests').select('*').eq('request_id', d.request_id).maybeSingle();
+      setPay(extractPay(full));
+      setPkgPhoto(findPhoto(full));
+    } catch { /* payment info is optional */ }
 
     if (d.provider_id) {
       const { data: p } = await supabase
@@ -434,31 +570,67 @@ export default function LiveTrackingScreen() {
 
   const targetIsDropoff = isProviderMode || (!!data?.pickupVerified && !data?.completedAt);
 
-  useEffect(() => {
-    if (!data) { setRouteCoords([]); setNavInfo(null); lastRoute.current = { at: 0, from: null, tKey: '' }; return; }
-    const target = targetIsDropoff ? data.dropoff : data.pickup;
-    const origin: LatLng = fix
-      ? { latitude: fix.latitude, longitude: fix.longitude }
-      : { latitude: data.pickup.latitude, longitude: data.pickup.longitude };
-    const tKey = `${target.latitude.toFixed(5)},${target.longitude.toFixed(5)}`;
+  const navTarget = data ? (targetIsDropoff ? data.dropoff : data.pickup) : null;
+  const tKey = navTarget ? `${navTarget.latitude.toFixed(5)},${navTarget.longitude.toFixed(5)}` : '';
+  const me = useMemo<LatLng | null>(
+    () => (fix ? { latitude: fix.latitude, longitude: fix.longitude } : null),
+    [fix],
+  );
 
-    const lr = lastRoute.current;
-    const targetChanged = lr.tKey !== tKey;
-    const moved = lr.from ? haversineM(lr.from, origin) : Infinity;
-    if (!targetChanged && (Date.now() - lr.at < REROUTE_MIN_MS || moved < REROUTE_MIN_MOVE_M)) return;
-    lastRoute.current = { at: Date.now(), from: origin, tKey };
-
-    let cancelled = false;
-    getNavRoute(origin, { latitude: target.latitude, longitude: target.longitude }).then(r => {
-      if (cancelled) return;
-      setRouteCoords(r.coords);
-      setNavInfo({
-        distanceM: r.distanceM || polylineDistanceKm(r.coords) * 1000,
-        durationS: r.durationS,
-      });
+  const requestRoute = useCallback((from: LatLng, to: LatLng, key: string, fromMe: boolean) => {
+    const seq = ++reqSeq.current;
+    inflightKey.current = key;
+    lastReqAt.current = Date.now();
+    routeFromMe.current = fromMe;
+    getRouteCached(from, to).then(r => {
+      if (seq !== reqSeq.current) return;
+      alongRef.current = undefined;
+      offCount.current = 0;
+      setNavRoute({ r, idx: buildRouteIndex(r), tKey: key });
+    }).catch(() => { /* keep the last route */ }).finally(() => {
+      if (seq === reqSeq.current) inflightKey.current = null;
     });
-    return () => { cancelled = true; };
-  }, [data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, fix?.latitude, fix?.longitude, targetIsDropoff]);
+  }, []);
+  useEffect(() => () => { reqSeq.current++; }, []);
+
+  const progress = useMemo(() => {
+    if (!me || !navRoute || navRoute.tKey !== tKey) return null;
+    return computeProgress(navRoute.r, navRoute.idx, me, alongRef.current);
+  }, [me, navRoute, tKey]);
+  useEffect(() => { alongRef.current = progress?.along; }, [progress]);
+
+  useEffect(() => {
+    if (!data || !navTarget || data.completedAt) return;
+    const to = { latitude: navTarget.latitude, longitude: navTarget.longitude };
+    const origin: LatLng = me ?? { latitude: data.pickup.latitude, longitude: data.pickup.longitude };
+    if (navRoute?.tKey !== tKey) {
+      if (inflightKey.current !== tKey) requestRoute(origin, to, tKey, !!me);
+      return;
+    }
+    if (inflightKey.current === tKey) return;
+    const now = Date.now();
+    if (me && !routeFromMe.current) { requestRoute(me, to, tKey, true); return; }
+    if (progress && progress.offRouteM > OFF_ROUTE_M) {
+      offCount.current += 1;
+      if (offCount.current >= 2 && now - lastReqAt.current > REROUTE_MIN_GAP_MS) requestRoute(origin, to, tKey, !!me);
+      return;
+    }
+    offCount.current = 0;
+    if (me && now - lastReqAt.current > ROUTE_REFRESH_MS) requestRoute(origin, to, tKey, true);
+  }, [data, navTarget, me, tKey, navRoute, progress, requestRoute]);
+
+  const linePts = useMemo(() => {
+    if (!navRoute || navRoute.tKey !== tKey || navRoute.r.coords.length < 2) return null;
+    if (progress && me && navRoute.r.source !== 'straight') return remainingPath(navRoute.r, navRoute.idx, progress.along, me);
+    return navRoute.r.coords;
+  }, [navRoute, tKey, progress, me]);
+
+  const liveM = me && navTarget ? haversineM(me, navTarget) : null;
+  const closeBy = liveM != null && liveM < 150;
+  const distanceM: number | null = progress ? (closeBy ? liveM : progress.remainingM) : null;
+  const durationS: number | null = progress
+    ? (progress.remainingM > 0 && distanceM != null ? progress.remainingS * Math.min(1, distanceM / progress.remainingM) : 0)
+    : null;
 
   useEffect(() => {
     if (!data) { setFullRoute([]); return; }
@@ -478,7 +650,7 @@ export default function LiveTrackingScreen() {
     ];
     if (fix) pts.push({ latitude: fix.latitude, longitude: fix.longitude });
     mapRef.current?.fitToCoordinates(pts, {
-      edgePadding: { top: 110, right: 60, bottom: sheetHeight + 40, left: 60 },
+      edgePadding: { top: 110, right: 60, bottom: sheetHeight + 70, left: 60 },
       animated,
     });
   }, [data, fix, sheetHeight]);
@@ -508,7 +680,7 @@ export default function LiveTrackingScreen() {
     lastStageRef.current = stage;
     if (prev < 0) return;
     const msg =
-      stage === 1 ? 'Courier is on the way to pickup' :
+      stage === 1 ? 'Provider is on the way to pickup' :
       stage === 3 ? 'Package picked up — in transit' :
       stage === 4 ? 'Delivered successfully' : null;
     if (!msg) return;
@@ -540,15 +712,10 @@ export default function LiveTrackingScreen() {
   };
 
   const providerName = provider
-    ? `${provider.first_name ?? ''} ${provider.last_name ?? ''}`.trim() || 'Courier'
-    : 'Courier';
+    ? `${provider.first_name ?? ''} ${provider.last_name ?? ''}`.trim() || 'Provider'
+    : 'Provider';
   const initials = providerName.split(' ').filter(Boolean).slice(0, 2).map(s => s[0]?.toUpperCase()).join('') || 'C';
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { Small: 0, Medium: 0, Large: 0 };
-    (data?.items || []).forEach(it => { if (it.size && c[it.size] != null) c[it.size] += 1; });
-    return c;
-  }, [data?.items]);
   const pkgTotal = data?.items.length ?? 0;
 
   if (loading || !data) {
@@ -563,18 +730,36 @@ export default function LiveTrackingScreen() {
     );
   }
 
-  const step = currentStep(data);
-  const headingTo = data.completedAt ? 'Delivered' : targetIsDropoff ? 'Heading to drop-off' : 'Heading to pickup';
-  const etaLabel = data.completedAt ? 'Delivered' : navInfo ? fmtDuration(navInfo.durationS) : '—';
-  const distLabel = data.completedAt ? '—' : navInfo ? fmtDistance(navInfo.distanceM) : '—';
-  const arrivalClock = !data.completedAt && navInfo
-    ? new Date(Date.now() + navInfo.durationS * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : null;
+  const etaLabel = data.completedAt ? 'Delivered' : durationS != null ? fmtDuration(durationS) : '—';
   const pulseOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] });
+  const hasEta = etaLabel !== '—' && !data.completedAt;
+
+  const plate = vehicle?.plate_number || null;
+  const pu = placeParts(data.pickup);
+  const dr = placeParts(data.dropoff);
+  const routeKm = fullRoute.length > 1 ? `${polylineDistanceKm(fullRoute).toFixed(2)} km` : null;
+  const statusText = data.completedAt ? 'Delivered' : isStale ? 'Waiting for GPS' : 'Live';
+
+  const onShare = async () => {
+    try {
+      await Share.share({
+        message:
+          `Pack-N-Ship delivery${plate ? ` · provider ${plate}` : ''}\n` +
+          `From: ${data.pickup.address}\nTo: ${data.dropoff.address}\n` +
+          `Status: ${statusText}${hasEta ? ` · ETA ${etaLabel}` : ''}`,
+      });
+    } catch { /* user dismissed */ }
+  };
+
+  const kv = (label: string, value: string, color?: string) => (
+    <View style={styles.kvRow}>
+      <Text style={styles.kvLabel}>{label}</Text>
+      <Text style={[styles.kvValue, color ? { color } : null]} numberOfLines={1}>{value}</Text>
+    </View>
+  );
 
   return (
     <View style={styles.container}>
-      {/* Force light map basemap even in dark theme — matches LocationSelectScreen */}
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
 
       <MapView
@@ -588,6 +773,7 @@ export default function LiveTrackingScreen() {
           latitudeDelta: 0.05,
           longitudeDelta: 0.05,
         }}
+        onPress={() => { if (expanded) snapSheet(false); }}
         onPanDrag={() => { if (follow) setFollow(false); }}
         showsUserLocation={false}
         showsMyLocationButton={false}
@@ -599,25 +785,24 @@ export default function LiveTrackingScreen() {
         {fullRoute.length > 1 && (
           <Polyline coordinates={fullRoute} strokeColor="#94A3B8" strokeWidth={6} lineCap="round" lineJoin="round" />
         )}
-        {routeCoords.length > 1 && (
-          <Polyline coordinates={routeCoords} strokeColor={colors.accent} strokeWidth={6} lineCap="round" lineJoin="round" />
+        {linePts && linePts.length > 1 && (
+          <Polyline coordinates={linePts} strokeColor={colors.accent} strokeWidth={6} lineCap="round" lineJoin="round" />
         )}
 
-        <Marker
-          coordinate={{ latitude: data.pickup.latitude, longitude: data.pickup.longitude }}
-          anchor={{ x: 0.5, y: 0.5 }}
-          tracksViewChanges={false}
-        >
-          <View style={mk.pin}><Text style={mk.pinLetter}>P</Text></View>
-        </Marker>
-
-        <Marker
-          coordinate={{ latitude: data.dropoff.latitude, longitude: data.dropoff.longitude }}
-          anchor={{ x: 0.5, y: 0.5 }}
-          tracksViewChanges={false}
-        >
-          <View style={mk.pin}><SolarIcon name="User" variant="bold" size={16} color="#000000" /></View>
-        </Marker>
+        <PlaceMarker
+          lat={data.pickup.latitude}
+          lng={data.pickup.longitude}
+          title={pu.title}
+          kind="pickup"
+          mk={mk}
+        />
+        <PlaceMarker
+          lat={data.dropoff.latitude}
+          lng={data.dropoff.longitude}
+          title={dr.title}
+          kind="dropoff"
+          mk={mk}
+        />
 
         {fix && <CourierMarker fix={fix} live={!isStale} />}
       </MapView>
@@ -632,19 +817,24 @@ export default function LiveTrackingScreen() {
         </View>
       </View>
 
-      <View style={[styles.fabCol, { bottom: sheetHeight + 12 }]}>
-        <TouchableOpacity
-          style={[styles.fab, follow && styles.fabOn]}
-          onPress={() => setFollow(f => !f)}
-          disabled={!fix}
-          activeOpacity={0.85}
-        >
-          <SolarIcon name="Routing" variant="bold" size={20} color={follow ? '#FFFFFF' : colors.accent} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.fab} onPress={() => { setFollow(false); fitAll(true); }} activeOpacity={0.85}>
-          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.accent} />
-        </TouchableOpacity>
-      </View>
+      <Animated.View
+        pointerEvents={expanded ? 'none' : 'box-none'}
+        style={[styles.fabCol, { bottom: sheetHeight + 12, opacity: fabOpacity, transform: [{ translateY: fabShift }] }]}
+      >
+        <View style={{ gap: 10 }}>
+          <TouchableOpacity
+            style={[styles.fab, follow && styles.fabOn]}
+            onPress={() => setFollow(f => !f)}
+            disabled={!fix}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="Routing" variant="bold" size={20} color={follow ? '#FFFFFF' : colors.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.fab} onPress={() => { setFollow(false); fitAll(true); }} activeOpacity={0.85}>
+            <SolarIcon name="Maximize" variant="linear" size={20} color={colors.accent} />
+          </TouchableOpacity>
+        </View>
+      </Animated.View>
 
       {stageBanner && (
         <Animated.View
@@ -662,255 +852,192 @@ export default function LiveTrackingScreen() {
         </Animated.View>
       )}
 
-      {/* ============================================================ */}
-      {/* Redesigned bottom sheet — the "what's happening now" surface */}
-      {/* ============================================================ */}
-      <View
-        style={[styles.sheet, expanded && styles.sheetExpanded, { paddingBottom: 12 }]}
-        onLayout={(e) => setSheetHeight(e.nativeEvent.layout.height)}
+      <Animated.View
+        style={[styles.sheet, { height: expandedH, paddingBottom: insets.bottom + 12, transform: [{ translateY: sheetTranslate }] }]}
       >
-        <TouchableOpacity activeOpacity={0.8} onPress={() => setExpanded(x => !x)} style={styles.grabberWrap} hitSlop={{ top: 8, bottom: 8 }}>
+        <TouchableOpacity activeOpacity={0.8} onPress={() => snapSheet(!expandedRef.current)} style={styles.grabberWrap} hitSlop={{ top: 8, bottom: 8 }}>
           <View style={styles.grabber} />
         </TouchableOpacity>
 
-        {/* --- PRIMARY (always visible): step → headline → driver → ETA --- */}
-        {!isProviderMode && (
-          <View style={styles.stepper}>
-            {STEPS.map((label, i) => {
-              const done = i < step;
-              const cur = i === step;
-              return (
-                <View key={label} style={styles.stepCol}>
-                  <View style={styles.stepTrack}>
-                    <View style={[styles.stepLine, i === 0 && { opacity: 0 }, (done || cur) && styles.stepLineOn]} />
-                    <View style={[styles.stepDot, done && styles.stepDotDone, cur && styles.stepDotCurrent]}>
-                      {done
-                        ? <SolarIcon name="Check" variant="bold" size={11} color="#FFFFFF" />
-                        : cur ? <View style={styles.stepDotCore} /> : null}
-                    </View>
-                    <View style={[styles.stepLine, i === STEPS.length - 1 && { opacity: 0 }, done && styles.stepLineOn]} />
+        <Animated.ScrollView
+          ref={scrollRef}
+          style={styles.sheetScroll}
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+          overScrollMode="never"
+          nestedScrollEnabled
+          scrollEventThrottle={16}
+          onScroll={onSheetScroll}
+          onScrollEndDrag={(e) => {
+            // If there is no momentum, settle immediately
+            if (Math.abs((e.nativeEvent as any).velocity?.y ?? 0) < 0.1) settleSheet(e);
+          }}
+          onMomentumScrollEnd={settleSheet}
+          onLayout={(e) => setViewH(e.nativeEvent.layout.height)}
+          contentContainerStyle={[styles.sheetContent, { minHeight: viewH + collapsedY }]}
+        >
+          <Animated.View style={{ transform: [{ translateY: contentShift }] }}>
+          {data.completedAt ? (
+            <Text style={styles.headline}>
+              Delivered! <Text style={styles.headlineAccent}>Your package has arrived</Text>
+            </Text>
+          ) : isProviderMode ? (
+            <Text style={styles.headline}>
+              Provider is <Text style={styles.headlineAccent}>on the road</Text>
+              {hasEta ? <Text> · arriving in <Text style={styles.headlineAccent}>{etaLabel}</Text></Text> : null}
+            </Text>
+          ) : targetIsDropoff ? (
+            <Text style={styles.headline}>
+              Your package is on the way{hasEta ? <Text> · arriving in <Text style={styles.headlineAccent}>{etaLabel}</Text></Text> : null}
+            </Text>
+          ) : (
+            <Text style={styles.headline}>
+              Provider{plate ? <Text style={styles.headlineAccent}> {plate}</Text> : null} will pick up your package{hasEta ? <Text> in <Text style={styles.headlineAccent}>{etaLabel}</Text></Text> : null}
+            </Text>
+          )}
+
+          <View style={styles.card}>
+            <View style={styles.cardTop}>
+              <View style={styles.profileRow}>
+                <View style={styles.avatar}>
+                  {provider?.profile_photo ? (
+                    <Image source={{ uri: provider.profile_photo }} style={styles.avatarImg} />
+                  ) : (
+                    <Text style={styles.avatarText}>{initials}</Text>
+                  )}
+                </View>
+              </View>
+
+              <View style={styles.rightBlock}>
+                {!!plate && (
+                  <View style={styles.plateBox}>
+                    <Text style={styles.plateText}>{plate}</Text>
                   </View>
-                  <Text style={[styles.stepLabel, (done || cur) && styles.stepLabelOn]} numberOfLines={2}>{label}</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* Headline: what's happening right now, big. */}
-        <View style={styles.headlineRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.headlineEyebrow}>
-              {data.completedAt
-                ? 'COMPLETED'
-                : data.pickupVerified
-                  ? 'ON THE WAY TO DROP-OFF'
-                  : data.acceptedAt
-                    ? 'ON THE WAY TO PICKUP'
-                    : 'WAITING FOR COURIER'}
-            </Text>
-            <Text style={styles.headlineText} numberOfLines={1}>
-              {data.completedAt
-                ? 'Delivered'
-                : data.pickupVerified
-                  ? data.dropoff.address.split(',')[0]
-                  : data.pickup.address.split(',')[0]}
-            </Text>
-            <Text style={styles.headlineSub} numberOfLines={1}>
-              {data.completedAt
-                ? formatLastSeen(fix?.updated_at)
-                : `${headingTo}${arrivalClock ? ` · arriving ${arrivalClock}` : ''} · ${formatLastSeen(fix?.updated_at)}`}
-            </Text>
-          </View>
-          <View style={styles.etaBigBox}>
-            <Text style={styles.etaBigLabel}>ETA</Text>
-            <Text style={styles.etaBigValue} numberOfLines={1}>{etaLabel}</Text>
-            <Text style={styles.etaBigSub} numberOfLines={1}>{distLabel}</Text>
-          </View>
-        </View>
-
-        {/* Driver row — always visible, since the sender may want to call early. */}
-        <View style={styles.providerRow}>
-          <View style={styles.avatar}>
-            {provider?.profile_photo ? (
-              <Image source={{ uri: provider.profile_photo }} style={styles.avatarImg} />
-            ) : (
-              <Text style={styles.avatarText}>{initials}</Text>
-            )}
-            <View style={styles.verifiedDot}>
-              <SolarIcon name="Check" variant="bold" size={9} color="#FFFFFF" />
-            </View>
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.providerName} numberOfLines={1}>{providerName}</Text>
-            <Text style={styles.providerSub} numberOfLines={1}>
-              {vehicle?.vehicle_type ?? 'Courier'} · {vehicle?.plate_number ?? '—'}
-            </Text>
-          </View>
-          <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.85}>
-            <SolarIcon name="Phone" variant="bold" size={17} color={colors.accent} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.detailsBtn} onPress={() => setExpanded(x => !x)} activeOpacity={0.85}>
-            <Text style={styles.detailsBtnText}>{expanded ? 'Less' : 'Details'}</Text>
-            <SolarIcon name={expanded ? 'AltArrowUp' : 'AltArrowDown'} variant="bold" size={12} color={colors.textPrimary} />
-          </TouchableOpacity>
-        </View>
-
-        {/* --- Alerts: keep these above the fold, they demand action --- */}
-        {!isProviderMode && !data.completedAt && !data.receiverNotified && (
-          <View style={styles.alertCard}>
-            <Text style={styles.alertTitle}>
-              🚚 Courier is on the way{data.providerEtaMins ? ` (~${data.providerEtaMins} mins)` : ''}!
-            </Text>
-            <Text style={styles.alertBody}>
-              Have you notified the receiver? Please call or message them now so they are ready.
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-              <TouchableOpacity
-                style={styles.alertPrimary}
-                onPress={async () => {
-                  await supabase
-                    .from('deliveries')
-                    .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
-                    .eq('delivery_id', data.deliveryId);
-                  if (data.receiverPhone) Linking.openURL(`tel:${data.receiverPhone}`);
-                  loadStatic();
-                }}
-              >
-                <Ionicons name="call" size={14} color="#FFF" />
-                <Text style={styles.alertPrimaryText}>Call Receiver</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.alertSecondary}
-                onPress={async () => {
-                  await supabase
-                    .from('deliveries')
-                    .update({ receiver_notified: true, receiver_notified_at: new Date().toISOString() })
-                    .eq('delivery_id', data.deliveryId);
-                  loadStatic();
-                }}
-              >
-                <Text style={styles.alertSecondaryText}>I've Notified Them ✓</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {!isProviderMode && !data.completedAt && !!data.dropoffArrivedAt && data.deliveryStatus !== 'Returning' && (
-          <View style={styles.warningCard}>
-            <Text style={styles.warningTitle}>⚠️ Courier is waiting at Drop-off (10-Min Grace Period)</Text>
-            <Text style={styles.warningBody}>
-              Please contact your receiver immediately so they can receive the package before the 10-minute timer expires.
-            </Text>
-          </View>
-        )}
-
-        {/* --- EXPANDED: addresses, packages, stat boxes --- */}
-        {expanded && (
-          <ScrollView showsVerticalScrollIndicator={false} bounces={false} contentContainerStyle={{ paddingTop: 4, paddingBottom: 4 }}>
-            <View style={styles.routeCard}>
-              <View style={styles.routeRow}>
-                <View style={[styles.routePin, !targetIsDropoff && !data.completedAt && styles.routePinActive]}>
-                  <Text style={mk.pinLetter}>P</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.routeLabel}>PICKUP</Text>
-                  <Text style={styles.routeAddr} numberOfLines={2}>{data.pickup.address}</Text>
-                </View>
-                {data.pickupVerified && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
-              </View>
-              <View style={styles.routeLink} />
-              <View style={styles.routeRow}>
-                <View style={[styles.routePin, targetIsDropoff && !data.completedAt && styles.routePinActive]}>
-                  <SolarIcon name="User" variant="bold" size={14} color="#000000" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.routeLabel}>DROP-OFF</Text>
-                  <Text style={styles.routeAddr} numberOfLines={2}>{data.dropoff.address}</Text>
-                </View>
-                {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
-              </View>
-            </View>
-
-            <View style={styles.stats}>
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>ETA</Text>
-                <Text style={[styles.statValue, { color: colors.accent }]} numberOfLines={1}>{etaLabel}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>DISTANCE</Text>
-                <Text style={styles.statValue} numberOfLines={1}>{distLabel}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>STATUS</Text>
-                <Text style={[styles.statValue, { color: data.completedAt || !isStale ? colors.success : colors.warning }]} numberOfLines={1}>
-                  {data.completedAt ? 'Done' : isStale ? 'Stale' : 'Live'}
+                )}
+                <Text style={styles.vehicleSub} numberOfLines={1}>
+                  {vehicle?.vehicle_type ? String(vehicle.vehicle_type).toUpperCase() : 'VEHICLE'}
                 </Text>
               </View>
             </View>
 
-            {pkgTotal > 0 && (
-              <TouchableOpacity style={styles.pkgChip} onPress={() => setPkgOpen(true)} activeOpacity={0.85}>
-                <SolarIcon name="Package" variant="linear" size={15} color={colors.accent} />
-                <Text style={styles.pkgChipText}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'}</Text>
-                <View style={{ flex: 1 }} />
-                <Text style={styles.pkgChipHint}>See sizes</Text>
-                <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} />
+            <Text style={styles.driverName} numberOfLines={1}>{providerName}</Text>
+
+            <View style={styles.actionRow}>
+              <TouchableOpacity style={styles.messageBtn} activeOpacity={0.7}>
+                <Ionicons name="chatbubble-outline" size={18} color={colors.textMuted} />
+                <Text style={styles.messageText} numberOfLines={1}>Message the provider</Text>
               </TouchableOpacity>
-            )}
 
-            {data.items.length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>YOUR PACKAGES</Text>
-                <View style={{ gap: 8 }}>
-                  {data.items.map((it, i) => {
-                    const meta = it.size ? SIZE_META[it.size] : null;
-                    return (
-                      <View key={i} style={styles.itemRow}>
-                        <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
-                          <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
-                        </View>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.itemTitle} numberOfLines={1}>
-                            {data.items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
-                          </Text>
-                          <Text style={styles.itemSub} numberOfLines={2}>{it.name}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              </>
-            )}
-          </ScrollView>
-        )}
-      </View>
-
-      <Modal visible={pkgOpen} transparent animationType="fade" onRequestClose={() => setPkgOpen(false)}>
-        <Pressable style={styles.popOverlay} onPress={() => setPkgOpen(false)}>
-          <Pressable style={styles.popCard} onPress={() => { /* keep open */ }}>
-            <View style={styles.popHead}>
-              <Text style={styles.popTitle}>{pkgTotal} {pkgTotal === 1 ? 'package' : 'packages'} in this order</Text>
-              <TouchableOpacity onPress={() => setPkgOpen(false)} hitSlop={10}>
-                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
+              <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.7}>
+                <Ionicons name="call" size={20} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
-            {(['Small', 'Medium', 'Large'] as const).filter(k => counts[k] > 0).map(k => (
-              <View key={k} style={styles.popRow}>
-                <View style={[styles.sizeBadge, { backgroundColor: SIZE_META[k].bg }]}>
-                  <Text style={[styles.sizeBadgeText, { color: SIZE_META[k].color }]}>{SIZE_META[k].letter}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.popName}>{k}</Text>
-                  <Text style={styles.itemSub}>{SIZE_META[k].kg} each</Text>
-                </View>
-                <Text style={styles.popQty}>×{counts[k]}</Text>
+
+            <View style={styles.shareRow}>
+              <View style={styles.shareLeft}>
+                <Ionicons name="share-outline" size={20} color={colors.textPrimary} />
+                <Text style={styles.shareText}>Share delivery details</Text>
               </View>
-            ))}
-          </Pressable>
+              <TouchableOpacity activeOpacity={0.7} onPress={onShare} hitSlop={10}>
+                <Text style={styles.shareBtn}>Share</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+            <>
+              <View style={styles.card}>
+                {!isProviderMode && data.deliveryId > 0 && kv('Pack-N-Ship ID', `#${data.deliveryId}`)}
+                {!!data.acceptedAt && kv('Accepted', fmtDateTime(data.acceptedAt))}
+
+                <View style={styles.tlRow}>
+                  <View style={styles.tlRail}>
+                    <View style={styles.tlPickIcon}><Ionicons name="cube" size={16} color="#FFFFFF" /></View>
+                    <View style={styles.tlLine} />
+                  </View>
+                  <View style={styles.tlBody}>
+                    <Text style={styles.tlTitle} numberOfLines={1}>{pu.title}</Text>
+                    {!!pu.sub && <Text style={styles.tlSub} numberOfLines={2}>{pu.sub}</Text>}
+                  </View>
+                  {data.pickupVerified && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
+                </View>
+
+                <View style={styles.tlRow}>
+                  <View style={styles.tlRail}>
+                    <View style={styles.tlDropIcon}><Ionicons name="person" size={18} color="#000000" /></View>
+                  </View>
+                  <View style={styles.tlBody}>
+                    <Text style={styles.tlTitle} numberOfLines={1}>{dr.title}</Text>
+                    {(!!routeKm || !!dr.sub) && (
+                      <Text style={styles.tlSub} numberOfLines={2}>
+                        {routeKm ? `${routeKm}${dr.sub ? ' • ' : ''}` : ''}{dr.sub}
+                      </Text>
+                    )}
+                  </View>
+                  {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
+                </View>
+
+                {!!pay && (
+                  <>
+                    <View style={styles.cardDivider} />
+                    <View style={styles.payRow}>
+                      <View style={styles.payIcon}>
+                        <Ionicons name="cash-outline" size={22} color={colors.textPrimary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.payTitle}>Total pay</Text>
+                        {!!pay.method && <Text style={styles.paySub}>{pay.method}</Text>}
+                      </View>
+                      {pay.amount != null && <Text style={styles.payAmount}>{fmtPeso(pay.amount)}</Text>}
+                    </View>
+                  </>
+                )}
+
+              </View>
+
+              {pkgTotal > 0 && (
+                <View style={styles.card}>
+                  <Text style={styles.pkgHeader}>PACKAGES · {pkgTotal}</Text>
+
+                  <View style={{ gap: 8 }}>
+                    {data.items.map((it, i) => {
+                      const meta = it.size ? SIZE_META[it.size] : null;
+                      return (
+                        <View key={i} style={styles.itemRow}>
+                          {(it.photo || pkgPhoto) ? (
+                            <TouchableOpacity activeOpacity={0.85} onPress={() => setPhotoView((it.photo || pkgPhoto) as string)}>
+                              <Image source={{ uri: (it.photo || pkgPhoto) as string }} style={styles.itemPhoto} />
+                            </TouchableOpacity>
+                          ) : (
+                            <View style={[styles.itemPhoto, styles.itemPhotoEmpty]}>
+                              <SolarIcon name="Package" variant="linear" size={24} color={colors.textMuted} />
+                            </View>
+                          )}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.itemTitle} numberOfLines={1}>
+                              {data.items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.fragile ? ' · Fragile' : ''}
+                            </Text>
+                            <Text style={styles.itemSub} numberOfLines={2}>{it.name}</Text>
+                          </View>
+                          <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
+                            <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
+            </>
+          </Animated.View>
+        </Animated.ScrollView>
+      </Animated.View>
+
+      <Modal visible={!!photoView} transparent animationType="fade" onRequestClose={() => setPhotoView(null)}>
+        <Pressable style={styles.viewerOverlay} onPress={() => setPhotoView(null)}>
+          {!!photoView && <Image source={{ uri: photoView }} style={styles.viewerImg} resizeMode="contain" />}
+          <TouchableOpacity style={[styles.viewerClose, { top: insets.top + 12 }]} onPress={() => setPhotoView(null)} hitSlop={10}>
+            <SolarIcon name="CloseCircle" variant="linear" size={28} color="#FFFFFF" />
+          </TouchableOpacity>
         </Pressable>
       </Modal>
     </View>
@@ -918,196 +1045,174 @@ export default function LiveTrackingScreen() {
 }
 
 const makeMarkerStyles = (c: ThemeColors) => StyleSheet.create({
-  pin: {
-    width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFFFFF',
-    borderWidth: 1.5, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5,
+  placeWrap: { alignItems: 'center', paddingHorizontal: 4 },
+  pickPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: BRAND_ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.4, shadowRadius: 6, elevation: 8,
   },
-  pinLetter: { fontSize: 14, fontFamily: 'Poppins_800ExtraBold', color: '#000000' },
+  dropPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
+  },
+  labelPill: {
+    maxWidth: 200, height: LABEL_H, justifyContent: 'center', marginTop: LABEL_GAP,
+    backgroundColor: '#FFFFFF', borderRadius: LABEL_H / 2, paddingHorizontal: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 5,
+  },
+  labelText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
 });
 
-const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: c.background },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+const makeStyles = (c: ThemeColors, isDark: boolean) => {
+  const hair = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+  return StyleSheet.create({
+    container: { flex: 1, backgroundColor: c.background },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
+    loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
-  topBar: {
-    position: 'absolute', left: 16, right: 16,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    zIndex: 20,
-  },
-  circleBtn: {
-    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
-  },
-  livePill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
-  },
-  livePillStale: { borderColor: c.warning },
-  liveDot: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.4 },
+    topBar: {
+      position: 'absolute', left: 16, right: 16,
+      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+      zIndex: 20,
+    },
+    circleBtn: {
+      width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
+      alignItems: 'center', justifyContent: 'center',
+      borderWidth: 1, borderColor: hair,
+      shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
+    },
+    livePill: {
+      flexDirection: 'row', alignItems: 'center', gap: 6,
+      backgroundColor: c.card, borderWidth: 1, borderColor: hair,
+      paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
+    },
+    livePillStale: { borderColor: c.warning },
+    liveDot: { width: 8, height: 8, borderRadius: 4 },
+    liveText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.4 },
 
-  fabCol: { position: 'absolute', right: 16, gap: 10, zIndex: 15 },
-  fab: {
-    width: 46, height: 46, borderRadius: 14, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  fabOn: { backgroundColor: c.accent, borderColor: c.accent },
+    fabCol: { position: 'absolute', left: 16, zIndex: 15 },
+    fab: {
+      width: 46, height: 46, borderRadius: 14, backgroundColor: c.card,
+      alignItems: 'center', justifyContent: 'center',
+      shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
+      borderWidth: 1, borderColor: hair,
+    },
+    fabOn: { backgroundColor: c.accent, borderColor: c.accent },
 
-  banner: {
-    position: 'absolute', left: 16, right: 16,
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
-    zIndex: 25,
-  },
-  bannerText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 12, flex: 1 },
+    banner: {
+      position: 'absolute', left: 16, right: 16,
+      flexDirection: 'row', alignItems: 'center', gap: 8,
+      backgroundColor: c.accent, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
+      zIndex: 25,
+    },
+    bannerText: { color: '#FFFFFF', fontFamily: 'Poppins_600SemiBold', fontSize: 12, flex: 1 },
 
-  sheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
-    backgroundColor: c.card,
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 4, maxHeight: '78%',
-    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
-  },
-  sheetExpanded: { maxHeight: '82%' },
-  grabberWrap: { alignItems: 'center', paddingVertical: 8 },
-  grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
+    sheet: {
+      position: 'absolute', left: 0, right: 0, bottom: 0,
+      backgroundColor: c.card,
+      borderTopLeftRadius: 24, borderTopRightRadius: 24,
+      paddingHorizontal: 16, paddingTop: 4,
+      shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+      shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
+    },
+    sheetScroll: { flex: 1 },
+    sheetContent: { paddingBottom: 0 },
+    grabberWrap: { alignItems: 'center', paddingVertical: 12 },
+    grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
 
-  stepper: { flexDirection: 'row', marginBottom: 14, marginTop: 2 },
-  stepCol: { flex: 1, alignItems: 'center' },
-  stepTrack: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch' },
-  stepLine: { flex: 1, height: 3, backgroundColor: c.border },
-  stepLineOn: { backgroundColor: c.accent },
-  stepDot: {
-    width: 22, height: 22, borderRadius: 11, backgroundColor: c.card,
-    borderWidth: 2, borderColor: c.border, alignItems: 'center', justifyContent: 'center',
-  },
-  stepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
-  stepDotCurrent: { borderColor: c.accent },
-  stepDotCore: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
-  stepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 6, textAlign: 'center' },
-  stepLabelOn: { color: c.textPrimary },
+    headline: {
+      fontSize: 20, lineHeight: 28, fontFamily: 'Poppins_700Bold',
+      color: c.textPrimary, marginTop: 8, marginBottom: 16, paddingHorizontal: 4,
+    },
+    headlineAccent: { color: c.accent },
 
-  // Big headline the sender sees first
-  headlineRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 14,
-    backgroundColor: c.background, borderRadius: 14, padding: 14,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  headlineEyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1 },
-  headlineText: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4, marginTop: 2 },
-  headlineSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
-  etaBigBox: {
-    alignItems: 'flex-end', justifyContent: 'center',
-    paddingLeft: 14, borderLeftWidth: 1, borderLeftColor: c.border, minWidth: 92,
-  },
-  etaBigLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  etaBigValue: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.accent, letterSpacing: -0.4, marginTop: 2 },
-  etaBigSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+    card: {
+      backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: hair,
+      padding: 16, marginBottom: 14,
+    },
+    cardDivider: { height: 1, backgroundColor: c.border, marginVertical: 12 },
 
-  providerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14 },
-  avatar: {
-    width: 48, height: 48, borderRadius: 24, backgroundColor: c.accent,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 2, borderColor: isDark ? '#3A2411' : '#FFE4D2',
-    overflow: 'hidden',
-  },
-  avatarImg: { width: '100%', height: '100%' },
-  avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 16 },
-  verifiedDot: {
-    position: 'absolute', right: -1, bottom: -1, width: 16, height: 16, borderRadius: 8,
-    backgroundColor: c.success, borderWidth: 2, borderColor: c.card,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  providerName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  providerSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
-  iconBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.accentSoft,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  detailsBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.divider, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10,
-  },
-  detailsBtnText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+    profileRow: { flexDirection: 'row', alignItems: 'center' },
+    avatar: {
+      width: 56, height: 56, borderRadius: 28, backgroundColor: c.success,
+      alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginRight: 4,
+    },
+    avatarImg: { width: '100%', height: '100%' },
+    avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 18 },
+    rightBlock: { alignItems: 'flex-end', flex: 1 },
+    plateBox: {
+      backgroundColor: '#1F2937', paddingHorizontal: 12, paddingVertical: 6,
+      borderRadius: 8, marginBottom: 8,
+    },
+    plateText: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_700Bold', letterSpacing: 0.6 },
+    vehicleSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
-  alertCard: {
-    marginTop: 14, padding: 12, borderRadius: 14,
-    backgroundColor: c.accentSoft, borderColor: ORANGE, borderWidth: 1,
-  },
-  alertTitle: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary },
-  alertBody: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
-  alertPrimary: {
-    flex: 1, backgroundColor: ORANGE, paddingVertical: 9, borderRadius: 10,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-  },
-  alertPrimaryText: { color: '#FFF', fontSize: 12, fontFamily: 'Poppins_800ExtraBold' },
-  alertSecondary: {
-    flex: 1, backgroundColor: c.card, borderColor: ORANGE, borderWidth: 1,
-    paddingVertical: 9, borderRadius: 10, alignItems: 'center', justifyContent: 'center',
-  },
-  alertSecondaryText: { color: ORANGE, fontSize: 12, fontFamily: 'Poppins_800ExtraBold' },
+    driverName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 14, marginBottom: 14 },
 
-  warningCard: {
-    marginTop: 14, padding: 12, borderRadius: 14,
-    backgroundColor: c.errorBg, borderColor: c.error, borderWidth: 1,
-  },
-  warningTitle: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.error },
-  warningBody: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+    actionRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    messageBtn: {
+      flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8,
+      backgroundColor: c.background, paddingHorizontal: 14, height: 48, borderRadius: 24,
+    },
+    messageText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+    iconBtn: {
+      width: 48, height: 48, borderRadius: 24, backgroundColor: c.background,
+      alignItems: 'center', justifyContent: 'center',
+    },
 
-  stats: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    borderRadius: 12, paddingVertical: 12, marginTop: 14,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  statBox: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
-  statLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  statValue: { fontSize: 15, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, marginTop: 4, letterSpacing: -0.2 },
-  statDivider: { width: 1, height: 26, backgroundColor: c.border },
+    shareRow: {
+      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+      marginTop: 16, paddingTop: 14, borderTopWidth: 1, borderTopColor: c.border,
+    },
+    shareLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+    shareText: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    shareBtn: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
-  pkgChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12,
-    backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
-  },
-  pkgChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-  pkgChipHint: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textMuted },
+    kvRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, gap: 12 },
+    kvLabel: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    kvValue: { fontSize: 14, fontFamily: 'Poppins_500Medium', color: c.textSecondary, flexShrink: 1, textAlign: 'right' },
 
-  routeCard: { backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12, marginTop: 14 },
-  routeRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  routePin: {
-    width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF',
-    borderWidth: 1.5, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
-  },
-  routePinActive: { borderColor: c.accent, borderWidth: 2 },
-  routeLink: { width: 2, height: 14, backgroundColor: c.border, marginLeft: 13, marginVertical: 3 },
-  routeLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  routeAddr: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 1 },
+    tlRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
+    tlRail: { width: 34, alignItems: 'center' },
+    tlPickIcon: {
+      width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    tlDropIcon: {
+      width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF',
+      borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
+    },
+    tlLine: { flex: 1, width: 2, backgroundColor: c.border, marginTop: 4, marginBottom: -8 },
+    tlBody: { flex: 1, paddingBottom: 14 },
+    tlTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    tlSub: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
-  sectionLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8, marginTop: 16, marginBottom: 8 },
-  itemRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background,
-    borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 10,
-  },
-  itemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-  itemSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
-  sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
-  sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
+    payRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 4 },
+    payIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: c.background, alignItems: 'center', justifyContent: 'center' },
+    payTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    paySub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+    payAmount: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
-  popOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
-  popCard: { backgroundColor: c.card, borderRadius: 16, padding: 20 },
-  popHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  popTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3, flex: 1, paddingRight: 8 },
-  popRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.border },
-  popName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-  popQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-});
+    noteBox: { marginTop: 10, backgroundColor: c.infoSoft, borderRadius: 14, padding: 14 },
+    noteText: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_500Medium', color: c.info },
+
+    pkgHeader: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8, marginBottom: 12 },
+    viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
+    viewerImg: { width: '100%', height: '78%' },
+    viewerClose: { position: 'absolute', right: 16 },
+    itemRow: {
+      flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background,
+      borderRadius: 14, borderWidth: 1, borderColor: hair, padding: 8,
+    },
+    itemPhoto: { width: 56, height: 56, borderRadius: 12, backgroundColor: c.divider },
+    itemPhotoEmpty: { alignItems: 'center', justifyContent: 'center' },
+    itemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    itemSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
+    sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
+    sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
+  });
+};

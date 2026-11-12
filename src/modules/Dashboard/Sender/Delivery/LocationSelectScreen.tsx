@@ -569,7 +569,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       return;
     }
     const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
-    const locationInfo = { address: fullAddress, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ...structuredAddress, note: note.trim() || undefined };
+    const locationInfo = { name: addressName, address: fullAddress, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ...structuredAddress, note: note.trim() || undefined };
     saveRecent({ name: addressName, address: addressSub || addressName, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ts: Date.now() });
     if (route.params?.fromExplore) {
       dispatch({ type: route.params.for === 'pickup' ? 'SET_EXPLORE_PICKUP' : 'SET_EXPLORE_DROPOFF', payload: locationInfo });
