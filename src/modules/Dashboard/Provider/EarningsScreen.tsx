@@ -128,7 +128,15 @@ export default function EarningsScreen() {
   const fetchEarnings = async (pid: number) => {
     const { data: escrows, error: escrowErr } = await supabase
       .from('escrow_payments')
-      .select(`escrow_id, delivery_id, sender_id, escrow_status, emergency_frozen, amount, created_at, bc_escrow_tx_hash, delivery:deliveries!escrow_payments_delivery_id_fkey ( delivery_id, completed_at, accepted_at )`)
+      .select(`
+        escrow_id, delivery_id, sender_id, escrow_status, emergency_frozen, amount, created_at, bc_escrow_tx_hash,
+        delivery:deliveries!escrow_payments_delivery_id_fkey (
+          delivery_id, completed_at, accepted_at,
+          delivery_requests!deliveries_request_id_fkey (
+            request_id, base_fare, return_deposit, delivery_status
+          )
+        )
+      `)
       .eq('provider_id', pid).order('created_at', { ascending: false });
 
     if (escrowErr) { setEarnings([]); return; }
@@ -152,18 +160,44 @@ export default function EarningsScreen() {
       else if (escrowStatusRaw === 'refunded') displayStatus = 'refunded';
       else if (isReleased || txnStatusRaw === 'completed') displayStatus = 'earned';
 
-      const base = t?.base_amount != null ? Number(t.base_amount) : null;
+      // Source of truth for courier earnings: delivery_requests.base_fare (what the RPC credits
+      // to provider_wallet). Ignore `transactions.base_amount` / `service_fee` — those are stale
+      // values from an old trigger and don't match the wallet credit.
+      const request = Array.isArray(delivery?.delivery_requests)
+        ? delivery.delivery_requests[0]
+        : delivery?.delivery_requests;
+      const requestStatus = String(request?.delivery_status || '').toLowerCase();
+      const baseFare = request?.base_fare != null ? Number(request.base_fare) : 0;
+      const deposit = request?.return_deposit != null ? Number(request.return_deposit) : 0;
       const escrowAmt = Number(e.amount || 0);
+
+      // What the courier actually received (or will receive):
+      //   Released + Returned  → base_fare + return_deposit (courier kept both)
+      //   Released + Completed → base_fare (deposit was refunded to sender)
+      //   Not released         → escrow amount (full potential)
+      const netBase = Math.round(baseFare * 0.85 * 100) / 100;
+      let courierAmount: number;
+      if (isReleased) {
+        courierAmount = requestStatus === 'returned'
+          ? (netBase + deposit || escrowAmt)
+          : (netBase || escrowAmt);
+      } else {
+        courierAmount = escrowAmt;
+      }
 
       return {
         escrow_id: e.escrow_id, delivery_id: e.delivery_id, sender_id: e.sender_id,
         escrow_status: e.escrow_status, emergency_frozen: !!e.emergency_frozen, amount: escrowAmt,
         created_at: e.created_at, bc_escrow_tx_hash: e.bc_escrow_tx_hash ?? null, bc_tx_hash: t?.bc_tx_hash ?? null, delivery_completed_at: completedAt,
-        delivery_accepted_at: delivery.accepted_at ?? null, transaction_id: t?.transaction_id ?? null, base_amount: base,
-        service_fee: t?.service_fee != null ? Number(t.service_fee) : null, total_amount: t?.total_amount != null ? Number(t.total_amount) : null,
-        penalty_fee: t?.penalty_fee != null ? Number(t.penalty_fee) : null, payment_method: t?.payment_method ?? null,
-        transaction_status: t?.status ?? null, processed_at: t?.processed_at ?? null, display_status: displayStatus,
-        display_amount: base != null ? base : escrowAmt,
+        delivery_accepted_at: delivery.accepted_at ?? null, transaction_id: t?.transaction_id ?? null,
+        base_amount: courierAmount,
+        service_fee: null,          // RPC credits a flat payout; no separate fee exists
+        total_amount: courierAmount,
+        penalty_fee: t?.penalty_fee != null ? Number(t.penalty_fee) : null,
+        payment_method: t?.payment_method ?? request?.payment_provider ?? null,
+        transaction_status: t?.status ?? null, processed_at: t?.processed_at ?? null,
+        display_status: displayStatus,
+        display_amount: courierAmount,
       };
     });
 

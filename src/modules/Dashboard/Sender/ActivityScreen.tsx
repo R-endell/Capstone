@@ -1,7 +1,7 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
   BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable,
 } from 'react-native';
@@ -17,8 +17,8 @@ import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
-import { PhIcon } from '../../../components/ui/PhIcon';
 import { createTicket } from '../../../services/ticketService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -33,6 +33,7 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const RATING_TAGS = ['On time', 'Careful handling', 'Friendly', 'Fast delivery', 'Good communication'];
 const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
+const REFUND_SEEN_KEY = '@pns/refund_popup_seen_ids';
 const EDIT_FLOW_ROUTE_NAMES = ['DropoffType', 'ScheduleDelivery'];
 
 const initials = (n?: string | null) =>
@@ -307,6 +308,8 @@ interface QrRow {
   dropoff_qr: string;
   dropoff_pin: string;
   dropoff_verified: boolean;
+  bc_pickup_tx_hash?: string | null;
+  bc_dropoff_tx_hash?: string | null;
 }
 
 interface ReceiverInfo {
@@ -356,6 +359,9 @@ interface MappedDelivery {
   fragile: boolean;
   dims: string | null;
   price: string;
+  payout_base: number;
+  payout_fee: number;
+  payout_deposit: number;
   payment_method: string | null;
   coords: {
     pickup: { latitude: number | null; longitude: number | null };
@@ -388,6 +394,13 @@ export default function ActivityScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
+
+  const selectedDelivery = useMemo(
+    () => selectedId == null
+      ? null
+      : deliveries.find(delivery => delivery.request_id === selectedId) || null,
+    [deliveries, selectedId],
+  );
 
   const [activeTab, setActiveTab] = useState<'active' | 'pending' | 'completed' | 'cancelled' | 'all'>('active');
   const [openingChat, setOpeningChat] = useState(false);
@@ -431,10 +444,54 @@ export default function ActivityScreen() {
   const contentAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
 
-  const selectedDelivery = useMemo(
-    () => (selectedId != null ? deliveries.find(d => d.request_id === selectedId) || null : null),
-    [deliveries, selectedId]
-  );
+  // ------------------------------------------------------------------
+  // Refund popup — fires once when the sender returns to the app after
+  // a delivery completes with a successful deposit refund.
+  // ------------------------------------------------------------------
+  const shownRefundIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (!deliveries.length) return;
+
+    const candidates = deliveries.filter(d =>
+      d.status === 'Completed' &&
+      (d.rawData?.refund_status === 'succeeded' || d.rawData?.refund_status === 'refunded') &&
+      d.payout_deposit > 0
+    );
+    if (!candidates.length) return;
+
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(REFUND_SEEN_KEY);
+        const persisted: number[] = raw ? JSON.parse(raw) : [];
+        const seenThisSession = Array.from(shownRefundIdsRef.current);
+
+        const unseen = candidates.filter(c =>
+          !persisted.includes(c.request_id) &&
+          !seenThisSession.includes(c.request_id)
+        );
+        if (!unseen.length) return;
+
+        // Mark immediately to prevent double-fire on concurrent re-renders.
+        unseen.forEach(u => shownRefundIdsRef.current.add(u.request_id));
+
+        const most = unseen[0];
+        const refundTotal = unseen.reduce((sum, u) => sum + (u.payout_deposit || 0), 0);
+
+        Alert.alert(
+          '📦 Delivery Complete!',
+          `Package #${trackingCode(most.request_id)} was delivered successfully.\n\n` +
+          `₱${refundTotal.toFixed(2)} return deposit has been refunded to your account.`,
+          [{ text: 'OK' }],
+        );
+
+        const updated = Array.from(new Set([...persisted, ...unseen.map(u => u.request_id)]));
+        await AsyncStorage.setItem(REFUND_SEEN_KEY, JSON.stringify(updated));
+      } catch (e) {
+        console.warn('[Activity] refund popup failed:', e);
+      }
+    })();
+  }, [deliveries]);
 
   useEffect(() => {
     const params = route.params;
@@ -630,11 +687,28 @@ export default function ActivityScreen() {
         let status = item.delivery_status;
         let statusDisplay = status;
 
+        // Source of truth: delivery_status.
+        const hasDeliveryRecord = !!delivery;
+        const hasCompletedOrReturned =
+          status === 'Completed' ||
+          status === 'Returned' ||
+          !!delivery?.completed_at;
+
+        // Cancelled in only two cases:
+        //   1. delivery_requests.delivery_status is explicitly 'Cancelled'
+        //   2. No courier ever picked it up (no delivery row) AND payment was refunded
+        const isExplicitlyCancelled = /^cancel/i.test(String(status || ''));
+        const refundedWithoutDelivery =
+          !hasDeliveryRecord &&
+          (
+            item.payment_status === 'refunded' ||
+            item.escrow_status === 'refunded' ||
+            item.refund_status === 'succeeded' ||
+            item.refund_status === 'refunded'
+          );
+
         const isCancelledReq =
-          /cancel/i.test(String(status || '')) ||
-          /refund/i.test(String(item.payment_status || '')) ||
-          /refund|cancel/i.test(String(item.escrow_status || '')) ||
-          /succeed|complet|refund/i.test(String(item.refund_status || ''));
+          !hasCompletedOrReturned && (isExplicitlyCancelled || refundedWithoutDelivery);
 
         if (isCancelledReq) statusDisplay = 'Cancelled';
         else if (status === 'Returned') statusDisplay = 'Returned';
@@ -720,6 +794,9 @@ export default function ActivityScreen() {
           preferred_provider_id: prefProviderId,
           preferred_route_id: prefRouteId,
           hasPreferredProvider,
+          payout_base: Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0)),
+          payout_fee: Math.round((Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0))) * 0.15 * 100) / 100,
+          payout_deposit: Number(item.return_deposit) || 0,
           price: item.estimated_cost?.toFixed(2) || '0.00',
           payment_method: item.payment_provider || null,
           coords: {
@@ -742,6 +819,8 @@ export default function ActivityScreen() {
             dropoff_qr: qrRow.dropoff_qr,
             dropoff_pin: qrRow.dropoff_pin,
             dropoff_verified: qrRow.dropoff_verified,
+            bc_pickup_tx_hash: qrRow.bc_pickup_tx_hash ?? null,
+            bc_dropoff_tx_hash: qrRow.bc_dropoff_tx_hash ?? null,
           } : null,
           receiver: receiverInfo,
           confirmation: confirmationRow || null,
@@ -1826,10 +1905,31 @@ export default function ActivityScreen() {
               <View style={styles.doneCard}>
                 <View style={styles.doneIcon}><SolarIcon name="Check" variant="linear" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.doneTitle}>Delivered successfully</Text>
+                  <Text style={styles.doneTitle}>
+                    {d.status === 'Returned' ? 'Returned to sender' : 'Delivered successfully'}
+                  </Text>
                   <Text style={styles.doneSub}>
                     {d.deliveryData?.completed_at ? formatDateTime(d.deliveryData.completed_at) : ''}
-                    {released ? `  ·  ${money(d.price)} released to courier` : ''}
+                    {released ? (
+                      <>
+                        {`  ·  ${money(
+                          d.status === 'Returned'
+                            ? d.payout_base * 0.85 + d.payout_deposit
+                            : d.payout_base * 0.85,
+                        )} released to courier`}
+                        {d.status === 'Returned'
+                          ? `  ·  deposit retained by courier for return trip`
+                          : `  ·  ${money(d.payout_fee)} platform fee`}
+                        {d.status !== 'Returned' && d.payout_deposit > 0 &&
+                          `  ·  ${money(d.payout_deposit)} ${
+                            d.rawData?.refund_status === 'succeeded'
+                              ? 'refunded to you'
+                              : d.rawData?.refund_status === 'failed'
+                                ? 'refund pending — contact support'
+                                : 'being refunded to you'
+                          }`}
+                      </>
+                    ) : ''}
                   </Text>
                 </View>
               </View>

@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Image,
   KeyboardAvoidingView, Platform, TouchableWithoutFeedback, Keyboard,
-  ActivityIndicator, Animated, Easing, Modal
+  ActivityIndicator, Animated, Easing, Modal, PanResponder
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -306,6 +306,64 @@ export default function RegisterScreen() {
 
   const mapRef = useRef<MapView>(null);
   const geocodeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Draggable bottom sheet (same behavior as HomeAddressMapPicker)
+  const [sheetCollapsed, setSheetCollapsed] = useState(false);
+  const sheetAnim = useRef(new Animated.Value(0)).current;
+  const sheetSnapRef = useRef<0 | 1>(0);
+  const sheetMaxTranslateRef = useRef(0);
+  const sheetPan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dy) > 3,
+      onPanResponderMove: (_, g) => {
+        const max = sheetMaxTranslateRef.current;
+        if (max <= 0) return;
+        const base = sheetSnapRef.current === 1 ? max : 0;
+        const next = Math.max(0, Math.min(max, base + g.dy));
+        sheetAnim.setValue(next);
+        setSheetCollapsed(next > max / 2);
+      },
+      onPanResponderRelease: (_, g) => {
+        const max = sheetMaxTranslateRef.current;
+        if (max <= 0) return;
+
+        // Tap (no significant move) → toggle
+        if (Math.abs(g.dy) < 5 && Math.abs(g.vy) < 0.15) {
+          const toCollapsed = sheetSnapRef.current === 0;
+          sheetSnapRef.current = toCollapsed ? 1 : 0;
+          setSheetCollapsed(toCollapsed);
+          Animated.spring(sheetAnim, {
+            toValue: toCollapsed ? max : 0,
+            useNativeDriver: true,
+            friction: 10,
+            tension: 60,
+          }).start();
+          return;
+        }
+
+        const base = sheetSnapRef.current === 1 ? max : 0;
+        const next = base + g.dy;
+        const toCollapsed = next > max / 2 || g.vy > 0.4;
+        sheetSnapRef.current = toCollapsed ? 1 : 0;
+        setSheetCollapsed(toCollapsed);
+        Animated.spring(sheetAnim, {
+          toValue: toCollapsed ? max : 0,
+          useNativeDriver: true,
+          friction: 10,
+          tension: 60,
+        }).start();
+      },
+    })
+  ).current;
+
+  const onSheetLayout = (e: any) => {
+    const h = e.nativeEvent.layout.height;
+    if (h > 0) {
+      // Keep ~88px of the sheet visible when collapsed (handle + address line)
+      sheetMaxTranslateRef.current = Math.max(0, h - 88);
+    }
+  };
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -1460,8 +1518,20 @@ export default function RegisterScreen() {
             )}
           </TouchableOpacity>
 
-          <View style={[styles.mapBottomSheet, { paddingBottom: Math.max(insets.bottom + 14, 20) }]}>
-            <View style={styles.sheetHandle} />
+          <Animated.View
+            style={[
+              styles.mapBottomSheet,
+              {
+                paddingBottom: Math.max(insets.bottom + 14, 20),
+                transform: [{ translateY: sheetAnim }],
+              },
+            ]}
+            onLayout={onSheetLayout}
+            pointerEvents={sheetCollapsed ? 'box-none' : 'auto'}
+          >
+            <View style={styles.sheetHandleHitArea} {...sheetPan.panHandlers}>
+              <View style={styles.sheetHandle} />
+            </View>
 
             <View style={styles.sheetHeaderRow}>
               <View style={styles.sheetIconBox}>
@@ -1534,7 +1604,7 @@ export default function RegisterScreen() {
                 </>
               )}
             </TouchableOpacity>
-          </View>
+          </Animated.View>
 
           {showConfirmSheet && (
             <View style={styles.verifyOverlay}>
@@ -1751,6 +1821,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
       borderTopLeftRadius: 26, borderTopRightRadius: 26,
       paddingHorizontal: 20, paddingTop: 10,
       shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.18, shadowRadius: 12, elevation: 14,
+    },
+    sheetHandleHitArea: {
+      paddingVertical: 8,
+      alignItems: 'center',
     },
     sheetHandle: {
       width: 40, height: 4, borderRadius: 2, backgroundColor: '#E5E7EB',

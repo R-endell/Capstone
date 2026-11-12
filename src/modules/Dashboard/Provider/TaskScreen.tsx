@@ -259,7 +259,16 @@ const buildTaskInfo = (d: any) => {
     senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
-    earnings: Number(request?.estimated_cost) || 0,
+    earnings: (() => {
+      const status = String(request?.delivery_status || '');
+      const base = Number(request?.base_fare) || 0;
+      const deposit = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      const net = Math.round(base * 0.85 * 100) / 100;
+      if (status === 'Returned') return (net + deposit) || est;
+      if (status === 'Completed') return net || est;
+      return est;
+    })(),
   };
 };
 
@@ -296,18 +305,29 @@ const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
   const status = String(req.delivery_status || '').toLowerCase();
+
+  // Completed or Returned is never "cancelled"
+  if (status === 'completed' || status === 'returned') return false;
+
+  // Explicit cancel wins
   if (status === 'cancelled' || status === 'canceled') return true;
 
+  // Only fall through to refund-state checks if no delivery record exists
+  const hasDeliveryRecord = !!d.delivery_id || !!d.completed_at;
+  if (hasDeliveryRecord) return false;
+
   const escrowStatus = String(d.escrow?.escrow_status || '').toLowerCase();
-  if (escrowStatus === 'refunded' || escrowStatus === 'cancelled' || escrowStatus === 'canceled') return true;
-
   const paymentStatus = String(req.payment_status || '').toLowerCase();
-  if (paymentStatus === 'refunded') return true;
-
   const refundStatus = String(req.refund_status || '').toLowerCase();
-  if (refundStatus === 'succeeded' || refundStatus === 'completed' || refundStatus === 'refunded') return true;
 
-  return false;
+  return (
+    escrowStatus === 'refunded' ||
+    escrowStatus === 'cancelled' ||
+    paymentStatus === 'refunded' ||
+    refundStatus === 'succeeded' ||
+    refundStatus === 'completed' ||
+    refundStatus === 'refunded'
+  );
 };
 
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
