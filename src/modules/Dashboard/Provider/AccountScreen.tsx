@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
-  Alert, StatusBar, Animated, Easing, ActivityIndicator, BackHandler, Switch, Modal, Dimensions,
+  Alert, StatusBar, Animated, Easing, ActivityIndicator, BackHandler, Switch, Modal, Dimensions, Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -16,9 +16,16 @@ import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 
+let Clipboard: any = null;
+try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
 const EMPTY_CLIPBOARD_ICON = require('../../../../assets/empty-state-clipboard-icon.png');
 
 const { height: SCREEN_H } = Dimensions.get('window');
+
+// Outcome filter for Job History. Only terminal jobs (Completed / Cancelled)
+// are listed — active jobs live elsewhere.
+type OutcomeFilter = 'All' | 'Completed' | 'Cancelled';
 
 export default function ProviderAccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -38,8 +45,23 @@ export default function ProviderAccountScreen() {
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<'All' | 'Awaiting Pickup' | 'In Transit' | 'Completed' | 'Cancelled'>('All');
+  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('All');
   const [selectedHistoryJob, setSelectedHistoryJob] = useState<any | null>(null);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -105,7 +127,8 @@ export default function ProviderAccountScreen() {
         .from('deliveries')
         .select(`
           delivery_id, completed_at, pod_photo_url,
-          qr_verifications ( pickup_verified ),
+          qr_verifications ( pickup_verified, bc_pickup_tx_hash, bc_dropoff_tx_hash ),
+          escrow:escrow_payments ( escrow_status, bc_escrow_tx_hash ),
           delivery_requests!inner (
             request_id, pickup_type, delivery_status, scheduled_time, created_at, estimated_cost, payment_status,
             pickup_note, dropoff_note, receiver_phone,
@@ -126,7 +149,7 @@ export default function ProviderAccountScreen() {
         const cargo = Array.isArray(req?.cargo) ? req.cargo[0] : req?.cargo;
         const sender = Array.isArray(req?.sender) ? req.sender[0] : req?.sender;
         const receiver = Array.isArray(req?.receiver) ? req.receiver[0] : req?.receiver;
-        
+
         let itemsJson: any = cargo?.items_json;
         if (typeof itemsJson === 'string') {
           try { itemsJson = JSON.parse(itemsJson); } catch { itemsJson = null; }
@@ -144,24 +167,23 @@ export default function ProviderAccountScreen() {
             }];
 
         const dims = [cargo?.cargo_length_cm, cargo?.cargo_width_cm, cargo?.cargo_height_cm];
-        
+
         const dateObj = req?.scheduled_time ? new Date(req.scheduled_time) : new Date(req?.created_at || new Date());
-        
-        // Align cancellation detection with TaskScreen
+
         const rawStatus = (req?.delivery_status || 'Pending').trim();
-        const escrowStatus = String(r.escrow?.escrow_status || '').toLowerCase();
+        const escrow = Array.isArray(r.escrow) ? r.escrow[0] : r.escrow;
+        const escrowStatus = String(escrow?.escrow_status || '').toLowerCase();
         const paymentStatus = String(req?.payment_status || '').toLowerCase();
         const refundStatus = String(req?.refund_status || '').toLowerCase();
-        
-        const isCancelled = 
-          /cancel/i.test(rawStatus) || 
+
+        const isCancelled =
+          /cancel/i.test(rawStatus) ||
           ['refunded', 'cancelled', 'canceled'].includes(escrowStatus) ||
           paymentStatus === 'refunded' ||
           ['succeeded', 'completed', 'refunded'].includes(refundStatus);
 
         const isCompleted = /complete|delivered/i.test(rawStatus) || !!r.completed_at;
-        
-        // Align transit detection with TaskScreen: checks QR verification first
+
         const qr = Array.isArray(r.qr_verifications) ? r.qr_verifications[0] : r.qr_verifications;
         const isPickupVerified = !!qr?.pickup_verified;
         const isTransit = (isPickupVerified && !isCompleted) || /transit|picked/i.test(rawStatus);
@@ -178,7 +200,6 @@ export default function ProviderAccountScreen() {
         } else if (isTransit) {
           statusLabel = 'In Transit'; statusColor = colors.info; statusBg = colors.infoSoft; statusIcon = 'Lightning';
         } else {
-          // This handles 'Accepted' or 'Pending' statuses where pickup is not yet verified
           statusLabel = 'Awaiting Pickup'; statusColor = colors.warning; statusBg = colors.warningBg; statusIcon = 'Clock';
         }
 
@@ -189,13 +210,13 @@ export default function ProviderAccountScreen() {
           date: dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
           time: dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
           rawDate: dateObj,
-          
+
           pickup: req?.pickup_location?.street_address || 'Pickup location',
           pickupSub: [req?.pickup_location?.barangay, req?.pickup_location?.city].filter(Boolean).join(', '),
           pickupLat: req?.pickup_location?.latitude,
           pickupLng: req?.pickup_location?.longitude,
           pickupNote: req?.pickup_note,
-          
+
           dropoff: req?.dropoff_location?.street_address || 'Dropoff location',
           dropoffSub: [req?.dropoff_location?.barangay, req?.dropoff_location?.city].filter(Boolean).join(', '),
           dropoffLat: req?.dropoff_location?.latitude,
@@ -206,16 +227,19 @@ export default function ProviderAccountScreen() {
           senderPhone: sender?.phone_number,
           receiverName: receiver?.receiver_name || 'Receiver',
           receiverPhone: req?.receiver_phone || receiver?.receiver_phone,
-          
+
           tracking: `PNS-${String(req?.request_id || r.delivery_id).padStart(4, '0')}`,
           price: Number(req?.estimated_cost || 0).toFixed(2),
           statusLabel, statusColor, statusBg, statusIcon,
           timestamp: dateObj.getTime(),
-          
+
           items,
           weight: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
           dims: dims.every((v: any) => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
           podPhotoUrl: r.pod_photo_url,
+          escrowHash: escrow?.bc_escrow_tx_hash ?? null,
+          pickupHash: qr?.bc_pickup_tx_hash ?? null,
+          dropoffHash: qr?.bc_dropoff_tx_hash ?? null,
         };
       });
 
@@ -309,7 +333,7 @@ export default function ProviderAccountScreen() {
       <Modal visible={!!item} animationType="slide" onRequestClose={() => setSelectedHistoryJob(null)}>
         <View style={{ flex: 1, backgroundColor: colors.background }}>
           <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-          
+
           <TouchableOpacity
             style={[styles.modalRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]}
             onPress={() => setSelectedHistoryJob(null)}
@@ -458,6 +482,65 @@ export default function ProviderAccountScreen() {
                   </View>
                 )}
               </View>
+
+              {(!!item.escrowHash || !!item.pickupHash || !!item.dropoffHash) && (
+                <>
+                  <View style={styles.modalSecHead}>
+                    <SolarIcon name="Link" variant="linear" size={17} color={colors.accent} />
+                    <Text style={styles.modalSecTitle}>Blockchain Record</Text>
+                  </View>
+                  <View style={styles.hashList}>
+                  {!!item.escrowHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                        <Text style={styles.hashValue}>{item.escrowHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('escrow', item.escrowHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {!!item.pickupHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>PICKUP VERIFIED</Text>
+                        <Text style={styles.hashValue}>{item.pickupHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('pickup', item.pickupHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'pickup' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {!!item.dropoffHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>DROP-OFF VERIFIED</Text>
+                        <Text style={styles.hashValue}>{item.dropoffHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('dropoff', item.dropoffHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'dropoff' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  </View>
+                </>
+              )}
             </View>
           </ScrollView>
         </View>
@@ -467,10 +550,18 @@ export default function ProviderAccountScreen() {
 
   /* ---------------- History sub-screen ---------------- */
   if (showHistory) {
-    const filteredHistory = history.filter((item) => {
-      if (historyFilter === 'All') return true;
-      return item.statusLabel === historyFilter;
+    // Only terminal jobs belong in history: Completed or Cancelled.
+    const terminalHistory = history.filter(
+      (item) => item.statusLabel === 'Completed' || item.statusLabel === 'Cancelled',
+    );
+
+    const filteredHistory = terminalHistory.filter((item) => {
+      if (outcomeFilter !== 'All' && item.statusLabel !== outcomeFilter) return false;
+      return true;
     });
+
+    const completedCount = terminalHistory.filter((i) => i.statusLabel === 'Completed').length;
+    const cancelledCount = terminalHistory.filter((i) => i.statusLabel === 'Cancelled').length;
 
     return (
       <View style={styles.container}>
@@ -486,17 +577,23 @@ export default function ProviderAccountScreen() {
 
         <ScrollView style={styles.historyContent} contentContainerStyle={styles.historyScroll} showsVerticalScrollIndicator={false}>
           <Animated.View style={{ opacity: historyAnim }}>
+
+            {/* Outcome chips */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow} style={{ marginBottom: 20 }}>
-              {(['All', 'Awaiting Pickup', 'In Transit', 'Completed', 'Cancelled'] as const).map((f) => {
-                const active = historyFilter === f;
+              {(['All', 'Completed', 'Cancelled'] as OutcomeFilter[]).map((f) => {
+                const active = outcomeFilter === f;
+                const n = f === 'All' ? terminalHistory.length : f === 'Completed' ? completedCount : cancelledCount;
                 return (
-                  <TouchableOpacity key={f} style={[styles.filterChip, active && styles.filterChipActive]} onPress={() => setHistoryFilter(f)} activeOpacity={0.85}>
+                  <TouchableOpacity
+                    key={f}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    onPress={() => setOutcomeFilter(f)}
+                    activeOpacity={0.85}
+                  >
                     <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{f}</Text>
                     {f !== 'All' && (
                       <View style={[styles.filterCount, active && styles.filterCountActive]}>
-                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>
-                          {history.filter((h) => h.statusLabel === f).length}
-                        </Text>
+                        <Text style={[styles.filterCountText, active && styles.filterCountTextActive]}>{n}</Text>
                       </View>
                     )}
                   </TouchableOpacity>
@@ -512,21 +609,18 @@ export default function ProviderAccountScreen() {
             ) : filteredHistory.length === 0 ? (
               <View style={styles.historyStateContainer}>
                 <Image source={EMPTY_CLIPBOARD_ICON} style={{ width: 140, height: 140, marginBottom: 20 }} resizeMode="contain" />
-                <Text style={styles.historyEmptyTitle}>No jobs found</Text>
+                <Text style={styles.historyEmptyTitle}>No finished jobs</Text>
                 <Text style={styles.historyEmptySubtext}>
-                  {historyFilter === 'All'
-                    ? 'Your past deliveries and jobs will show up here.'
-                    : `No ${historyFilter.toLowerCase()} jobs found.`}
+                  {terminalHistory.length === 0
+                    ? 'Completed and cancelled deliveries will appear here.'
+                    : 'No jobs match this filter.'}
                 </Text>
               </View>
             ) : (
               filteredHistory.map((item) => (
                 <TouchableOpacity
                   key={item.id}
-                  style={[
-                    styles.card,
-                    (item.statusLabel === 'Completed' || item.statusLabel === 'Cancelled') ? styles.completedCard : null,
-                  ]}
+                  style={styles.card}
                   activeOpacity={0.85}
                   onPress={() => setSelectedHistoryJob(item)}
                 >
@@ -714,7 +808,27 @@ export default function ProviderAccountScreen() {
 
             <View style={styles.menuDivider} />
 
-            
+            {/* ACCOUNT HEALTH — opens the dedicated AccountHealth screen */}
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => navigation.navigate('AccountHealth' as any)}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="Open account health"
+            >
+              <View style={styles.menuItemLeft}>
+                <View style={styles.menuIconWrapper}>
+                  <SolarIcon name="ShieldCheck" size={24} />
+                </View>
+                <View style={styles.menuTextWrapper}>
+                  <Text style={styles.menuText}>Account Health</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>
+                    Disputes, reports, tickets and account status
+                  </Text>
+                </View>
+              </View>
+              <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
+            </TouchableOpacity>
 
             <View style={styles.menuDivider} />
 
@@ -725,7 +839,7 @@ export default function ProviderAccountScreen() {
                 </View>
                 <View style={styles.menuTextWrapper}>
                   <Text style={styles.menuText}>Customer Service</Text>
-                  <Text style={styles.menuSubtext} numberOfLines={1}>Report a problem, track cases, contact support</Text>
+                  <Text style={styles.menuSubtext} numberOfLines={1}>Chat with support or report a new problem</Text>
                 </View>
               </View>
               <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
@@ -915,7 +1029,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  completedCard: { backgroundColor: c.card, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', opacity: 0.92 },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   cardHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, paddingRight: 8 },
   serviceTypeBadge: { backgroundColor: c.divider, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
@@ -925,7 +1038,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, gap: 4,
   },
   statusBadgeText: { fontSize: 11, fontFamily: 'Poppins_700Bold' },
-  
+
   routeBox: {
     backgroundColor: c.background, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 14,
     marginBottom: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
@@ -973,7 +1086,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
   modalCode: { fontSize: 24, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
   modalDate: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4, marginBottom: 16 },
-  
+
   modalNoteBox: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 6,
     backgroundColor: c.accentSoft, borderRadius: 12,
@@ -996,6 +1109,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 14 },
   tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4 },

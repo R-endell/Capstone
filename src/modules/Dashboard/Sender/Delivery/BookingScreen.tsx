@@ -10,6 +10,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { useSchedule } from './ScheduleContext';
 import { saveScheduleToDB, updateScheduleInDB } from './scheduleService';
+import TermsModal from '../../../../components/terms/TermsModal';
+import { needsAcceptance, recordTermsAcceptance } from '../../../../services/termsService';
 import { supabase } from '../../../../utils/supabase';
 import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown, parseNaiveRouteTime } from '../../../../services/routeService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
@@ -285,6 +287,9 @@ export default function BookingScreen({ route, navigation }: any) {
   const proceedingRef = useRef(false);
   const proceedReturnToRef = useRef<number | null>(null);
   const [savingBooking, setSavingBooking] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsBusy, setTermsBusy] = useState(false);
+  const termsOkRef = useRef(false);
 
   const cancellingRef = useRef(false);
 
@@ -1192,8 +1197,29 @@ export default function BookingScreen({ route, navigation }: any) {
     })();
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
+  // Terms and Policies (sender version) are shown before every new booking is confirmed.
+  const acceptBookingTerms = async () => {
+    try {
+      setTermsBusy(true);
+      await recordTermsAcceptance('booking');
+      termsOkRef.current = true;
+      setTermsOpen(false);
+      setTermsBusy(false);
+      handleProceedToPayment();
+    } catch (e: any) {
+      setTermsBusy(false);
+      Alert.alert("Couldn't save your agreement", e?.message || 'Please try again.');
+    }
+  };
+
   const handleProceedToPayment = async () => {
     if (proceedingRef.current) return;
+    // Not when editing a booking that was already confirmed.
+    if (!state.isEdit && !termsOkRef.current && (await needsAcceptance('booking'))) {
+      setTermsOpen(true);
+      return;
+    }
+    termsOkRef.current = false;
     proceedingRef.current = true;
     setSavingBooking(true);
 
@@ -2122,6 +2148,14 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
       </View>
+
+      <TermsModal
+        visible={termsOpen}
+        variant="sender"
+        busy={termsBusy}
+        onAccept={acceptBookingTerms}
+        onClose={() => setTermsOpen(false)}
+      />
     </View>
   );
 }

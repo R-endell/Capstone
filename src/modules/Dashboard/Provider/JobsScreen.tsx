@@ -29,11 +29,11 @@ import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
 import { MAP_PROPS } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
-import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
@@ -248,8 +248,41 @@ const ago = (iso: string) => {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const titleForType = (type: string, fallback: string): string => {
-  const t = (type || '').toLowerCase();
+const iconForNotif = (n: Notif): SolarIconName => {
+  if (isWithdrawalNotif(n)) return 'Wallet';
+  const t = (n.type || '').toLowerCase();
+  if (t.startsWith('dispute')) return 'ShieldCheck';
+  if (t.startsWith('delivery')) return 'Package';
+  if (t === 'match' || t.includes('direct')) return 'Lightning';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'ChatCircleText';
+  if (t.startsWith('support')) return 'ChatCircleText';
+  if (t === 'payment' || t === 'escrow') return 'Card';
+  return 'Bell';
+};
+
+const titleForNotif = (n: Notif): string => {
+  const rawTitle = (n.title || '').trim();
+
+  if (isWithdrawalNotif(n)) {
+    if (!rawTitle || /dispute/i.test(rawTitle)) {
+      const b = (n.body || '').toLowerCase();
+      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) {
+        return 'Cashout Completed';
+      }
+      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) {
+        return 'Cashout Refunded';
+      }
+      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) {
+        return 'Cashout Processing';
+      }
+      return 'Cashout Update';
+    }
+    return rawTitle;
+  }
+
+  if (rawTitle) return rawTitle;
+
+  const t = (n.type || '').toLowerCase();
   if (t === 'match') return 'New Delivery Match';
   if (t.includes('direct')) return 'Direct Route Request';
   if (t.startsWith('delivery')) return 'Delivery Update';
@@ -257,7 +290,7 @@ const titleForType = (type: string, fallback: string): string => {
   if (t.startsWith('dispute')) return 'Dispute Update';
   if (t.startsWith('support')) return 'Pack-N-Ship';
   if (t === 'payment' || t === 'escrow') return 'Payment Update';
-  return fallback;
+  return 'Notification';
 };
 
 const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
@@ -700,7 +733,7 @@ const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
 };
 
 const RouteLocationPickerModal = ({
-  visible, onClose, onSelect, initialCoords, title, pinColor,
+  visible, onClose, onSelect, initialCoords, title, pinColor, asOverlay = false,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -708,6 +741,12 @@ const RouteLocationPickerModal = ({
   initialCoords?: Coord | null;
   title: string;
   pinColor: string;
+  /**
+   * Render as a full-screen overlay INSIDE the parent's Modal instead of opening a second
+   * native Modal. Swapping one native Modal for another (dismiss + present at the same time)
+   * is what made the sheet flash / re-open in a loop on Android.
+   */
+  asOverlay?: boolean;
 }) => {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
@@ -719,6 +758,9 @@ const RouteLocationPickerModal = ({
   const resolveSeq = useRef(0);
   const lastResolved = useRef<Coord | null>(null);
   const lastPoiTap = useRef(0);
+  // Camera moves WE trigger (moveTo / animateToRegion) must not feed back into
+  // onRegionChangeComplete -> resolveAt -> moveTo ... (that feedback is the "loop").
+  const ignoreRegionUntil = useRef(0);
   const markerRef = useRef<Coord>(initialCoords || DEFAULT_CENTER);
 
   const [markerCoord, setMarkerCoord] = useState<Coord>(initialCoords || DEFAULT_CENTER);
@@ -748,23 +790,28 @@ const RouteLocationPickerModal = ({
 
   useEffect(() => {
     if (!visible) return;
+    let cancelled = false;
+    loadRecents();
     if (initialCoords) {
       setMarkerCoord(initialCoords);
       resolveAt(initialCoords);
       const t = setTimeout(() => {
+        ignoreRegionUntil.current = Date.now() + 600;
         mapRef.current?.animateToRegion({ ...initialCoords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 0);
       }, 50);
-      return () => clearTimeout(t);
+      return () => { cancelled = true; clearTimeout(t); };
     }
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled) return;
         if (status !== 'granted') { resolveAt(markerRef.current); return; }
         const loc = await Location.getCurrentPositionAsync({});
+        if (cancelled) return;
         moveTo({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-      } catch { resolveAt(markerRef.current); }
+      } catch { if (!cancelled) resolveAt(markerRef.current); }
     })();
-    loadRecents();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, initialCoords?.latitude, initialCoords?.longitude]);
 
@@ -847,6 +894,7 @@ const RouteLocationPickerModal = ({
 
   const moveTo = (coords: Coord, label?: Label) => {
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    ignoreRegionUntil.current = Date.now() + 900; // 450ms animation + settle margin
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
     resolveAt(coords, label);
@@ -961,8 +1009,11 @@ const RouteLocationPickerModal = ({
     if (!isDraggingMap) setIsDraggingMap(true);
   };
 
-  const onRegionChangeComplete = (region: Region) => {
+  const onRegionChangeComplete = (region: Region, details?: { isGesture?: boolean }) => {
     setIsDraggingMap(false);
+    // Only react to the USER moving the map. Programmatic animations are already resolved by moveTo().
+    if (details?.isGesture === false) return;
+    if (details?.isGesture !== true && Date.now() < ignoreRegionUntil.current) return;
     const center = { latitude: region.latitude, longitude: region.longitude };
     if (lastResolved.current && metersBetween(lastResolved.current, center) < SAME_SPOT_METERS) return;
     setMarkerCoord(center);
@@ -996,8 +1047,7 @@ const RouteLocationPickerModal = ({
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
-  return (
-    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+  const body = (
       <View style={[styles.container, { paddingBottom: kbH }]}>
         <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
 
@@ -1187,6 +1237,16 @@ const RouteLocationPickerModal = ({
           </View>
         )}
       </View>
+  );
+
+  if (asOverlay) {
+    if (!visible) return null;
+    return <View style={[StyleSheet.absoluteFill, { zIndex: 100, elevation: 100 }]}>{body}</View>;
+  }
+
+  return (
+    <Modal animationType="slide" visible={visible} onRequestClose={onClose}>
+      {body}
     </Modal>
   );
 };
@@ -1291,6 +1351,14 @@ export default function JobsScreen() {
   const activeRouteRef = useRef<Route | null>(null);
   const routesRef = useRef<Route[]>([]);
 
+  // --- load control: the full-screen loader is for the FIRST load only. Re-showing it on every
+  // focus/refresh replaced the whole tree, which destroyed every open native Modal (the "glitch").
+  const hasLoadedRef = useRef(false);
+  const loadInFlightRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+  const modalOpenRef = useRef(false);
+  const loadDataRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
   useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
   useEffect(() => { routesRef.current = routes; }, [routes]);
@@ -1375,7 +1443,7 @@ export default function JobsScreen() {
         void refreshMatches(providerIdRef.current, found, routesRef.current);
       } else {
         // A brand-new route we haven't loaded yet.
-        void loadData();
+        void loadDataRef.current(true);
       }
     });
   }, []);
@@ -1510,9 +1578,9 @@ export default function JobsScreen() {
     await markNotifRead(n);
     setNotifModalOpen(false);
     const type = (n.type || '').toLowerCase();
-    if (type.startsWith('support')) { setFullListOpen(true); return; }
+    if (type.startsWith('support') && !isWithdrawalNotif(n)) { setFullListOpen(true); return; }
     const handled = await routeNotification(navigation, n, { role: 'provider' });
-    if (!handled) { Alert.alert(n.title || 'Notification', n.body || ''); }
+    if (!handled) { Alert.alert(titleForNotif(n), n.body || ''); }
   };
 
   const loadTodayStats = async (pid: number) => {
@@ -1807,31 +1875,42 @@ export default function JobsScreen() {
     }
   }, []);
 
-  const loadData = useCallback(async () => {
-    // FAIL-SAFE: If a modal is open, NEVER set loading to true.
-    // This prevents the screen from unmounting and destroying the native Modals.
-    if (addRouteModalVisible || routeLocationPickerVisible) {
-      return; 
-    }
+  // Read live (not from a stale closure) so every caller sees the current modal state.
+  modalOpenRef.current = addRouteModalVisible || routeLocationPickerVisible;
 
-    setLoading(true);
-    const pid = await getProviderData();
-    if (pid) {
-      const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
-      await refreshMatches(pid, resolvedRoute, validRoutes);
-    }
-    setLoading(false);
-  }, [refreshMatches, addRouteModalVisible, routeLocationPickerVisible]);
+  const loadData = async (force = false) => {
+    // Never reload underneath an open modal.
+    if (modalOpenRef.current) return;
+    // One load at a time, and de-bounce back-to-back focus events.
+    if (loadInFlightRef.current) return;
+    if (!force && hasLoadedRef.current && Date.now() - lastLoadAtRef.current < 2000) return;
 
+    loadInFlightRef.current = true;
+    // Full-screen loader ONLY for the very first load. Later reloads update data in place,
+    // so the tree (and any native Modal in it) is never unmounted.
+    if (!hasLoadedRef.current) setLoading(true);
+    try {
+      const pid = await getProviderData();
+      if (pid) {
+        const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
+        await refreshMatches(pid, resolvedRoute, validRoutes);
+      }
+    } catch (e) {
+      console.warn('loadData error:', e);
+    } finally {
+      hasLoadedRef.current = true;
+      lastLoadAtRef.current = Date.now();
+      loadInFlightRef.current = false;
+      setLoading(false);
+    }
+  };
+  loadDataRef.current = loadData;
+
+  // Stable callback: runs when the screen actually gains focus, NOT whenever a modal opens/closes.
   useFocusEffect(
     useCallback(() => {
-      // Prevent loadData() from unmounting the screen while the location picker
-      // or add route modal is open. Unmounting destroys the native Modal and
-      // causes it to re-open in an infinite loop.
-      if (addRouteModalVisible || routeLocationPickerVisible) return;
-      
-      loadData();
-    }, [loadData, addRouteModalVisible, routeLocationPickerVisible])
+      void loadDataRef.current();
+    }, [])
   );
 
   useEffect(() => {
@@ -2240,16 +2319,6 @@ export default function JobsScreen() {
         resolvedRouteId = rRow?.route_id ?? null;
       }
 
-      // Claim the request atomically: flip it to 'Accepted' ONLY if it's still 'Pending'.
-      //
-      // 1) Preferred path: the `claim_delivery_request` RPC (SECURITY DEFINER, see the SQL
-      //    shipped with this fix). It runs with the owner's rights, so a provider is never
-      //    silently refused by the delivery_requests UPDATE policy (which normally only lets
-      //    the SENDER update their own row).
-      // 2) Fallback: the direct table UPDATE, for databases that don't have the RPC yet.
-      //
-      // A plain UPDATE that RLS refuses does NOT error - it just touches 0 rows, which used to
-      // look identical to "somebody else got it first" / "request removed".
       let claimed: { request_id: number; sender_id: number; estimated_cost: number } | null = null;
       let claimErr: { message: string } | null = null;
 
@@ -2258,7 +2327,6 @@ export default function JobsScreen() {
         const row = Array.isArray(rpcRes.data) ? rpcRes.data[0] : rpcRes.data;
         claimed = row ?? null;
       } else {
-        // RPC missing (PGRST202) or failed - fall back to the direct UPDATE.
         const direct = await supabase
           .from('delivery_requests')
           .update({ delivery_status: 'Accepted' })
@@ -2277,8 +2345,6 @@ export default function JobsScreen() {
       }
 
       if (!claimed) {
-        // The claim touched 0 rows. Find out WHY, and never let a failed read masquerade as
-        // "the request was removed" (the old code ignored the read error entirely).
         const [existingRes, stillRes] = await Promise.all([
           supabase
             .from('deliveries')
@@ -2309,7 +2375,6 @@ export default function JobsScreen() {
           );
         } else if (existing && existing.length > 0) {
           if (Number(existing[0].provider_id) === Number(providerId)) {
-            // Already accepted by THIS provider (e.g. a double tap) - not an error, go to the task.
             setDetailRequestId(null);
             void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
             if (!goToTaskTab()) Alert.alert('Already accepted', 'You already accepted this delivery. Find it in the Task tab.');
@@ -2317,14 +2382,11 @@ export default function JobsScreen() {
           }
           Alert.alert('Request unavailable', 'This request was already accepted by another provider.');
         } else if (!still) {
-          // No error, no row: the request really is gone (e.g. the sender cancelled and it was deleted).
           Alert.alert(
             'Request unavailable',
             'The sender cancelled or removed this request. Pull to refresh to see current requests.',
           );
         } else if (still.delivery_status === 'Pending') {
-          // Readable + still Pending, yet our UPDATE changed nothing => the database REFUSED the
-          // write (row-level security), it is not a lost race.
           Alert.alert(
             'Could not accept request',
             'This request is still open, but the server refused the update. Please contact support - the accept permission is not set up for providers.',
@@ -2348,8 +2410,6 @@ export default function JobsScreen() {
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
       }).select('*').single();
       if (deliveryError) {
-        // The deliveries insert failed after we'd already claimed the request - put it
-        // back to Pending so it isn't stuck "Accepted" with nobody actually assigned.
         await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
         throw deliveryError;
       }
@@ -2363,13 +2423,9 @@ export default function JobsScreen() {
       });
       if (qrError) {
         await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
-        // Same as above: undo the claim so the request goes back to Pending instead of
-        // being stuck "Accepted" with no delivery behind it.
         await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
         throw qrError;
       }
-
-      // delivery_status was already set to 'Accepted' by the atomic claim above.
 
       try {
         await supabase
@@ -2385,7 +2441,6 @@ export default function JobsScreen() {
           .eq('status', 'matched');
       } catch (e) { console.warn('[Jobs] match status update failed', e); }
 
-      // Deduct trunk space from the route this request was actually accepted on.
       const capacityRoute = routes.find(r => r.route_id === resolvedRouteId) ?? activeRoute;
       if (capacityRoute) {
         const cargoWeight = req.weightKg || 5;
@@ -3227,15 +3282,14 @@ export default function JobsScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
                   <View style={styles.notifIconBox}>
-                    <SolarIcon name="Bell" variant="duotone" size={18} color={colors.accent} />
+                    <SolarIcon name={iconForNotif(item)} variant="duotone" size={18} color={colors.accent} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <View style={styles.notifTitleRow}>
-                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForType(item.type, item.title)}</Text>
+                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForNotif(item)}</Text>
                       {!item.is_read && <View style={styles.notifDot} />}
                     </View>
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
-                    <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
                   <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
                 </TouchableOpacity>
@@ -3409,10 +3463,14 @@ export default function JobsScreen() {
 
   const renderAddRouteModal = () => (
     <Modal
-      visible={addRouteModalVisible && !routeLocationPickerVisible}
+      visible={addRouteModalVisible}
       transparent
       animationType="slide"
-      onRequestClose={() => setAddRouteModalVisible(false)}
+      onRequestClose={() => {
+        // Hardware back closes the map picker first, then the sheet.
+        if (routeLocationPickerVisible) setRouteLocationPickerVisible(false);
+        else setAddRouteModalVisible(false);
+      }}
     >
       <View style={styles.modalOverlay}>
         <View style={[styles.addRouteSheet, { backgroundColor: colors.card, paddingBottom: insets.bottom + 20 }]}>
@@ -3667,6 +3725,22 @@ export default function JobsScreen() {
             </TouchableOpacity>
           </ScrollView>
         </View>
+
+        {/* Map picker lives INSIDE this Modal as an overlay: no second native Modal, no dismiss/present race. */}
+        <RouteLocationPickerModal
+          asOverlay
+          key={routeLocationPickerType}
+          visible={routeLocationPickerVisible}
+          onClose={() => setRouteLocationPickerVisible(false)}
+          onSelect={(loc) => handleNewRouteLocationSelect(loc, routeLocationPickerType)}
+          initialCoords={
+            routeLocationPickerType === 'start'
+              ? (newRouteStart ? { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude } : undefined)
+              : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
+          }
+          title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
+          pinColor={routeLocationPickerType === 'start' ? colors.accent : colors.textPrimary}
+        />
       </View>
     </Modal>
   );
@@ -3784,19 +3858,6 @@ export default function JobsScreen() {
       </Modal>
 
       {renderAddRouteModal()}
-
-      <RouteLocationPickerModal
-        visible={routeLocationPickerVisible}
-        onClose={() => setRouteLocationPickerVisible(false)}
-        onSelect={(loc) => handleNewRouteLocationSelect(loc, routeLocationPickerType)}
-        initialCoords={
-          routeLocationPickerType === 'start'
-            ? (newRouteStart ? { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude } : undefined)
-            : (newRouteEnd ? { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude } : undefined)
-        }
-        title={routeLocationPickerType === 'start' ? 'Starting Point' : 'Destination'}
-        pinColor={routeLocationPickerType === 'start' ? colors.accent : colors.textPrimary}
-      />
 
       <Modal visible={!!previewPhoto} transparent animationType="fade" onRequestClose={() => setPreviewPhoto(null)}>
         <View style={styles.previewOverlay}>

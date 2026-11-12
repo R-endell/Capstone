@@ -26,6 +26,7 @@ export default function AddItemScreen({ route, navigation }: any) {
   const [description, setDescription] = useState('');
   const [fragile, setFragile] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState(false);
   const [focused, setFocused] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -64,10 +65,27 @@ export default function AddItemScreen({ route, navigation }: any) {
     Animated.spring(buttonScale, { toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6 }).start();
   };
 
-  const pickImage = async () => {
+  const takePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission required', 'Allow camera access to take a package picture.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      quality: 0.7,
+    });
+    if (!result.canceled) {
+      setPhotoUri(result.assets[0].uri);
+      setPhotoError(false);
+    }
+  };
+
+  const chooseFromFiles = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission required', 'Allow access to photos to add a package picture.');
+      Alert.alert('Permission required', 'Allow access to your files and photos to add a package picture.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -75,10 +93,27 @@ export default function AddItemScreen({ route, navigation }: any) {
       allowsEditing: true,
       quality: 0.7,
     });
-    if (!result.canceled) setPhotoUri(result.assets[0].uri);
+    if (!result.canceled) {
+      setPhotoUri(result.assets[0].uri);
+      setPhotoError(false);
+    }
+  };
+
+  // Ask how the sender wants to add the photo: camera or files/gallery.
+  const pickImage = () => {
+    Alert.alert('Package photo', 'How would you like to add the photo?', [
+      { text: 'Take Photo', onPress: takePhoto },
+      { text: 'Choose from Files', onPress: chooseFromFiles },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const addItem = () => {
+    if (!photoUri) {
+      setPhotoError(true);
+      Alert.alert('Photo required', 'Please add a photo of the package. Take a photo or choose one from your files.');
+      return;
+    }
     if (!description.trim()) {
       Alert.alert('Missing', 'Please enter a description.');
       return;
@@ -135,9 +170,11 @@ export default function AddItemScreen({ route, navigation }: any) {
         >
           {/* Photo */}
           <Animated.View style={fadeUp(photoAnim, 20)}>
-            <Text style={styles.sectionLabel}>Package Photo</Text>
+            <Text style={styles.sectionLabel}>
+              Package Photo <Text style={{ color: colors.error }}>*</Text>
+            </Text>
             <TouchableOpacity
-              style={[styles.photoBox, photoUri && styles.photoBoxFilled]}
+              style={[styles.photoBox, photoUri && styles.photoBoxFilled, photoError && !photoUri && styles.photoBoxError]}
               onPress={pickImage}
               activeOpacity={0.85}
             >
@@ -154,8 +191,10 @@ export default function AddItemScreen({ route, navigation }: any) {
                   <View style={styles.photoIconCircle}>
                     <SolarIcon name="Camera" variant="duotone" size={28} color={colors.accent} />
                   </View>
-                  <Text style={styles.photoPlaceholderTitle}>Add package photo</Text>
-                  <Text style={styles.photoPlaceholderText}>Helps providers handle with care</Text>
+                  <Text style={styles.photoPlaceholderTitle}>Add package photo (required)</Text>
+                  <Text style={[styles.photoPlaceholderText, photoError && { color: colors.error }]}>
+                    Take a photo or choose one from your files
+                  </Text>
                 </>
               )}
             </TouchableOpacity>
@@ -292,6 +331,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     justifyContent: 'center', alignItems: 'center',
     marginBottom: 28, backgroundColor: c.card,
   },
+  photoBoxError: { borderColor: c.error, backgroundColor: c.errorBg },
   photoBoxFilled: {
     borderStyle: 'solid', borderColor: c.accent, backgroundColor: c.accentSoft,
     padding: 0, overflow: 'hidden',

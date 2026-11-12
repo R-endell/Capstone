@@ -16,6 +16,8 @@ import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import TermsModal from '../../../../components/terms/TermsModal';
+import { needsAcceptance, recordTermsAcceptance } from '../../../../services/termsService';
 import {
   getTodayRouteStats,
   createProviderRouteWithGuardrails,
@@ -886,6 +888,9 @@ export default function ManageRoutesScreen() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsBusy, setTermsBusy] = useState(false);
+  const termsOkRef = useRef(false);
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<RouteTab>('active');
   const [usedTodayCount, setUsedTodayCount] = useState(0);
@@ -1044,6 +1049,21 @@ export default function ManageRoutesScreen() {
     return departureDate;
   };
 
+  // Terms and Policies (provider version) are shown every time a new route is posted.
+  const acceptRouteTerms = async () => {
+    try {
+      setTermsBusy(true);
+      await recordTermsAcceptance('route_post');
+      termsOkRef.current = true;
+      setTermsOpen(false);
+      setTermsBusy(false);
+      handleSubmit();
+    } catch (e: any) {
+      setTermsBusy(false);
+      Alert.alert("Couldn't save your agreement", e?.message || 'Please try again.');
+    }
+  };
+
   const handleSubmit = async () => {
     if (!startLocation || !endLocation || !selectedVehicleId || !userId) {
       return Alert.alert('Required', 'Please fill all fields');
@@ -1082,6 +1102,13 @@ export default function ManageRoutesScreen() {
     }
 
     const endTimeObj = new Date(combined.getTime() + routeDurationHours * 60 * 60 * 1000);
+
+    // New routes only (editing an existing one does not ask again).
+    if (!editingRoute && !termsOkRef.current && (await needsAcceptance('route_post'))) {
+      setTermsOpen(true);
+      return;
+    }
+    termsOkRef.current = false;
 
     setSubmitting(true);
     try {
@@ -1786,6 +1813,14 @@ export default function ManageRoutesScreen() {
             </ScrollView>
           </View>
         </View>
+
+        <TermsModal
+          visible={termsOpen}
+          variant="provider"
+          busy={termsBusy}
+          onAccept={acceptRouteTerms}
+          onClose={() => setTermsOpen(false)}
+        />
       </Modal>
 
       <LocationPickerModal

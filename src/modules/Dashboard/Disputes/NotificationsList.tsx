@@ -12,8 +12,8 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../../utils/supabase';
 import { getMyUserId } from '../../../services/disputeService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { routeNotification, NotifRow } from '../../../utils/notifRouter';
-import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon'; // ✅ Replaced Ionicons
+import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 
 const SENDER_NAME = 'Pack-N-Ship';
 
@@ -28,22 +28,9 @@ type SupportMessage = {
   _temp_id?: number;
 };
 
-const ago = (iso: string) => {
-  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
-  if (m < 1) return 'Just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
-const timeOnly = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-
-const iconForType = (type: string): SolarIconName => {
-  const t = (type || '').toLowerCase();
+const iconForNotif = (n: Notif): SolarIconName => {
+  if (isWithdrawalNotif(n)) return 'Wallet';
+  const t = (n.type || '').toLowerCase();
   if (t.startsWith('dispute')) return 'ShieldCheck';
   if (t.startsWith('delivery')) return 'Package';
   if (t === 'match') return 'Lightning';
@@ -51,6 +38,26 @@ const iconForType = (type: string): SolarIconName => {
   if (t === 'chat') return 'ChatCircleText';
   if (t === 'payment' || t === 'escrow') return 'Card';
   return 'Bell';
+};
+
+const displayTitleForNotif = (n: Notif): string => {
+  const rawTitle = (n.title || '').trim();
+  if (isWithdrawalNotif(n)) {
+    if (!rawTitle || /dispute/i.test(rawTitle)) {
+      const b = (n.body || '').toLowerCase();
+      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) {
+        return 'Cashout Completed';
+      }
+      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) {
+        return 'Cashout Refunded';
+      }
+      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) {
+        return 'Cashout Processing';
+      }
+      return 'Cashout Update';
+    }
+  }
+  return rawTitle || 'Notification';
 };
 
 type Props = {
@@ -308,7 +315,7 @@ export default function NotificationsList({ embedded = false, role = 'sender', L
   const open = async (n: Notif) => {
     const type = (n.type || '').toLowerCase();
 
-    if (type.startsWith('support')) {
+    if (type.startsWith('support') && !isWithdrawalNotif(n)) {
       await openSupportThread(n);
       return;
     }
@@ -316,15 +323,17 @@ export default function NotificationsList({ embedded = false, role = 'sender', L
     await markOneRead(n);
     const handled = await routeNotification(navigation, n, { role });
     if (!handled) {
-      Alert.alert(n.title || 'Notification', n.body || '');
+      Alert.alert(displayTitleForNotif(n), n.body || '');
     }
   };
 
   const renderItem = ({ item }: { item: Notif }) => {
     const t = (item.type || '').toLowerCase();
-    const isSupport = t.startsWith('support');
+    const isWithdraw = isWithdrawalNotif(item);
+    const isSupport = t.startsWith('support') && !isWithdraw;
     const isChat = t === 'chat';
-    const iconName = iconForType(item.type);
+    const iconName = iconForNotif(item);
+    const shownTitle = displayTitleForNotif(item);
 
     return (
       <TouchableOpacity
@@ -333,23 +342,21 @@ export default function NotificationsList({ embedded = false, role = 'sender', L
         onPress={() => open(item)}
       >
         <View style={styles.iconBox}>
-          {/* ✅ SolarIcon integration */}
           <SolarIcon name={iconName} variant="duotone" size={22} />
         </View>
         <View style={{ flex: 1 }}>
           <View style={styles.row}>
             <Text style={styles.title} numberOfLines={1}>
-              {isSupport || isChat ? SENDER_NAME : item.title}
+              {isSupport || isChat ? SENDER_NAME : shownTitle}
             </Text>
             {!item.is_read && <View style={styles.dot} />}
           </View>
           {(isSupport || isChat) && (
             <Text style={styles.subTitle} numberOfLines={1}>
-              {item.title || (isChat ? 'New message' : 'Support message')}
+              {shownTitle || (isChat ? 'New message' : 'Support message')}
             </Text>
           )}
           <Text style={styles.body} numberOfLines={3}>{item.body}</Text>
-          <Text style={styles.time}>{ago(item.created_at)}</Text>
         </View>
         <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} style={{ alignSelf: 'center' }} />
       </TouchableOpacity>
@@ -415,7 +422,7 @@ export default function NotificationsList({ embedded = false, role = 'sender', L
                         <View style={[styles.msgBubble, isMe && styles.msgBubbleMe]}>
                           <Text style={[styles.msgText, isMe && styles.msgTextMe]}>{m.body}</Text>
                           <Text style={[styles.msgTime, isMe && styles.msgTimeMe]}>
-                            {isMe ? 'You' : SENDER_NAME} · {timeOnly(m.created_at)}
+                            {isMe ? 'You' : SENDER_NAME}
                           </Text>
                         </View>
                       </View>
@@ -540,7 +547,7 @@ export default function NotificationsList({ embedded = false, role = 'sender', L
           <View style={styles.center}>
             <SolarIcon name="Bell" variant="duotone" size={48} color={colors.textMuted} />
             <Text style={styles.emptyTitle}>No notifications yet</Text>
-            <Text style={styles.emptySub}>Updates about your reports and disputes will appear here.</Text>
+            <Text style={styles.emptySub}>Updates about your deliveries, payouts, and reports will appear here.</Text>
           </View>
         )
       ) : (
@@ -582,7 +589,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     width: 32, height: 32, borderRadius: 16,
     alignItems: 'center', justifyContent: 'center',
   },
-  // ✅ ATOME STYLE
   topBarTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, textAlign: 'center' },
 
   markAllBtn: {
@@ -626,13 +632,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
 
   row: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  
-  // ✅ ATOME STYLE
   title: { flex: 1, fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   subTitle: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
   body: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 4, lineHeight: 19 },
-  time: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 8 },
 
   modalRoot: { flex: 1, backgroundColor: c.background },
   modalHeader: {
