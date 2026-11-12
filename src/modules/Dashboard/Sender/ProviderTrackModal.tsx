@@ -405,7 +405,6 @@ export default function ProviderTrackModal({
           </TouchableOpacity>
           <View style={[styles.livePill, !live && styles.livePillStale]}>
             <View style={[styles.liveDot, { backgroundColor: statusColor }]} />
-            <Text style={styles.liveText}>{live ? 'Live' : fix ? 'Stale' : 'No live GPS'}</Text>
           </View>
         </View>
 
@@ -472,22 +471,7 @@ export default function ProviderTrackModal({
                   {distanceKm != null ? formatKm(distanceKm) : '—'}
                 </Text>
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>REACHES YOU</Text>
-                <Text style={styles.statValue}>{etaMin != null ? `~${etaMin} min` : '—'}</Text>
-              </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>GPS</Text>
-                <Text style={[styles.statValue, { color: statusColor }]}>{statusText}</Text>
-              </View>
             </View>
-            <Text style={styles.updated}>
-              {fix
-                ? formatLastSeen(fix.updated_at)
-                : `${trip.timeLabel} · live GPS appears once the provider is on the road`}
-            </Text>
 
             <TouchableOpacity
               style={[styles.requestBtn, isFinished && { backgroundColor: '#94A3B8', shadowOpacity: 0 }]}
@@ -555,12 +539,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     },
     livePillStale: { borderColor: c.warning },
     liveDot: { width: 8, height: 8, borderRadius: 4 },
-    liveText: {
-      fontSize: 11,
-      fontFamily: 'Poppins_700Bold',
-      color: c.textPrimary,
-      letterSpacing: 0.4,
-    },
     fab: {
       position: 'absolute',
       right: 16,

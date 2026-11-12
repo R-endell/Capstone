@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform,
+  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
@@ -1576,10 +1576,11 @@ export default function TaskScreen() {
       const proofUrl = await uploadPodPhoto(failurePhotoUri, deliveryId);
 
       if (fallbackAction === 'leave_with_guard') {
-        await supabase
+        // Option B: the provider only submits proof of handover.
+        // NO completed_at and NO escrow settlement here — the sender must approve first.
+        const { error: proofErr } = await supabase
           .from('deliveries')
           .update({
-            completed_at: nowIso,
             pod_photo_url: proofUrl,
             failure_photo_url: proofUrl,
             failure_reason: `Left with ${fallbackRecipient}`,
@@ -1588,22 +1589,26 @@ export default function TaskScreen() {
             pod_seen_by_sender: false,
           })
           .eq('delivery_id', deliveryId);
+        if (proofErr) throw proofErr;
 
-        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
-          p_delivery_id: deliveryId,
-          p_outcome: 'completed_safe_drop',
-        });
-        if (settleErr) throw settleErr;
+        const { error: awaitErr } = await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Awaiting Approval' })
+          .eq('request_id', requestId);
+        if (awaitErr) throw awaitErr;
 
         if (req.sender_id) {
           await notifyUser(
             req.sender_id,
-            'Delivery Left with Authorized Person 📦',
-            `Receiver was unreachable. Your courier has left the package with ${fallbackRecipient}. Tap for proof of delivery.`,
+            'Approve Handover 📦',
+            `Receiver was unreachable. Your courier left the package with ${fallbackRecipient} and uploaded a photo. Open Activity to review it and approve the delivery.`,
             { deliveryId, requestId }
           );
         }
-        Alert.alert('✅ Left with Authorized Recipient', `Photo proof saved and your payout has been released.`);
+        Alert.alert(
+          '📸 Proof Submitted',
+          `Waiting for the sender to confirm the package was left with ${fallbackRecipient}. Your payout will be released once they approve.`
+        );
       } else {
         await supabase
           .from('deliveries')
@@ -1658,21 +1663,48 @@ export default function TaskScreen() {
 
   const onRefresh = () => { setRefreshing(true); loadData(); };
 
+  // ── Realtime: no manual refresh needed ──────────────────────────────────────
+  const taskRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Coalesce bursts of DB events (one approval touches several tables) into a single refetch.
+  const scheduleTaskRefresh = useCallback((pid: number) => {
+    if (taskRefreshTimerRef.current) clearTimeout(taskRefreshTimerRef.current);
+    taskRefreshTimerRef.current = setTimeout(() => {
+      taskRefreshTimerRef.current = null;
+      void fetchDeliveries(pid);
+    }, 250);
+  }, [fetchDeliveries]);
+
   useEffect(() => {
     if (!providerId) return;
+    const refresh = () => scheduleTaskRefresh(providerId);
     const channel = supabase
       .channel(`task-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments', filter: `provider_id=eq.${providerId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => {
         fetchProviderRoutes(providerId).then((r) => fetchDeliveries(providerId, r?.route_id ?? null));
       })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [providerId, fetchDeliveries, fetchProviderRoutes]);
+      .subscribe((status) => {
+        // Catch up on anything missed while the socket was (re)connecting.
+        if (status === 'SUBSCRIBED') refresh();
+      });
+
+    // Catch up when the app returns to the foreground.
+    const appStateSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') refresh();
+    });
+
+    return () => {
+      if (taskRefreshTimerRef.current) { clearTimeout(taskRefreshTimerRef.current); taskRefreshTimerRef.current = null; }
+      appStateSub.remove();
+      supabase.removeChannel(channel);
+    };
+  }, [providerId, fetchDeliveries, fetchProviderRoutes, scheduleTaskRefresh]);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
@@ -1702,8 +1734,12 @@ export default function TaskScreen() {
       else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Returning' || status === 'Completed' || status === 'Returned';
+    return status === 'In Transit' || status === 'Awaiting Approval' || status === 'Returning' || status === 'Completed' || status === 'Returned';
   };
+
+  // Option B: provider left the package with the authorized person; waiting for the sender to approve.
+  const isAwaitingApproval = (d: any): boolean =>
+    String(d?.delivery_requests?.delivery_status || '') === 'Awaiting Approval' && !d?.completed_at;
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
@@ -1711,7 +1747,10 @@ export default function TaskScreen() {
     return isPickupVerified(d) ? 'transit' : 'pickup';
   };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled', awaitingApproval = false) => {
+    if (awaitingApproval && stage === 'transit') {
+      return { label: 'Awaiting Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
+    }
     switch (stage) {
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
@@ -1934,7 +1973,7 @@ export default function TaskScreen() {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
     const stage = stageOf(d);
-    const meta = statusMeta(stage);
+    const meta = statusMeta(stage, isAwaitingApproval(d));
     const isCancelled = stage === 'cancelled';
     const active = stage === 'pickup' || stage === 'transit';
 
@@ -2399,7 +2438,10 @@ export default function TaskScreen() {
     const H = Dimensions.get('window').height;
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
-    const hintText = stage === 'pickup'
+    const awaitingApproval = isAwaitingApproval(d);
+    const hintText = awaitingApproval
+      ? 'Proof photo sent. Waiting for the sender to confirm the package was left with the authorized person. Your payout is released as soon as they approve.'
+      : stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
       : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
 
@@ -2432,7 +2474,7 @@ export default function TaskScreen() {
 
             <View style={styles.oTopRow}>
               {renderServicePill(info)}
-              {renderStatusPill(statusMeta(stage))}
+              {renderStatusPill(statusMeta(stage, isAwaitingApproval(d)))}
             </View>
 
             <View style={styles.dCodeRow}>
@@ -2550,7 +2592,7 @@ export default function TaskScreen() {
               </View>
             )}
 
-            {stage === 'transit' && d.delivery_requests?.delivery_status !== 'Returning' && (
+            {stage === 'transit' && !awaitingApproval && d.delivery_requests?.delivery_status !== 'Returning' && (
               <TouchableOpacity
                 style={[styles.mSoftBtn, { marginTop: 14, flex: 0, backgroundColor: colors.errorBg }]}
                 onPress={() => handleStartDropoffGracePeriod(d)}
@@ -2730,7 +2772,8 @@ export default function TaskScreen() {
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }]}
+              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && { opacity: 0.55 }]}
+              disabled={awaitingApproval}
               onPress={() =>
                 stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
                   ? openVerifyModal(d)
@@ -2739,16 +2782,24 @@ export default function TaskScreen() {
               activeOpacity={0.9}
             >
               <Ionicons
-                name={stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning' ? 'qr-code-outline' : 'checkmark-circle'}
+                name={
+                  awaitingApproval
+                    ? 'time-outline'
+                    : stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
+                      ? 'qr-code-outline'
+                      : 'checkmark-circle'
+                }
                 size={18}
                 color="#FFFFFF"
               />
               <Text style={styles.mPrimaryText}>
-                { d.delivery_requests?.delivery_status === 'Returning'
-                  ? 'Verify Return QR'
-                  : stage === 'pickup'
-                    ? 'Verify Pickup'
-                    : 'Complete'}
+                {awaitingApproval
+                  ? 'Awaiting Sender Approval'
+                  : d.delivery_requests?.delivery_status === 'Returning'
+                    ? 'Verify Return QR'
+                    : stage === 'pickup'
+                      ? 'Verify Pickup'
+                      : 'Complete'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -3181,7 +3232,7 @@ export default function TaskScreen() {
 
   const navSessionId = useNavigationSession();
   const broadcastingDelivery = useMemo(() => {
-    const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit');
+    const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit' && !isAwaitingApproval(d));
     if (inTransit) return inTransit;
     if (navSessionId == null) return null;
     return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;

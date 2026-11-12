@@ -540,7 +540,7 @@ export default function ExploreScreen() {
             activeOpacity={0.85}
           >
             <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
-            <Text style={styles.trackBtnText}>Track</Text>
+            <Text style={styles.trackBtnText}>View</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
