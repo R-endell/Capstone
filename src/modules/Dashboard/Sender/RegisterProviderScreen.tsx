@@ -14,6 +14,8 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+import TermsModal from '../../../components/terms/TermsModal';
+import { needsAcceptance, recordTermsAcceptance } from '../../../services/termsService';
 
 const BUCKET_NAME = 'vehicle-documents';
 
@@ -42,6 +44,9 @@ export default function RegisterProviderScreen() {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [loading, setLoading] = useState(false);
+  const [termsOpen, setTermsOpen] = useState(false);
+  const [termsBusy, setTermsBusy] = useState(false);
+  const termsOkRef = useRef(false);
 
   const [licenseNumber, setLicenseNumber] = useState('');
   const [licenseExpiry, setLicenseExpiry] = useState('');
@@ -668,6 +673,21 @@ export default function RegisterProviderScreen() {
     return urlData.publicUrl;
   };
 
+  // Terms and Policies (provider version) are shown before the application is sent.
+  const acceptProviderTerms = async () => {
+    try {
+      setTermsBusy(true);
+      await recordTermsAcceptance('provider_application');
+      termsOkRef.current = true;
+      setTermsOpen(false);
+      setTermsBusy(false);
+      handleRegisterProvider();
+    } catch (e: any) {
+      setTermsBusy(false);
+      Alert.alert("Couldn't save your agreement", e?.message || 'Please try again.');
+    }
+  };
+
   const handleRegisterProvider = async () => {
     // We only strictly require the FRONT photo to be valid. Back is optional.
     if (!licenseFrontUri || !frontVerified) {
@@ -704,6 +724,13 @@ export default function RegisterProviderScreen() {
       Alert.alert('Please Wait', 'Your selfie is still uploading. Please try again in a moment.');
       return;
     }
+
+    // Everything above is valid: now ask for the agreement (once per Terms version).
+    if (!termsOkRef.current && (await needsAcceptance('provider_application'))) {
+      setTermsOpen(true);
+      return;
+    }
+    termsOkRef.current = false;
 
     setLoading(true);
     try {
@@ -1282,6 +1309,14 @@ export default function RegisterProviderScreen() {
           </TouchableOpacity>
         </Animated.View>
       </ScrollView>
+
+      <TermsModal
+        visible={termsOpen}
+        variant="provider"
+        busy={termsBusy}
+        onAccept={acceptProviderTerms}
+        onClose={() => setTermsOpen(false)}
+      />
     </View>
   );
 }

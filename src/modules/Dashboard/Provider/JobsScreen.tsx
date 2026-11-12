@@ -29,11 +29,11 @@ import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
 import { MAP_PROPS } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
-import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
@@ -248,8 +248,41 @@ const ago = (iso: string) => {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const titleForType = (type: string, fallback: string): string => {
-  const t = (type || '').toLowerCase();
+const iconForNotif = (n: Notif): SolarIconName => {
+  if (isWithdrawalNotif(n)) return 'Wallet';
+  const t = (n.type || '').toLowerCase();
+  if (t.startsWith('dispute')) return 'ShieldCheck';
+  if (t.startsWith('delivery')) return 'Package';
+  if (t === 'match' || t.includes('direct')) return 'Lightning';
+  if (t.startsWith('message') || t.startsWith('chat')) return 'ChatCircleText';
+  if (t.startsWith('support')) return 'ChatCircleText';
+  if (t === 'payment' || t === 'escrow') return 'Card';
+  return 'Bell';
+};
+
+const titleForNotif = (n: Notif): string => {
+  const rawTitle = (n.title || '').trim();
+
+  if (isWithdrawalNotif(n)) {
+    if (!rawTitle || /dispute/i.test(rawTitle)) {
+      const b = (n.body || '').toLowerCase();
+      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) {
+        return 'Cashout Completed';
+      }
+      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) {
+        return 'Cashout Refunded';
+      }
+      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) {
+        return 'Cashout Processing';
+      }
+      return 'Cashout Update';
+    }
+    return rawTitle;
+  }
+
+  if (rawTitle) return rawTitle;
+
+  const t = (n.type || '').toLowerCase();
   if (t === 'match') return 'New Delivery Match';
   if (t.includes('direct')) return 'Direct Route Request';
   if (t.startsWith('delivery')) return 'Delivery Update';
@@ -257,7 +290,7 @@ const titleForType = (type: string, fallback: string): string => {
   if (t.startsWith('dispute')) return 'Dispute Update';
   if (t.startsWith('support')) return 'Pack-N-Ship';
   if (t === 'payment' || t === 'escrow') return 'Payment Update';
-  return fallback;
+  return 'Notification';
 };
 
 const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
@@ -1545,9 +1578,9 @@ export default function JobsScreen() {
     await markNotifRead(n);
     setNotifModalOpen(false);
     const type = (n.type || '').toLowerCase();
-    if (type.startsWith('support')) { setFullListOpen(true); return; }
+    if (type.startsWith('support') && !isWithdrawalNotif(n)) { setFullListOpen(true); return; }
     const handled = await routeNotification(navigation, n, { role: 'provider' });
-    if (!handled) { Alert.alert(n.title || 'Notification', n.body || ''); }
+    if (!handled) { Alert.alert(titleForNotif(n), n.body || ''); }
   };
 
   const loadTodayStats = async (pid: number) => {
@@ -2286,16 +2319,6 @@ export default function JobsScreen() {
         resolvedRouteId = rRow?.route_id ?? null;
       }
 
-      // Claim the request atomically: flip it to 'Accepted' ONLY if it's still 'Pending'.
-      //
-      // 1) Preferred path: the `claim_delivery_request` RPC (SECURITY DEFINER, see the SQL
-      //    shipped with this fix). It runs with the owner's rights, so a provider is never
-      //    silently refused by the delivery_requests UPDATE policy (which normally only lets
-      //    the SENDER update their own row).
-      // 2) Fallback: the direct table UPDATE, for databases that don't have the RPC yet.
-      //
-      // A plain UPDATE that RLS refuses does NOT error - it just touches 0 rows, which used to
-      // look identical to "somebody else got it first" / "request removed".
       let claimed: { request_id: number; sender_id: number; estimated_cost: number } | null = null;
       let claimErr: { message: string } | null = null;
 
@@ -2304,7 +2327,6 @@ export default function JobsScreen() {
         const row = Array.isArray(rpcRes.data) ? rpcRes.data[0] : rpcRes.data;
         claimed = row ?? null;
       } else {
-        // RPC missing (PGRST202) or failed - fall back to the direct UPDATE.
         const direct = await supabase
           .from('delivery_requests')
           .update({ delivery_status: 'Accepted' })
@@ -2323,8 +2345,6 @@ export default function JobsScreen() {
       }
 
       if (!claimed) {
-        // The claim touched 0 rows. Find out WHY, and never let a failed read masquerade as
-        // "the request was removed" (the old code ignored the read error entirely).
         const [existingRes, stillRes] = await Promise.all([
           supabase
             .from('deliveries')
@@ -2355,7 +2375,6 @@ export default function JobsScreen() {
           );
         } else if (existing && existing.length > 0) {
           if (Number(existing[0].provider_id) === Number(providerId)) {
-            // Already accepted by THIS provider (e.g. a double tap) - not an error, go to the task.
             setDetailRequestId(null);
             void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
             if (!goToTaskTab()) Alert.alert('Already accepted', 'You already accepted this delivery. Find it in the Task tab.');
@@ -2363,14 +2382,11 @@ export default function JobsScreen() {
           }
           Alert.alert('Request unavailable', 'This request was already accepted by another provider.');
         } else if (!still) {
-          // No error, no row: the request really is gone (e.g. the sender cancelled and it was deleted).
           Alert.alert(
             'Request unavailable',
             'The sender cancelled or removed this request. Pull to refresh to see current requests.',
           );
         } else if (still.delivery_status === 'Pending') {
-          // Readable + still Pending, yet our UPDATE changed nothing => the database REFUSED the
-          // write (row-level security), it is not a lost race.
           Alert.alert(
             'Could not accept request',
             'This request is still open, but the server refused the update. Please contact support - the accept permission is not set up for providers.',
@@ -2394,8 +2410,6 @@ export default function JobsScreen() {
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
       }).select('*').single();
       if (deliveryError) {
-        // The deliveries insert failed after we'd already claimed the request - put it
-        // back to Pending so it isn't stuck "Accepted" with nobody actually assigned.
         await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
         throw deliveryError;
       }
@@ -2409,13 +2423,9 @@ export default function JobsScreen() {
       });
       if (qrError) {
         await supabase.from('deliveries').delete().eq('delivery_id', delivery.delivery_id);
-        // Same as above: undo the claim so the request goes back to Pending instead of
-        // being stuck "Accepted" with no delivery behind it.
         await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
         throw qrError;
       }
-
-      // delivery_status was already set to 'Accepted' by the atomic claim above.
 
       try {
         await supabase
@@ -2431,7 +2441,6 @@ export default function JobsScreen() {
           .eq('status', 'matched');
       } catch (e) { console.warn('[Jobs] match status update failed', e); }
 
-      // Deduct trunk space from the route this request was actually accepted on.
       const capacityRoute = routes.find(r => r.route_id === resolvedRouteId) ?? activeRoute;
       if (capacityRoute) {
         const cargoWeight = req.weightKg || 5;
@@ -3273,15 +3282,14 @@ export default function JobsScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
                   <View style={styles.notifIconBox}>
-                    <SolarIcon name="Bell" variant="duotone" size={18} color={colors.accent} />
+                    <SolarIcon name={iconForNotif(item)} variant="duotone" size={18} color={colors.accent} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <View style={styles.notifTitleRow}>
-                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForType(item.type, item.title)}</Text>
+                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForNotif(item)}</Text>
                       {!item.is_read && <View style={styles.notifDot} />}
                     </View>
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
-                    <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
                   <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
                 </TouchableOpacity>

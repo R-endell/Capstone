@@ -2,7 +2,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
-  Alert, StatusBar, Animated, Easing, ActivityIndicator, BackHandler, Switch, Modal, Dimensions,
+  Alert, StatusBar, Animated, Easing, ActivityIndicator, BackHandler, Switch, Modal, Dimensions, Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -15,6 +15,9 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { formatDate, formatDateTime } from '../../../utils/dateUtils';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+
+let Clipboard: any = null;
+try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const EMPTY_CLIPBOARD_ICON = require('../../../../assets/empty-state-clipboard-icon.png');
 
@@ -44,6 +47,21 @@ export default function ProviderAccountScreen() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('All');
   const [selectedHistoryJob, setSelectedHistoryJob] = useState<any | null>(null);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -109,7 +127,8 @@ export default function ProviderAccountScreen() {
         .from('deliveries')
         .select(`
           delivery_id, completed_at, pod_photo_url,
-          qr_verifications ( pickup_verified ),
+          qr_verifications ( pickup_verified, bc_pickup_tx_hash, bc_dropoff_tx_hash ),
+          escrow:escrow_payments ( escrow_status, bc_escrow_tx_hash ),
           delivery_requests!inner (
             request_id, pickup_type, delivery_status, scheduled_time, created_at, estimated_cost, payment_status,
             pickup_note, dropoff_note, receiver_phone,
@@ -152,7 +171,8 @@ export default function ProviderAccountScreen() {
         const dateObj = req?.scheduled_time ? new Date(req.scheduled_time) : new Date(req?.created_at || new Date());
 
         const rawStatus = (req?.delivery_status || 'Pending').trim();
-        const escrowStatus = String(r.escrow?.escrow_status || '').toLowerCase();
+        const escrow = Array.isArray(r.escrow) ? r.escrow[0] : r.escrow;
+        const escrowStatus = String(escrow?.escrow_status || '').toLowerCase();
         const paymentStatus = String(req?.payment_status || '').toLowerCase();
         const refundStatus = String(req?.refund_status || '').toLowerCase();
 
@@ -217,6 +237,9 @@ export default function ProviderAccountScreen() {
           weight: cargo?.total_weight_kg != null ? Number(cargo.total_weight_kg) : null,
           dims: dims.every((v: any) => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
           podPhotoUrl: r.pod_photo_url,
+          escrowHash: escrow?.bc_escrow_tx_hash ?? null,
+          pickupHash: qr?.bc_pickup_tx_hash ?? null,
+          dropoffHash: qr?.bc_dropoff_tx_hash ?? null,
         };
       });
 
@@ -459,6 +482,65 @@ export default function ProviderAccountScreen() {
                   </View>
                 )}
               </View>
+
+              {(!!item.escrowHash || !!item.pickupHash || !!item.dropoffHash) && (
+                <>
+                  <View style={styles.modalSecHead}>
+                    <SolarIcon name="Link" variant="linear" size={17} color={colors.accent} />
+                    <Text style={styles.modalSecTitle}>Blockchain Record</Text>
+                  </View>
+                  <View style={styles.hashList}>
+                  {!!item.escrowHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                        <Text style={styles.hashValue}>{item.escrowHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('escrow', item.escrowHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {!!item.pickupHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>PICKUP VERIFIED</Text>
+                        <Text style={styles.hashValue}>{item.pickupHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('pickup', item.pickupHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'pickup' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  {!!item.dropoffHash && (
+                    <View style={styles.hashRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.hashLabel}>DROP-OFF VERIFIED</Text>
+                        <Text style={styles.hashValue}>{item.dropoffHash}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.hashCopyBtn}
+                        onPress={() => copyHash('dropoff', item.dropoffHash)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <SolarIcon name={copiedHash === 'dropoff' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  </View>
+                </>
+              )}
             </View>
           </ScrollView>
         </View>
@@ -1027,6 +1109,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   modalSecTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 14 },
   tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4 },

@@ -9,16 +9,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
-import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
-import { SolarIcon } from '../../../components/ui/SolarIcon'; 
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
-import { PhIcon } from '../../../components/ui/PhIcon'; // Kept for specific double-check receipts
+import { PhIcon } from '../../../components/ui/PhIcon';
 import { createTicket } from '../../../services/ticketService';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -88,9 +87,6 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
   );
 };
 
-/* ==================================================================== */
-/* Local notification helper — cancellation / refund confirmation      */
-/* ==================================================================== */
 const fireCancelNotification = async (opts: {
   requestId: number;
   amount?: number | null;
@@ -387,7 +383,6 @@ export default function ActivityScreen() {
   const hasLoadedRef = useRef(false);
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [showFullMap, setShowFullMap] = useState(false);
   const [showPickupQR, setShowPickupQR] = useState(false);
   const [showDeliveryOTP, setShowDeliveryOTP] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -397,6 +392,21 @@ export default function ActivityScreen() {
   const [activeTab, setActiveTab] = useState<'active' | 'pending' | 'completed' | 'cancelled' | 'all'>('active');
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
@@ -409,7 +419,6 @@ export default function ActivityScreen() {
   const [ratingSaved, setRatingSaved] = useState<{ rating: number; tags: string[]; comment: string | null } | null>(null);
   const [escrowRow, setEscrowRow] = useState<any>(null);
 
-  // ---- Edit Request Modal State ----
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editTarget, setEditTarget] = useState<MappedDelivery | null>(null);
   const [editPickupNote, setEditPickupNote] = useState('');
@@ -458,13 +467,12 @@ export default function ActivityScreen() {
       if (editModalVisible) { setEditModalVisible(false); return true; }
       if (pkgItem) { setPkgItem(null); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
-      if (showFullMap) { setShowFullMap(false); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
-  }, [selectedId, showFullMap, photoPreview, editModalVisible, pkgItem]);
+  }, [selectedId, photoPreview, editModalVisible, pkgItem]);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -490,15 +498,20 @@ export default function ActivityScreen() {
     const id = item.deliveryData?.delivery_id;
     if (id) {
       navigation.navigate('LiveTracking', { deliveryId: id });
-    } else if (item.hasPreferredProvider && item.preferred_provider_id) {
+      return;
+    }
+    if (item.hasPreferredProvider && item.preferred_provider_id) {
       navigation.navigate('LiveTracking', {
         mode: 'provider',
         providerId: item.preferred_provider_id,
         routeId: item.preferred_route_id,
       });
-    } else {
-      setShowFullMap(true);
+      return;
     }
+    Alert.alert(
+      'Live tracking not available yet',
+      'Live tracking becomes available once a courier accepts this booking.',
+    );
   };
 
   const fetchUserRecord = async () => {
@@ -886,7 +899,6 @@ export default function ActivityScreen() {
     }
   };
 
-  /* --------------------------- Edit Request Functionality --------------------------- */
   const openEditModal = (item: MappedDelivery) => {
     setEditTarget(item);
     setEditPickupNote(item.pickup_note || '');
@@ -1118,7 +1130,6 @@ export default function ActivityScreen() {
       if (!roomId) {
         return Alert.alert('Error', 'Could not open chat.');
       }
-      setShowFullMap(false);
       let current: any = navigation;
       while (current) {
         try {
@@ -1183,7 +1194,6 @@ export default function ActivityScreen() {
                 });
                 createdTicketId = ticket.ticket_id;
               } catch {
-                // Fallback direct insert if create_ticket RPC isn't present
                 const { data: fallbackTicket, error: tErr } = await supabase
                   .from('support_tickets')
                   .insert({
@@ -1219,7 +1229,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* --------------------------- Stage & Status --------------------------- */
   const stageOf = (item: MappedDelivery): 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (item.status === 'Cancelled') return 'cancelled';
     if (item.status === 'Completed' || item.status === 'Returned' || !!item.deliveryData?.completed_at) return 'done';
@@ -1266,18 +1275,6 @@ export default function ActivityScreen() {
     });
   }, [deliveries, activeTab]);
 
-  const packagePhotosOf = (item: MappedDelivery | null): { url: string; label: string }[] => {
-    if (!item) return [];
-    const out: { url: string; label: string }[] = [];
-    const seen = new Set<string>();
-    (item.cargo_items || []).forEach((ci: CargoItem, i: number) => {
-      (ci.photos || []).forEach(url => {
-        if (url && !seen.has(url)) { seen.add(url); out.push({ url, label: ci.name || `Item ${i + 1}` }); }
-      });
-    });
-    return out;
-  };
-
   const pkgCount = (item: MappedDelivery) => `${item.total_items} ${item.total_items === 1 ? 'pkg' : 'pkgs'}`;
 
   const SIZE_META: Record<string, { letter: string; kg: string; color: string; bg: string }> = {
@@ -1301,7 +1298,6 @@ export default function ActivityScreen() {
     return full || `${item.total_items} ${item.total_items === 1 ? 'item' : 'items'}`;
   };
 
-  /* --------------------------- Shared Pieces --------------------------- */
   const renderServicePill = (item: MappedDelivery) => (
     <View style={styles.svcPill}>
       <SolarIcon name="Package" variant="duotone" size={16} color={BLUE} />
@@ -1354,16 +1350,16 @@ export default function ActivityScreen() {
     </View>
   );
 
-    const renderMiniContact = (o: {
-      role: string;
-      name: string | null;
-      phone: string | null;
-      userId?: number | null;   // kept for caller compatibility, unused
-      deliveryId?: number | null;
-      color: string;
-      subBadge?: string | null;
-    }) => {
-      const canCall = !!o.phone;
+  const renderMiniContact = (o: {
+    role: string;
+    name: string | null;
+    phone: string | null;
+    userId?: number | null;
+    deliveryId?: number | null;
+    color: string;
+    subBadge?: string | null;
+  }) => {
+    const canCall = !!o.phone;
 
     const triggerCall = () => {
       if (!o.phone) {
@@ -1418,7 +1414,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ---------------------------- List Card ---------------------------- */
   const renderShipmentCard = (item: MappedDelivery) => {
     const stage = stageOf(item);
     const meta = statusMeta(stage, item.hasPreferredProvider);
@@ -1452,7 +1447,6 @@ export default function ActivityScreen() {
 
           {renderRoute(item)}
 
-          {/* Proof of Pickup Banner (shown as soon as the courier has collected the package) */}
           {!!item.deliveryData?.pickup_photo_url && (
             <TouchableOpacity
               style={[styles.cardPodBanner, { marginBottom: 8 }]}
@@ -1480,7 +1474,6 @@ export default function ActivityScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Proof of Delivery Banner on Completed Shipment Cards */}
           {stage === 'done' && !!item.deliveryData?.pod_photo_url && (
             <TouchableOpacity
               style={styles.cardPodBanner}
@@ -1618,7 +1611,6 @@ export default function ActivityScreen() {
     );
   };
 
-  /* ---------------------------- List View ---------------------------- */
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
@@ -1669,10 +1661,10 @@ export default function ActivityScreen() {
                   <SolarIcon name="Package" variant="duotone" size={32} />
                 </View>
               ) : (
-                <Image 
-                  source={SEARCH_ICON} 
-                  style={{ width: 140, height: 140, marginBottom: 20 }} 
-                  resizeMode="contain" 
+                <Image
+                  source={SEARCH_ICON}
+                  style={{ width: 140, height: 140, marginBottom: 20 }}
+                  resizeMode="contain"
                 />
               )}
               <Text style={styles.emptyTitle}>
@@ -1697,7 +1689,7 @@ export default function ActivityScreen() {
     </View>
   );
 
-  /* --------------------------- Detail View --------------------------- */
+  /* ---------------- Detail view: package-first, no top map, no Package Photos section ---------------- */
   const renderDetailView = (d: MappedDelivery) => {
     const stage = stageOf(d);
     const meta = statusMeta(stage, d.hasPreferredProvider);
@@ -1717,9 +1709,6 @@ export default function ActivityScreen() {
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : stage === 'pickup' ? 1 : 0;
     const currentStep = stage === 'done' ? -1 : stage === 'transit' ? 3 : stage === 'pickup' ? 2 : 1;
 
-    const H = Dimensions.get('window').height;
-    const mapH = Math.round(H * 0.46);
-    const photos = packagePhotosOf(d).filter(ph => !failedPhotos[ph.url]);
     const vehicle: any = d.deliveryData?.vehicle;
     const podPhotoUrl = d.deliveryData?.pod_photo_url || null;
     const pickupPhotoUrl = (d.deliveryData as any)?.pickup_photo_url || null;
@@ -1753,43 +1742,30 @@ export default function ActivityScreen() {
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
-        <TouchableOpacity
-          style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, left: 16 }]}
-          onPress={() => setSelectedId(null)}
-          activeOpacity={0.85}
-        >
-          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.dRoundBtn, { top: Math.max(insets.top, 16) + 6, right: 16 }]}
-          onPress={() => setShowFullMap(true)}
-          activeOpacity={0.85}
-        >
-          <SolarIcon name="Maximize" variant="linear" size={20} color={colors.textPrimary} />
-        </TouchableOpacity>
+        <View style={[styles.dHeaderBar, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
+          <TouchableOpacity
+            style={styles.dRoundBtnInline}
+            onPress={() => setSelectedId(null)}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.dHeaderTitle} numberOfLines={1}>Shipment Details</Text>
+          <TouchableOpacity
+            style={styles.dRoundBtnInline}
+            onPress={() => openLiveTrack(d)}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="Map" variant="linear" size={20} color={colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
 
         <ScrollView
-          style={StyleSheet.absoluteFill}
-          contentContainerStyle={{ paddingBottom: active ? insets.bottom + 110 : insets.bottom + 40 }}
+          contentContainerStyle={{ paddingBottom: active ? insets.bottom + 130 : insets.bottom + 40 }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={{ height: mapH - 28 }}>
-            <View style={[styles.dMap, { height: mapH + 24, position: 'relative' }]}>
-              <RoutePreviewMap
-                pickupLat={d.coords.pickup.latitude}
-                pickupLng={d.coords.pickup.longitude}
-                dropoffLat={d.coords.dropoff.latitude}
-                dropoffLng={d.coords.dropoff.longitude}
-                padTop={insets.top + 70}
-                padBottom={60}
-              />
-            </View>
-          </View>
-
-          <Animated.View style={[styles.dSheet, { opacity: detailAnim }]}>
-            <View style={styles.dHandle} />
-
+          <Animated.View style={[styles.dSheetBody, { opacity: detailAnim }]}>
             <View style={styles.oTopRow}>
               {renderServicePill(d)}
               {renderStatusPill(meta)}
@@ -1895,7 +1871,25 @@ export default function ActivityScreen() {
               </View>
             )}
 
-            {/* Proof of Pickup Section */}
+            <TouchableOpacity
+              style={styles.trackCtaBtn}
+              onPress={() => openLiveTrack(d)}
+              activeOpacity={0.85}
+            >
+              <View style={styles.trackCtaIconBox}>
+                <SolarIcon name="Routing" variant="duotone" size={22} color={colors.accent} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.trackCtaTitle}>Open live tracking</Text>
+                <Text style={styles.trackCtaSub}>
+                  {d.isMatched
+                    ? 'See the courier’s live position on the map.'
+                    : 'Live tracking unlocks once a courier accepts this booking.'}
+                </Text>
+              </View>
+              <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.accent} />
+            </TouchableOpacity>
+
             {!!pickupPhotoUrl && (
               <>
                 <View style={styles.dSecHead}>
@@ -1925,7 +1919,6 @@ export default function ActivityScreen() {
               </>
             )}
 
-            {/* Proof of Delivery Section */}
             {!!podPhotoUrl && (
               <>
                 <View style={styles.dSecHead}>
@@ -1959,52 +1952,60 @@ export default function ActivityScreen() {
               </>
             )}
 
-            {photos.length > 0 && (
-              <>
-                <View style={styles.dSecHead}>
-                  <SolarIcon name="Gallery" variant="duotone" size={18} />
-                  <Text style={styles.dSecTitle}>Package Photos</Text>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {photos.map((ph, i) => (
-                    <TouchableOpacity key={i} activeOpacity={0.9} onPress={() => setPhotoPreview(ph.url)}>
-                      <Image
-                        source={{ uri: ph.url }}
-                        style={styles.dPhoto}
-                        resizeMode="cover"
-                        onError={() => setFailedPhotos(p => ({ ...p, [ph.url]: true }))}
-                      />
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
             <View style={styles.dSecHead}>
               <SolarIcon name="Package" variant="duotone" size={18} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
+
             {d.cargo_items.length > 0 && (
               <View style={{ gap: 8, marginBottom: 12 }}>
                 {d.cargo_items.map((it, i) => {
                   const meta = it.size ? SIZE_META[it.size] : null;
-                  const qty = !it.perItem && (Number(it.quantity) || 1) > 1 ? ` ×${it.quantity}` : '';
+                  const thumb = (it.photos || [])[0];
+                  const showThumb = thumb && !failedPhotos[thumb];
                   return (
                     <View key={i} style={styles.dItemRow}>
-                      <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
-                        <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
-                      </View>
+                      {showThumb ? (
+                        <TouchableOpacity
+                          activeOpacity={0.9}
+                          onPress={() => setPhotoPreview(thumb)}
+                          style={styles.dItemPhotoWrap}
+                        >
+                          <Image
+                            source={{ uri: thumb }}
+                            style={styles.dItemPhoto}
+                            resizeMode="cover"
+                            onError={() => setFailedPhotos(p => ({ ...p, [thumb]: true }))}
+                          />
+                          {meta && (
+                            <View style={[styles.dItemPhotoTag, { backgroundColor: meta.bg }]}>
+                              <Text style={[styles.dItemPhotoTagText, { color: meta.color }]}>{meta.letter}</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={[styles.dItemPhotoWrap, styles.dItemPhotoEmpty, meta && { backgroundColor: meta.bg }]}>
+                          <Text style={[styles.dItemPhotoEmptyText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.dItemTitle} numberOfLines={2}>
-                          {d.cargo_items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{qty}{it.fragile ? ' · Fragile' : ''}
+                          {d.cargo_items.length > 1 ? `Package ${i + 1}` : 'Package'}
+                          {it.size ? ` · ${it.size}` : ''}
+                          {it.fragile ? ' · Fragile' : ''}
                         </Text>
-                        {!!it.name && <Text style={styles.dItemText} numberOfLines={2}>{it.name}{it.notes ? ` — ${it.notes}` : ''}</Text>}
+                        {!!it.name && (
+                          <Text style={styles.dItemText} numberOfLines={2}>
+                            {it.name}{it.notes ? ` — ${it.notes}` : ''}
+                          </Text>
+                        )}
                       </View>
                     </View>
                   );
                 })}
               </View>
             )}
+
             <View style={styles.tileGrid}>
               <View style={styles.tile}>
                 <Text style={styles.tileLabel}>CARGO SIZE</Text>
@@ -2050,7 +2051,65 @@ export default function ActivityScreen() {
               )}
             </View>
 
-            {/* Rating Section */}
+            {(!!(escrowRow?.bc_escrow_tx_hash) || !!(d.qr?.bc_pickup_tx_hash) || !!(d.qr?.bc_dropoff_tx_hash)) && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Link" variant="linear" size={18} color={colors.accent} />
+                  <Text style={styles.dSecTitle}>Blockchain Record</Text>
+                </View>
+                <View style={styles.hashList}>
+                {!!(escrowRow?.bc_escrow_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                      <Text style={styles.hashValue}>{escrowRow?.bc_escrow_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('escrow', escrowRow?.bc_escrow_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr?.bc_pickup_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>PICKUP VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr?.bc_pickup_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('pickup', d.qr?.bc_pickup_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'pickup' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr?.bc_dropoff_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>DROP-OFF VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr?.bc_dropoff_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('dropoff', d.qr?.bc_dropoff_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'dropoff' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                </View>
+              </>
+            )}
+
             {!isCancelled && (
               <>
                 <View style={styles.dSecHead}>
@@ -2156,7 +2215,6 @@ export default function ActivityScreen() {
               </>
             )}
 
-            {/* Cancel / Edit Booking buttons before In Transit */}
             {!isCompleted && !isCancelled && !isInTransit && (
               <View style={styles.detailActionsRow}>
                 {!d.isMatched && (
@@ -2172,7 +2230,6 @@ export default function ActivityScreen() {
               </View>
             )}
 
-            {/* PHASE 5: Dispute Package Missing & Freeze Escrow Button */}
             {(isCompleted || d.status === 'Returning') && d.deliveryData?.delivery_id && (
               <TouchableOpacity
                 style={[styles.sdCancelBtn, { marginTop: 18, flex: 0 }]}
@@ -2186,7 +2243,6 @@ export default function ActivityScreen() {
           </Animated.View>
         </ScrollView>
 
-        {/* Sticky Bottom Bar */}
         {(stage === 'pickup' || stage === 'transit') && (
           <View style={styles.dBar}>
             <TouchableOpacity
@@ -2203,7 +2259,7 @@ export default function ActivityScreen() {
               activeOpacity={0.85}
             >
               <SolarIcon name="Routing" variant="linear" size={16} color={colors.accent} />
-              <Text style={styles.mSoftText}>Live Track</Text>
+              <Text style={styles.mSoftText}>Track</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
@@ -2363,67 +2419,6 @@ export default function ActivityScreen() {
             )}
           </View>
         </KeyboardAvoidingView>
-      </Modal>
-    );
-  };
-
-  const renderFullMapModal = () => {
-    if (!selectedDelivery) return null;
-    const st = stageOf(selectedDelivery);
-    return (
-      <Modal
-        visible={showFullMap}
-        animationType="slide"
-        onRequestClose={() => setShowFullMap(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: colors.background }}>
-          <RoutePreviewMap
-            pickupLat={selectedDelivery.coords.pickup.latitude}
-            pickupLng={selectedDelivery.coords.pickup.longitude}
-            dropoffLat={selectedDelivery.coords.dropoff.latitude}
-            dropoffLng={selectedDelivery.coords.dropoff.longitude}
-            padTop={100}
-            padBottom={260}
-          />
-          <TouchableOpacity
-            style={[styles.mapCloseBtn, { top: insets.top + 12 }]}
-            onPress={() => setShowFullMap(false)}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="ArrowLeft" variant="linear" size={20} color={colors.textPrimary} />
-          </TouchableOpacity>
-
-          <View style={[styles.mapSheet, { paddingBottom: insets.bottom + 16 }]}>
-            <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinPickup}><Text style={styles.sdPinLetter}>P</Text></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>PICKUP</Text>
-                <Text style={styles.sdRouteMain} numberOfLines={1}>{selectedDelivery.pickup_main}</Text>
-              </View>
-            </View>
-            <View style={styles.contactDivider} />
-            <View style={styles.mapSheetRow}>
-              <View style={styles.sdPinDropoff}><Text style={styles.sdPinLetter}>D</Text></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>DROP-OFF</Text>
-                <Text style={styles.sdRouteMain} numberOfLines={1}>{selectedDelivery.dropoff_main}</Text>
-              </View>
-            </View>
-            {(st === 'pickup' || st === 'transit') && !!selectedDelivery.deliveryData?.delivery_id && (
-              <TouchableOpacity
-                style={[styles.mPrimaryBtn, { marginTop: 14 }]}
-                onPress={() => {
-                  setShowFullMap(false);
-                  openLiveTrack(selectedDelivery);
-                }}
-                activeOpacity={0.9}
-              >
-                <SolarIcon name="Routing" variant="linear" size={16} color="#FFFFFF" />
-                <Text style={styles.mPrimaryText}>Open Live Tracking</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
       </Modal>
     );
   };
@@ -2608,7 +2603,6 @@ export default function ActivityScreen() {
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {selectedDelivery ? renderDetailView(selectedDelivery) : renderListView()}
       {renderEditModal()}
-      {renderFullMapModal()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
       {renderPhotoPreviewModal()}
@@ -2627,11 +2621,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.background,
     borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  pageTitle: { 
-    fontSize: 26, 
-    fontFamily: 'Poppins_700Bold', 
-    color: c.textPrimary, 
-    letterSpacing: -0.3 
+  pageTitle: {
+    fontSize: 26,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    letterSpacing: -0.3
   },
   tabBarScroll: { gap: 8, paddingTop: 16 },
   tabItem: {
@@ -2653,7 +2647,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 6, lineHeight: 20 },
 
-  /* Shared Card & Route Styles */
   svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   svcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: BLUE },
   stPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
@@ -2673,7 +2666,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sdNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
   sdNoteText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', lineHeight: 17, color: c.textPrimary },
 
-  /* Completed Card POD Banner */
   cardPodBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2685,32 +2677,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: c.success,
   },
-  cardPodThumb: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: c.card,
-  },
-  cardPodTitle: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.success,
-  },
-  cardPodSub: {
-    fontSize: 12,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 2,
-  },
+  cardPodThumb: { width: 44, height: 44, borderRadius: 10, backgroundColor: c.card },
+  cardPodTitle: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.success },
+  cardPodSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
 
-  // ✅ Atome Card Style
-  oCard: { 
+  oCard: {
     backgroundColor: c.card, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
   },
   oPad: { padding: 20 },
   oTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
-  
+
   oContactsRow: { flexDirection: 'row', gap: 12, marginTop: 16 },
   mcRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   mcAvatarSmall: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
@@ -2731,18 +2708,27 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 16 },
   oRouteText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
 
-  /* Detail View Styles */
-  dMap: { overflow: 'hidden' },
-  dRoundBtn: { position: 'absolute', width: 44, height: 44, borderRadius: 22, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2, zIndex: 10, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
-  dSheet: { backgroundColor: c.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 24, paddingBottom: 24, minHeight: 500 },
-  dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginTop: 10, marginBottom: 16 },
+  /* Detail view (package-first, no top map) */
+  dHeaderBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingBottom: 14,
+    backgroundColor: c.card,
+    borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  dHeaderTitle: { flex: 1, textAlign: 'center', fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  dRoundBtnInline: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.background,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  dSheetBody: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 24 },
   dCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   dCode: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
   dWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
   trackTextCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   trackTextCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 
-  stepper: { flexDirection: 'row', backgroundColor: c.background, borderRadius: 12, paddingVertical: 16, paddingHorizontal: 8, marginTop: 16, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  stepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 12, paddingVertical: 16, paddingHorizontal: 8, marginTop: 16, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   stepCol: { flex: 1, alignItems: 'center' },
   stepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
   stepLine: { flex: 1, height: 3, backgroundColor: c.divider },
@@ -2776,9 +2762,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   dSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
   dSecTitle: { flex: 1, fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
-  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
 
-  /* Proof of Delivery Card Styles */
   podPhotoCard: {
     width: '100%',
     height: 200,
@@ -2806,8 +2790,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   podPhotoTime: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontFamily: 'Poppins_500Medium' },
 
   dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
-  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
   dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  dItemPhotoWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider },
+  dItemPhoto: { width: '100%', height: '100%' },
+  dItemPhotoTag: { position: 'absolute', right: 4, bottom: 4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoTagText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+  dItemPhotoEmpty: { alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoEmptyText: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
+
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
   sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
@@ -2820,16 +2811,16 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
   tileLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 6 },
 
   sdCardInner: { backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
-  tlRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingBottom: 14 },
-  tlTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-  tlSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 18 },
-
-  /* Rating Styles */
   sdRatedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.accentSoft, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   sdRatedBadgeText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.accent },
   sdStarsRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginVertical: 4 },
@@ -2850,7 +2841,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   sdThanksComment: { marginTop: 12, fontSize: 13, fontFamily: 'Poppins_400Regular', fontStyle: 'italic', textAlign: 'center', color: c.textSecondary },
   sdThanksText: { marginTop: 10, textAlign: 'center', fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textMuted },
 
-  /* Edit & Cancel Actions */
   detailActionsRow: { flexDirection: 'row', gap: 12, marginTop: 24 },
   editBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -2863,7 +2853,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   sdCancelBtnText: { color: c.error, fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
-  /* Edit Modal Styles */
+  trackCtaBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18,
+    backgroundColor: c.card, borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  trackCtaIconBox: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: c.accentSoft,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  trackCtaTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  trackCtaSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+
   editFieldLabel: {
     fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8, marginBottom: 6, marginTop: 10,
   },
@@ -2873,7 +2874,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.background, marginBottom: 6,
   },
 
-  /* Bottom Sticky Bar */
   dBar: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, backgroundColor: c.card, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   dBarIcon: { width: 50, height: 50, borderRadius: 14, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
   mPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, paddingVertical: 14, borderRadius: 12 },
@@ -2881,28 +2881,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 12 },
   mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
 
-  /* Full Map Modal */
-  mapCloseBtn: {
-    position: 'absolute', left: 16, width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1, shadowRadius: 4, elevation: 2, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  mapSheet: {
-    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
-    borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 24, paddingTop: 20,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.05, shadowRadius: 8, elevation: 4, borderTopWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  mapSheetRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  sdPinPickup: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.accent, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
-  sdPinDropoff: { width: 24, height: 24, borderRadius: 12, backgroundColor: c.textPrimary, borderWidth: 2, borderColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
-  sdPinLetter: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
-  eyebrow: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 1 },
-  sdRouteMain: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
-  contactDivider: { height: 1, backgroundColor: c.divider, marginVertical: 16 },
-
-  /* Photo Preview Modal */
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },
   previewClose: {
@@ -2910,7 +2888,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center',
   },
 
-  /* Pickup QR & Delivery OTP Modals */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { width: '100%', maxWidth: 360, backgroundColor: c.card, borderRadius: 16, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   modalHeader: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },

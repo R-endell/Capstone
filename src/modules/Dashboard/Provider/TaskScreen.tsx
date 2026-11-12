@@ -18,7 +18,13 @@ import {
   computeCargoVolumeLiters,
   SHIPMENT_SIZE_SPECS,
 } from '../../../services/matchingService';
-import { getActiveRouteId } from '../../../services/activeRouteStore';
+import {
+  getActiveRouteId,
+  setActiveRouteId,
+  subscribeActiveRoute,
+  syncSelectedRouteToDb,
+} from '../../../services/activeRouteStore';
+import { isRouteExpired } from './Manage/ManageRoutesScreen';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useProviderLocationBroadcast } from '../../../services/useProviderLocationBroadcast';
 import { useNavigationSession } from '../../../services/navigationSessionStore';
@@ -38,6 +44,7 @@ const BLUE = '#3B82F6';
 const RED = '#EF4444';
 const PURPLE = '#8B5CF6';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
@@ -46,6 +53,19 @@ const { width: SCREEN_W } = Dimensions.get('window');
 const frameSize = Math.min(SCREEN_W * 0.72, 280);
 
 const GEOFENCE_RADIUS_M = __DEV__ ? 999999 : 150;
+
+const parseNaiveIsoString = (s: string): Date => {
+  if (!s) return new Date();
+  const parts = s.split(/[-T:+Z]/);
+  if (parts.length < 5) return new Date();
+  return new Date(
+    parseInt(parts[0], 10),
+    parseInt(parts[1], 10) - 1,
+    parseInt(parts[2], 10),
+    parseInt(parts[3], 10),
+    parseInt(parts[4], 10),
+  );
+};
 
 const getDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371000;
@@ -71,14 +91,12 @@ const verifyProviderWithinGeofence = async (
     return { allowed: false, lat: 0, lng: 0, distanceM: 999999 };
   }
 
-  // Try last known position first — returns instantly if OS has cached GPS
   let coords: { latitude: number; longitude: number } | null = null;
   try {
     const last = await Location.getLastKnownPositionAsync({ maxAge: 5 * 60 * 1000 });
     if (last?.coords) coords = last.coords;
   } catch { /* ignore */ }
 
-  // Fall back to a live fix, but don't let it hang forever
   if (!coords) {
     try {
       const pos = await Promise.race([
@@ -259,7 +277,7 @@ const enrichDeliveries = async (list: any[]) => {
   } catch { }
   try {
     if (deliveryIds.length) {
-      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status').in('delivery_id', deliveryIds);
+      const { data } = await supabase.from('escrow_payments').select('delivery_id, amount, escrow_status, bc_escrow_tx_hash').in('delivery_id', deliveryIds);
       (data || []).forEach((e: any) => { escrows[e.delivery_id] = e; });
     }
   } catch { }
@@ -342,6 +360,19 @@ export default function TaskScreen() {
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
+  // --- Active Route Filter States (synced with JobsScreen via activeRouteStore) ---
+  const [routes, setRoutes] = useState<any[]>([]);
+  const [activeRoute, setActiveRoute] = useState<any | null>(null);
+  const [filterByActiveRoute, setFilterByActiveRoute] = useState(true);
+  const [routePickerVisible, setRoutePickerVisible] = useState(false);
+  const routesRef = useRef<any[]>([]);
+  const activeRouteRef = useRef<any | null>(null);
+  const providerIdRef = useRef<number | null>(null);
+
+  useEffect(() => { routesRef.current = routes; }, [routes]);
+  useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
+  useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
+
   const [pingingId, setPingingId] = useState<number | null>(null);
   const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
 
@@ -355,6 +386,21 @@ export default function TaskScreen() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('active');
   const [copied, setCopied] = useState(false);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [mapModalVisible, setMapModalVisible] = useState(false);
   const [navInfo, setNavInfo] = useState<NavInfo>({ distanceM: null, durationS: null });
@@ -382,7 +428,6 @@ export default function TaskScreen() {
   const [pickupTakenAt, setPickupTakenAt] = useState<string>('');
   const [pickupTakingPhoto, setPickupTakingPhoto] = useState(false);
   const [pickupSubmitting, setPickupSubmitting] = useState(false);
-  // The ONE camera used for both the QR scan and the pickup photo reports ready here.
   const [pickupCameraReady, setPickupCameraReady] = useState(false);
 
   // --- Phase 3 & 4: 10-Min Grace Period & Failure Resolution States ---
@@ -410,8 +455,6 @@ export default function TaskScreen() {
         return;
       }
       const elapsedSec = Math.floor((Date.now() - startedMs) / 1000);
-      // Clamp — if DB clock and device clock differ, or if the timestamp is in the future,
-      // don't show weird values.
       const remaining = Math.min(600, Math.max(0, 600 - elapsedSec));
       setGraceRemainingSec(remaining);
     };
@@ -442,11 +485,12 @@ export default function TaskScreen() {
       if (podCameraOpen) { setPodCameraOpen(false); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
+      if (routePickerVisible) { setRoutePickerVisible(false); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [podCameraOpen, photoPreview, mapModalVisible, selectedId]);
+  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId]);
 
   useEffect(() => {
     if (!verifyModalVisible || pickupPending) return;
@@ -465,14 +509,64 @@ export default function TaskScreen() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData } = await supabase.from('users').select('*').eq('auth_id', user.id).single();
-      setUserData(userData);
-      setProviderId(userData.user_id);
-      return userData.user_id;
+      const { data: uData } = await supabase.from('users').select('*').eq('auth_id', user.id).single();
+      setUserData(uData);
+      setProviderId(uData.user_id);
+      providerIdRef.current = uData.user_id;
+      return uData.user_id;
     } catch { return null; }
   };
 
-  const fetchDeliveries = async (pid: number) => {
+  // Load provider's active routes & sync the selected route from activeRouteStore
+  const fetchProviderRoutes = useCallback(async (pid: number): Promise<any | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('provider_routes')
+        .select(`
+          *,
+          start_location:locations!provider_routes_start_location_id_fkey(*),
+          end_location:locations!provider_routes_end_location_id_fkey(*),
+          vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
+        `)
+        .eq('provider_id', pid)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const validRoutes = (data || [])
+        .filter((r: any) => r.is_deleted !== true)
+        .filter((r: any) => !isRouteExpired(r));
+
+      setRoutes(validRoutes);
+      routesRef.current = validRoutes;
+
+      const savedId = await getActiveRouteId();
+      const restored = savedId ? validRoutes.find((r: any) => r.route_id === savedId) : null;
+
+      if (restored) {
+        setActiveRoute(restored);
+        activeRouteRef.current = restored;
+        if (restored.is_selected !== true) void syncSelectedRouteToDb(restored.route_id, true);
+        return restored;
+      } else if (validRoutes.length > 0) {
+        const first = validRoutes[0];
+        setActiveRoute(first);
+        activeRouteRef.current = first;
+        await setActiveRouteId(first.route_id);
+        return first;
+      } else {
+        setActiveRoute(null);
+        activeRouteRef.current = null;
+        await setActiveRouteId(null);
+        return null;
+      }
+    } catch (e) {
+      console.warn('[Task] fetchProviderRoutes error:', e);
+      return activeRouteRef.current;
+    }
+  }, []);
+
+  const fetchDeliveries = useCallback(async (pid: number, overrideRouteId?: number | null) => {
     try {
       const deliveries = await getProviderDeliveries(pid);
 
@@ -488,7 +582,9 @@ export default function TaskScreen() {
 
       let pending: any[] = [];
       try {
-        const selectedRouteId = await getActiveRouteId();
+        const selectedRouteId = overrideRouteId !== undefined
+          ? overrideRouteId
+          : (activeRouteRef.current?.route_id ?? (await getActiveRouteId()));
         const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
         const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
         const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
@@ -518,8 +614,44 @@ export default function TaskScreen() {
     } catch (error) {
       console.error('Error fetching deliveries:', error);
     }
+  }, []);
+
+  // Listen to active route changes from JobsScreen / ManageRoutesScreen
+  useEffect(() => {
+    return subscribeActiveRoute((newRouteId) => {
+      if (!newRouteId) {
+        setActiveRoute(null);
+        activeRouteRef.current = null;
+        return;
+      }
+      if (activeRouteRef.current?.route_id === newRouteId) return;
+      const found = routesRef.current.find((r: any) => r.route_id === newRouteId);
+      if (found) {
+        setActiveRoute(found);
+        activeRouteRef.current = found;
+        if (providerIdRef.current) {
+          void fetchDeliveries(providerIdRef.current, found.route_id);
+        }
+      } else if (providerIdRef.current) {
+        void fetchProviderRoutes(providerIdRef.current).then((resolved) => {
+          if (providerIdRef.current) void fetchDeliveries(providerIdRef.current, resolved?.route_id ?? null);
+        });
+      }
+    });
+  }, [fetchDeliveries, fetchProviderRoutes]);
+
+  const handleSelectRoute = async (routeObj: any) => {
+    setActiveRoute(routeObj);
+    activeRouteRef.current = routeObj;
+    setFilterByActiveRoute(true);
+    setRoutePickerVisible(false);
+    await setActiveRouteId(routeObj.route_id);
+    if (providerId) {
+      await fetchDeliveries(providerId, routeObj.route_id);
+    }
   };
-const handleAcceptPendingMatch = async (m: any) => {
+
+  const handleAcceptPendingMatch = async (m: any) => {
     if (!providerId || acceptingReqId != null) return;
     const req = m.request;
     if (!req?.request_id) return;
@@ -534,15 +666,20 @@ const handleAcceptPendingMatch = async (m: any) => {
           onPress: async () => {
             setAcceptingReqId(req.request_id);
             try {
-              let vehicleId: number | null = null;
-              const { data: v } = await supabase
-                .from('vehicles')
-                .select('vehicle_id')
-                .eq('provider_id', providerId)
-                .eq('verification_status', 'Verified')
-                .limit(1)
-                .maybeSingle();
-              vehicleId = v?.vehicle_id ?? null;
+              let vehicleId: number | null =
+                activeRoute?.vehicle?.verification_status === 'Verified'
+                  ? activeRoute.vehicle.vehicle_id
+                  : null;
+              if (!vehicleId) {
+                const { data: v } = await supabase
+                  .from('vehicles')
+                  .select('vehicle_id')
+                  .eq('provider_id', providerId)
+                  .eq('verification_status', 'Verified')
+                  .limit(1)
+                  .maybeSingle();
+                vehicleId = v?.vehicle_id ?? null;
+              }
 
               if (!vehicleId) {
                 const { data: anyVeh } = await supabase
@@ -559,7 +696,7 @@ const handleAcceptPendingMatch = async (m: any) => {
               }
 
               let resolvedRouteId: number | null =
-                req.preferred_route_id ?? m.route_id ?? (await getActiveRouteId()) ?? null;
+                req.preferred_route_id ?? m.route_id ?? activeRoute?.route_id ?? (await getActiveRouteId()) ?? null;
               if (!resolvedRouteId) {
                 const { data: rRow } = await supabase
                   .from('provider_routes')
@@ -679,6 +816,7 @@ const handleAcceptPendingMatch = async (m: any) => {
                 } catch {}
               }
 
+              await fetchProviderRoutes(providerId);
               await fetchDeliveries(providerId);
               setActiveTab('active');
             } catch (e: any) {
@@ -774,15 +912,12 @@ const handleAcceptPendingMatch = async (m: any) => {
     setPickupCameraReady(false);
   };
 
-  // Safety net: if the camera never reports ready (rare), don't leave the button spinning forever.
   useEffect(() => {
     if (!verifyModalVisible || !pickupPending || pickupCameraReady) return;
     const t = setTimeout(() => setPickupCameraReady(true), 3000);
     return () => clearTimeout(t);
   }, [verifyModalVisible, pickupPending, pickupCameraReady]);
 
-  // Leaving the Task tab (notification tap, "View on Map", etc.) must never leave a native camera
-  // modal floating on top of another screen such as Jobs.
   useFocusEffect(
     useCallback(() => {
       return () => {
@@ -813,7 +948,6 @@ const handleAcceptPendingMatch = async (m: any) => {
       const isReturning = verifyTarget?.delivery_requests?.delivery_status === 'Returning';
 
       if (isReturning) {
-        // PHASE 4 (Option A): Verify Return back to Sender & Release Full Escrow (Base + Return Deposit)
         const now = new Date().toISOString();
         const { error: retQrErr } = await supabase
           .from('qr_verifications')
@@ -861,7 +995,6 @@ const handleAcceptPendingMatch = async (m: any) => {
         .eq('request_id', requestId);
       if (reqErr) throw reqErr;
 
-      // PHASE 2 System Action 1: Notify the receiver via SMS from the courier's own phone
       const info = buildTaskInfo(verifyTarget);
       const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
       const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
@@ -871,7 +1004,6 @@ const handleAcceptPendingMatch = async (m: any) => {
         ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
         : '';
 
-      // PHASE 2 System Action 2: Push Prompt to Sender
       if (info.senderId) {
         try {
           await notifyUser(
@@ -885,7 +1017,6 @@ const handleAcceptPendingMatch = async (m: any) => {
         }
       }
 
-      // Show confirmation with an action button so the courier can send the SMS from their own phone
       const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
       if (info.receiverPhone) {
         alertButtons.push({
@@ -944,7 +1075,6 @@ const handleAcceptPendingMatch = async (m: any) => {
       if (isReturning) {
         await markPickupVerified(row.delivery_id, reqId);
       } else {
-        // QR is valid -> the courier must now take the pickup photo before pickup is confirmed.
         setPickupPhotoUri(null);
         setPickupPending({ deliveryId: row.delivery_id, requestId: reqId });
       }
@@ -954,7 +1084,6 @@ const handleAcceptPendingMatch = async (m: any) => {
       ]);
     }
   };
-  
 
   const handlePinVerify = async () => {
     if (!verifyTarget || pinInput.trim().length !== 4) return;
@@ -986,7 +1115,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     } finally { setPinVerifying(false); }
   };
 
-  // Best-effort geotag. Never blocks or fails the pickup.
   const getPhotoCoords = async (): Promise<{ lat: number; lng: number } | null> => {
     try {
       const perm = await Location.getForegroundPermissionsAsync();
@@ -1010,15 +1138,12 @@ const handleAcceptPendingMatch = async (m: any) => {
     }
     setPickupTakingPhoto(true);
     try {
-      // Start GPS in parallel - the shutter is never delayed by a slow GPS fix.
       const coordsPromise = getPhotoCoords();
 
       let photo: any = null;
       try {
         photo = await pickupCameraRef.current.takePictureAsync({ quality: 0.7 });
       } catch {
-        // Some Android devices fail the first capture while the pipeline settles: retry once,
-        // this time skipping post-processing.
         await new Promise<void>((resolve) => setTimeout(resolve, 400));
         photo = await pickupCameraRef.current?.takePictureAsync({ quality: 0.7, skipProcessing: true });
       }
@@ -1221,14 +1346,12 @@ const handleAcceptPendingMatch = async (m: any) => {
         .eq('delivery_id', deliveryId);
       if (delError) throw delError;
 
-      // In completeDelivery:
       const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
         p_delivery_id: deliveryId,
         p_outcome: 'completed_normal',
       });
       if (settleErr) throw settleErr;
 
-      // Refund 50% Return Deposit to Sender if Option A was selected
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
       if (returnDep > 0 && requestId) {
         try {
@@ -1246,8 +1369,6 @@ const handleAcceptPendingMatch = async (m: any) => {
               .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
               .eq('request_id', requestId);
           } else {
-            // Record the refund in the escrow ledger so the audit trail is complete.
-            // The provider is the same channel the sender paid with (gcash/maya).
             const rawProvider = String(
               deliveryOTPTarget?.escrow?.payment_method ||
               deliveryOTPTarget?.delivery_requests?.payment_provider ||
@@ -1310,14 +1431,11 @@ const handleAcceptPendingMatch = async (m: any) => {
     }
   };
 
-  // --- PHASE 3 & 4: 10-Minute Drop-off Grace Period & Fallback Execution ---
   const handleStartDropoffGracePeriod = async (delivery: any) => {
     const info = buildTaskInfo(delivery);
     const geo = await verifyProviderWithinGeofence(info.dropoff.lat, info.dropoff.lng, 'drop-off');
     if (!geo.allowed) return;
 
-    // Fetch the freshest timestamps directly from the DB so re-opening the modal resumes
-    // the timer instead of restarting it, even if local state is stale.
     const { data: freshRow, error: freshErr } = await supabase
       .from('deliveries')
       .select('dropoff_arrived_at, dropoff_wait_lat, dropoff_wait_lng, call_receiver_at, sms_receiver_at, chat_sender_at')
@@ -1364,7 +1482,6 @@ const handleAcceptPendingMatch = async (m: any) => {
         );
       }
 
-      // Refresh local state so the next tap sees the new timestamp
       if (providerId) fetchDeliveries(providerId).catch(() => {});
     }
 
@@ -1512,7 +1629,10 @@ const handleAcceptPendingMatch = async (m: any) => {
     try {
       if (!hasLoadedRef.current) setLoading(true);
       const pid = await getProviderData();
-      if (pid) await fetchDeliveries(pid);
+      if (pid) {
+        const resolved = await fetchProviderRoutes(pid);
+        await fetchDeliveries(pid, resolved?.route_id ?? null);
+      }
     } finally { hasLoadedRef.current = true; setLoading(false); setRefreshing(false); }
   };
 
@@ -1527,9 +1647,12 @@ const handleAcceptPendingMatch = async (m: any) => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => {
+        fetchProviderRoutes(providerId).then((r) => fetchDeliveries(providerId, r?.route_id ?? null));
+      })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [providerId]);
+  }, [providerId, fetchDeliveries, fetchProviderRoutes]);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
@@ -1555,12 +1678,12 @@ const handleAcceptPendingMatch = async (m: any) => {
   const isPickupVerified = (delivery: any) => {
     const qr = delivery?.qr_verifications;
     if (qr) {
-    if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
-    else if (qr.pickup_verified) return true;
+      if (Array.isArray(qr)) { if (qr[0]?.pickup_verified) return true; }
+      else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
     return status === 'In Transit' || status === 'Returning' || status === 'Completed' || status === 'Returned';
-    };
+  };
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
@@ -1621,6 +1744,31 @@ const handleAcceptPendingMatch = async (m: any) => {
     return Array.from(map.values());
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries]);
 
+  // --- Filter Active & Pending deliveries by the selected Active Route when filterByActiveRoute is enabled ---
+  const matchesSelectedRoute = useCallback((d: any): boolean => {
+    if (!filterByActiveRoute || !activeRoute?.route_id) return true;
+    const targetRouteId = Number(activeRoute.route_id);
+    const delRouteId = d?.route_id != null ? Number(d.route_id) : null;
+    const prefRouteId = d?.delivery_requests?.preferred_route_id != null
+      ? Number(d.delivery_requests.preferred_route_id)
+      : (d?.request?.preferred_route_id != null ? Number(d.request.preferred_route_id) : null);
+
+    if (delRouteId === targetRouteId || prefRouteId === targetRouteId) return true;
+    // Also include direct requests or deliveries that didn't record a route_id
+    if (delRouteId == null && prefRouteId == null) return true;
+    return false;
+  }, [filterByActiveRoute, activeRoute?.route_id]);
+
+  const visibleActiveDeliveries = useMemo(
+    () => activeDeliveries.filter(matchesSelectedRoute),
+    [activeDeliveries, matchesSelectedRoute]
+  );
+
+  const visiblePendingDeliveries = useMemo(
+    () => pendingDeliveries.filter(matchesSelectedRoute),
+    [pendingDeliveries, matchesSelectedRoute]
+  );
+
   const openRoute = (d: any) => {
     const st = stageOf(d);
     if (st !== 'pickup' && st !== 'transit') return;
@@ -1636,15 +1784,15 @@ const handleAcceptPendingMatch = async (m: any) => {
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
 
   const tabCount = (t: TabType) =>
-    t === 'active' ? activeDeliveries.length
-      : t === 'pending' ? pendingDeliveries.length
+    t === 'active' ? visibleActiveDeliveries.length
+      : t === 'pending' ? visiblePendingDeliveries.length
       : t === 'completed' ? completedDeliveries.length
       : t === 'cancelled' ? cancelledDeliveries.length
       : allTasks.length;
 
   const filteredTasks =
-    activeTab === 'active' ? activeDeliveries
-      : activeTab === 'pending' ? pendingDeliveries
+    activeTab === 'active' ? visibleActiveDeliveries
+      : activeTab === 'pending' ? visiblePendingDeliveries
       : activeTab === 'completed' ? completedDeliveries
       : activeTab === 'cancelled' ? cancelledDeliveries
       : allTasks;
@@ -1698,7 +1846,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     </View>
   );
 
-  // ──────────────── Contact tile (no in-app call) ────────────────
   const renderMiniContact = (o: {
     role: string;
     name: string | null;
@@ -1931,10 +2078,215 @@ const handleAcceptPendingMatch = async (m: any) => {
     );
   };
 
+  // --- Active Route Filter Banner (shown in header when on Active or Pending tab) ---
+  const renderActiveRouteFilterBar = () => {
+    const startAddr = splitAddress(activeRoute?.start_location?.street_address);
+    const endAddr = splitAddress(activeRoute?.end_location?.street_address);
+    const hiddenActiveCount = Math.max(0, activeDeliveries.length - visibleActiveDeliveries.length);
+
+    return (
+      <View style={styles.routeFilterWrap}>
+        <TouchableOpacity
+          style={[
+            styles.routeFilterCard,
+            filterByActiveRoute && activeRoute && styles.routeFilterCardActive,
+          ]}
+          onPress={() => setRoutePickerVisible(true)}
+          activeOpacity={0.88}
+        >
+          <View style={styles.routeFilterIconWrap}>
+            <SolarIcon name="Routing" variant="duotone" size={20} color={colors.accent} />
+          </View>
+
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.routeFilterEyebrow}>
+                {filterByActiveRoute && activeRoute ? 'FILTERED BY ACTIVE CORRIDOR' : 'SHOWING ALL ROUTES'}
+              </Text>
+              {hiddenActiveCount > 0 && filterByActiveRoute && (
+                <Text style={styles.routeHiddenHint}>({hiddenActiveCount} on other routes)</Text>
+              )}
+            </View>
+            {activeRoute ? (
+              <>
+                <Text style={styles.routeFilterTitle} numberOfLines={1}>
+                  {startAddr.main}{' '}
+                  <Text style={{ color: colors.accent, fontFamily: 'Poppins_800ExtraBold' }}>→</Text>{' '}
+                  {endAddr.main}
+                </Text>
+                <Text style={styles.routeFilterSub} numberOfLines={1}>
+                  Trunk: {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg ·{' '}
+                  {Number(activeRoute.remaining_volume_liters ?? 200).toFixed(0)} L left · {activeRoute.route_frequency}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.routeFilterTitle} numberOfLines={1}>
+                No active route selected — tap to choose or post a route
+              </Text>
+            )}
+          </View>
+
+          {activeRoute && (
+            <TouchableOpacity
+              style={[
+                styles.routeScopeToggle,
+                !filterByActiveRoute && styles.routeScopeToggleAll,
+              ]}
+              onPress={(e) => {
+                e.stopPropagation();
+                setFilterByActiveRoute((prev) => !prev);
+              }}
+              activeOpacity={0.85}
+              hitSlop={6}
+            >
+              <Text
+                style={[
+                  styles.routeScopeToggleText,
+                  !filterByActiveRoute && styles.routeScopeToggleTextAll,
+                ]}
+              >
+                {filterByActiveRoute ? 'This Route' : 'All Routes'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            style={styles.routeSwapBtn}
+            onPress={() => setRoutePickerVisible(true)}
+            activeOpacity={0.85}
+          >
+            <SolarIcon name="TransferHorizontal" variant="linear" size={16} color={colors.textPrimary} />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
+  const renderRoutePickerModal = () => (
+    <Modal visible={routePickerVisible} transparent animationType="slide" onRequestClose={() => setRoutePickerVisible(false)}>
+      <View style={styles.routeModalOverlay}>
+        <View style={styles.routePickerSheet}>
+          <View style={styles.routePickerHandle} />
+          <View style={styles.routePickerHeader}>
+            <Text style={styles.routePickerTitle}>Filter Tasks by Active Route</Text>
+            <TouchableOpacity onPress={() => setRoutePickerVisible(false)} hitSlop={8}>
+              <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {routes.length > 0 && (
+            <TouchableOpacity
+              style={[
+                styles.routeOption,
+                !filterByActiveRoute && styles.routeOptionSelected,
+              ]}
+              onPress={() => {
+                setFilterByActiveRoute(false);
+                setRoutePickerVisible(false);
+              }}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.routeOptionDot, { backgroundColor: !filterByActiveRoute ? colors.accent : colors.textMuted }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.routeOptionTitle} numberOfLines={1}>
+                  Show All Active Deliveries ({activeDeliveries.length})
+                </Text>
+                <Text style={styles.routeOptionSub} numberOfLines={1}>
+                  Display tasks across all of your posted routes
+                </Text>
+              </View>
+              {!filterByActiveRoute && <SolarIcon name="CheckCircle" variant="linear" size={22} color={colors.accent} />}
+            </TouchableOpacity>
+          )}
+
+          {routes.length === 0 ? (
+            <View style={styles.routePickerEmpty}>
+              <SolarIcon name="Map" variant="duotone" size={40} color={colors.accent} />
+              <Text style={styles.routePickerEmptyTitle}>No active routes posted</Text>
+              <Text style={styles.routePickerEmptySub}>
+                Post or manage your routes in the Jobs or Manage Routes screen to filter tasks by corridor.
+              </Text>
+              <TouchableOpacity
+                style={styles.emptyManageRouteBtn}
+                onPress={() => {
+                  setRoutePickerVisible(false);
+                  navigation.navigate('ManageRoutes');
+                }}
+                activeOpacity={0.85}
+              >
+                <SolarIcon name="Map" variant="linear" size={16} color={colors.accent} />
+                <Text style={styles.emptyManageRouteText}>Manage Routes</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {routes.map((r: any) => {
+                const isSelected = filterByActiveRoute && activeRoute?.route_id === r.route_id;
+                const rDate = parseNaiveIsoString(r.departure_time);
+                const timeStr = rDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const scheduleLabel =
+                  r.route_frequency === 'Daily'
+                    ? `Every day · ${timeStr}`
+                    : r.route_frequency === 'Weekly'
+                      ? `Every ${WEEKDAY_LABELS[rDate.getDay()]} · ${timeStr}`
+                      : `${rDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${timeStr}`;
+
+                const startAddr = splitAddress(r.start_location?.street_address);
+                const endAddr = splitAddress(r.end_location?.street_address);
+                const routeTaskCount = activeDeliveries.filter(
+                  (d) =>
+                    Number(d?.route_id) === Number(r.route_id) ||
+                    Number(d?.delivery_requests?.preferred_route_id) === Number(r.route_id)
+                ).length;
+
+                return (
+                  <TouchableOpacity
+                    key={r.route_id}
+                    style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
+                    onPress={() => handleSelectRoute(r)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={[styles.routeOptionDot, { backgroundColor: isSelected ? colors.accent : colors.textMuted }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.routeOptionTitle} numberOfLines={1}>
+                        {startAddr.main} → {endAddr.main}
+                      </Text>
+                      <Text style={styles.routeOptionSub} numberOfLines={1}>
+                        {scheduleLabel} · {r.route_frequency} · {routeTaskCount} active
+                      </Text>
+                    </View>
+                    {isSelected && <SolarIcon name="CheckCircle" variant="linear" size={22} color={colors.accent} />}
+                  </TouchableOpacity>
+                );
+              })}
+
+              <TouchableOpacity
+                style={[styles.emptyManageRouteBtn, { alignSelf: 'center', marginTop: 10 }]}
+                onPress={() => {
+                  setRoutePickerVisible(false);
+                  navigation.navigate('ManageRoutes');
+                }}
+                activeOpacity={0.85}
+              >
+                <SolarIcon name="Settings" variant="linear" size={16} color={colors.accent} />
+                <Text style={styles.emptyManageRouteText}>Manage All Routes</Text>
+              </TouchableOpacity>
+              <View style={{ height: 30 }} />
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderListView = () => (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Animated.View style={[styles.headerSection, { paddingTop: Math.max(insets.top, 16) + 12 }, fadeUp(headerAnim, -14)]}>
         <Text style={styles.pageTitle}>My Tasks</Text>
+
+        {/* Active Route Selector & Filter Bar (mirrors JobsScreen) */}
+        {(activeTab === 'active' || activeTab === 'pending') && renderActiveRouteFilterBar()}
+
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabBarScroll}>
           {(['active', 'pending', 'completed', 'cancelled', 'all'] as const).map(t => {
             const on = activeTab === t;
@@ -1974,18 +2326,32 @@ const handleAcceptPendingMatch = async (m: any) => {
                 {activeTab === 'cancelled'
                   ? 'No cancelled bookings'
                   : activeTab === 'pending'
-                    ? 'No pending requests'
-                    : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
+                    ? 'No pending requests on this route'
+                    : activeTab === 'active' && filterByActiveRoute && activeDeliveries.length > 0
+                      ? 'No active tasks on this route'
+                      : allTasks.length === 0 ? 'No tasks yet' : 'Nothing here'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {activeTab === 'cancelled'
                   ? 'Bookings cancelled by the sender will appear here.'
                   : activeTab === 'pending'
-                    ? 'Requests waiting for your acceptance along your route will appear here.'
-                    : allTasks.length === 0
-                      ? 'Deliveries you accept appear here.'
-                      : 'Try another tab to view history.'}
+                    ? 'Requests waiting for your acceptance along your selected route will appear here.'
+                    : activeTab === 'active' && filterByActiveRoute && activeDeliveries.length > 0
+                      ? `You have ${activeDeliveries.length} active delivery task(s) on your other routes.`
+                      : allTasks.length === 0
+                        ? 'Deliveries you accept appear here.'
+                        : 'Try another tab or route to view tasks.'}
               </Text>
+              {activeTab === 'active' && filterByActiveRoute && activeDeliveries.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.emptyManageRouteBtn, { marginTop: 16 }]}
+                  onPress={() => setFilterByActiveRoute(false)}
+                  activeOpacity={0.85}
+                >
+                  <SolarIcon name="Routing" variant="duotone" size={16} color={colors.accent} />
+                  <Text style={styles.emptyManageRouteText}>Show All Routes ({activeDeliveries.length})</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : filteredTasks.map(d => activeTab === 'pending' ? renderPendingCard(d) : renderTaskCard(d))}
           <View style={styles.bottomSpacer} />
@@ -2013,7 +2379,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     const H = Dimensions.get('window').height;
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
-    const photos = items.filter((it: any) => !!it.photo && !failedPhotos[it.photo]);
     const hintText = stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
       : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
@@ -2210,40 +2575,35 @@ const handleAcceptPendingMatch = async (m: any) => {
               </>
             )}
 
-            {photos.length > 0 && (
-              <>
-                <View style={styles.dSecHead}>
-                  <SolarIcon name="Gallery" variant="duotone" size={17} color={colors.accent} />
-                  <Text style={styles.dSecTitle}>Package Photos</Text>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {photos.map((it: any, i: number) => (
-                    <TouchableOpacity key={i} activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)}>
-                      <Image
-                        source={{ uri: it.photo }}
-                        style={styles.dPhoto}
-                        resizeMode="cover"
-                        onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
-                      />
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </>
-            )}
-
             <View style={styles.dSecHead}>
               <SolarIcon name="Package" variant="duotone" size={17} color={colors.accent} />
               <Text style={styles.dSecTitle}>Package Details</Text>
             </View>
-            {items.some((it: any) => !!it.description) && (
+            {items.some((it: any) => !!it.description || !!it.photo) && (
               <View style={{ gap: 8, marginBottom: 12 }}>
                 {items.map((it: any, i: number) => {
                   const meta = it.size ? SIZE_META[it.size] : null;
                   return (
                     <View key={i} style={styles.dItemRow}>
-                      <View style={[styles.sizeBadge, meta && { backgroundColor: meta.bg }]}>
-                        <Text style={[styles.sizeBadgeText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
-                      </View>
+                      {!!it.photo && !failedPhotos[it.photo] ? (
+                        <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)} style={styles.dItemPhotoWrap}>
+                          <Image
+                            source={{ uri: it.photo }}
+                            style={styles.dItemPhoto}
+                            resizeMode="cover"
+                            onError={() => setFailedPhotos(p => ({ ...p, [it.photo]: true }))}
+                          />
+                          {meta && (
+                            <View style={[styles.dItemPhotoTag, { backgroundColor: meta.bg }]}>
+                              <Text style={[styles.dItemPhotoTagText, { color: meta.color }]}>{meta.letter}</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      ) : (
+                        <View style={[styles.dItemPhotoWrap, styles.dItemPhotoEmpty, meta && { backgroundColor: meta.bg }]}>
+                          <Text style={[styles.dItemPhotoEmptyText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.dItemTitle} numberOfLines={2}>
                           {items.length > 1 ? `Package ${i + 1}` : 'Package'}{it.size ? ` · ${it.size}` : ''}{it.fragile ? ' · Fragile' : ''}
@@ -2278,6 +2638,65 @@ const handleAcceptPendingMatch = async (m: any) => {
                 <View style={{ marginTop: 2, alignSelf: 'flex-start' }}><PaymentMethodBadge provider={d.escrow?.payment_method} /></View>
               </View>
             </View>
+
+            {(!!(d.escrow?.bc_escrow_tx_hash) || !!(d.qr_verifications?.bc_pickup_tx_hash) || !!(d.qr_verifications?.bc_dropoff_tx_hash)) && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Link" variant="linear" size={18} color={colors.accent} />
+                  <Text style={styles.dSecTitle}>Blockchain Record</Text>
+                </View>
+                <View style={styles.hashList}>
+                {!!(d.escrow?.bc_escrow_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                      <Text style={styles.hashValue}>{d.escrow?.bc_escrow_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('escrow', d.escrow?.bc_escrow_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr_verifications?.bc_pickup_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>PICKUP VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr_verifications?.bc_pickup_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('pickup', d.qr_verifications?.bc_pickup_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'pickup' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr_verifications?.bc_dropoff_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>DROP-OFF VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr_verifications?.bc_dropoff_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('dropoff', d.qr_verifications?.bc_dropoff_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'dropoff' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                </View>
+              </>
+            )}
           </Animated.View>
         </ScrollView>
 
@@ -2318,7 +2737,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     );
   };
 
-  // Overlay for step 2 (photo). The camera itself is rendered once, in renderScannerModal.
   const renderPickupPhotoStep = () => {
     const camBusy = pickupTakingPhoto || !pickupCameraReady;
     return !pickupPhotoUri ? (
@@ -2397,7 +2815,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     );
   };
 
-  // Overlay for step 1 (scan QR / enter PIN).
   const renderScanStep = () => (
     <>
       <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} pointerEvents="none">
@@ -2473,13 +2890,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     <Modal visible={verifyModalVisible} animationType="slide" transparent={false} onRequestClose={closeVerifyModal}>
       <View style={styles.scannerRoot}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
-
-        {/*
-          ONE CameraView for the whole flow (QR scan -> pickup photo -> retake).
-          Previously the scanner camera was unmounted and a second camera mounted in the same
-          frame; the first native session had not released yet, so takePictureAsync failed with
-          "Failed to capture image". Keeping a single camera mounted removes that race.
-        */}
         {cameraPermission?.granted && (
           <CameraView
             ref={pickupCameraRef}
@@ -2788,8 +3198,6 @@ const handleAcceptPendingMatch = async (m: any) => {
     const secs = String(graceRemainingSec % 60).padStart(2, '0');
     const anyContacted = contactLogs.call || contactLogs.sms || contactLogs.chat;
     const isLeaveWithGuard = fallbackAction === 'leave_with_guard';
-    // Option B (Leave with Guard/Neighbor) unlocks the live camera immediately without waiting 10 mins!
-    // Option A (Return to Sender) still requires the 10-minute timer + at least 1 contact attempt.
     const canMarkUnavailable = isLeaveWithGuard ? true : (graceRemainingSec === 0 && anyContacted);
 
     return (
@@ -2857,7 +3265,6 @@ const handleAcceptPendingMatch = async (m: any) => {
                   : 'Contact the receiver or sender below. If the receiver arrives, close this modal and tap "Complete".'}
               </Text>
 
-              {/* Show immediate green banner for Option B, or 10-minute timer for Option A */}
               {isLeaveWithGuard ? (
                 <View style={{ alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, backgroundColor: colors.successBg, borderRadius: 16, marginBottom: 14 }}>
                   <Text style={{ fontSize: 13, fontWeight: '900', color: colors.success, textAlign: 'center' }}>
@@ -2967,6 +3374,7 @@ const handleAcceptPendingMatch = async (m: any) => {
       </Modal>
     );
   };
+
   if (loading) {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
@@ -2982,6 +3390,7 @@ const handleAcceptPendingMatch = async (m: any) => {
       <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
       {selectedTask ? renderDetailView(selectedTask) : renderListView()}
 
+      {renderRoutePickerModal()}
       {renderScannerModal()}
       {renderMapModal()}
       {renderPhotoModal()}
@@ -3003,7 +3412,152 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   pageTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
-  tabBarScroll: { gap: 8, paddingTop: 16 },
+
+  // --- Active Route Filter Bar (matches JobsScreen corridor block) ---
+  routeFilterWrap: { marginTop: 12 },
+  routeFilterCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  routeFilterCardActive: {
+    borderColor: c.accent,
+    backgroundColor: c.accentSoft,
+  },
+  routeFilterIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: c.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  routeFilterEyebrow: {
+    fontSize: 9,
+    fontFamily: 'Poppins_800ExtraBold',
+    letterSpacing: 0.7,
+    color: c.accent,
+  },
+  routeHiddenHint: {
+    fontSize: 9.5,
+    fontFamily: 'Poppins_600SemiBold',
+    color: c.textSecondary,
+  },
+  routeFilterTitle: {
+    fontSize: 13.5,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    marginTop: 1,
+  },
+  routeFilterSub: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textSecondary,
+    marginTop: 1,
+  },
+  routeScopeToggle: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: c.accent,
+  },
+  routeScopeToggleAll: {
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  routeScopeToggleText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
+    color: '#FFFFFF',
+  },
+  routeScopeToggleTextAll: {
+    color: c.textSecondary,
+  },
+  routeSwapBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // --- Route Picker Modal ---
+  routeModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  routePickerSheet: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    maxHeight: '80%',
+  },
+  routePickerHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: c.border,
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  routePickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  routePickerTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  routePickerEmpty: { alignItems: 'center', paddingVertical: 36, gap: 10 },
+  routePickerEmptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8 },
+  routePickerEmptySub: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: c.textSecondary,
+    textAlign: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 8,
+  },
+  emptyManageRouteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: c.accentSoft,
+    marginTop: 6,
+  },
+  emptyManageRouteText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
+  routeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    backgroundColor: c.background,
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
+  routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
+  routeOptionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  routeOptionSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
+
+  tabBarScroll: { gap: 8, paddingTop: 14 },
   tabItem: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
     backgroundColor: c.card, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6,
@@ -3130,6 +3684,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   dItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
   dItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
   dItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  dItemPhotoWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider },
+  dItemPhoto: { width: '100%', height: '100%' },
+  dItemPhotoTag: { position: 'absolute', right: 4, bottom: 4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoTagText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+  dItemPhotoEmpty: { alignItems: 'center', justifyContent: 'center' },
+  dItemPhotoEmptyText: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
   sizeBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: c.divider, alignItems: 'center', justifyContent: 'center' },
   sizeBadgeText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
@@ -3141,6 +3701,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pkgSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
   tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 6 },

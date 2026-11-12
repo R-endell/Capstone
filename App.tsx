@@ -112,6 +112,7 @@ import AddPaymentMethodScreen from './src/modules/Settings/AddPaymentMethodScree
 import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/DeliveryPaymentScreen';
 
 import { UserProvider } from './src/utils/userContext';
+import TermsGate from './src/components/terms/TermsGate';
 import { ThemeProvider, useTheme } from './src/utils/themeContext';
 
 import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
@@ -775,6 +776,9 @@ function AppInner() {
         <Stack.Screen name="NotificationsList" component={NotificationsList} />
         <Stack.Screen name="ProviderNavigation" component={ProviderNavigationScreen} options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
       </Stack.Navigator>
+
+      {/* Asks signed-in users to accept the current Terms and Policies version if they have not */}
+      <TermsGate />
     </NavigationContainer>
   );
 }
