@@ -392,6 +392,21 @@ export default function ActivityScreen() {
   const [activeTab, setActiveTab] = useState<'active' | 'pending' | 'completed' | 'cancelled' | 'all'>('active');
   const [openingChat, setOpeningChat] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
@@ -2036,6 +2051,65 @@ export default function ActivityScreen() {
               )}
             </View>
 
+            {(!!(escrowRow?.bc_escrow_tx_hash) || !!(d.qr?.bc_pickup_tx_hash) || !!(d.qr?.bc_dropoff_tx_hash)) && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Link" variant="linear" size={18} color={colors.accent} />
+                  <Text style={styles.dSecTitle}>Blockchain Record</Text>
+                </View>
+                <View style={styles.hashList}>
+                {!!(escrowRow?.bc_escrow_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                      <Text style={styles.hashValue}>{escrowRow?.bc_escrow_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('escrow', escrowRow?.bc_escrow_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr?.bc_pickup_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>PICKUP VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr?.bc_pickup_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('pickup', d.qr?.bc_pickup_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'pickup' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!(d.qr?.bc_dropoff_tx_hash) && (
+                  <View style={styles.hashRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hashLabel}>DROP-OFF VERIFIED</Text>
+                      <Text style={styles.hashValue}>{d.qr?.bc_dropoff_tx_hash}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('dropoff', d.qr?.bc_dropoff_tx_hash)}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'dropoff' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+                </View>
+              </>
+            )}
+
             {!isCancelled && (
               <>
                 <View style={styles.dSecHead}>
@@ -2737,6 +2811,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   pkgQty: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },
   tileLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
   tileValue: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 6 },

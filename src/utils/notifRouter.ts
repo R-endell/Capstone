@@ -17,6 +17,36 @@ export type NotifRouterOptions = {
 };
 
 /**
+ * Helper to detect if a notification row is actually about a wallet withdrawal / cashout / payout,
+ * even if a backend trigger or service accidentally tagged `type` as 'dispute'.
+ */
+export function isWithdrawalNotif(n: Pick<NotifRow, 'type' | 'title' | 'body'>): boolean {
+  const t = (n.type || '').toLowerCase();
+  const title = (n.title || '').toLowerCase();
+  const body = (n.body || '').toLowerCase();
+
+  if (
+    t.startsWith('withdraw') ||
+    t.startsWith('cashout') ||
+    t.startsWith('payout') ||
+    t === 'wallet'
+  ) {
+    return true;
+  }
+
+  // Catch notifications whose body/title clearly describes a withdrawal/cashout/GCash/Maya payout
+  const text = `${title} ${body}`;
+  if (
+    /\b(withdrawal|withdrawn|cash\s*out|cashout|payout)\b/i.test(text) &&
+    !/\b(dispute|parcel|package|sender|courier)\b/i.test(body)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Given a notification row and a navigation object, this navigates
  * to the correct screen. Returns true if it handled the navigation,
  * false if the caller should fall back to showing an Alert.
@@ -29,6 +59,26 @@ export async function routeNotification(
   const type = (n.type || '').toLowerCase();
   const ref = n.ref_id;
   const role = options.role || 'sender';
+
+  // ---- WITHDRAWAL / CASHOUT / PAYOUT / WALLET ---------------------
+  if (isWithdrawalNotif(n)) {
+    const withdrawalId = typeof ref === 'number' ? ref : null;
+    try {
+      navigation.navigate('ProviderTabs', {
+        screen: 'Earnings',
+        params: {
+          initialTab: 'withdrawals',
+          highlightWithdrawalId: withdrawalId,
+        },
+      });
+    } catch {
+      navigation.navigate('Earnings', {
+        initialTab: 'withdrawals',
+        highlightWithdrawalId: withdrawalId,
+      });
+    }
+    return true;
+  }
 
   // ---- CHAT (real chat, not support) ------------------------------
   if (type === 'chat') {
@@ -104,29 +154,25 @@ export async function routeNotification(
     return true;
   }
 
-  // ---- DELIVERY / MATCH / PAYMENT ---------------------------------
+  // ---- DELIVERY / MATCH / PAYMENT / ESCROW ------------------------
   if (
     type.startsWith('delivery') ||
     type === 'match' ||
     type === 'payment' ||
     type === 'escrow'
   ) {
-    // We want to redirect to the list screens (Activity/Task), NOT LiveTracking.
-    // We pass the ref (which is usually the delivery_id or request_id) as a param 
-    // so the destination screen can highlight or scroll to the correct item.
-    
     // Provider → Task Screen
     if (role === 'provider') {
-      navigation.navigate('ProviderTabs', { 
+      navigation.navigate('ProviderTabs', {
         screen: 'Task',
-        params: { highlightDeliveryId: ref } 
+        params: { highlightDeliveryId: ref },
       });
-    } 
+    }
     // Sender → Activity Screen
     else {
-      navigation.navigate('MainTabs', { 
+      navigation.navigate('MainTabs', {
         screen: 'Activity',
-        params: { highlightDeliveryId: ref } 
+        params: { highlightDeliveryId: ref },
       });
     }
     return true;

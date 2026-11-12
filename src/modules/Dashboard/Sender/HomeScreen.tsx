@@ -14,7 +14,7 @@ import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { routeNotification, NotifRow } from '../../../utils/notifRouter';
+import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
 import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 
 const ICON_3D_SEND = require('../../../../assets/package-icon.png');
@@ -33,8 +33,9 @@ const ago = (iso: string) => {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const iconForType = (type: string): SolarIconName => {
-  const t = (type || '').toLowerCase();
+const iconForNotif = (n: Notif): SolarIconName => {
+  if (isWithdrawalNotif(n)) return 'Wallet';
+  const t = (n.type || '').toLowerCase();
   if (t.startsWith('dispute')) return 'Warning';
   if (t.startsWith('delivery')) return 'Package';
   if (t === 'match') return 'Lightning';
@@ -44,15 +45,36 @@ const iconForType = (type: string): SolarIconName => {
   return 'Bell';
 };
 
-const titleForType = (type: string, fallback: string): string => {
-  const t = (type || '').toLowerCase();
+const titleForNotif = (n: Notif): string => {
+  const rawTitle = (n.title || '').trim();
+
+  if (isWithdrawalNotif(n)) {
+    if (!rawTitle || /dispute/i.test(rawTitle)) {
+      const b = (n.body || '').toLowerCase();
+      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) {
+        return 'Cashout Completed';
+      }
+      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) {
+        return 'Cashout Refunded';
+      }
+      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) {
+        return 'Cashout Processing';
+      }
+      return 'Cashout Update';
+    }
+    return rawTitle;
+  }
+
+  if (rawTitle) return rawTitle;
+
+  const t = (n.type || '').toLowerCase();
   if (t === 'match') return 'New Delivery Match';
   if (t.startsWith('delivery')) return 'Delivery Update';
   if (t.startsWith('message') || t.startsWith('chat')) return 'New Message';
   if (t.startsWith('dispute')) return 'Dispute Update';
   if (t.startsWith('support')) return 'Pack-N-Ship';
   if (t === 'payment' || t === 'escrow') return 'Payment Update';
-  return fallback;
+  return 'Notification';
 };
 
 type BannerItem = {
@@ -277,9 +299,9 @@ export default function HomeScreen() {
     await markRead(n);
     setNotifModalOpen(false);
     const type = (n.type || '').toLowerCase();
-    if (type.startsWith('support')) { setFullListOpen(true); return; }
+    if (type.startsWith('support') && !isWithdrawalNotif(n)) { setFullListOpen(true); return; }
     const handled = await routeNotification(navigation as any, n, { role: 'sender' });
-    if (!handled) Alert.alert(n.title || 'Notification', n.body || '');
+    if (!handled) Alert.alert(titleForNotif(n), n.body || '');
   };
 
   const fadeUp = (value: Animated.Value, distance = 16) => ({
@@ -314,15 +336,14 @@ export default function HomeScreen() {
               renderItem={({ item }) => (
                 <TouchableOpacity style={[styles.notifRow, !item.is_read && styles.notifRowUnread]} onPress={() => handleNotifPress(item)} activeOpacity={0.85}>
                   <View style={styles.notifIcon}>
-                    <SolarIcon name={iconForType(item.type)} variant="duotone" size={18} />
+                    <SolarIcon name={iconForNotif(item)} variant="duotone" size={18} color={colors.accent} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <View style={styles.notifTitleRow}>
-                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForType(item.type, item.title)}</Text>
+                      <Text style={styles.notifTitle} numberOfLines={1}>{titleForNotif(item)}</Text>
                       {!item.is_read && <View style={styles.notifDot} />}
                     </View>
                     <Text style={styles.notifBody} numberOfLines={2}>{item.body}</Text>
-                    <Text style={styles.notifTime}>{ago(item.created_at)}</Text>
                   </View>
                   <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
                 </TouchableOpacity>

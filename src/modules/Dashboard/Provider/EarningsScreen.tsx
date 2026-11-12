@@ -3,15 +3,18 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   StatusBar, Alert, ActivityIndicator, RefreshControl,
-  Animated, Easing, Modal, ScrollView, Image,
+  Animated, Easing, Modal, ScrollView, Image, Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { ProviderWallet, WithdrawalRequest } from '../../../types/payment';
 import { fetchWithdrawalHistory, reconcileWithdrawalStatus, isSavedWalletNumberValid } from '../../../services/withdrawalService';
+
+let Clipboard: any = null;
+try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const EMPTY_BOX_ICON = require('../../../../assets/empty-box-icon.png');
 const GCASH_LOGO = require('../../../../assets/gcash.png');
@@ -26,6 +29,7 @@ interface EarningRow {
   amount: number;
   created_at: string;
   bc_escrow_tx_hash: string | null;
+  bc_tx_hash: string | null;
   delivery_completed_at: string | null;
   delivery_accepted_at: string | null;
   transaction_id: number | null;
@@ -43,6 +47,7 @@ interface EarningRow {
 export default function EarningsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
@@ -62,6 +67,37 @@ export default function EarningsScreen() {
   const [completedJobs, setCompletedJobs] = useState(0);
 
   const [detailRow, setDetailRow] = useState<EarningRow | null>(null);
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const [wdHashes, setWdHashes] = useState<Record<number, string>>({});
+  const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyHash = async (key: string, value?: string | null) => {
+    if (!value) return;
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(value);
+        setCopiedHash(key);
+        if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+        copyHashTimerRef.current = setTimeout(() => setCopiedHash(null), 1800);
+      } else {
+        await Share.share({ message: value });
+      }
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    const ids = withdrawals.map((w) => Number(w.withdrawal_id)).filter(Boolean);
+    if (ids.length === 0) { setWdHashes({}); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('withdrawal_requests').select('withdrawal_id, bc_tx_hash').in('withdrawal_id', ids);
+      if (cancelled) return;
+      const map: Record<number, string> = {};
+      (data || []).forEach((r: any) => { if (r.bc_tx_hash) map[Number(r.withdrawal_id)] = r.bc_tx_hash; });
+      setWdHashes(map);
+    })();
+    return () => { cancelled = true; };
+  }, [withdrawals]);
+
   const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalRequest | null>(null);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
@@ -122,7 +158,7 @@ export default function EarningsScreen() {
       return {
         escrow_id: e.escrow_id, delivery_id: e.delivery_id, sender_id: e.sender_id,
         escrow_status: e.escrow_status, emergency_frozen: !!e.emergency_frozen, amount: escrowAmt,
-        created_at: e.created_at, bc_escrow_tx_hash: e.bc_escrow_tx_hash ?? null, delivery_completed_at: completedAt,
+        created_at: e.created_at, bc_escrow_tx_hash: e.bc_escrow_tx_hash ?? null, bc_tx_hash: t?.bc_tx_hash ?? null, delivery_completed_at: completedAt,
         delivery_accepted_at: delivery.accepted_at ?? null, transaction_id: t?.transaction_id ?? null, base_amount: base,
         service_fee: t?.service_fee != null ? Number(t.service_fee) : null, total_amount: t?.total_amount != null ? Number(t.total_amount) : null,
         penalty_fee: t?.penalty_fee != null ? Number(t.penalty_fee) : null, payment_method: t?.payment_method ?? null,
@@ -150,6 +186,23 @@ export default function EarningsScreen() {
   };
 
   useFocusEffect(useCallback(() => { loadData(); }, [providerId]));
+
+  // Handle deep-linking from withdrawal notifications
+  useEffect(() => {
+    const params = route.params || {};
+    if (params.initialTab === 'withdrawals' || params.highlightWithdrawalId) {
+      setHistoryTab('withdrawals');
+    }
+    if (params.highlightWithdrawalId && withdrawals.length > 0) {
+      const match = withdrawals.find(
+        (w) => Number(w.withdrawal_id) === Number(params.highlightWithdrawalId),
+      );
+      if (match) {
+        setSelectedWithdrawal(match);
+        navigation.setParams({ highlightWithdrawalId: undefined });
+      }
+    }
+  }, [route.params, withdrawals, navigation]);
 
   useEffect(() => {
     if (!providerId) return;
@@ -446,6 +499,28 @@ export default function EarningsScreen() {
               <InfoRow styles={styles} colors={colors} label="Processed At" value={formatFullDate(w.processed_at)} last={!w.failure_code} />
               {!!w.failure_code && <InfoRow styles={styles} colors={colors} label="Gateway Failure Code" value={`${w.failure_code}${w.failure_message ? ` (${w.failure_message})` : ''}`} valueColor={colors.error} last />}
 
+              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN</Text>
+              <View style={styles.hashList}>
+                <View style={styles.hashRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.hashLabel}>WITHDRAWAL TRANSACTION</Text>
+                    <Text style={[styles.hashValue, !((w as any).bc_tx_hash || wdHashes[Number(w.withdrawal_id)]) && { color: colors.textMuted }]}>
+                      {(w as any).bc_tx_hash || wdHashes[Number(w.withdrawal_id)] || 'Not yet recorded on the blockchain'}
+                    </Text>
+                  </View>
+                  {!!((w as any).bc_tx_hash || wdHashes[Number(w.withdrawal_id)]) && (
+                    <TouchableOpacity
+                      style={styles.hashCopyBtn}
+                      onPress={() => copyHash('wd', (w as any).bc_tx_hash || wdHashes[Number(w.withdrawal_id)])}
+                      activeOpacity={0.7}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <SolarIcon name={copiedHash === 'wd' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+
               {isRefunded && (
                 <View style={[styles.noteBox, { backgroundColor: colors.successBg, borderColor: colors.success }]}>
                   <SolarIcon name="CheckCircle" variant="linear" size={15} color={colors.success} />
@@ -544,12 +619,42 @@ export default function EarningsScreen() {
               <InfoRow styles={styles} colors={colors} label="Accepted at" value={formatFullDate(r.delivery_accepted_at)} />
               <InfoRow styles={styles} colors={colors} label="Completed at" value={formatFullDate(r.delivery_completed_at)} last />
 
-              {r.bc_escrow_tx_hash && (
+              {(!!r.bc_escrow_tx_hash || !!r.bc_tx_hash) && (
                 <>
                   <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN</Text>
-                  <View style={styles.hashBox}>
-                    <SolarIcon name="Link" variant="linear" size={14} color={colors.textSecondary} />
-                    <Text style={styles.hashText} numberOfLines={2}>{r.bc_escrow_tx_hash}</Text>
+                  <View style={styles.hashList}>
+                    {!!r.bc_escrow_tx_hash && (
+                      <View style={styles.hashRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.hashLabel}>ESCROW PAYMENT</Text>
+                          <Text style={styles.hashValue}>{r.bc_escrow_tx_hash}</Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.hashCopyBtn}
+                          onPress={() => copyHash('escrow', r.bc_escrow_tx_hash)}
+                          activeOpacity={0.7}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <SolarIcon name={copiedHash === 'escrow' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                    {!!r.bc_tx_hash && (
+                      <View style={styles.hashRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.hashLabel}>PAYMENT TRANSACTION</Text>
+                          <Text style={styles.hashValue}>{r.bc_tx_hash}</Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.hashCopyBtn}
+                          onPress={() => copyHash('payout', r.bc_tx_hash)}
+                          activeOpacity={0.7}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <SolarIcon name={copiedHash === 'payout' ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 </>
               )}
@@ -725,8 +830,11 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
   totalLabel: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   totalValue: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4 },
-  hashBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 12 },
-  hashText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+  hashList: { gap: 10 },
+  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
+  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
   noteBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning, borderRadius: 12, padding: 12, marginTop: 16 },
   noteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 16 },
   reconcileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: c.accent, backgroundColor: c.accentSoft },
