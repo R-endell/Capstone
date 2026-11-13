@@ -50,6 +50,7 @@ deno.Deno.serve(async (req) => {
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    const basicAuth = `Basic ${btoa(XENDIT_SECRET_KEY + ':')}`
 
     // Fetch user details
     const { data: user, error: userError } = await supabase
@@ -70,9 +71,11 @@ deno.Deno.serve(async (req) => {
       const givenName = sanitizeName(user.first_name) || 'Customer'
       const surname = sanitizeName(user.last_name) || 'User'
       const mobileNumber = normalizePhone(user.phone_number)
+      const referenceId = `user_${userId}_${Date.now()}`
 
       console.log('[CUSTOMER_CREATE]', {
         userId,
+        referenceId,
         givenName,
         surname,
         email: user.email,
@@ -80,7 +83,7 @@ deno.Deno.serve(async (req) => {
       })
 
       const customerPayload: Record<string, unknown> = {
-        reference_id: `user_${userId}`,
+        reference_id: referenceId,
         type: 'INDIVIDUAL',
         email: user.email,
         individual_detail: {
@@ -93,7 +96,7 @@ deno.Deno.serve(async (req) => {
       const customerResponse = await fetch('https://api.xendit.co/customers', {
         method: 'POST',
         headers: {
-          'Authorization': `Basic ${btoa(XENDIT_SECRET_KEY + ':')}`,
+          'Authorization': basicAuth,
           'Content-Type': 'application/json',
           'api-version': '2020-10-31',
         },
@@ -102,17 +105,50 @@ deno.Deno.serve(async (req) => {
 
       if (!customerResponse.ok) {
         const errorText = await customerResponse.text()
-        console.error('[XENDIT_CUSTOMER_FAIL]', customerResponse.status, errorText)
-        throw new Error(`Xendit customer creation failed: ${errorText}`)
+        let parsedError: any = null
+        try {
+          parsedError = JSON.parse(errorText)
+        } catch {
+          // ignore JSON parse error
+        }
+
+        // Fallback: if DUPLICATE_ERROR ever occurs, fetch the existing customer by reference_id
+        if (parsedError?.error_code === 'DUPLICATE_ERROR') {
+          const getRes = await fetch(
+            `https://api.xendit.co/customers?reference_id=${encodeURIComponent(referenceId)}`,
+            {
+              method: 'GET',
+              headers: {
+                'Authorization': basicAuth,
+                'Content-Type': 'application/json',
+                'api-version': '2020-10-31',
+              },
+            }
+          )
+          const getData = await getRes.json()
+          const existingCustomer = getData?.data?.[0] ?? getData?.[0]
+          if (getRes.ok && existingCustomer?.id) {
+            customerId = existingCustomer.id
+          } else {
+            throw new Error(`Xendit customer lookup failed: ${JSON.stringify(getData)}`)
+          }
+        } else {
+          console.error('[XENDIT_CUSTOMER_FAIL]', customerResponse.status, errorText)
+          throw new Error(`Xendit customer creation failed: ${errorText}`)
+        }
+      } else {
+        const customerData = await customerResponse.json()
+        customerId = customerData.id
       }
 
-      const customerData = await customerResponse.json()
-      customerId = customerData.id
-
-      await supabase
+      const { error: updateError } = await supabase
         .from('users')
         .update({ xendit_customer_id: customerId })
         .eq('user_id', userId)
+
+      if (updateError) {
+        console.error('[USER_CUSTOMER_ID_UPDATE_FAIL]', updateError)
+      }
     }
 
     // Create SAVE session with PAYMENT_LINK mode
@@ -139,7 +175,7 @@ deno.Deno.serve(async (req) => {
     const sessionResponse = await fetch('https://api.xendit.co/sessions', {
       method: 'POST',
       headers: {
-        'Authorization': `Basic ${btoa(XENDIT_SECRET_KEY + ':')}`,
+        'Authorization': basicAuth,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(sessionPayload),

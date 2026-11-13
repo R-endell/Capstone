@@ -1,8 +1,8 @@
 // src/modules/Dashboard/Provider/EditProfileScreen.tsx
 //
 // Provider edit profile — flat transparent header, avatar in its own card.
-// Home address is picked on a map (HomeAddressMapPicker); only the unit
-// remains a free-text field.
+// Home address is entered via text inputs while live GPS coordinates are
+// captured silently in the background when saving.
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
@@ -13,11 +13,58 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import HomeAddressMapPicker from '../../../components/address/HomeAddressMapPicker';
+
+const getDeviceCoords = async (): Promise<{ lat: number; lng: number } | null> => {
+  try {
+    let { status } = await Location.getForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      const permissionReq = await Location.requestForegroundPermissionsAsync();
+      status = permissionReq.status;
+    }
+    if (status !== 'granted') {
+      return null;
+    }
+
+    const location = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+    });
+
+    if (
+      location?.coords &&
+      typeof location.coords.latitude === 'number' &&
+      typeof location.coords.longitude === 'number'
+    ) {
+      return {
+        lat: location.coords.latitude,
+        lng: location.coords.longitude,
+      };
+    }
+
+    return null;
+  } catch {
+    try {
+      const lastKnown = await Location.getLastKnownPositionAsync();
+      if (
+        lastKnown?.coords &&
+        typeof lastKnown.coords.latitude === 'number' &&
+        typeof lastKnown.coords.longitude === 'number'
+      ) {
+        return {
+          lat: lastKnown.coords.latitude,
+          lng: lastKnown.coords.longitude,
+        };
+      }
+    } catch {
+      // Ignore fallback error and return null below
+    }
+    return null;
+  }
+};
 
 export default function EditProfileScreen() {
   const navigation = useNavigation<any>();
@@ -33,10 +80,12 @@ export default function EditProfileScreen() {
   const [unitInfo, setUnitInfo] = useState('');
   const [locationId, setLocationId] = useState<number | null>(null);
   const [structuredAddress, setStructuredAddress] = useState({
-    street: '', barangay: '', city: '', province: '', zip_code: '',
+    street: '',
+    barangay: '',
+    city: '',
+    province: '',
+    zip_code: '',
   });
-  const [pickedCoords, setPickedCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [mapPickerOpen, setMapPickerOpen] = useState(false);
 
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -56,8 +105,11 @@ export default function EditProfileScreen() {
   useEffect(() => {
     const animate = (value: Animated.Value, delay: number, duration = 600) =>
       Animated.timing(value, {
-        toValue: 1, duration, delay,
-        easing: Easing.out(Easing.cubic), useNativeDriver: true,
+        toValue: 1,
+        duration,
+        delay,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
       });
     Animated.parallel([
       animate(headerAnim, 0),
@@ -69,10 +121,17 @@ export default function EditProfileScreen() {
   }, [headerAnim, avatarAnim, profileAnim, addressAnim, linkedAnim]);
 
   const pressIn = () => Animated.spring(btnScale, {
-    toValue: 0.97, useNativeDriver: true, speed: 30, bounciness: 4,
+    toValue: 0.97,
+    useNativeDriver: true,
+    speed: 30,
+    bounciness: 4,
   }).start();
+
   const pressOut = () => Animated.spring(btnScale, {
-    toValue: 1, useNativeDriver: true, speed: 30, bounciness: 6,
+    toValue: 1,
+    useNativeDriver: true,
+    speed: 30,
+    bounciness: 6,
   }).start();
 
   useEffect(() => {
@@ -103,18 +162,12 @@ export default function EditProfileScreen() {
 
           setStructuredAddress({
             street: loc.street_address || '',
-            barangay: looksLikeUnit ? '' : rawBarangay,
+            barangay: looksLikeUnit ? '' : rawBarangay && rawBarangay !== 'Unknown' ? rawBarangay : '',
             city: loc.city && loc.city !== 'Unknown' ? loc.city : '',
             province: loc.province && loc.province !== 'Unknown' ? loc.province : '',
             zip_code: loc.zip_code && loc.zip_code !== '0000' ? loc.zip_code : '',
           });
           setUnitInfo(looksLikeUnit ? rawBarangay : '');
-
-          setPickedCoords(
-            loc.latitude != null && loc.longitude != null
-              ? { lat: loc.latitude, lng: loc.longitude }
-              : null,
-          );
           setLocationId(userData.location_id || null);
         }
       }
@@ -126,7 +179,11 @@ export default function EditProfileScreen() {
   const pickImage = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.5, base64: true,
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.5,
+        base64: true,
       });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         setImageUri(result.assets[0].uri);
@@ -142,16 +199,26 @@ export default function EditProfileScreen() {
       Alert.alert('Error', 'Please enter both first and last name.');
       return;
     }
-    if (!structuredAddress.street || !structuredAddress.city) {
-      Alert.alert('Error', 'Please pin your home address on the map.');
-      return;
-    }
-    if (!pickedCoords) {
-      Alert.alert('Error', 'Please pin your home address on the map.');
+    if (
+      !structuredAddress.street.trim() ||
+      !structuredAddress.barangay.trim() ||
+      !structuredAddress.city.trim() ||
+      !structuredAddress.province.trim() ||
+      !structuredAddress.zip_code.trim()
+    ) {
+      Alert.alert('Error', 'Please fill in all home address fields (Street, Barangay, City, Province, and Zip Code).');
       return;
     }
 
     setSaving(true);
+
+    const coords = await getDeviceCoords();
+    if (!coords) {
+      setSaving(false);
+      Alert.alert('Location Required', 'Location is required to save your address.');
+      return;
+    }
+
     let finalAvatarUrl = imageUri;
 
     try {
@@ -185,20 +252,24 @@ export default function EditProfileScreen() {
 
         const locPayload = {
           street_address: fullStreet,
-          barangay: structuredAddress.barangay || 'Unknown',
-          city: structuredAddress.city || 'Unknown',
-          province: structuredAddress.province || 'Unknown',
-          zip_code: structuredAddress.zip_code || '0000',
-          latitude: pickedCoords.lat,
-          longitude: pickedCoords.lng,
+          barangay: structuredAddress.barangay.trim(),
+          city: structuredAddress.city.trim(),
+          province: structuredAddress.province.trim(),
+          zip_code: structuredAddress.zip_code.trim(),
+          latitude: coords.lat,
+          longitude: coords.lng,
         };
 
         if (locationId) {
           await supabase.from('locations').update(locPayload).eq('location_id', locationId);
         } else {
           const { data: newLoc } = await supabase
-            .from('locations').insert(locPayload).select('location_id').single();
+            .from('locations')
+            .insert(locPayload)
+            .select('location_id')
+            .single();
           if (newLoc) {
+            setLocationId(newLoc.location_id);
             await supabase.from('users').update({ location_id: newLoc.location_id }).eq('auth_id', user.id);
           }
         }
@@ -279,9 +350,13 @@ export default function EditProfileScreen() {
                   <Text style={styles.label}>First Name</Text>
                   <View style={[styles.inputWrapper, focusedInput === 'firstName' && styles.inputWrapperFocused]}>
                     <TextInput
-                      style={styles.input} value={firstName} onChangeText={setFirstName}
-                      placeholderTextColor={colors.textMuted} placeholder="Juan"
-                      onFocus={() => setFocusedInput('firstName')} onBlur={() => setFocusedInput(null)}
+                      style={styles.input}
+                      value={firstName}
+                      onChangeText={setFirstName}
+                      placeholderTextColor={colors.textMuted}
+                      placeholder="Juan"
+                      onFocus={() => setFocusedInput('firstName')}
+                      onBlur={() => setFocusedInput(null)}
                     />
                   </View>
                 </View>
@@ -289,9 +364,13 @@ export default function EditProfileScreen() {
                   <Text style={styles.label}>Last Name</Text>
                   <View style={[styles.inputWrapper, focusedInput === 'lastName' && styles.inputWrapperFocused]}>
                     <TextInput
-                      style={styles.input} value={lastName} onChangeText={setLastName}
-                      placeholderTextColor={colors.textMuted} placeholder="Dela Cruz"
-                      onFocus={() => setFocusedInput('lastName')} onBlur={() => setFocusedInput(null)}
+                      style={styles.input}
+                      value={lastName}
+                      onChangeText={setLastName}
+                      placeholderTextColor={colors.textMuted}
+                      placeholder="Dela Cruz"
+                      onFocus={() => setFocusedInput('lastName')}
+                      onBlur={() => setFocusedInput(null)}
                     />
                   </View>
                 </View>
@@ -301,9 +380,14 @@ export default function EditProfileScreen() {
                 <Text style={styles.label}>Mobile Number</Text>
                 <View style={[styles.inputWrapper, focusedInput === 'phone' && styles.inputWrapperFocused]}>
                   <TextInput
-                    style={styles.input} value={phone} onChangeText={setPhone} keyboardType="phone-pad"
-                    placeholderTextColor={colors.textMuted} placeholder="09123456789"
-                    onFocus={() => setFocusedInput('phone')} onBlur={() => setFocusedInput(null)}
+                    style={styles.input}
+                    value={phone}
+                    onChangeText={setPhone}
+                    keyboardType="phone-pad"
+                    placeholderTextColor={colors.textMuted}
+                    placeholder="09123456789"
+                    onFocus={() => setFocusedInput('phone')}
+                    onBlur={() => setFocusedInput(null)}
                   />
                 </View>
               </View>
@@ -313,7 +397,8 @@ export default function EditProfileScreen() {
                 <View style={[styles.inputWrapper, styles.inputWrapperDisabled]}>
                   <TextInput
                     style={[styles.input, { color: colors.textMuted }]}
-                    value={email} editable={false}
+                    value={email}
+                    editable={false}
                     placeholderTextColor={colors.textMuted}
                   />
                   <Ionicons name="lock-closed-outline" size={14} color={colors.textMuted} style={{ marginRight: 14 }} />
@@ -331,44 +416,26 @@ export default function EditProfileScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.sectionTitle}>Home address</Text>
-                  <Text style={styles.sectionSubtitle}>Pin on the map, then add unit</Text>
+                  <Text style={styles.sectionSubtitle}>Enter your complete home address</Text>
                 </View>
               </View>
 
-              <TouchableOpacity
-                style={styles.addressTrigger}
-                onPress={() => setMapPickerOpen(true)}
-                activeOpacity={0.85}
-              >
-                <View style={styles.addressIconBox}>
-                  <Ionicons name="home" size={20} color={colors.accent} />
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Street Address</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'street' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input}
+                    value={structuredAddress.street}
+                    onChangeText={(text) => setStructuredAddress((prev) => ({ ...prev, street: text }))}
+                    placeholder="e.g., 123 Osmeña Blvd"
+                    placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('street')}
+                    onBlur={() => setFocusedInput(null)}
+                  />
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.addressOverline}>
-                    {structuredAddress.street ? 'HOME ADDRESS' : 'SELECT HOME ADDRESS'}
-                  </Text>
-                  <Text
-                    style={[styles.addressMain, !structuredAddress.street && { color: colors.textMuted }]}
-                    numberOfLines={2}
-                  >
-                    {structuredAddress.street
-                      ? [
-                          structuredAddress.street,
-                          structuredAddress.barangay ? `Brgy. ${structuredAddress.barangay}` : '',
-                          structuredAddress.city,
-                          structuredAddress.province,
-                          structuredAddress.zip_code,
-                        ].filter(Boolean).join(', ')
-                      : 'Tap to pick your home address on the map'}
-                  </Text>
-                </View>
-                <View style={styles.changePill}>
-                  <Ionicons name="map" size={13} color={colors.accent} />
-                  <Text style={styles.changePillText}>{structuredAddress.street ? 'Change' : 'Map'}</Text>
-                </View>
-              </TouchableOpacity>
+              </View>
 
-              <View style={[styles.inputGroup, { marginBottom: 0 }]}>
+              <View style={styles.inputGroup}>
                 <Text style={styles.label}>Unit / Floor / Apt</Text>
                 <View style={[styles.inputWrapper, focusedInput === 'unit' && styles.inputWrapperFocused]}>
                   <TextInput
@@ -382,27 +449,71 @@ export default function EditProfileScreen() {
                   />
                 </View>
               </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>Barangay</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'barangay' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input}
+                    value={structuredAddress.barangay}
+                    onChangeText={(text) => setStructuredAddress((prev) => ({ ...prev, barangay: text }))}
+                    placeholder="e.g., Lahug"
+                    placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('barangay')}
+                    onBlur={() => setFocusedInput(null)}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.row}>
+                <View style={[styles.inputGroup, { flex: 1, marginRight: 8 }]}>
+                  <Text style={styles.label}>City / Municipality</Text>
+                  <View style={[styles.inputWrapper, focusedInput === 'city' && styles.inputWrapperFocused]}>
+                    <TextInput
+                      style={styles.input}
+                      value={structuredAddress.city}
+                      onChangeText={(text) => setStructuredAddress((prev) => ({ ...prev, city: text }))}
+                      placeholder="e.g., Cebu City"
+                      placeholderTextColor={colors.textMuted}
+                      onFocus={() => setFocusedInput('city')}
+                      onBlur={() => setFocusedInput(null)}
+                    />
+                  </View>
+                </View>
+
+                <View style={[styles.inputGroup, { flex: 1, marginLeft: 8 }]}>
+                  <Text style={styles.label}>Province</Text>
+                  <View style={[styles.inputWrapper, focusedInput === 'province' && styles.inputWrapperFocused]}>
+                    <TextInput
+                      style={styles.input}
+                      value={structuredAddress.province}
+                      onChangeText={(text) => setStructuredAddress((prev) => ({ ...prev, province: text }))}
+                      placeholder="e.g., Cebu"
+                      placeholderTextColor={colors.textMuted}
+                      onFocus={() => setFocusedInput('province')}
+                      onBlur={() => setFocusedInput(null)}
+                    />
+                  </View>
+                </View>
+              </View>
+
+              <View style={[styles.inputGroup, { marginBottom: 0 }]}>
+                <Text style={styles.label}>Zip Code</Text>
+                <View style={[styles.inputWrapper, focusedInput === 'zip_code' && styles.inputWrapperFocused]}>
+                  <TextInput
+                    style={styles.input}
+                    value={structuredAddress.zip_code}
+                    onChangeText={(text) => setStructuredAddress((prev) => ({ ...prev, zip_code: text }))}
+                    keyboardType="number-pad"
+                    placeholder="e.g., 6000"
+                    placeholderTextColor={colors.textMuted}
+                    onFocus={() => setFocusedInput('zip_code')}
+                    onBlur={() => setFocusedInput(null)}
+                  />
+                </View>
+              </View>
             </View>
           </Animated.View>
-
-          <HomeAddressMapPicker
-            visible={mapPickerOpen}
-            initialCoords={
-              pickedCoords ? { latitude: pickedCoords.lat, longitude: pickedCoords.lng } : null
-            }
-            onClose={() => setMapPickerOpen(false)}
-            onConfirm={(resolved, coords) => {
-              setStructuredAddress({
-                street: resolved.street,
-                barangay: resolved.barangay,
-                city: resolved.city,
-                province: resolved.province,
-                zip_code: resolved.zip_code,
-              });
-              setPickedCoords(coords);
-              setMapPickerOpen(false);
-            }}
-          />
 
           {/* Save */}
           <Animated.View style={[fadeUp(addressAnim, 20), { transform: [{ scale: btnScale }] }]}>
@@ -561,28 +672,4 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     googleIcon: { width: 22, height: 22, resizeMode: 'contain' },
     linkedText: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
     linkedSubtext: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
-
-    addressTrigger: {
-      flexDirection: 'row', alignItems: 'center', gap: 12,
-      backgroundColor: c.background, borderRadius: 14, padding: 12, marginBottom: 16,
-      borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    },
-    addressIconBox: {
-      width: 40, height: 40, borderRadius: 12,
-      backgroundColor: c.accentSoft,
-      alignItems: 'center', justifyContent: 'center',
-    },
-    addressOverline: {
-      fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted,
-      letterSpacing: 0.6, marginBottom: 2,
-    },
-    addressMain: {
-      fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, lineHeight: 18,
-    },
-    changePill: {
-      flexDirection: 'row', alignItems: 'center', gap: 4,
-      backgroundColor: c.accentSoft,
-      paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
-    },
-    changePillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.accent },
   });
