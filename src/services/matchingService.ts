@@ -70,6 +70,21 @@ export interface RouteMatchRow {
   status: string;
   request: any;
   route?: any;
+  provider?: {
+    user_id: number;
+    first_name: string;
+    last_name: string;
+    phone_number?: string;
+    profile_photo?: string | null;
+  } | null;
+  vehicle?: {
+    vehicle_id?: number;
+    vehicle_type: string;
+    plate_number: string;
+    max_weight_kg?: number;
+  } | null;
+  rating_avg?: number;
+  rating_count?: number;
 }
 
 export interface MatchResult {
@@ -212,12 +227,6 @@ export function isRouteRunningToday(route: any, now = new Date()): boolean {
   return sameDay;
 }
 
-/**
- * Has this route already departed as of `now`?
- * Example: Route is at 10:00 AM today.
- * - At 8:00 AM -> returns false (has NOT departed yet -> CAN match!)
- * - At 11:00 AM -> returns true (HAS departed -> CANNOT match!)
- */
 export function hasRouteDeparted(route: any, now = new Date()): boolean {
   if (!route?.departure_time) return false;
   if (!isRouteRunningToday(route, now)) return true;
@@ -250,33 +259,23 @@ export function isSendNowRequest(req: any): boolean {
   }
 }
 
-/**
- * Enforces the Send-Now same-day departure rule:
- * - Sender books Send Package Now at 8:00 AM, provider route is at 10:00 AM today -> TRUE (matches!)
- * - Sender books Send Package Now at 11:00 AM, provider route was at 10:00 AM today -> FALSE (too late, won't match!)
- * - Also checks `now` so if 10:00 AM has already passed without acceptance, it won't match anymore.
- */
 export function isRouteTimeValidForRequest(route: any, request: any, now = new Date()): boolean {
   if (!route || !request) return false;
   if (request.preferred_provider_id != null) return true;
 
   if (!isSendNowRequest(request)) {
-    // Scheduled request: match if scheduled on the same day before route departure
     return true;
   }
 
-  // Must be a route running today
   if (!isRouteRunningToday(route, now)) return false;
 
   const routeDepToday = getRouteTodayDepartureDate(route, now);
   const bookedAt = parseRequestCreatedTime(request);
 
-  // 1. Booking must have been made BEFORE the route's departure time today (e.g. 8:00 AM <= 10:00 AM)
   if (bookedAt.getTime() > routeDepToday.getTime()) {
     return false;
   }
 
-  // 2. And the route must not have already departed right now
   if (now.getTime() > routeDepToday.getTime()) {
     return false;
   }
@@ -380,14 +379,16 @@ export async function ensureRouteCorridorBackfilled(routeId: number): Promise<vo
 
 /**
  * Evaluates a single request against a single route and inserts/updates `route_request_matches`
- * if the route runs today, hasn't departed yet, and the pickup/dropoff lie along the route.
+ * ONLY if the pickup and dropoff lie along the provider's forward route corridor.
+ * If a non-matching row already exists in `route_request_matches`, it is revoked so non-matching
+ * providers never see or receive the request.
  */
 async function evaluatePairAndUpsertMatch(
   route: any,
   reqRow: any,
   now: Date,
   shouldNotify: boolean,
-  isDemo: boolean = false, // <--- ADD THIS
+  isDemo: boolean = false,
 ): Promise<boolean> {
   if (!route || !reqRow || reqRow.delivery_status !== 'Pending') return false;
   if (Number(route.provider_id) === Number(reqRow.sender_id)) return false;
@@ -399,9 +400,17 @@ async function evaluatePairAndUpsertMatch(
       reqRow.preferred_provider_id &&
       Number(reqRow.preferred_provider_id) === Number(route.provider_id));
 
-  if (isDirectRequest && !isPreferredRoute) return false;
+  if (isDirectRequest && !isPreferredRoute) {
+    await supabase
+      .from('route_request_matches')
+      .update({ status: 'revoked' })
+      .eq('route_id', route.route_id)
+      .eq('request_id', reqRow.request_id)
+      .eq('status', 'matched');
+    return false;
+  }
 
-  // DEMO OVERRIDE: Ignore time window
+  // In demo mode we only relax the time-of-day departure check; route corridor & capacity MUST always match.
   if (!isDemo && !isRouteTimeValidForRequest(route, reqRow, now)) {
     return false;
   }
@@ -438,26 +447,32 @@ async function evaluatePairAndUpsertMatch(
 
   const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
   const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-  
-  // DEMO OVERRIDE: Expand fallback radius to 30km
-  const fallbackMaxM = isDemo ? 30000 : 5000; 
+  // Fallback corridor is strictly capped at 3000m (and only when fallback_unlocked on the route or within 3km)
+  const fallbackMaxM = route.fallback_unlocked ? 3000 : maxCorridorM;
 
-  // DEMO OVERRIDE: Ignore capacity and direction
-  const fitsCapacity = isDemo ? true : (
+  const fitsCapacity =
     Number(route.remaining_weight_kg ?? 100) >= reqWeight &&
-    Number(route.remaining_volume_liters ?? 300) >= reqVol
-  );
-  
-  const isForward = isDemo ? true : (doProj.fraction >= puProj.fraction - 0.05);
-  
+    Number(route.remaining_volume_liters ?? 300) >= reqVol;
+
+  // Pickup must come before dropoff along the provider's route direction
+  const isForward = doProj.fraction >= puProj.fraction - 0.02;
+
   const withinPrimary = puProj.minDistanceM <= maxCorridorM && doProj.minDistanceM <= maxCorridorM;
-  const withinFallback = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
+  const withinFallback =
+    Boolean(route.fallback_unlocked) &&
+    puProj.minDistanceM <= fallbackMaxM &&
+    doProj.minDistanceM <= fallbackMaxM;
 
   if (!isPreferredRoute && !(fitsCapacity && isForward && (withinPrimary || withinFallback))) {
+    // Ensure any stale/previous match for this non-matching route is revoked
+    await supabase
+      .from('route_request_matches')
+      .update({ status: 'revoked' })
+      .eq('route_id', route.route_id)
+      .eq('request_id', reqRow.request_id)
+      .eq('status', 'matched');
     return false;
   }
-
-  // ... the rest of the function (the database insert and notification) stays exactly the same
 
   const { data: existingMatch } = await supabase
     .from('route_request_matches')
@@ -469,10 +484,9 @@ async function evaluatePairAndUpsertMatch(
   const avgDistM = (puProj.minDistanceM + doProj.minDistanceM) / 2;
   const computedScore = isPreferredRoute
     ? 100
-    : Math.max(60, Math.min(99, Math.round(100 - (avgDistM / fallbackMaxM) * 35)));
+    : Math.max(60, Math.min(99, Math.round(100 - (avgDistM / Math.max(fallbackMaxM, 1500)) * 35)));
 
   if (existingMatch) {
-    // The provider explicitly declined this request: never bring it back to them.
     if (existingMatch.status === 'declined') return false;
     if (existingMatch.status === 'expired' || existingMatch.status === 'revoked') {
       await supabase
@@ -507,7 +521,11 @@ async function evaluatePairAndUpsertMatch(
         isPreferredRoute
           ? `A sender requested delivery #${trackingId} along your route.`
           : `Delivery #${trackingId} matches your route today. Open Jobs to accept!`,
-        { type: isPreferredRoute ? 'direct_route_request' : 'match', requestId: reqRow.request_id, routeId: route.route_id },
+        {
+          type: isPreferredRoute ? 'direct_route_request' : 'match',
+          requestId: reqRow.request_id,
+          routeId: route.route_id,
+        },
       );
     } catch {}
   }
@@ -516,9 +534,114 @@ async function evaluatePairAndUpsertMatch(
 }
 
 /**
+ * Enriches RouteMatchRow[] with provider user details, vehicle details, and ratings
+ * so BookingScreen can display every matching provider cleanly.
+ */
+export async function enrichRouteMatchRows(rows: any[]): Promise<RouteMatchRow[]> {
+  if (!rows || rows.length === 0) return [];
+  const providerIds = Array.from(new Set(rows.map((r) => Number(r.provider_id)).filter(Boolean)));
+  const routeIds = Array.from(new Set(rows.map((r) => Number(r.route_id)).filter(Boolean)));
+
+  const [{ data: usersData }, { data: routesData }, { data: vehiclesData }, { data: ratingsData }] =
+    await Promise.all([
+      providerIds.length > 0
+        ? supabase
+            .from('users')
+            .select('user_id, first_name, last_name, phone_number, profile_photo')
+            .in('user_id', providerIds)
+        : Promise.resolve({ data: [] as any[] }),
+      routeIds.length > 0
+        ? supabase
+            .from('provider_routes')
+            .select(
+              'route_id, provider_id, vehicle_id, departure_time, end_time, route_frequency, is_active, is_deleted',
+            )
+            .in('route_id', routeIds)
+        : Promise.resolve({ data: [] as any[] }),
+      providerIds.length > 0
+        ? supabase
+            .from('vehicles')
+            .select('vehicle_id, provider_id, vehicle_type, plate_number, max_weight_kg')
+            .in('provider_id', providerIds)
+        : Promise.resolve({ data: [] as any[] }),
+      providerIds.length > 0
+        ? supabase
+            .from('ratings_reviews')
+            .select('reviewee_id, rating')
+            .in('reviewee_id', providerIds)
+        : Promise.resolve({ data: [] as any[] }),
+    ]);
+
+  const userMap = new Map<number, any>();
+  (usersData || []).forEach((u: any) => userMap.set(Number(u.user_id), u));
+
+  const routeMap = new Map<number, any>();
+  (routesData || []).forEach((r: any) => routeMap.set(Number(r.route_id), r));
+
+  const vehicleById = new Map<number, any>();
+  const vehicleByProvider = new Map<number, any>();
+  (vehiclesData || []).forEach((v: any) => {
+    vehicleById.set(Number(v.vehicle_id), v);
+    if (!vehicleByProvider.has(Number(v.provider_id))) {
+      vehicleByProvider.set(Number(v.provider_id), v);
+    }
+  });
+
+  const ratingStats = new Map<number, { sum: number; count: number }>();
+  (ratingsData || []).forEach((r: any) => {
+    const pid = Number(r.reviewee_id);
+    const cur = ratingStats.get(pid) || { sum: 0, count: 0 };
+    cur.sum += Number(r.rating) || 0;
+    cur.count += 1;
+    ratingStats.set(pid, cur);
+  });
+
+  // Deduplicate by provider_id (keep highest match_score per provider)
+  const seenProviders = new Set<number>();
+  const deduped: RouteMatchRow[] = [];
+
+  for (const m of rows) {
+    const pid = Number(m.provider_id);
+    if (seenProviders.has(pid)) continue;
+    seenProviders.add(pid);
+
+    const rObj = (Array.isArray(m.route) ? m.route[0] : m.route) || routeMap.get(Number(m.route_id)) || null;
+    const veh =
+      (rObj?.vehicle_id ? vehicleById.get(Number(rObj.vehicle_id)) : null) ||
+      vehicleByProvider.get(pid) ||
+      null;
+    const rStat = ratingStats.get(pid);
+
+    deduped.push({
+      match_id: Number(m.match_id),
+      route_id: Number(m.route_id),
+      request_id: Number(m.request_id),
+      provider_id: pid,
+      match_score: Number(m.match_score),
+      is_fallback: !!m.is_fallback,
+      fallback_type: m.fallback_type || null,
+      pickup_dist_m: Number(m.pickup_dist_m),
+      dropoff_dist_m: Number(m.dropoff_dist_m),
+      pickup_fraction: Number(m.pickup_fraction),
+      dropoff_fraction: Number(m.dropoff_fraction),
+      extra_detour_km: Number(m.extra_detour_km),
+      status: m.status,
+      request: m.request,
+      route: rObj,
+      provider: userMap.get(pid) || null,
+      vehicle: veh,
+      rating_avg: rStat && rStat.count > 0 ? Number((rStat.sum / rStat.count).toFixed(1)) : 0,
+      rating_count: rStat ? rStat.count : 0,
+    });
+  }
+
+  return deduped;
+}
+
+/**
  * Called by Sender's BookingScreen / scheduleService when a new request is created or paid.
- * Finds all active provider routes running today that haven't departed yet,
- * creates `route_request_matches` rows, and returns them sorted by best match.
+ * Evaluates all active provider routes running today that strictly match the sender's route corridor,
+ * creates `route_request_matches` rows ONLY for matching providers, and returns all of them sorted by score.
  */
 export async function syncAllActiveRoutesTodayForRequest(
   requestId: number,
@@ -549,8 +672,6 @@ export async function syncAllActiveRoutesTodayForRequest(
 
     const now = new Date();
 
-    // Pick each provider's selected route running today, or fall back to their latest active route running today
-    // so routes whose `is_selected` column wasn't flipped yet are never skipped!
     const routesByProvider = new Map<number, any[]>();
     for (const r of allRoutes || []) {
       if (!routesByProvider.has(r.provider_id)) routesByProvider.set(r.provider_id, []);
@@ -559,7 +680,7 @@ export async function syncAllActiveRoutesTodayForRequest(
 
     const candidateRoutes: any[] = [];
     routesByProvider.forEach((pRoutes) => {
-      const runningToday = pRoutes.filter((r) => isRouteRunningToday(r, now));
+      const runningToday = pRoutes.filter((r) => isDemo || isRouteRunningToday(r, now));
       const selectedToday = runningToday.find((r) => r.is_selected === true);
       if (selectedToday) {
         candidateRoutes.push(selectedToday);
@@ -568,7 +689,7 @@ export async function syncAllActiveRoutesTodayForRequest(
       }
     });
 
-    // Always include explicitly preferred route/provider
+    // Always include explicitly preferred route/provider (when sender booked from Explore)
     for (const r of allRoutes || []) {
       const isPref =
         (reqRow.preferred_route_id && Number(r.route_id) === Number(reqRow.preferred_route_id)) ||
@@ -578,18 +699,31 @@ export async function syncAllActiveRoutesTodayForRequest(
       }
     }
 
+    const validRouteIds = new Set<number>();
     for (const route of candidateRoutes) {
       await ensureRouteCorridorBackfilled(route.route_id);
-      // ADD `|| isDemo` SO IT ALWAYS RUNS IN DEMO MODE
-      if (isRouteTimeValidForRequest(route, reqRow, now) || isDemo) {
-        try {
-          await supabase.rpc('evaluate_route_matches', {
-            p_route_id: route.route_id,
-            p_demo_mode: isDemo,
-          });
-        } catch {}
+      const matched = await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify, isDemo);
+      if (matched) {
+        validRouteIds.add(Number(route.route_id));
       }
-      await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify, isDemo);
+    }
+
+    // Revoke any stray matches on routes that did not pass strict evaluation
+    const { data: allExistingMatches } = await supabase
+      .from('route_request_matches')
+      .select('match_id, route_id, status')
+      .eq('request_id', requestId)
+      .eq('status', 'matched');
+
+    const invalidMatchIds = (allExistingMatches || [])
+      .filter((m: any) => !validRouteIds.has(Number(m.route_id)))
+      .map((m: any) => Number(m.match_id));
+
+    if (invalidMatchIds.length > 0) {
+      await supabase
+        .from('route_request_matches')
+        .update({ status: 'revoked' })
+        .in('match_id', invalidMatchIds);
     }
 
     const { data: matches } = await supabase
@@ -601,13 +735,13 @@ export async function syncAllActiveRoutesTodayForRequest(
       .eq('status', 'matched')
       .order('match_score', { ascending: false });
 
-    // Filter out any matches whose route already departed for Send Now
     const validMatches = (matches || []).filter((m: any) => {
+      if (!validRouteIds.has(Number(m.route_id))) return false;
       const r = Array.isArray(m.route) ? m.route[0] : m.route;
-      return !r || isRouteTimeValidForRequest(r, reqRow, now);
+      return isDemo || !r || isRouteTimeValidForRequest(r, reqRow, now);
     });
 
-    return validMatches as RouteMatchRow[];
+    return await enrichRouteMatchRows(validMatches);
   } catch (err) {
     console.warn('[matchingService] syncAllActiveRoutesTodayForRequest warning:', err);
     return [];
@@ -616,13 +750,14 @@ export async function syncAllActiveRoutesTodayForRequest(
 
 /**
  * Scans all open `Pending` requests created today against a specific provider route
- * so when a provider opens JobsScreen or posts a route, any waiting Send-Now request
- * that fits their route corridor and time window is matched immediately.
+ * using strict corridor evaluation so non-matching providers never pick up unrelated requests.
  */
 export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<void> {
   if (!routeId) return;
   try {
     const isDemo = await getDemoMode();
+    await ensureRouteCorridorBackfilled(routeId);
+
     const { data: route } = await supabase
       .from('provider_routes')
       .select(
@@ -634,7 +769,7 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
     if (!route || route.is_deleted || route.is_active === false) return;
 
     const now = new Date();
-    if (!isRouteRunningToday(route, now)) return;
+    if (!isDemo && !isRouteRunningToday(route, now)) return;
 
     const { data: pendingReqs } = await supabase
       .from('delivery_requests')
@@ -674,16 +809,14 @@ export async function evaluateAndFetchRouteMatches(
   const isDemo = demoMode !== undefined ? demoMode : await getDemoMode();
 
   if (doEvaluate) {
-    await ensureRouteCorridorBackfilled(routeId);
-    try {
-      await supabase.rpc('evaluate_route_matches', { p_route_id: routeId, p_demo_mode: isDemo });
-    } catch {}
     await syncOpenPendingRequestsForRoute(routeId);
   }
 
   const { data: routeRow } = await supabase
     .from('provider_routes')
-    .select('route_id, provider_id, departure_time, end_time, route_frequency, is_active, is_deleted')
+    .select(
+      '*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*)',
+    )
     .eq('route_id', routeId)
     .maybeSingle();
   if (!routeRow || routeRow.is_deleted || routeRow.is_active === false) {
@@ -712,13 +845,61 @@ export async function evaluateAndFetchRouteMatches(
       m.request.preferred_provider_id == null ||
       Number(m.request.preferred_provider_id) === Number(m.provider_id),
   );
-  const afterTime = afterPreferred.filter((m: any) =>
-    isDemo || isRouteTimeValidForRequest(routeRow, m.request, now),
-  );
 
-  
+  // Double-check corridor geometry so any row inserted by an external trigger/RPC that doesn't match is filtered out
+  const sLoc = Array.isArray(routeRow.start_location) ? routeRow.start_location[0] : routeRow.start_location;
+  const eLoc = Array.isArray(routeRow.end_location) ? routeRow.end_location[0] : routeRow.end_location;
+  const corridor: { latitude: number; longitude: number }[] =
+    Array.isArray(routeRow.corridor_path) && routeRow.corridor_path.length >= 2
+      ? routeRow.corridor_path
+      : sLoc && eLoc
+        ? [
+            { latitude: Number(sLoc.latitude), longitude: Number(sLoc.longitude) },
+            { latitude: Number(eLoc.latitude), longitude: Number(eLoc.longitude) },
+          ]
+        : [];
 
-  return afterTime.map((m: any) => ({
+  const strictlyValid: any[] = [];
+  for (const m of afterPreferred) {
+    const reqRow = m.request;
+    if (!isDemo && !isRouteTimeValidForRequest(routeRow, reqRow, now)) continue;
+
+    const isPreferred =
+      (reqRow.preferred_route_id && Number(reqRow.preferred_route_id) === Number(routeRow.route_id)) ||
+      (reqRow.preferred_provider_id && Number(reqRow.preferred_provider_id) === Number(routeRow.provider_id));
+
+    if (!isPreferred) {
+      const puLoc = Array.isArray(reqRow.pickup_location) ? reqRow.pickup_location[0] : reqRow.pickup_location;
+      const doLoc = Array.isArray(reqRow.dropoff_location) ? reqRow.dropoff_location[0] : reqRow.dropoff_location;
+      if (corridor.length < 2 || puLoc?.latitude == null || doLoc?.latitude == null) continue;
+
+      const puProj = projectPointToPolyline(
+        { lat: Number(puLoc.latitude), lng: Number(puLoc.longitude) },
+        corridor,
+      );
+      const doProj = projectPointToPolyline(
+        { lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) },
+        corridor,
+      );
+      const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
+      const maxCorridorM = isDoorToDoor ? 3000 : 1500;
+      const fallbackMaxM = routeRow.fallback_unlocked ? 3000 : maxCorridorM;
+      const isForward = doProj.fraction >= puProj.fraction - 0.02;
+      const withinCorridor = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
+
+      if (!isForward || !withinCorridor) {
+        await supabase
+          .from('route_request_matches')
+          .update({ status: 'revoked' })
+          .eq('match_id', m.match_id);
+        continue;
+      }
+    }
+
+    strictlyValid.push(m);
+  }
+
+  return strictlyValid.map((m: any) => ({
     match_id: Number(m.match_id),
     route_id: Number(m.route_id),
     request_id: Number(m.request_id),
@@ -792,11 +973,6 @@ export async function fetchDirectRequestMatches(
     });
 }
 
-/**
- * Fetches all requests awaiting THIS provider's acceptance for TaskScreen -> Pending tab:
- * 1. Direct requests addressed to this provider (from Explore)
- * 2. Route matches across the provider's active route(s) today (including Send Package Now)
- */
 export async function fetchPendingRequestsForProvider(
   providerId: number,
   selectedRouteId?: number | null,
@@ -1006,7 +1182,6 @@ export function startBackgroundMatcher() {
     runPeriodicFallbackAndMatchCheck();
   }, 5 * 60 * 1000);
 
-  // Unique channel name — never collides with a stale already-subscribed channel
   const channelName = `realtime-global-matcher-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   globalMatchChannel = supabase
@@ -1064,17 +1239,10 @@ export async function getMatchingStats(providerId: number) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Provider declines a DIRECT request (sender picked them on Explore)  */
-/* ------------------------------------------------------------------ */
 export type DeclineDirectResult =
-  | { ok: true; released: boolean } // released=false -> request was no longer addressed to this provider
+  | { ok: true; released: boolean }
   | { ok: false; message: string };
 
-/**
- * Releases a request the sender addressed to this provider, notifies the sender, and re-runs matching
- * so another courier can pick it up. Used by JobsScreen (Dismiss) and TaskScreen (Pending -> Decline).
- */
 export async function declineDirectRequest(
   requestId: number,
   providerId: number,
@@ -1086,7 +1254,6 @@ export async function declineDirectRequest(
       .eq('request_id', requestId)
       .maybeSingle();
 
-    // Already taken / cancelled / reassigned: nothing to release.
     if (
       !reqRow ||
       reqRow.delivery_status !== 'Pending' ||
@@ -1100,7 +1267,6 @@ export async function declineDirectRequest(
       const released = rpcRes.data === true || (Array.isArray(rpcRes.data) && rpcRes.data[0] === true);
       if (!released) return { ok: true, released: false };
     } else {
-      // Fallback when the SQL function is not installed: plain updates (requires RLS to allow them).
       const { data: upd, error: upErr } = await supabase
         .from('delivery_requests')
         .update({ preferred_provider_id: null, preferred_route_id: null })
@@ -1131,7 +1297,6 @@ export async function declineDirectRequest(
       }
     }
 
-    // Find another courier: re-run matching for the now-open request (notifies matching providers).
     try {
       await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
     } catch (err) {

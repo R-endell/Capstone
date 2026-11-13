@@ -577,7 +577,7 @@ export default function ExploreScreen() {
             <Image source={require('../../../../assets/package-icon.png')} style={styles.actionCustomIcon} resizeMode="contain" />
           </View>
           <View style={styles.actionTextContainer}>
-            <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
+            <Text style={styles.actionTitlePrimary}>Send Package Today</Text>
             <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
           </View>
           <View style={styles.chevronPrimary}>

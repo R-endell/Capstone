@@ -3,12 +3,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image,
   StatusBar, Linking, ScrollView, Animated, Easing, Modal, Pressable, Share,
-  useWindowDimensions,
+  useWindowDimensions, Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { supabase } from '../../../../utils/supabase';
+import { getOrCreateChatRoom } from '../../../../utils/chatHelpers';
 import { fetchLatestFix, ProviderFix } from '../../../../services/locationService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS, BRAND_ORANGE } from '../../../../utils/mapConfig';
@@ -20,15 +21,26 @@ import {
 } from '../../../../services/navigationEngine';
 import type { RouteIndex } from '../../../../services/navigationEngine';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import DraggableSheet, { DraggableSheetHandle } from '../../../../components/ui/DraggableSheet';
 import { Ionicons } from '@expo/vector-icons';
 
 const STALE_MS = 45_000;
+const VEHICLE_IMG = require('../../../../../assets/sports-car.png');
 const MIN_GLIDE_MS = 600;
 const MAX_GLIDE_MS = 2000;
 const FRAME_MS = 33;
 
 type LatLng = { latitude: number; longitude: number };
 type PkgItem = { size: string | null; name: string; fragile: boolean; photo?: string | null };
+
+// Landmark / street / area are kept separate so the UI can always render
+//   top line    = the landmark the sender picked (place_name)
+//   bottom line = the street name (road), then the barangay/city
+type PlaceInfo = LatLng & {
+  landmark: string;
+  street: string;
+  area: string;
+};
 
 type RouteData = {
   deliveryId: number;
@@ -37,8 +49,8 @@ type RouteData = {
   acceptedAt: string | null;
   completedAt: string | null;
   estimatedEta: string | null;
-  pickup: LatLng & { address: string; name?: string | null; area?: string };
-  dropoff: LatLng & { address: string; name?: string | null; area?: string };
+  pickup: PlaceInfo;
+  dropoff: PlaceInfo;
   pickupVerified: boolean;
   dropoffVerified: boolean;
   deliveryStatus: string;
@@ -99,6 +111,7 @@ const polylineDistanceKm = (coords: LatLng[]): number => {
   return total / 1000;
 };
 
+// "Ouano Ave, Tipolo, Mandaue City" -> { title: "Ouano Ave", sub: "Tipolo, Mandaue City" }
 const splitAddress = (a: string | null | undefined) => {
   const s = (a ?? '').trim();
   const i = s.indexOf(',');
@@ -109,12 +122,47 @@ const splitAddress = (a: string | null | undefined) => {
 const areaOf = (l: any): string =>
   [l?.barangay, l?.city, l?.province].filter(v => v && v !== 'Unknown').join(', ');
 
-const placeParts = (l: { address: string; name?: string | null; area?: string }) => {
-  if (l.name) return { title: l.name, sub: [l.address, l.area].filter(Boolean).join(', ') };
-  const sp = splitAddress(l.address);
-  return { title: sp.title, sub: sp.sub || l.area || '' };
+// Google Plus Codes ("8Q7X+V4", "J9X5+2V Mandaue City") and other random-looking codes are not street names.
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (t: string) => {
+  const x = (t ?? '').trim();
+  if (!x) return true;
+  if (PLUS_CODE.test(x)) return true;
+  // one "word" mixing letters and digits (ids, hashes); real street names have spaces or are plain words
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+const cleanAddress = (a?: string | null): string =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p)).join(', ');
+
+/** Street name for a location row: its road, else the readable part of the address, else the barangay. */
+const streetOf = (l: any, fallback: string): string => {
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = l?.barangay && l.barangay !== 'Unknown' ? String(l.barangay) : '';
+  return road || cleanAddress(l?.street_address) || brgy || fallback;
+};
+/** The place name the sender picked, unless it is just a code. */
+const nameOf = (l: any): string | null =>
+  typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : null;
+
+// Landmark on top, street (then area) underneath.
+//   landmark = the place the sender picked on the location screen (place_name)
+//   street   = the road name (road), else the cleaned street_address, else the barangay
+const placeParts = (p: PlaceInfo) => {
+  const landmark = (p.landmark || '').trim();
+  const street = (p.street || '').trim();
+  const area = (p.area || '').trim();
+
+  const title = landmark || street || area || 'Selected location';
+  const sub = [
+    street && street !== title ? street : '',
+    area && area !== title && area !== street ? area : '',
+  ].filter(Boolean).join(', ');
+
+  return { title, sub };
 };
 
+// 21:49 • 11/11/2026
 const fmtDateTime = (iso?: string | null) => {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -123,22 +171,53 @@ const fmtDateTime = (iso?: string | null) => {
   return `${p(d.getHours())}:${p(d.getMinutes())} • ${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
 };
 
-const FARE_KEYS = ['total_price', 'total_amount', 'total_fare', 'delivery_fee', 'price', 'fare', 'amount', 'estimated_price', 'final_price', 'agreed_price'];
-const METHOD_KEYS = ['payment_method', 'payment_type'];
-type PayInfo = { amount: number | null; method: string | null };
+// Payment info — the request row stores the fare on `estimated_cost`, the
+// courier payout on `base_fare`, and the refundable deposit on `return_deposit`.
+// Older / alternative schemas may use the generic keys, so those are still tried.
+const FARE_KEYS = [
+  'estimated_cost', 'total_price', 'total_amount', 'total_fare',
+  'delivery_fee', 'price', 'fare', 'amount', 'estimated_price',
+  'final_price', 'agreed_price',
+];
+const METHOD_KEYS = ['payment_provider', 'payment_method', 'payment_type'];
+
+type PayInfo = {
+  amount: number | null;   // total charged to the sender
+  base: number | null;     // amount that goes to the courier (excl. fee)
+  fee: number | null;      // platform fee (15%)
+  deposit: number | null;  // refundable return deposit
+  method: string | null;
+};
+
 const extractPay = (row: any): PayInfo | null => {
   if (!row) return null;
+
   let amount: number | null = null;
   for (const k of FARE_KEYS) {
     const v = Number(row[k]);
     if (row[k] != null && isFinite(v) && v > 0) { amount = v; break; }
   }
+
+  const depositRaw = Number(row.return_deposit);
+  const deposit = isFinite(depositRaw) && depositRaw > 0 ? depositRaw : null;
+
+  const baseRaw = Number(row.base_fare);
+  const base = isFinite(baseRaw) && baseRaw > 0
+    ? baseRaw
+    : (amount != null ? Math.max(0, amount - (deposit ?? 0)) : null);
+
+  const fee = base != null ? Math.round(base * 0.15 * 100) / 100 : null;
+
   let method: string | null = null;
   for (const k of METHOD_KEYS) {
     if (typeof row[k] === 'string' && row[k]) { method = row[k]; break; }
   }
-  return amount == null && !method ? null : { amount, method };
+
+  return amount == null && base == null && !method
+    ? null
+    : { amount, base, fee, deposit, method };
 };
+
 const findPhoto = (row: any): string | null => {
   if (!row) return null;
   for (const k of Object.keys(row)) {
@@ -231,21 +310,23 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
 
 type MarkerStyles = ReturnType<typeof makeMarkerStyles>;
 
-const PIN = 44, LABEL_H = 26, LABEL_GAP = 6;
+// Same pickup / drop-off pins as the navigation map, with the street name underneath.
+const PIN = 44, LABEL_H = 26, LABEL_H2 = 42, LABEL_GAP = 6;
 const PlaceMarker = React.memo(function PlaceMarker({
-  lat, lng, title, kind, mk,
-}: { lat: number; lng: number; title: string; kind: 'pickup' | 'dropoff'; mk: MarkerStyles }) {
+  lat, lng, title, street, kind, mk,
+}: { lat: number; lng: number; title: string; street?: string; kind: 'pickup' | 'dropoff'; mk: MarkerStyles }) {
   const [track, setTrack] = useState(true);
   useEffect(() => {
     setTrack(true);
     const t = setTimeout(() => setTrack(false), 700);
     return () => clearTimeout(t);
-  }, [title]);
+  }, [title, street]);
+  const labelH = street ? LABEL_H2 : LABEL_H;
 
   return (
     <Marker
       coordinate={{ latitude: lat, longitude: lng }}
-      anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + LABEL_H) }}
+      anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + labelH) }}
       tracksViewChanges={track}
       zIndex={5}
     >
@@ -257,6 +338,7 @@ const PlaceMarker = React.memo(function PlaceMarker({
         )}
         <View style={mk.labelPill}>
           <Text style={mk.labelText} numberOfLines={1}>{title}</Text>
+          {!!street && <Text style={mk.labelSub} numberOfLines={1}>{street}</Text>}
         </View>
       </View>
     </Marker>
@@ -267,7 +349,6 @@ export default function LiveTrackingScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
-  const focused = useIsFocused();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
   const mk = useMemo(() => makeMarkerStyles(colors), [colors]);
@@ -286,65 +367,21 @@ export default function LiveTrackingScreen() {
   const [fix, setFix] = useState<ProviderFix | null>(null);
   const [tick, setTick] = useState(0);
   const { height: winH } = useWindowDimensions();
-  const sheetHeight = Math.round(winH * 0.44);          // visible height when collapsed
-  const expandedH = Math.round(winH * 0.9);             // full sheet height
-  const collapsedY = expandedH - sheetHeight;           // distance the sheet travels
+  const sheetHeight = Math.round(winH * 0.44);
+  const expandedH = Math.round(winH * 0.9);
+  const collapsedY = expandedH - sheetHeight;
 
-  const scrollRef = useRef<any>(null);
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const sheetY = useRef(new Animated.Value(collapsedY)).current;
+  const sheetRef = useRef<DraggableSheetHandle>(null);
   const [expanded, setExpanded] = useState(false);
-  const expandedRef = useRef(false);
-  const isAnimating = useRef(false); // Prevents the blink/spam
-  const [viewH, setViewH] = useState(expandedH);
   const [pay, setPay] = useState<PayInfo | null>(null);
   const [pkgPhoto, setPkgPhoto] = useState<string | null>(null);
+  const [openingChat, setOpeningChat] = useState(false);
 
-  const range = { inputRange: [0, collapsedY], extrapolate: 'clamp' as const };
-  const sheetTranslate = scrollY.interpolate({ ...range, outputRange: [collapsedY, 0] });
-  const contentShift = scrollY.interpolate({ ...range, outputRange: [0, collapsedY] });
-  const fabShift = scrollY.interpolate({ ...range, outputRange: [0, -collapsedY] });
-  const fabOpacity = scrollY.interpolate({ inputRange: [0, collapsedY * 0.35], outputRange: [1, 0], extrapolate: 'clamp' });
-
-  const snapSheet = useCallback((open: boolean) => {
-    isAnimating.current = true;
-    setExpanded(open);
-    expandedRef.current = open;
-    scrollRef.current?.scrollTo({ y: open ? collapsedY : 0, animated: true });
-    // Release the lock after the scroll animation finishes
-    setTimeout(() => { isAnimating.current = false; }, 400);
-  }, [collapsedY]);
-
-  const onSheetScroll = useMemo(() => Animated.event(
-    [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-    {
-      useNativeDriver: true,
-      listener: (e: any) => {
-        if (isAnimating.current) return; // Ignore state changes while snapping
-        const y = e.nativeEvent.contentOffset.y;
-        const open = y > collapsedY * 0.5;
-        if (open !== expandedRef.current) {
-          expandedRef.current = open;
-          setExpanded(open);
-        }
-      },
-    },
-  ), [scrollY, collapsedY]);
-
-  // If the finger lifts half-way, finish the move.
-  const settleSheet = useCallback((e: any) => {
-    if (isAnimating.current) return;
-    const y = e.nativeEvent.contentOffset.y;
-    if (y > 1 && y < collapsedY - 1) {
-      snapSheet(y > collapsedY / 2);
-    }
-  }, [collapsedY, snapSheet]);
-
-  const [follow, setFollow] = useState(false);
   const [photoView, setPhotoView] = useState<string | null>(null);
   const [stageBanner, setStageBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
   const lastStageRef = useRef<number>(-1);
-  const pulse = useRef(new Animated.Value(0)).current;
 
   const [navRoute, setNavRoute] = useState<{ r: NavRoute; idx: RouteIndex; tKey: string } | null>(null);
   const [fullRoute, setFullRoute] = useState<LatLng[]>([]);
@@ -356,6 +393,50 @@ export default function LiveTrackingScreen() {
   const routeFromMe = useRef(false);
   const lastFitKey = useRef('');
 
+  // Open (or create) the chat room for this delivery and jump straight to it in Messages.
+  const handleMessageProvider = useCallback(async () => {
+    if (openingChat) return;
+    if (isProviderMode || !data?.deliveryId) {
+      Alert.alert(
+        'Please wait',
+        'Chat becomes available as soon as the courier accepts your request.',
+      );
+      return;
+    }
+    try {
+      setOpeningChat(true);
+      const roomId = await getOrCreateChatRoom(data.deliveryId);
+      if (!roomId) {
+        Alert.alert('Error', 'Could not open chat.');
+        return;
+      }
+
+      // Prefer an existing Messages/Inbox route anywhere in the navigation tree.
+      let current: any = navigation;
+      while (current) {
+        try {
+          const names: string[] = current.getState?.()?.routeNames || [];
+          const match = names.find(n => /message|chat|inbox/i.test(n));
+          if (match) {
+            current.navigate(match, { openRoomId: roomId });
+            return;
+          }
+        } catch { /* ignore and keep walking up */ }
+        current = current.getParent?.();
+      }
+      // Fallback: route through the main tabs.
+      navigation.navigate('MainTabs', {
+        screen: 'Messages',
+        params: { openRoomId: roomId },
+      });
+    } catch (e) {
+      console.warn('[LiveTracking] open chat failed:', e);
+      Alert.alert('Error', 'Could not open chat.');
+    } finally {
+      setOpeningChat(false);
+    }
+  }, [data?.deliveryId, isProviderMode, openingChat, navigation]);
+
   const loadProviderStatic = useCallback(async () => {
     if (!providerParamId) return;
 
@@ -363,8 +444,8 @@ export default function LiveTrackingScreen() {
       .from('provider_routes')
       .select(`
         route_id, provider_id,
-        start_location:locations!provider_routes_start_location_id_fkey ( street_address, latitude, longitude ),
-        end_location:locations!provider_routes_end_location_id_fkey ( street_address, latitude, longitude ),
+        start_location:locations!provider_routes_start_location_id_fkey ( street_address, latitude, longitude, road, barangay, city, province, place_name ),
+        end_location:locations!provider_routes_end_location_id_fkey ( street_address, latitude, longitude, road, barangay, city, province, place_name ),
         vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, plate_number, max_weight_kg )
       `)
       .eq('provider_id', providerParamId);
@@ -390,12 +471,16 @@ export default function LiveTrackingScreen() {
       pickup: {
         latitude: Number(start?.latitude) || 10.3157,
         longitude: Number(start?.longitude) || 123.8854,
-        address: start?.street_address ?? 'Route start',
+        landmark: nameOf(start) ?? '',
+        street: streetOf(start, 'Route start'),
+        area: areaOf(start),
       },
       dropoff: {
         latitude: Number(end?.latitude) || 10.3157,
         longitude: Number(end?.longitude) || 123.8854,
-        address: end?.street_address ?? 'Destination',
+        landmark: nameOf(end) ?? '',
+        street: streetOf(end, 'Destination'),
+        area: areaOf(end),
       },
     });
     setVehicle((r as any).vehicle ?? null);
@@ -472,15 +557,15 @@ export default function LiveTrackingScreen() {
       pickup: {
         latitude: pickupLoc?.latitude ?? 10.3157,
         longitude: pickupLoc?.longitude ?? 123.8854,
-        address: pickupLoc?.street_address ?? 'Pickup',
-        name: pickupLoc?.place_name ?? null,
+        landmark: nameOf(pickupLoc) ?? '',
+        street: streetOf(pickupLoc, 'Pickup'),
         area: areaOf(pickupLoc),
       },
       dropoff: {
         latitude: dropoffLoc?.latitude ?? 10.3157,
         longitude: dropoffLoc?.longitude ?? 123.8854,
-        address: dropoffLoc?.street_address ?? 'Drop-off',
-        name: dropoffLoc?.place_name ?? null,
+        landmark: nameOf(dropoffLoc) ?? '',
+        street: streetOf(dropoffLoc, 'Drop-off'),
         area: areaOf(dropoffLoc),
       },
       providerOnWayAt: (d as any).provider_on_way_at ?? null,
@@ -656,22 +741,14 @@ export default function LiveTrackingScreen() {
   }, [data, fix, sheetHeight]);
 
   useEffect(() => {
-    if (!data || follow) return;
+    if (!data) return;
     const key = `${targetIsDropoff}-${sheetHeight}`;
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
     const t = setTimeout(() => fitAll(false), 150);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetIsDropoff, sheetHeight, data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, follow]);
-
-  useEffect(() => {
-    if (!follow || !fix) return;
-    mapRef.current?.animateCamera(
-      { center: { latitude: fix.latitude, longitude: fix.longitude }, zoom: 16 },
-      { duration: 900 },
-    );
-  }, [follow, fix?.latitude, fix?.longitude]);
+  }, [targetIsDropoff, sheetHeight, data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude]);
 
   const stage = timelineStage(data);
   useEffect(() => {
@@ -695,17 +772,6 @@ export default function LiveTrackingScreen() {
 
   const isStale = fix ? Date.now() - new Date(fix.updated_at).getTime() > STALE_MS : true;
   void tick;
-
-  useEffect(() => {
-    pulse.setValue(0);
-    if (isStale || !focused) return;
-    const loop = Animated.loop(Animated.sequence([
-      Animated.timing(pulse, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      Animated.timing(pulse, { toValue: 0, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-    ]));
-    loop.start();
-    return () => loop.stop();
-  }, [isStale, focused, pulse]);
 
   const callProvider = () => {
     if (provider?.phone_number) Linking.openURL(`tel:${provider.phone_number}`);
@@ -731,7 +797,6 @@ export default function LiveTrackingScreen() {
   }
 
   const etaLabel = data.completedAt ? 'Delivered' : durationS != null ? fmtDuration(durationS) : '—';
-  const pulseOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.35] });
   const hasEta = etaLabel !== '—' && !data.completedAt;
 
   const plate = vehicle?.plate_number || null;
@@ -745,8 +810,9 @@ export default function LiveTrackingScreen() {
       await Share.share({
         message:
           `Pack-N-Ship delivery${plate ? ` · provider ${plate}` : ''}\n` +
-          `From: ${data.pickup.address}\nTo: ${data.dropoff.address}\n` +
-          `Status: ${statusText}${hasEta ? ` · ETA ${etaLabel}` : ''}`,
+          `From: ${[pu.title, pu.sub].filter(Boolean).join(', ')}\nTo: ${[dr.title, dr.sub].filter(Boolean).join(', ')}\n` +
+          `Status: ${statusText}${hasEta ? ` · ETA ${etaLabel}` : ''}` +
+          (pay?.amount != null ? `\nTotal pay: ${fmtPeso(pay.amount)}` : ''),
       });
     } catch { /* user dismissed */ }
   };
@@ -773,8 +839,7 @@ export default function LiveTrackingScreen() {
           latitudeDelta: 0.05,
           longitudeDelta: 0.05,
         }}
-        onPress={() => { if (expanded) snapSheet(false); }}
-        onPanDrag={() => { if (follow) setFollow(false); }}
+        onPress={() => sheetRef.current?.close()}
         showsUserLocation={false}
         showsMyLocationButton={false}
         showsCompass={false}
@@ -793,6 +858,7 @@ export default function LiveTrackingScreen() {
           lat={data.pickup.latitude}
           lng={data.pickup.longitude}
           title={pu.title}
+          street={pu.sub}
           kind="pickup"
           mk={mk}
         />
@@ -800,6 +866,7 @@ export default function LiveTrackingScreen() {
           lat={data.dropoff.latitude}
           lng={data.dropoff.longitude}
           title={dr.title}
+          street={dr.sub}
           kind="dropoff"
           mk={mk}
         />
@@ -811,30 +878,7 @@ export default function LiveTrackingScreen() {
         <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.goBack()} activeOpacity={0.85}>
           <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
         </TouchableOpacity>
-        <View style={[styles.livePill, isStale && styles.livePillStale]}>
-          <Animated.View style={[styles.liveDot, { backgroundColor: isStale ? colors.warning : colors.success, opacity: isStale ? 1 : pulseOpacity }]} />
-          <Text style={styles.liveText}>{isStale ? 'Stale' : 'Live'}</Text>
-        </View>
       </View>
-
-      <Animated.View
-        pointerEvents={expanded ? 'none' : 'box-none'}
-        style={[styles.fabCol, { bottom: sheetHeight + 12, opacity: fabOpacity, transform: [{ translateY: fabShift }] }]}
-      >
-        <View style={{ gap: 10 }}>
-          <TouchableOpacity
-            style={[styles.fab, follow && styles.fabOn]}
-            onPress={() => setFollow(f => !f)}
-            disabled={!fix}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="Routing" variant="bold" size={20} color={follow ? '#FFFFFF' : colors.accent} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.fab} onPress={() => { setFollow(false); fitAll(true); }} activeOpacity={0.85}>
-            <SolarIcon name="Maximize" variant="linear" size={20} color={colors.accent} />
-          </TouchableOpacity>
-        </View>
-      </Animated.View>
 
       {stageBanner && (
         <Animated.View
@@ -852,31 +896,18 @@ export default function LiveTrackingScreen() {
         </Animated.View>
       )}
 
-      <Animated.View
-        style={[styles.sheet, { height: expandedH, paddingBottom: insets.bottom + 12, transform: [{ translateY: sheetTranslate }] }]}
-      >
-        <TouchableOpacity activeOpacity={0.8} onPress={() => snapSheet(!expandedRef.current)} style={styles.grabberWrap} hitSlop={{ top: 8, bottom: 8 }}>
-          <View style={styles.grabber} />
-        </TouchableOpacity>
-
-        <Animated.ScrollView
-          ref={scrollRef}
-          style={styles.sheetScroll}
-          showsVerticalScrollIndicator={false}
-          bounces={false}
-          overScrollMode="never"
-          nestedScrollEnabled
-          scrollEventThrottle={16}
-          onScroll={onSheetScroll}
-          onScrollEndDrag={(e) => {
-            // If there is no momentum, settle immediately
-            if (Math.abs((e.nativeEvent as any).velocity?.y ?? 0) < 0.1) settleSheet(e);
-          }}
-          onMomentumScrollEnd={settleSheet}
-          onLayout={(e) => setViewH(e.nativeEvent.layout.height)}
-          contentContainerStyle={[styles.sheetContent, { minHeight: viewH + collapsedY }]}
-        >
-          <Animated.View style={{ transform: [{ translateY: contentShift }] }}>
+      <DraggableSheet
+        ref={sheetRef}
+        y={sheetY}
+        collapsedY={collapsedY}
+        height={expandedH}
+        contentPaddingBottom={insets.bottom + 24}
+        style={styles.sheet}
+        handleHitAreaStyle={styles.grabberWrap}
+        handleStyle={styles.grabber}
+        onOpenChange={setExpanded}
+        header={(
+          <View style={styles.sheetHeader}>
           {data.completedAt ? (
             <Text style={styles.headline}>
               Delivered! <Text style={styles.headlineAccent}>Your package has arrived</Text>
@@ -896,6 +927,10 @@ export default function LiveTrackingScreen() {
             </Text>
           )}
 
+          </View>
+        )}
+      >
+          {/* Provider card */}
           <View style={styles.card}>
             <View style={styles.cardTop}>
               <View style={styles.profileRow}>
@@ -906,6 +941,7 @@ export default function LiveTrackingScreen() {
                     <Text style={styles.avatarText}>{initials}</Text>
                   )}
                 </View>
+                <Image source={VEHICLE_IMG} style={styles.vehicleImg} resizeMode="contain" />
               </View>
 
               <View style={styles.rightBlock}>
@@ -923,9 +959,20 @@ export default function LiveTrackingScreen() {
             <Text style={styles.driverName} numberOfLines={1}>{providerName}</Text>
 
             <View style={styles.actionRow}>
-              <TouchableOpacity style={styles.messageBtn} activeOpacity={0.7}>
-                <Ionicons name="chatbubble-outline" size={18} color={colors.textMuted} />
-                <Text style={styles.messageText} numberOfLines={1}>Message the provider</Text>
+              <TouchableOpacity
+                style={styles.messageBtn}
+                onPress={handleMessageProvider}
+                disabled={openingChat}
+                activeOpacity={0.7}
+              >
+                {openingChat ? (
+                  <ActivityIndicator size="small" color={colors.accent} />
+                ) : (
+                  <Ionicons name="chatbubble-outline" size={18} color={colors.textMuted} />
+                )}
+                <Text style={styles.messageText} numberOfLines={1}>
+                  {openingChat ? 'Opening chat…' : 'Message the provider'}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={styles.iconBtn} onPress={callProvider} disabled={!provider?.phone_number} activeOpacity={0.7}>
@@ -942,12 +989,39 @@ export default function LiveTrackingScreen() {
                 <Text style={styles.shareBtn}>Share</Text>
               </TouchableOpacity>
             </View>
+
+            {!!pay && (
+              <>
+                <View style={styles.cardDivider} />
+                <View style={styles.payRow}>
+                  <View style={styles.payIcon}>
+                    <Ionicons name="cash-outline" size={22} color={colors.textPrimary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.payTitle}>Total pay</Text>
+                    {!!pay.method && <Text style={styles.paySub}>{pay.method}</Text>}
+                  </View>
+                  {pay.amount != null && <Text style={styles.payAmount}>{fmtPeso(pay.amount)}</Text>}
+                </View>
+              </>
+            )}
           </View>
 
+          {/* Details — revealed by scrolling the sheet up */}
             <>
               <View style={styles.card}>
                 {!isProviderMode && data.deliveryId > 0 && kv('Pack-N-Ship ID', `#${data.deliveryId}`)}
                 {!!data.acceptedAt && kv('Accepted', fmtDateTime(data.acceptedAt))}
+
+                {!!pay && pay.amount != null && (
+                  <>
+                    <View style={styles.cardDivider} />
+                    {pay.base != null && kv('Courier payout', fmtPeso(pay.base))}
+                    {pay.fee != null && kv('Platform fee (15%)', fmtPeso(pay.fee))}
+                    {pay.deposit != null && kv('Return deposit (refundable)', fmtPeso(pay.deposit))}
+                    {!!pay.method && kv('Paid via', pay.method)}
+                  </>
+                )}
 
                 <View style={styles.tlRow}>
                   <View style={styles.tlRail}>
@@ -975,23 +1049,6 @@ export default function LiveTrackingScreen() {
                   </View>
                   {data.completedAt && <SolarIcon name="CheckCircle" variant="duotone" size={18} color={colors.success} />}
                 </View>
-
-                {!!pay && (
-                  <>
-                    <View style={styles.cardDivider} />
-                    <View style={styles.payRow}>
-                      <View style={styles.payIcon}>
-                        <Ionicons name="cash-outline" size={22} color={colors.textPrimary} />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.payTitle}>Total pay</Text>
-                        {!!pay.method && <Text style={styles.paySub}>{pay.method}</Text>}
-                      </View>
-                      {pay.amount != null && <Text style={styles.payAmount}>{fmtPeso(pay.amount)}</Text>}
-                    </View>
-                  </>
-                )}
-
               </View>
 
               {pkgTotal > 0 && (
@@ -1028,9 +1085,7 @@ export default function LiveTrackingScreen() {
                 </View>
               )}
             </>
-          </Animated.View>
-        </Animated.ScrollView>
-      </Animated.View>
+      </DraggableSheet>
 
       <Modal visible={!!photoView} transparent animationType="fade" onRequestClose={() => setPhotoView(null)}>
         <Pressable style={styles.viewerOverlay} onPress={() => setPhotoView(null)}>
@@ -1057,11 +1112,12 @@ const makeMarkerStyles = (c: ThemeColors) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
   },
   labelPill: {
-    maxWidth: 200, height: LABEL_H, justifyContent: 'center', marginTop: LABEL_GAP,
-    backgroundColor: '#FFFFFF', borderRadius: LABEL_H / 2, paddingHorizontal: 12,
+    maxWidth: 210, minHeight: LABEL_H, justifyContent: 'center', marginTop: LABEL_GAP, paddingVertical: 3,
+    backgroundColor: '#FFFFFF', borderRadius: 14, paddingHorizontal: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 5,
   },
   labelText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
+  labelSub: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: '#6B7280', marginTop: -1 },
 });
 
 const makeStyles = (c: ThemeColors, isDark: boolean) => {
@@ -1083,24 +1139,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
       shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
       shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
     },
-    livePill: {
-      flexDirection: 'row', alignItems: 'center', gap: 6,
-      backgroundColor: c.card, borderWidth: 1, borderColor: hair,
-      paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20,
-    },
-    livePillStale: { borderColor: c.warning },
-    liveDot: { width: 8, height: 8, borderRadius: 4 },
-    liveText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: 0.4 },
-
-    fabCol: { position: 'absolute', left: 16, zIndex: 15 },
-    fab: {
-      width: 46, height: 46, borderRadius: 14, backgroundColor: c.card,
-      alignItems: 'center', justifyContent: 'center',
-      shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-      shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
-      borderWidth: 1, borderColor: hair,
-    },
-    fabOn: { backgroundColor: c.accent, borderColor: c.accent },
 
     banner: {
       position: 'absolute', left: 16, right: 16,
@@ -1118,9 +1156,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
       shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
       shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
     },
-    sheetScroll: { flex: 1 },
-    sheetContent: { paddingBottom: 0 },
-    grabberWrap: { alignItems: 'center', paddingVertical: 12 },
+    sheetHeader: { paddingBottom: 4 },
+    grabberWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
     grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
 
     headline: {
@@ -1141,6 +1178,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
       width: 56, height: 56, borderRadius: 28, backgroundColor: c.success,
       alignItems: 'center', justifyContent: 'center', overflow: 'hidden', marginRight: 4,
     },
+    vehicleImg: { width: 92, height: 54, marginLeft: -8 },
     avatarImg: { width: '100%', height: '100%' },
     avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 18 },
     rightBlock: { alignItems: 'flex-end', flex: 1 },

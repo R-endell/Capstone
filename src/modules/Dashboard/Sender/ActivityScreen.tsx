@@ -26,6 +26,7 @@ const SEARCH_ICON = require('../../../../assets/empty-state-magnifying-glass-ico
 
 const BLUE = '#3B82F6';
 const PURPLE = '#8B5CF6';
+const BRAND_ORANGE = '#F27024';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
@@ -278,8 +279,6 @@ interface DeliveryRequest {
   refund_status?: string | null;
   preferred_provider_id?: number | null;
   preferred_route_id?: number | null;
-  fallback_recipient_name?: string | null;
-  fallback_action?: string | null;
   cargo_profiles: any;
   pickup_location: any;
   dropoff_location: any;
@@ -382,6 +381,44 @@ interface MappedDelivery {
 /* ==================================================================== */
 /* ActivityScreen                                                       */
 /* ==================================================================== */
+// ---------------------------------------------------------------------------------------------
+// Readable place text for the pickup / drop-off lines on each card.
+//   top line    = the landmark / place name the sender picked (or the first readable part of the address)
+//   bottom line = the street name (+ barangay), never "Unknown" and never a Google Plus Code
+// ---------------------------------------------------------------------------------------------
+// Plus Codes ("8Q7X+V4", "J9X5+2V Mandaue City") and other random-looking codes are not place names.
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (t: string) => {
+  const x = (t ?? '').trim();
+  if (!x) return true;
+  if (/^unknown$/i.test(x)) return true;
+  if (PLUS_CODE.test(x)) return true;
+  // one "word" mixing letters and digits (ids, hashes); real names have spaces or are plain words
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+const readableParts = (a?: string | null): string[] =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p));
+
+const describePlace = (l: any): { main: string; sub: string; road: string } => {
+  const parts = readableParts(l?.street_address);
+  const name = typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : '';
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = typeof l?.barangay === 'string' && !isCodeLike(l.barangay) ? l.barangay.trim() : '';
+
+  // a bare city / province in the address is not a landmark or a street
+  const localities = [l?.city, l?.province, l?.barangay]
+    .filter((v: any) => typeof v === 'string').map((v: string) => v.trim().toLowerCase());
+  const placeParts = parts.filter(p => !localities.includes(p.toLowerCase()));
+
+  const main = name || placeParts[0] || road || brgy || parts[0] || 'Selected location';
+  // street name: the road column, else the first other readable part of the address
+  const street = road || placeParts.find(p => p !== main) || '';
+  const bottom = [street && street !== main ? street : '', brgy && brgy !== main ? brgy : '']
+    .filter(Boolean).join(', ');
+  return { main, sub: parts.slice(1).join(', '), road: bottom };
+};
+
 export default function ActivityScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -391,13 +428,6 @@ export default function ActivityScreen() {
   const { dispatch: scheduleDispatch } = useSchedule();
 
   const hasLoadedRef = useRef(false);
-
-  // Direct requests (sender picked a courier on Explore) whose courier declined while still open.
-  const [declinedNotices, setDeclinedNotices] = useState<{ requestId: number; providerName: string; at: number }[]>([]);
-  const directStoreRef = useRef<{
-    picks: Record<string, string>;
-    declined: { requestId: number; providerName: string; at: number }[];
-  } | null>(null);
   // Guards against out-of-order responses when realtime fires several refreshes back-to-back.
   const fetchSeqRef = useRef(0);
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
@@ -599,66 +629,6 @@ export default function ActivityScreen() {
     } catch { return null; }
   };
 
-  const directStoreKey = (uid: number) => `packnship.activity.directPicks.${uid}`;
-
-  /**
-   * Remembers which open requests are waiting on a chosen courier. When one of them loses its chosen
-   * courier but is still Pending (the courier declined), the sender gets a notice on this screen.
-   * Persisted so the notice is still there if the app was closed when the courier declined.
-   */
-  const trackDirectProviderDeclines = async (uid: number, items: MappedDelivery[]) => {
-    try {
-      let store = directStoreRef.current;
-      if (!store) {
-        const raw = await AsyncStorage.getItem(directStoreKey(uid));
-        const parsed = raw ? JSON.parse(raw) : {};
-        store = { picks: parsed?.picks || {}, declined: Array.isArray(parsed?.declined) ? parsed.declined : [] };
-      }
-      const isOpen = (it: MappedDelivery) => !it.isMatched && String(it.rawData?.delivery_status) === 'Pending';
-      const byId = new Map(items.map(i => [i.request_id, i]));
-      const picks: Record<string, string> = { ...store.picks };
-      let declined = [...store.declined];
-
-      for (const [idStr, name] of Object.entries(picks)) {
-        const id = Number(idStr);
-        const it = byId.get(id);
-        if (!it || !isOpen(it)) { delete picks[idStr]; continue; } // gone, accepted, cancelled...
-        if (it.hasPreferredProvider) continue;                      // still waiting on the chosen courier
-        delete picks[idStr];                                        // chosen courier was released -> declined
-        if (!declined.some(d => d.requestId === id)) {
-          declined.push({ requestId: id, providerName: name || 'Your selected courier', at: Date.now() });
-        }
-      }
-
-      for (const it of items) {
-        if (it.hasPreferredProvider && isOpen(it)) {
-          picks[String(it.request_id)] = it.provider_name || 'Your selected courier';
-        }
-      }
-
-      // A notice only applies while the request is still open with no chosen courier.
-      declined = declined.filter(d => {
-        const it = byId.get(d.requestId);
-        return !!it && isOpen(it) && !it.hasPreferredProvider;
-      });
-
-      store = { picks, declined };
-      directStoreRef.current = store;
-      setDeclinedNotices(declined);
-      await AsyncStorage.setItem(directStoreKey(uid), JSON.stringify(store));
-    } catch {
-      // Tracking is best-effort; never block the list.
-    }
-  };
-
-  const dismissDeclinedNotice = async (requestId: number) => {
-    setDeclinedNotices(prev => prev.filter(n => n.requestId !== requestId));
-    const store = directStoreRef.current;
-    if (!store || !userId) return;
-    store.declined = store.declined.filter(n => n.requestId !== requestId);
-    try { await AsyncStorage.setItem(directStoreKey(userId), JSON.stringify(store)); } catch {}
-  };
-
   const fetchData = async () => {
     const seq = ++fetchSeqRef.current;
     try {
@@ -746,16 +716,10 @@ export default function ActivityScreen() {
         const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
         const delivery = deliveriesData.find((d: any) => d.request_id === item.request_id);
 
-        const parseAddr = (full: string) => {
-          if (!full) return { main: 'Selected location', sub: '' };
-          const parts = full.split(', ');
-          return { main: parts[0], sub: parts.slice(1).join(', ') };
-        };
-
-        const pickup = parseAddr(item.pickup_location?.street_address);
-        const dropoff = parseAddr(item.dropoff_location?.street_address);
-        const pickupRoad = [item.pickup_location?.road, item.pickup_location?.barangay].filter(Boolean).join(', ') || pickup.sub;
-        const dropoffRoad = [item.dropoff_location?.road, item.dropoff_location?.barangay].filter(Boolean).join(', ') || dropoff.sub;
+        const pickup = describePlace(item.pickup_location);
+        const dropoff = describePlace(item.dropoff_location);
+        const pickupRoad = pickup.road;
+        const dropoffRoad = dropoff.road;
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
         const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
@@ -910,10 +874,7 @@ export default function ActivityScreen() {
       });
 
       // Ignore stale responses so an older fetch can never overwrite newer realtime data.
-      if (seq === fetchSeqRef.current) {
-        await trackDirectProviderDeclines(currentUserId, mappedDeliveries);
-        if (seq === fetchSeqRef.current) setDeliveries(mappedDeliveries);
-      }
+      if (seq === fetchSeqRef.current) setDeliveries(mappedDeliveries);
     } catch {
       // Keep showing the last good data on a transient realtime refetch failure.
       if (!hasLoadedRef.current) setDeliveries([]);
@@ -1589,14 +1550,20 @@ export default function ActivityScreen() {
   const renderRoute = (item: MappedDelivery, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, color: colors.accent, note: item.pickup_note },
-        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, color: colors.textPrimary, note: item.dropoff_note },
+        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, note: item.pickup_note, kind: 'pickup' as const },
+        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, note: item.dropoff_note, kind: 'dropoff' as const },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
-            <View style={[styles.rtRing, { borderColor: r.color }]}>
-              <View style={[styles.rtRingDot, { backgroundColor: r.color }]} />
-            </View>
+            {r.kind === 'pickup' ? (
+              <View style={styles.rtPickPin}>
+                <Ionicons name="cube" size={14} color="#FFFFFF" />
+              </View>
+            ) : (
+              <View style={styles.rtDropPin}>
+                <Ionicons name="person" size={16} color="#000000" />
+              </View>
+            )}
             {i === 0 && (
               <View style={styles.rtDots}>
                 {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
@@ -1939,34 +1906,6 @@ export default function ActivityScreen() {
         }
       >
         <Animated.View style={{ opacity: contentAnim }}>
-          {declinedNotices.map(n => {
-            const target = deliveries.find(d => d.request_id === n.requestId);
-            return (
-              <View key={`declined-${n.requestId}`} style={styles.declinedBanner}>
-                <View style={styles.declinedBannerTop}>
-                  <SolarIcon name="CloseCircle" variant="duotone" size={22} color={colors.error} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.declinedTitle}>Courier declined your request</Text>
-                    <Text style={styles.declinedSub}>
-                      {n.providerName} can't take #{trackingCode(n.requestId)}. We're finding another courier for you.
-                    </Text>
-                  </View>
-                  <TouchableOpacity onPress={() => dismissDeclinedNotice(n.requestId)} hitSlop={10} activeOpacity={0.7}>
-                    <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                </View>
-                {target && (
-                  <TouchableOpacity
-                    style={styles.declinedBtn}
-                    onPress={() => { void dismissDeclinedNotice(n.requestId); handleResumeFindingProvider(target); }}
-                    activeOpacity={0.9}
-                  >
-                    <Text style={styles.declinedBtnText}>Find Courier</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            );
-          })}
           {filteredDeliveries.length === 0 ? (
             <View style={styles.emptyContainer}>
               {deliveries.length === 0 ? (
@@ -3201,18 +3140,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   tabCountText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   tabCountTextActive: { color: c.accent },
 
-  declinedBanner: {
-    backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error, borderRadius: 16,
-    padding: 14, marginBottom: 14,
-  },
-  declinedBannerTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  declinedTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.error },
-  declinedSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
-  declinedBtn: {
-    marginTop: 12, alignItems: 'center', justifyContent: 'center', paddingVertical: 11,
-    borderRadius: 12, backgroundColor: c.accent,
-  },
-  declinedBtnText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 80 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
@@ -3227,9 +3154,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
 
   rtRow: { flexDirection: 'row', gap: 14 },
-  rtRail: { alignItems: 'center', width: 26 },
-  rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
-  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtRail: { alignItems: 'center', width: 32 },
+  rtPickPin: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: BRAND_ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25, shadowRadius: 4, elevation: 4,
+  },
+  rtDropPin: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2, shadowRadius: 3, elevation: 3,
+  },
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
@@ -3464,7 +3404,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   hpCaption: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 12 },
   hpPhotoWrap: { width: '100%', aspectRatio: 4 / 3, borderRadius: 14, overflow: 'hidden', backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   hpPhoto: { width: '100%', height: '100%' },
-  hpPhotoLoading: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
+  hpPhotoLoading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
   hpPhotoBadge: { position: 'absolute', right: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14 },
   hpPhotoBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
   hpMetaBox: { marginTop: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 14 },

@@ -16,11 +16,12 @@ import { supabase } from '../../../../utils/supabase';
 import { getRoadDistanceKm, quickEstimateKm, computePricing, PricingBreakdown, parseNaiveRouteTime } from '../../../../services/routeService';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import DraggableSheet, { DraggableSheetHandle } from '../../../../components/ui/DraggableSheet';
 import { notifyUser } from '../../../../services/pushService';
 import {
   syncAllActiveRoutesTodayForRequest,
-  isRouteTimeValidForRequest,
-  getRouteTodayDepartureDate,
+  enrichRouteMatchRows,
+  RouteMatchRow,
 } from '../../../../services/matchingService';
 
 const { height } = Dimensions.get('window');
@@ -29,7 +30,7 @@ const ORANGE = '#F27024';
 const SEND_NOW_WINDOW_MINUTES = 5;
 const MANILA_OFFSET_HOURS = 8;
 
-// How long we search before offering "Try Again" / "Go Home". Change this one number to adjust.
+// How long we search before offering "Try Again" / "Go Home" when 0 routes match.
 const SEARCH_DURATION_MS = 10000; // 10 seconds
 
 const ANIMATION_STYLES = [
@@ -110,52 +111,17 @@ const formatDepartureTime = (isoString: string | null | undefined, routeFreq?: s
   }
 };
 
-interface MatchedProviderOption {
-  providerId: number;
-  routeId: number;
-  name: string;
-  vehicleType: string;
-  plateNumber: string;
-  departureTime: string | null;
-  routeFrequency: string | null;
-  matchScore: number | null;
-  ratingAvg: number;
-  ratingCount: number;
-}
-
 interface ProviderRating {
   avg: number;
   count: number;
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
 
-const fireDirectDeclinedNotification = async (providerName: string, requestId: number) => {
-  try {
-    const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: 'Courier declined your request',
-        body: `${providerName} can't take delivery #${trackingId}. We're finding another courier for you.`,
-        data: { type: 'direct_request_declined', requestId },
-        sound: 'default',
-        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-        seconds: 1,
-        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
-      },
-    });
-  } catch (err) {
-    console.warn('[BookingScreen] local declined notif failed:', err);
-  }
-};
-
 const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: '🎉 Provider Matched!',
+        title: '🎉 Provider Accepted!',
         body: `${providerName} accepted your delivery. Vehicle: ${plate}`,
         data: { type: 'match', deliveryId },
         sound: 'default',
@@ -172,15 +138,29 @@ const fireMatchNotification = async (providerName: string, plate: string, delive
   }
 };
 
-const fireDirectRequestNotification = async (providerName: string, requestId: number, isAutoRouteMatch = false) => {
+const fireDirectRequestNotification = async (
+  providerName: string,
+  requestId: number,
+  matchedCount = 1,
+  isAutoRouteMatch = false,
+) => {
   const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
   try {
+    const title = isAutoRouteMatch
+      ? matchedCount > 1
+        ? `🎯 ${matchedCount} Route Providers Matched!`
+        : '🎯 Route Provider Matched!'
+      : '📨 Request Sent to Provider!';
+    const body = isAutoRouteMatch
+      ? matchedCount > 1
+        ? `Delivery #${trackingId} matched with ${matchedCount} providers along your route. Waiting for one to accept.`
+        : `Delivery #${trackingId} matched with ${providerName}'s route today and is awaiting acceptance.`
+      : `Your delivery #${trackingId} has been sent directly to ${providerName}.`;
+
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: isAutoRouteMatch ? '🎯 Route Provider Matched!' : '📨 Request Sent to Provider!',
-        body: isAutoRouteMatch
-          ? `Delivery #${trackingId} matched with ${providerName}'s route today and is awaiting acceptance.`
-          : `Your delivery #${trackingId} has been sent directly to ${providerName}.`,
+        title,
+        body,
         data: { type: 'direct_request', requestId },
         sound: 'default',
         ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
@@ -286,16 +266,13 @@ export default function BookingScreen({ route, navigation }: any) {
   const [isAcceptedByProvider, setIsAcceptedByProvider] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [providerData, setProviderData] = useState<any>(null);
+  const [matchedProvidersList, setMatchedProvidersList] = useState<RouteMatchRow[]>([]);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
 
   const [departureTime, setDepartureTime] = useState<string | null>(null);
   const [routeFrequency, setRouteFrequency] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
-
-  // Providers whose routes match this request. NONE of them is assigned automatically:
-  // the sender waits here until one of them accepts (which creates a `deliveries` row).
-  const [matchedProviders, setMatchedProviders] = useState<MatchedProviderOption[]>([]);
 
   const resumeRequestId: number | undefined = route.params?.requestId ?? route.params?.request_id;
   const isResume = !!route.params?.resume && !!resumeRequestId;
@@ -318,6 +295,10 @@ export default function BookingScreen({ route, navigation }: any) {
   const radarAnim3 = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const sheetAnim = useRef(new Animated.Value(0)).current;
+  const sheetY = useRef(new Animated.Value(0)).current;
+  const sheetRef = useRef<DraggableSheetHandle>(null);
+  const [footerH, setFooterH] = useState(150);
+  const [sheetContentH, setSheetContentH] = useState(0);
 
   const isResumedSession = useRef(false);
   const matchChannelRef = useRef<any>(null);
@@ -341,17 +322,7 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
 
-  // "Waiting" = matched providers are listed, but nobody has accepted yet and it is not a direct request.
-  const isWaitingForProviders =
-    bookingState === 'matched' && matchFound && !isAcceptedByProvider && !isDirectPreferredProvider;
-  const waitingRef = useRef(false);
-  waitingRef.current = isWaitingForProviders;
-  const bookingStateRef = useRef(bookingState);
-  const declineHandledRef = useRef<number | null>(null);
-  bookingStateRef.current = bookingState;
-
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
-  // --- PHASE 1: Pre-Authorization & Escrow Math ---
   const [fallbackAction, setFallbackAction] = useState<'return_to_sender' | 'leave_with_guard'>(
     state.fallbackAction || 'return_to_sender'
   );
@@ -513,6 +484,8 @@ export default function BookingScreen({ route, navigation }: any) {
     }).start();
   }, [bookingState, sheetAnim]);
 
+  useEffect(() => { sheetRef.current?.close(); }, [bookingState]);
+
   useEffect(() => {
     return () => {
       if (matchChannelRef.current) {
@@ -536,16 +509,6 @@ export default function BookingScreen({ route, navigation }: any) {
     });
     return unsub;
   }, [navigation]);
-
-  // During the first search window the user can't leave by swipe or the Android back button.
-  // ("Cancel Search" still works, and the lock lifts when the window ends.)
-  useEffect(() => {
-    const locked = bookingState === 'finding' && !longSearch;
-    navigation.setOptions({ gestureEnabled: !locked });
-    if (!locked) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
-    return () => sub.remove();
-  }, [bookingState, longSearch, navigation]);
 
   useEffect(() => {
     const locked = bookingState === 'finding' && !longSearch;
@@ -713,218 +676,103 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   /**
-   * Turns `route_request_matches` rows into display cards (name, vehicle, departure, rating).
-   * Pure read - nothing is assigned to the request here.
+   * Subscribes to realtime `deliveries` INSERT (when any matched provider accepts the request)
+   * and `route_request_matches` INSERT/UPDATE (if a new matching route appears while waiting).
    */
-  const buildMatchedProviderOptions = async (matches: any[]): Promise<MatchedProviderOption[]> => {
-    if (!matches || matches.length === 0) return [];
-    const providerIds = Array.from(new Set(matches.map((m: any) => Number(m.provider_id))));
-    const routeIds = Array.from(new Set(matches.map((m: any) => Number(m.route_id))));
-
-    const [usersRes, routesRes, ratingsRes] = await Promise.all([
-      supabase.from('users').select('user_id, first_name, last_name').in('user_id', providerIds),
-      supabase
-        .from('provider_routes')
-        .select('route_id, departure_time, route_frequency, vehicle:vehicles!provider_routes_vehicle_id_fkey(vehicle_type, plate_number)')
-        .in('route_id', routeIds),
-      supabase.from('ratings_reviews').select('reviewee_id, rating').in('reviewee_id', providerIds),
-    ]);
-
-    const userMap = new Map<number, any>();
-    (usersRes.data || []).forEach((u: any) => userMap.set(Number(u.user_id), u));
-
-    const routeMap = new Map<number, any>();
-    (routesRes.data || []).forEach((r: any) => routeMap.set(Number(r.route_id), r));
-
-    const ratingAgg = new Map<number, { sum: number; count: number }>();
-    (ratingsRes.data || []).forEach((r: any) => {
-      const id = Number(r.reviewee_id);
-      const cur = ratingAgg.get(id) || { sum: 0, count: 0 };
-      cur.sum += Number(r.rating || 0);
-      cur.count += 1;
-      ratingAgg.set(id, cur);
-    });
-
-    const seen = new Set<number>();
-    const options: MatchedProviderOption[] = [];
-    for (const m of matches) {
-      const providerId = Number(m.provider_id);
-      if (seen.has(providerId)) continue; // one card per provider
-      seen.add(providerId);
-
-      const u = userMap.get(providerId);
-      const r = routeMap.get(Number(m.route_id));
-      const vehicle = r ? (Array.isArray(r.vehicle) ? r.vehicle[0] : r.vehicle) : null;
-      const agg = ratingAgg.get(providerId);
-
-      options.push({
-        providerId,
-        routeId: Number(m.route_id),
-        name: u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'Courier' : 'Courier',
-        vehicleType: vehicle?.vehicle_type || 'Courier Vehicle',
-        plateNumber: vehicle?.plate_number || '—',
-        departureTime: r?.departure_time ?? null,
-        routeFrequency: r?.route_frequency ?? null,
-        matchScore: m.match_score != null ? Number(m.match_score) : null,
-        ratingAvg: agg && agg.count > 0 ? Number((agg.sum / agg.count).toFixed(1)) : 0,
-        ratingCount: agg?.count ?? 0,
-      });
-    }
-    return options;
-  };
-
-  /**
-   * Shows every matched provider on the Booking screen and waits.
-   * Deliberately does NOT write preferred_provider_id / preferred_route_id, so the request stays
-   * open to all matched routes and the first provider to accept it wins.
-   */
-  const showMatchedProviders = async (matches: any[]) => {
-    const options = await buildMatchedProviderOptions(matches);
-    if (options.length === 0) return;
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
-    }
-    setMatchedProviders(options);
-    setProviderData(null);
-    setDepartureTime(null);
-    setRouteFrequency(null);
-    setProviderRating(null);
-    setIsDirectPreferredProvider(false);
-    setIsAcceptedByProvider(false);
-    setMatchFound(true);
-    setIsSearching(false);
-    setBookingState('matched');
-  };
-
-  /** Re-reads the live matches for a request (called on realtime changes to route_request_matches). */
-  const refreshMatchedProviders = async (requestId: number) => {
-    const state_ = bookingStateRef.current;
-    // Once a provider accepted, or the sender cancelled / is still reviewing, the list no longer matters.
-    if (state_ === 'review') return;
-    if (state_ === 'matched' && !waitingRef.current) return;
-
-    const { data: rows } = await supabase
-      .from('route_request_matches')
-      .select('match_id, route_id, provider_id, match_score, status')
-      .eq('request_id', requestId)
-      .eq('status', 'matched')
-      .order('match_score', { ascending: false });
-
-    if (!rows || rows.length === 0) {
-      setMatchedProviders([]);
-      if (waitingRef.current) {
-        // Every matched provider dropped out - go back to background-notification mode.
-        setMatchFound(false);
-        setBookingState('no_match');
-      }
-      return;
-    }
-    await showMatchedProviders(rows);
-  };
-
-  /** A provider accepted: a `deliveries` row now exists for this request. */
-  const handleProviderAccepted = async (delivery: any) => {
-    const [{ data: provider }, { data: vehicle }] = await Promise.all([
-      supabase.from('users').select('first_name, last_name, phone_number').eq('user_id', delivery.provider_id).single(),
-      supabase.from('vehicles').select('vehicle_type, plate_number, max_weight_kg').eq('vehicle_id', delivery.vehicle_id).single(),
-    ]);
-
-    if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
-    if (delivery.provider_id) loadProviderRating(delivery.provider_id);
-    await loadProviderDeparture(delivery.route_id, delivery.provider_id);
-
-    fireMatchNotification(
-      provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
-      vehicle?.plate_number || '—',
-      delivery.delivery_id,
-    );
-
-    setMatchedProviders([]);
-    setIsDirectPreferredProvider(false);
-    setIsAcceptedByProvider(true);
-    setMatchFound(true);
-    setIsSearching(false);
-    setBookingState('matched');
-
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-      searchTimeoutRef.current = null;
-    }
-    if (matchChannelRef.current) {
-      supabase.removeChannel(matchChannelRef.current);
-      matchChannelRef.current = null;
-    }
-  };
-
-  /** One realtime channel per request: provider acceptance + changes to the matched-provider list. */
-  const attachRequestListener = (requestId: number) => {
-    supabase
-      .getChannels()
-      .filter((c: any) => c.topic === `realtime:match-listener-${requestId}`)
-      .forEach((c: any) => supabase.removeChannel(c));
+  const attachAcceptanceAndMatchListener = (requestId: number, stopTimerOnMatch = false) => {
     if (matchChannelRef.current) {
       supabase.removeChannel(matchChannelRef.current);
       matchChannelRef.current = null;
     }
 
-    const channel = supabase
-      .channel(`match-listener-${requestId}`)
+    const matchChannel = supabase
+      .channel(`match-listener-${requestId}-${Date.now()}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
-        async (payload) => { await handleProviderAccepted(payload.new); }
+        async (payload) => {
+          const delivery = payload.new;
+
+          const { data: provider } = await supabase
+            .from('users')
+            .select('first_name, last_name, phone_number')
+            .eq('user_id', delivery.provider_id)
+            .single();
+          const { data: vehicle } = await supabase
+            .from('vehicles')
+            .select('vehicle_type, plate_number, max_weight_kg')
+            .eq('vehicle_id', delivery.vehicle_id)
+            .single();
+
+          if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
+          if (delivery.provider_id) loadProviderRating(delivery.provider_id);
+
+          await loadProviderDeparture(delivery.route_id, delivery.provider_id);
+
+          fireMatchNotification(
+            provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
+            vehicle?.plate_number || '—',
+            delivery.delivery_id,
+          );
+
+          setIsDirectPreferredProvider(false);
+          setIsAcceptedByProvider(true);
+          setMatchFound(true);
+          setBookingState('matched');
+          setIsSearching(false);
+
+          if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+            searchTimeoutRef.current = null;
+          }
+          supabase.removeChannel(matchChannel);
+          matchChannelRef.current = null;
+        },
       )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'route_request_matches', filter: `request_id=eq.${requestId}` },
-        async () => { await refreshMatchedProviders(requestId); }
+        async () => {
+          // Refresh the full list of matching providers for this request
+          const { data: rows } = await supabase
+            .from('route_request_matches')
+            .select('*, route:provider_routes(*)')
+            .eq('request_id', requestId)
+            .eq('status', 'matched')
+            .order('match_score', { ascending: false });
+
+          if (rows && rows.length > 0) {
+            const enriched = await enrichRouteMatchRows(rows);
+            if (enriched.length > 0) {
+              if (searchTimeoutRef.current && stopTimerOnMatch) {
+                clearTimeout(searchTimeoutRef.current);
+                searchTimeoutRef.current = null;
+              }
+              setMatchedProvidersList(enriched);
+              setIsDirectPreferredProvider(false);
+              setIsAcceptedByProvider(false);
+              setMatchFound(true);
+              setIsSearching(false);
+              setBookingState('matched');
+            }
+          }
+        },
       )
       .subscribe();
 
-    matchChannelRef.current = channel;
+    matchChannelRef.current = matchChannel;
   };
 
   /**
-   * The preferred provider (picked from Explore) dismissed the request. Tell the sender and
-   * go back to searching for another courier for the SAME paid request.
+   * Used ONLY when the sender explicitly chose a single preferred provider on ExploreScreen.
    */
-  const handleDirectProviderDeclined = async (requestId: number) => {
-    if (declineHandledRef.current === requestId) return;
-    declineHandledRef.current = requestId;
-
-    const name =
-      (providerData ? `${providerData.first_name || ''} ${providerData.last_name || ''}`.trim() : '') ||
-      state.preferredProviderName ||
-      'The courier you selected';
-
-    fireDirectDeclinedNotification(name, requestId);
-    Alert.alert('Courier declined', `${name} declined your request. We're finding another courier for you.`);
-
-    setIsDirectPreferredProvider(false);
-    setIsAcceptedByProvider(false);
-    setMatchFound(false);
-    setProviderData(null);
-    setDepartureTime(null);
-    setRouteFrequency(null);
-    setProviderRating(null);
-    setMatchedProviders([]);
-    preferredAtPaymentRef.current = { requestId: null, providerId: null, routeId: null, name: null };
-
-    searchStartRef.current = Date.now();
-    setIsSearching(true);
-    setBookingState('finding');
-    await startMatching({ reuseRequestId: requestId });
-  };
-
   const finalizePreferredProviderBooking = async (opts: {
     requestId: number;
     providerId: number;
     routeId?: number | null;
     notifyProvider?: boolean;
-    isAutoRouteMatch?: boolean;
   }) => {
-    const { requestId, providerId, routeId, notifyProvider = false, isAutoRouteMatch = false } = opts;
+    const { requestId, providerId, routeId, notifyProvider = false } = opts;
 
     try {
       const { data: provider } = await supabase
@@ -993,7 +841,7 @@ export default function BookingScreen({ route, navigation }: any) {
       const providerFullName =
         provider
           ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim()
-          : state.preferredProviderName || 'your matched provider';
+          : state.preferredProviderName || 'your selected provider';
 
       if (notifyProvider) {
         const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
@@ -1007,14 +855,18 @@ export default function BookingScreen({ route, navigation }: any) {
         } catch (err) {
           console.warn('[BookingScreen] direct provider push failed:', err);
         }
-        fireDirectRequestNotification(providerFullName, requestId, isAutoRouteMatch);
+        fireDirectRequestNotification(providerFullName, requestId, 1, false);
       }
 
+      setMatchedProvidersList([]);
       setIsDirectPreferredProvider(true);
       setIsAcceptedByProvider(false);
       setMatchFound(true);
       setIsSearching(false);
       setBookingState('matched');
+
+      // Keep listening for when the preferred provider accepts into `deliveries`
+      attachAcceptanceAndMatchListener(requestId, false);
     } catch (e) {
       console.warn('[BookingScreen] finalizePreferredProviderBooking failed:', e);
       setIsDirectPreferredProvider(true);
@@ -1022,6 +874,7 @@ export default function BookingScreen({ route, navigation }: any) {
       setMatchFound(true);
       setIsSearching(false);
       setBookingState('matched');
+      attachAcceptanceAndMatchListener(requestId, false);
     }
   };
 
@@ -1048,37 +901,45 @@ export default function BookingScreen({ route, navigation }: any) {
       setSavedRequestId(requestId);
       searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
 
-      if (matchChannelRef.current) {
-        supabase.removeChannel(matchChannelRef.current);
-        matchChannelRef.current = null;
-      }
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-        searchTimeoutRef.current = null;
-      }
-
-      // Listen first so a fast acceptance / new match is never missed. The channel reports:
-      //  - a provider accepting the request (new `deliveries` row)
-      //  - matched providers appearing / disappearing (`route_request_matches`)
-      attachRequestListener(requestId);
-
-      // 1. Evaluate every active provider route running today that hasn't departed yet.
-      //    All matching providers are notified (inside the sync call) so any of them can accept.
-      let matchedRoutes: any[] = [];
+      // 1. Evaluate all active provider routes today that strictly match the sender's route corridor.
+      //    IMPORTANT: Do NOT auto-assign `preferred_provider_id` to matchedRoutes[0]!
+      //    All matching providers receive the request in their Jobs / Tasks tab and we list them all here.
+      let matchedRoutes: RouteMatchRow[] = [];
       try {
         matchedRoutes = await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
       } catch (e) {
         console.warn('[BookingScreen] route matching failed:', e);
       }
 
-      // 2. One OR MORE routes match: DO NOT assign anyone. Show them all and wait for acceptance.
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+
+      // 2. If 1 or more providers match the sender's route, list ALL of them on BookingScreen
+      //    and wait in realtime for one of them to accept!
       if (matchedRoutes.length > 0) {
-        await showMatchedProviders(matchedRoutes);
+        const firstProv = matchedRoutes[0].provider;
+        const firstName = firstProv
+          ? `${firstProv.first_name || ''} ${firstProv.last_name || ''}`.trim()
+          : 'a route provider';
+
+        fireDirectRequestNotification(firstName, requestId, matchedRoutes.length, true);
+
+        setMatchedProvidersList(matchedRoutes);
+        setIsDirectPreferredProvider(false);
+        setIsAcceptedByProvider(false);
+        setMatchFound(true);
+        setIsSearching(false);
+        setBookingState('matched');
+
+        attachAcceptanceAndMatchListener(requestId, true);
         return;
       }
 
-      // 3. No match yet: keep searching. The listener stays attached so a provider who matches or
-      //    accepts later still shows up; after the timeout we switch to background-notification mode.
+      // 3. Otherwise, stay in 'finding' for SEARCH_DURATION_MS and listen in real time
+      attachAcceptanceAndMatchListener(requestId, true);
+
       searchTimeoutRef.current = setTimeout(() => {
         searchTimeoutRef.current = null;
         setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
@@ -1179,9 +1040,13 @@ export default function BookingScreen({ route, navigation }: any) {
 
       const matchedNow = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
       if (matchedNow.length > 0) {
-        // Several providers may match: list them all and wait for one to accept (no auto-assign).
-        setResumeSubId(requestId); // attaches the realtime listener
-        await showMatchedProviders(matchedNow);
+        setMatchedProvidersList(matchedNow);
+        setIsDirectPreferredProvider(false);
+        setIsAcceptedByProvider(false);
+        setMatchFound(true);
+        setIsSearching(false);
+        setBookingState('matched');
+        attachAcceptanceAndMatchListener(requestId, true);
         return;
       }
 
@@ -1203,52 +1068,15 @@ export default function BookingScreen({ route, navigation }: any) {
   }, [isResume, resumeRequestId]);
 
   useEffect(() => {
-    if (!resumeSubId) return;
-    const requestId = resumeSubId;
-    attachRequestListener(requestId);
-
+    if (bookingState !== 'finding' || !resumeSubId) return;
+    attachAcceptanceAndMatchListener(resumeSubId, true);
     return () => {
-      supabase
-        .getChannels()
-        .filter((c: any) => c.topic === `realtime:match-listener-${requestId}`)
-        .forEach((c: any) => supabase.removeChannel(c));
-      matchChannelRef.current = null;
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
     };
-  }, [resumeSubId]);
-
-  // While a request sits with the selected (direct) provider, watch for a decline or an acceptance.
-  const handleDirectDeclinedRef = useRef<(id: number) => void>(() => {});
-  handleDirectDeclinedRef.current = (id: number) => { void handleDirectProviderDeclined(id); };
-  const handleAcceptedRef = useRef<(d: any) => void>(() => {});
-  handleAcceptedRef.current = (d: any) => { void handleProviderAccepted(d); };
-
-  const directWatchActive =
-    bookingState === 'matched' && matchFound && isDirectPreferredProvider && !isAcceptedByProvider;
-
-  useEffect(() => {
-    if (!directWatchActive || !savedRequestId) return;
-    const requestId = savedRequestId;
-    const channel = supabase
-      .channel(`direct-watch-${requestId}`)
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'delivery_requests', filter: `request_id=eq.${requestId}` },
-        (payload: any) => {
-          const row = payload.new;
-          if (row && row.preferred_provider_id == null && row.delivery_status === 'Pending') {
-            handleDirectDeclinedRef.current(requestId);
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
-        (payload: any) => { handleAcceptedRef.current(payload.new); }
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [directWatchActive, savedRequestId]);
+  }, [bookingState, resumeSubId]);
 
   useEffect(() => {
     const justPaid = route.params?.paymentJustCompleted;
@@ -1282,6 +1110,7 @@ export default function BookingScreen({ route, navigation }: any) {
         }
       }
 
+      // Only lock to a single provider if the sender explicitly picked one on ExploreScreen
       if (prefProviderId) {
         try {
           const { data: provider } = await supabase
@@ -1306,7 +1135,7 @@ export default function BookingScreen({ route, navigation }: any) {
             console.warn('[BookingScreen] direct provider push failed:', err);
           }
 
-          fireDirectRequestNotification(providerFullName, numericReqId, false);
+          fireDirectRequestNotification(providerFullName, numericReqId, 1, false);
         } catch (e) {
           console.warn('[BookingScreen] post-payment provider notify failed:', e);
         }
@@ -1323,10 +1152,6 @@ export default function BookingScreen({ route, navigation }: any) {
           console.warn('[BookingScreen] direct match sync failed:', e);
         }
 
-        if (matchChannelRef.current) {
-          supabase.removeChannel(matchChannelRef.current);
-          matchChannelRef.current = null;
-        }
         if (searchTimeoutRef.current) {
           clearTimeout(searchTimeoutRef.current);
           searchTimeoutRef.current = null;
@@ -1337,7 +1162,6 @@ export default function BookingScreen({ route, navigation }: any) {
           providerId: prefProviderId,
           routeId: prefRouteId ?? null,
           notifyProvider: false,
-          isAutoRouteMatch: false,
         });
 
         proceedingRef.current = false;
@@ -1352,7 +1176,6 @@ export default function BookingScreen({ route, navigation }: any) {
     })();
   }, [route.params?.paymentJustCompleted, route.params?.requestId]);
 
-  // Terms and Policies (sender version) are shown before every new booking is confirmed.
   const acceptBookingTerms = async () => {
     try {
       setTermsBusy(true);
@@ -1369,7 +1192,6 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const handleProceedToPayment = async () => {
     if (proceedingRef.current) return;
-    // Not when editing a booking that was already confirmed.
     if (!state.isEdit && !termsOkRef.current && (await needsAcceptance('booking'))) {
       setTermsOpen(true);
       return;
@@ -1590,7 +1412,6 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       setResumeSubId(null);
-      setMatchedProviders([]);
       preferredAtPaymentRef.current = { requestId: null, providerId: null, routeId: null, name: null };
 
       if (cancelledRequestId != null) {
@@ -1622,7 +1443,7 @@ export default function BookingScreen({ route, navigation }: any) {
         proceedingRef.current = false;
         proceedReturnToRef.current = null;
         setSavingBooking(false);
-        navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+        navigation.popTo('MainTabs');
         return;
       }
 
@@ -1646,7 +1467,7 @@ export default function BookingScreen({ route, navigation }: any) {
     proceedReturnToRef.current = null;
     setSavingBooking(false);
     dispatch({ type: 'RESET' });
-    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+    navigation.popTo('MainTabs');
   };
 
   const handleTryAgain = () => {
@@ -1656,11 +1477,15 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   const handleConfirmAction = () => {
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
     dispatch({ type: 'RESET' });
     proceedingRef.current = false;
     proceedReturnToRef.current = null;
     setSavingBooking(false);
-    navigation.popTo('MainTabs'); // popTo: reuse the existing tabs; navigate() would push a 2nd MainTabs instance
+    navigation.popTo('MainTabs');
   };
 
   const handleSelectReceiver = () => {
@@ -1694,6 +1519,11 @@ export default function BookingScreen({ route, navigation }: any) {
     transform: [{ translateY: sheetAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }],
   };
 
+  const sheetMaxH = Math.round(height * 0.82) - footerH;
+  const sheetH = sheetContentH > 0 ? Math.min(sheetMaxH, 24 + sheetContentH) : sheetMaxH;
+  const sheetVisibleH = Math.min(sheetH, Math.max(140, SHEET_MAX_H - footerH));
+  const sheetCollapsedY = Math.max(0, sheetH - sheetVisibleH);
+
   const mapTopPad = Math.round(insets.top + 70);
   const mapBottomPad = SHEET_MAX_H + 16;
 
@@ -1719,268 +1549,6 @@ export default function BookingScreen({ route, navigation }: any) {
       </View>
 
       <View style={[styles.bottomSheet, bookingState === 'finding' && styles.bottomSheetFinding]}>
-
-        {bookingState === 'review' && (
-          <Animated.View style={[styles.sheetCard, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-            <View style={styles.sheetHandle} />
-            <ScrollView
-              style={styles.sheetScroll}
-              contentContainerStyle={styles.sheetScrollContent}
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
-              bounces={false}
-            >
-              <View style={styles.rvHeader}>
-                <Text style={styles.rvTitle}>Review & pay</Text>
-              </View>
-
-              {state.preferredProviderId && (
-                <View style={styles.preferredProviderBanner}>
-                  <View style={styles.preferredProviderIcon}>
-                    <SolarIcon name="Car" variant="boldDuotone" size={18} color="#FFFFFF" />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.preferredProviderLabel}>SELECTED COURIER PARTNER</Text>
-                    <Text style={styles.preferredProviderName} numberOfLines={1}>
-                      {providerData ? `${providerData.first_name || ''} ${providerData.last_name || ''}`.trim() || state.preferredProviderName : state.preferredProviderName || `Provider #${state.preferredProviderId}`}
-                    </Text>
-                    {formattedDep && (
-                      <Text style={styles.preferredProviderRoute} numberOfLines={1}>
-                        Time of Departure: {formattedDep}
-                      </Text>
-                    )}
-                    {state.preferredRoute && (
-                      <Text style={styles.preferredProviderRoute} numberOfLines={1}>
-                        Route: {state.preferredRoute.pickup.split(',')[0]} → {state.preferredRoute.dropoff.split(',')[0]}
-                      </Text>
-                    )}
-                  </View>
-                  <SolarIcon name="CheckCircle" variant="duotone" size={20} color={colors.success} />
-                </View>
-              )}
-
-              <View style={[styles.rvCard, !receiver && styles.rvCardEmpty]}>
-                <TouchableOpacity
-                  style={styles.rvReceiverRow}
-                  onPress={handleSelectReceiver}
-                  activeOpacity={0.8}
-                  disabled={savingBooking}
-                >
-                  <View style={[styles.rvAvatar, !receiver && styles.rvAvatarEmpty]}>
-                    {receiver ? (
-                      <Text style={styles.rvAvatarText}>
-                        {(receiver.receiver_name || receiver.first_name || '?').trim().charAt(0).toUpperCase()}
-                      </Text>
-                    ) : (
-                      <SolarIcon name="User" variant="duotone" size={18} color={ORANGE} />
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    {receiver ? (
-                      <>
-                        <Text style={styles.rvReceiverName} numberOfLines={1}>
-                          {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
-                        </Text>
-                        <Text style={styles.rvReceiverSub} numberOfLines={1}>
-                          {receiver.receiver_phone || receiver.phone_number || '—'}
-                        </Text>
-                      </>
-                    ) : (
-                      <>
-                        <Text style={[styles.rvReceiverName, { color: ORANGE }]}>Select receiver</Text>
-                        <Text style={styles.rvReceiverSub}>Who will receive this package?</Text>
-                      </>
-                    )}
-                  </View>
-                  {receiver ? (
-                    <View style={styles.rvChangePill}>
-                      <Text style={styles.rvChangeText}>Change</Text>
-                    </View>
-                  ) : (
-                    <SolarIcon name="AltArrowRight" variant="linear" size={18} color={ORANGE} />
-                  )}
-                </TouchableOpacity>
-
-                {receiver && (
-                  <View style={styles.rvNote}>
-                    <SolarIcon name="QrCode" variant="linear" size={14} color={colors.textSecondary} />
-                    <Text style={styles.rvNoteText}>
-                      Show your pickup QR or PIN when the courier arrives. A delivery OTP follows for the receiver.
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              {/* PHASE 1: FALLBACK PRE-AUTHORIZATION CARD */}
-              <View style={[styles.rvCard, { padding: 14 }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                  <Ionicons name="shield-half-outline" size={16} color={ORANGE} />
-                  <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
-                    If Receiver is Unreachable (Required)
-                  </Text>
-                </View>
-
-                <TouchableOpacity
-                  style={{
-                    flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
-                    borderRadius: 12, borderWidth: 1.5, marginBottom: 8,
-                    borderColor: fallbackAction === 'return_to_sender' ? ORANGE : colors.border,
-                    backgroundColor: fallbackAction === 'return_to_sender' ? colors.accentSoft : colors.background,
-                  }}
-                  onPress={() => setFallbackAction('return_to_sender')}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons
-                    name={fallbackAction === 'return_to_sender' ? 'radio-button-on' : 'radio-button-off'}
-                    size={18}
-                    color={fallbackAction === 'return_to_sender' ? ORANGE : colors.textMuted}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
-                      Option A: Return to me (Sender)
-                    </Text>
-                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
-                      Adds a 50% Return Deposit (₱{(baseFareAmount * 0.5).toFixed(2)}) held in escrow. 100% refunded if delivery succeeds.
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={{
-                    flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
-                    borderRadius: 12, borderWidth: 1.5,
-                    borderColor: fallbackAction === 'leave_with_guard' ? ORANGE : colors.border,
-                    backgroundColor: fallbackAction === 'leave_with_guard' ? colors.accentSoft : colors.background,
-                  }}
-                  onPress={() => setFallbackAction('leave_with_guard')}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons
-                    name={fallbackAction === 'leave_with_guard' ? 'radio-button-on' : 'radio-button-off'}
-                    size={18}
-                    color={fallbackAction === 'leave_with_guard' ? ORANGE : colors.textMuted}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
-                      Option B: Leave with Guard / Neighbor / Reception
-                    </Text>
-                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
-                      ₱0 extra deposit. Courier waits 10 mins, then leaves the package with your authorized recipient with photo proof.
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {fallbackAction === 'leave_with_guard' && (
-                  <TextInput
-                    style={{
-                      marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 10,
-                      paddingHorizontal: 12, paddingVertical: 10, fontSize: 13,
-                      color: colors.textPrimary, backgroundColor: colors.card,
-                    }}
-                    placeholder="Enter person or place (e.g., Guardhouse / Neighbor Maria)"
-                    placeholderTextColor={colors.textMuted}
-                    value={fallbackRecipientName}
-                    onChangeText={setFallbackRecipientName}
-                    maxLength={100}
-                  />
-                )}
-              </View>
-
-              <View style={styles.rvCard}>
-                {pricing ? (
-                  <View style={styles.rvFareRows}>
-                    <View style={styles.rvFareRow}>
-                      <Text style={styles.rvFareLabel}>Base fee</Text>
-                      <Text style={styles.rvFareValue}>₱{pricing.base.toFixed(2)}</Text>
-                    </View>
-                    <View style={styles.rvFareRow}>
-                      <Text style={styles.rvFareLabel}>Distance · {pricing.distanceKm.toFixed(1)} km</Text>
-                      <Text style={styles.rvFareValue}>₱{pricing.distance.toFixed(2)}</Text>
-                    </View>
-                    {pricing.size > 0 && (
-                      <View style={styles.rvFareRow}>
-                        <Text style={styles.rvFareLabel}>Package size</Text>
-                        <Text style={styles.rvFareValue}>₱{pricing.size.toFixed(2)}</Text>
-                      </View>
-                    )}
-                    {pricing.fragile > 0 && (
-                      <View style={styles.rvFareRow}>
-                        <Text style={styles.rvFareLabel}>Fragile handling</Text>
-                        <Text style={styles.rvFareValue}>₱{pricing.fragile.toFixed(2)}</Text>
-                      </View>
-                    )}
-                    {pricing.schedule > 0 && (
-                      <View style={styles.rvFareRow}>
-                        <Text style={styles.rvFareLabel}>Scheduled delivery</Text>
-                        <Text style={styles.rvFareValue}>₱{pricing.schedule.toFixed(2)}</Text>
-                      </View>
-                    )}
-                    {pricing.emergency > 0 && (
-                      <View style={styles.rvFareRow}>
-                        <Text style={styles.rvFareLabel}>Emergency priority</Text>
-                        <Text style={styles.rvFareValue}>₱{pricing.emergency.toFixed(2)}</Text>
-                      </View>
-                    )}
-                    {returnDepositAmount > 0 && (
-                      <View style={styles.rvFareRow}>
-                        <Text style={[styles.rvFareLabel, { color: ORANGE, fontWeight: '700' }]}>
-                          Return Deposit (Refunded on success)
-                        </Text>
-                        <Text style={[styles.rvFareValue, { color: ORANGE, fontWeight: '800' }]}>
-                          ₱{returnDepositAmount.toFixed(2)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                ) : (
-                  <View style={styles.rvCalcRow}>
-                    <ActivityIndicator size="small" color={ORANGE} />
-                    <Text style={styles.rvFareLabel}>Calculating fare…</Text>
-                  </View>
-                )}
-              </View>
-
-            </ScrollView>
-
-            <View style={styles.sheetFooter}>
-              <View style={styles.rvTotalRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rvTotalLabel}>Total{refiningDistance ? ' · updating…' : ''}</Text>
-                  <View style={styles.rvEscrowRow}>
-                    <SolarIcon name="ShieldCheck" variant="linear" size={12} color={colors.success} />
-                    <Text style={styles.rvEscrowText}>Held in escrow until delivery</Text>
-                  </View>
-                </View>
-                <Text style={styles.rvTotalValue}>
-                  ₱{totalEscrowAmount.toFixed(2)}
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={[
-                  styles.primaryButton,
-                  ((!receiver || !pricing) || savingBooking) && styles.primaryButtonDisabled,
-                ]}
-                onPress={handleProceedToPayment}
-                disabled={!receiver || !pricing || savingBooking}
-                activeOpacity={0.9}
-              >
-                {savingBooking ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <>
-                    <SolarIcon name="Card" variant="linear" size={16} color="#FFFFFF" />
-                    <Text style={styles.primaryButtonText}>
-                      {pricing ? 'Proceed to Payment' : 'Calculating fare…'}
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable payment</Text>}
-            </View>
-          </Animated.View>
-        )}
 
         {bookingState === 'finding' && (
           <Animated.View style={[styles.sheetCardFinding, sheetFadeUp]} pointerEvents="box-none">
@@ -2107,111 +1675,346 @@ export default function BookingScreen({ route, navigation }: any) {
           </Animated.View>
         )}
 
-        {bookingState === 'matched' && matchFound && (
-          <Animated.View style={[styles.sheetCardMatched, styles.sheetCardCapped, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        {bookingState === 'no_match' && (
+          <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.sheetHandle} />
-            <ScrollView
-              style={styles.sheetScroll}
-              contentContainerStyle={styles.sheetScrollContent}
-              showsVerticalScrollIndicator={false}
-              nestedScrollEnabled
-              bounces={false}
-            >
-              <View style={styles.matchedHeader}>
-                <View style={styles.matchedHeaderIcon}>
-                  <SolarIcon name="CheckCircle" variant="duotone" size={22} color={colors.success} />
+            <View style={styles.noMatchIconCircle}>
+              <Ionicons name="notifications-outline" size={34} color={ORANGE} />
+            </View>
+            <Text style={styles.noMatchTitle}>We'll Notify You When Matched!</Text>
+            <Text style={styles.noMatchSubtitle}>
+              Your delivery request is live and broadcasted to couriers along your route. You don't need to wait here — we'll send you a notification as soon as a provider accepts!
+            </Text>
+
+            <View style={styles.noMatchActions}>
+              <TouchableOpacity
+                style={[styles.noMatchBtn, styles.retryBtn]}
+                onPress={handleGoHome}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="checkmark-circle-outline" size={16} color="#FFFFFF" />
+                <Text style={styles.retryBtnText}>Got It, Go Home</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.noMatchBtn, styles.modifyBtn]}
+                onPress={handleTryAgain}
+                activeOpacity={0.9}
+              >
+                <Ionicons name="refresh" size={15} color={colors.textSecondary} />
+                <Text style={styles.modifyBtnText}>Search 10s More</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        )}
+      </View>
+
+      {bookingState === 'review' && (
+        <>
+          <DraggableSheet
+            ref={sheetRef}
+            y={sheetY}
+            collapsedY={sheetCollapsedY}
+            height={sheetH}
+            contentPaddingBottom={16}
+            style={[styles.dragSheet, { bottom: footerH, opacity: sheetAnim }]}
+            handleHitAreaStyle={styles.dragHandleHit}
+            handleStyle={styles.dragHandle}
+            onContentHeight={setSheetContentH}
+          >
+            <View style={styles.rvHeader}>
+              <Text style={styles.rvTitle}>Review & pay</Text>
+            </View>
+
+            {state.preferredProviderId && (
+              <View style={styles.preferredProviderBanner}>
+                <View style={styles.preferredProviderIcon}>
+                  <SolarIcon name="Car" variant="boldDuotone" size={18} color="#FFFFFF" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.matchedHeaderTitle}>
-                    {isAcceptedByProvider
-                      ? 'Provider Accepted!'
-                      : isWaitingForProviders
-                        ? `${matchedProviders.length} Provider${matchedProviders.length === 1 ? '' : 's'} Matched`
-                        : 'Provider Matched!'}
+                  <Text style={styles.preferredProviderLabel}>SELECTED COURIER PARTNER</Text>
+                  <Text style={styles.preferredProviderName} numberOfLines={1}>
+                    {providerData ? `${providerData.first_name || ''} ${providerData.last_name || ''}`.trim() || state.preferredProviderName : state.preferredProviderName || `Provider #${state.preferredProviderId}`}
                   </Text>
-                  <Text style={styles.matchedHeaderSub}>
-                    {isAcceptedByProvider
-                      ? 'Your delivery partner is on the way'
-                      : isWaitingForProviders
-                        ? 'Waiting for one of them to accept your request'
-                        : 'Matched with a provider traveling along your route today'}
-                  </Text>
-                </View>
-              </View>
-
-              {isWaitingForProviders ? (
-                <View style={styles.matchedInnerCard}>
-                  <View style={styles.waitingNote}>
-                    <SolarIcon name="Clock" variant="bold" size={16} color={ORANGE} />
-                    <Text style={styles.waitingNoteText}>
-                      No provider is assigned yet. The first matched provider to accept will be confirmed here and you'll be notified.
+                  {formattedDep && (
+                    <Text style={styles.preferredProviderRoute} numberOfLines={1}>
+                      Time of Departure: {formattedDep}
                     </Text>
-                  </View>
+                  )}
+                  {state.preferredRoute && (
+                    <Text style={styles.preferredProviderRoute} numberOfLines={1}>
+                      Route: {state.preferredRoute.pickup.split(',')[0]} → {state.preferredRoute.dropoff.split(',')[0]}
+                    </Text>
+                  )}
+                </View>
+                <SolarIcon name="CheckCircle" variant="duotone" size={20} color={colors.success} />
+              </View>
+            )}
 
-                  {matchedProviders.map((p) => {
-                    const dep = formatDepartureTime(p.departureTime, p.routeFrequency);
-                    return (
-                      <View key={`${p.providerId}-${p.routeId}`} style={styles.waitingProviderCard}>
-                        <View style={styles.waitingProviderTop}>
-                          <View style={styles.waitingAvatar}>
-                            <SolarIcon name="User" variant="boldDuotone" size={20} color="#FFFFFF" />
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.waitingProviderName} numberOfLines={1}>{p.name}</Text>
-                            <Text style={styles.waitingProviderMeta} numberOfLines={1}>
-                              {p.vehicleType} · {p.plateNumber}
-                            </Text>
-                          </View>
-                          {p.matchScore != null && (
-                            <View style={styles.waitingScoreBadge}>
-                              <Text style={styles.waitingScoreText}>{p.matchScore}%</Text>
-                            </View>
-                          )}
-                        </View>
-                        <View style={styles.waitingProviderBottom}>
-                          <View style={styles.waitingInfoPill}>
-                            <SolarIcon name="Clock" variant="linear" size={12} color={colors.textSecondary} />
-                            <Text style={styles.waitingProviderMeta}>{dep ? `Departs ${dep}` : 'Departure time n/a'}</Text>
-                          </View>
-                          <View style={styles.waitingInfoPill}>
-                            <SolarIcon name="Star" variant={p.ratingCount > 0 ? 'boldDuotone' : 'linear'} size={12} color={colors.warning} />
-                            <Text style={styles.waitingProviderMeta}>
-                              {p.ratingCount > 0 ? `${p.ratingAvg.toFixed(1)} (${p.ratingCount})` : 'No reviews yet'}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  })}
-
-                  {receiver && (
+            <View style={[styles.rvCard, !receiver && styles.rvCardEmpty]}>
+              <TouchableOpacity
+                style={styles.rvReceiverRow}
+                onPress={handleSelectReceiver}
+                activeOpacity={0.8}
+                disabled={savingBooking}
+              >
+                <View style={[styles.rvAvatar, !receiver && styles.rvAvatarEmpty]}>
+                  {receiver ? (
+                    <Text style={styles.rvAvatarText}>
+                      {(receiver.receiver_name || receiver.first_name || '?').trim().charAt(0).toUpperCase()}
+                    </Text>
+                  ) : (
+                    <SolarIcon name="User" variant="duotone" size={18} color={ORANGE} />
+                  )}
+                </View>
+                <View style={{ flex: 1 }}>
+                  {receiver ? (
                     <>
-                      <View style={styles.matchedDivider} />
-                      <View style={styles.matchedReceiverRow}>
-                        <SolarIcon name="User" variant="linear" size={16} color={colors.textSecondary} />
-                        <View style={{ flex: 1, marginLeft: 8 }}>
-                          <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
-                          <Text style={styles.matchedReceiverName} numberOfLines={1}>
-                            {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
-                          </Text>
-                          <Text style={styles.matchedReceiverPhone} numberOfLines={1}>
-                            {receiver.receiver_phone || receiver.phone_number || '—'}
-                          </Text>
-                        </View>
-                      </View>
+                      <Text style={styles.rvReceiverName} numberOfLines={1}>
+                        {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
+                      </Text>
+                      <Text style={styles.rvReceiverSub} numberOfLines={1}>
+                        {receiver.receiver_phone || receiver.phone_number || '—'}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.rvReceiverName, { color: ORANGE }]}>Select receiver</Text>
+                      <Text style={styles.rvReceiverSub}>Who will receive this package?</Text>
                     </>
                   )}
-
-                  <View style={styles.matchedDivider} />
-                  <View style={styles.totalRow}>
-                    <View>
-                      <Text style={styles.totalLabel}>Total paid</Text>
-                      <Text style={styles.totalPaidBadge}>Held in escrow</Text>
-                    </View>
-                    <Text style={styles.totalValue}>₱{totalEscrowAmount.toFixed(2)}</Text>
+                </View>
+                {receiver ? (
+                  <View style={styles.rvChangePill}>
+                    <Text style={styles.rvChangeText}>Change</Text>
                   </View>
+                ) : (
+                  <SolarIcon name="AltArrowRight" variant="linear" size={18} color={ORANGE} />
+                )}
+              </TouchableOpacity>
+
+              {receiver && (
+                <View style={styles.rvNote}>
+                  <SolarIcon name="QrCode" variant="linear" size={14} color={colors.textSecondary} />
+                  <Text style={styles.rvNoteText}>
+                    Show your pickup QR or PIN when the courier arrives. A delivery OTP follows for the receiver.
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* PHASE 1: FALLBACK PRE-AUTHORIZATION CARD */}
+            <View style={[styles.rvCard, { padding: 14 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                <Ionicons name="shield-half-outline" size={16} color={ORANGE} />
+                <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                  If Receiver is Unreachable (Required)
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
+                  borderRadius: 12, borderWidth: 1.5, marginBottom: 8,
+                  borderColor: fallbackAction === 'return_to_sender' ? ORANGE : colors.border,
+                  backgroundColor: fallbackAction === 'return_to_sender' ? colors.accentSoft : colors.background,
+                }}
+                onPress={() => setFallbackAction('return_to_sender')}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name={fallbackAction === 'return_to_sender' ? 'radio-button-on' : 'radio-button-off'}
+                  size={18}
+                  color={fallbackAction === 'return_to_sender' ? ORANGE : colors.textMuted}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                    Option A: Return to me (Sender)
+                  </Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                    Adds a 50% Return Deposit (₱{(baseFareAmount * 0.5).toFixed(2)}) held in escrow. 100% refunded if delivery succeeds.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 12,
+                  borderRadius: 12, borderWidth: 1.5,
+                  borderColor: fallbackAction === 'leave_with_guard' ? ORANGE : colors.border,
+                  backgroundColor: fallbackAction === 'leave_with_guard' ? colors.accentSoft : colors.background,
+                }}
+                onPress={() => setFallbackAction('leave_with_guard')}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name={fallbackAction === 'leave_with_guard' ? 'radio-button-on' : 'radio-button-off'}
+                  size={18}
+                  color={fallbackAction === 'leave_with_guard' ? ORANGE : colors.textMuted}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '800', color: colors.textPrimary }}>
+                    Option B: Leave with Guard / Neighbor / Reception
+                  </Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                    ₱0 extra deposit. Courier waits 10 mins, then leaves the package with your authorized recipient with photo proof.
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {fallbackAction === 'leave_with_guard' && (
+                <TextInput
+                  style={{
+                    marginTop: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 10,
+                    paddingHorizontal: 12, paddingVertical: 10, fontSize: 13,
+                    color: colors.textPrimary, backgroundColor: colors.card,
+                  }}
+                  placeholder="Enter person or place (e.g., Guardhouse / Neighbor Maria)"
+                  placeholderTextColor={colors.textMuted}
+                  value={fallbackRecipientName}
+                  onChangeText={setFallbackRecipientName}
+                  maxLength={100}
+                />
+              )}
+            </View>
+
+            <View style={styles.rvCard}>
+              {pricing ? (
+                <View style={styles.rvFareRows}>
+                  <View style={styles.rvFareRow}>
+                    <Text style={styles.rvFareLabel}>Base fee</Text>
+                    <Text style={styles.rvFareValue}>₱{pricing.base.toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.rvFareRow}>
+                    <Text style={styles.rvFareLabel}>Distance · {pricing.distanceKm.toFixed(1)} km</Text>
+                    <Text style={styles.rvFareValue}>₱{pricing.distance.toFixed(2)}</Text>
+                  </View>
+                  {pricing.size > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Package size</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.size.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.fragile > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Fragile handling</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.fragile.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.schedule > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Scheduled delivery</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.schedule.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {pricing.emergency > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={styles.rvFareLabel}>Emergency priority</Text>
+                      <Text style={styles.rvFareValue}>₱{pricing.emergency.toFixed(2)}</Text>
+                    </View>
+                  )}
+                  {returnDepositAmount > 0 && (
+                    <View style={styles.rvFareRow}>
+                      <Text style={[styles.rvFareLabel, { color: ORANGE, fontWeight: '700' }]}>
+                        Return Deposit (Refunded on success)
+                      </Text>
+                      <Text style={[styles.rvFareValue, { color: ORANGE, fontWeight: '800' }]}>
+                        ₱{returnDepositAmount.toFixed(2)}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               ) : (
+                <View style={styles.rvCalcRow}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                  <Text style={styles.rvFareLabel}>Calculating fare…</Text>
+                </View>
+              )}
+            </View>
+          </DraggableSheet>
+
+          <Animated.View
+            style={[styles.dragFooter, { opacity: sheetAnim, paddingBottom: Math.max(insets.bottom, 16) }]}
+            onLayout={(e) => setFooterH(e.nativeEvent.layout.height)}
+          >
+            <View style={styles.sheetFooter}>
+              <View style={styles.rvTotalRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rvTotalLabel}>Total{refiningDistance ? ' · updating…' : ''}</Text>
+                  <View style={styles.rvEscrowRow}>
+                    <SolarIcon name="ShieldCheck" variant="linear" size={12} color={colors.success} />
+                    <Text style={styles.rvEscrowText}>Held in escrow until delivery</Text>
+                  </View>
+                </View>
+                <Text style={styles.rvTotalValue}>
+                  ₱{totalEscrowAmount.toFixed(2)}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  ((!receiver || !pricing) || savingBooking) && styles.primaryButtonDisabled,
+                ]}
+                onPress={handleProceedToPayment}
+                disabled={!receiver || !pricing || savingBooking}
+                activeOpacity={0.9}
+              >
+                {savingBooking ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <>
+                    <SolarIcon name="Card" variant="linear" size={16} color="#FFFFFF" />
+                    <Text style={styles.primaryButtonText}>
+                      {pricing ? 'Proceed to Payment' : 'Calculating fare…'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {!receiver && <Text style={styles.primaryButtonHint}>Select a receiver first to enable payment</Text>}
+            </View>
+          </Animated.View>
+        </>
+      )}
+
+      {bookingState === 'matched' && matchFound && (
+        <>
+          <DraggableSheet
+            ref={sheetRef}
+            y={sheetY}
+            collapsedY={sheetCollapsedY}
+            height={sheetH}
+            contentPaddingBottom={16}
+            style={[styles.dragSheet, { bottom: footerH, opacity: sheetAnim }]}
+            handleHitAreaStyle={styles.dragHandleHit}
+            handleStyle={styles.dragHandle}
+            onContentHeight={setSheetContentH}
+          >
+            <View style={styles.matchedHeader}>
+              <View style={styles.matchedHeaderIcon}>
+                <SolarIcon name="CheckCircle" variant="duotone" size={22} color={colors.success} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.matchedHeaderTitle}>
+                  {isAcceptedByProvider
+                    ? 'Provider Accepted!'
+                    : isDirectPreferredProvider
+                      ? 'Request Sent to Provider!'
+                      : `${matchedProvidersList.length} Matching Provider${matchedProvidersList.length === 1 ? '' : 's'} Found`}
+                </Text>
+                <Text style={styles.matchedHeaderSub}>
+                  {isAcceptedByProvider
+                    ? 'Your delivery partner is on the way'
+                    : isDirectPreferredProvider
+                      ? 'Waiting for your selected courier to accept'
+                      : 'Only providers matching your route are notified — waiting for one to accept'}
+                </Text>
+              </View>
+            </View>
+
+            {/* CASE A: Accepted by a provider OR Direct Preferred Provider from Explore */}
+            {(isAcceptedByProvider || isDirectPreferredProvider) ? (
               <View style={styles.matchedInnerCard}>
                 <View style={styles.matchedRow}>
                   <View style={styles.matchedLeftCol}>
@@ -2239,7 +2042,6 @@ export default function BookingScreen({ route, navigation }: any) {
                   </View>
                 </View>
 
-                {/* Prominent Provider Time of Departure Banner */}
                 {formattedDep && (
                   <View style={styles.departureBanner}>
                     <View style={styles.departureIconBox}>
@@ -2337,65 +2139,117 @@ export default function BookingScreen({ route, navigation }: any) {
                   </Text>
                 </View>
               </View>
-              )}
+            ) : (
+              /* CASE B: List ALL providers whose route matches the sender's route and wait for one to accept */
+              <View style={styles.matchedInnerCard}>
+                <View style={styles.waitingPulseBanner}>
+                  <ActivityIndicator size="small" color={ORANGE} />
+                  <Text style={styles.waitingPulseText}>
+                    Waiting for one of the {matchedProvidersList.length} matched provider{matchedProvidersList.length === 1 ? '' : 's'} below to accept…
+                  </Text>
+                </View>
 
-            </ScrollView>
+                <View style={{ gap: 10, marginTop: 10 }}>
+                  {matchedProvidersList.map((m) => {
+                    const pName = m.provider
+                      ? `${m.provider.first_name || ''} ${m.provider.last_name || ''}`.trim()
+                      : `Provider #${m.provider_id}`;
+                    const depLabel = formatDepartureTime(m.route?.departure_time, m.route?.route_frequency);
+                    return (
+                      <View key={`${m.route_id}-${m.provider_id}`} style={styles.multiProviderItem}>
+                        <View style={styles.matchedRow}>
+                          <View style={styles.multiAvatarWrap}>
+                            <View style={styles.multiAvatarCircle}>
+                              <SolarIcon name="User" variant="boldDuotone" size={20} color="#FFFFFF" />
+                            </View>
+                            <View style={styles.multiScoreBadge}>
+                              <Text style={styles.multiScoreText}>{Math.round(m.match_score)}%</Text>
+                            </View>
+                          </View>
 
+                          <View style={{ flex: 1 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <Text style={styles.matchedName} numberOfLines={1}>{pName}</Text>
+                            </View>
+
+                            <View style={styles.carDetailBox}>
+                              <View style={styles.carDetailRow}>
+                                <SolarIcon name="Car" variant="linear" size={12} color={colors.textSecondary} />
+                                <Text style={styles.carText} numberOfLines={1}>
+                                  {m.vehicle?.vehicle_type || 'Courier Vehicle'} · {m.vehicle?.plate_number || 'Assigned Route'}
+                                </Text>
+                              </View>
+                              {depLabel && (
+                                <View style={styles.carDetailRow}>
+                                  <SolarIcon name="Clock" variant="linear" size={12} color={ORANGE} />
+                                  <Text style={[styles.carText, { color: ORANGE }]}>
+                                    Departs: {depLabel}
+                                  </Text>
+                                </View>
+                              )}
+                              <View style={styles.carDetailRow}>
+                                <SolarIcon name="Star" variant="boldDuotone" size={12} color={colors.warning} />
+                                <Text style={styles.carText}>
+                                  {m.rating_count && m.rating_count > 0
+                                    ? `${Number(m.rating_avg || 0).toFixed(1)} (${m.rating_count} review${m.rating_count === 1 ? '' : 's'})`
+                                    : 'No reviews yet'}
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {receiver && (
+                  <>
+                    <View style={styles.matchedDivider} />
+                    <View style={styles.matchedReceiverRow}>
+                      <SolarIcon name="User" variant="linear" size={16} color={colors.textSecondary} />
+                      <View style={{ flex: 1, marginLeft: 8 }}>
+                        <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
+                        <Text style={styles.matchedReceiverName} numberOfLines={1}>
+                          {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
+                        </Text>
+                        <Text style={styles.matchedReceiverPhone} numberOfLines={1}>
+                          {receiver.receiver_phone || receiver.phone_number || '—'}
+                        </Text>
+                      </View>
+                    </View>
+                  </>
+                )}
+
+                <View style={styles.matchedDivider} />
+                <View style={styles.totalRow}>
+                  <View>
+                    <Text style={styles.totalLabel}>Total paid</Text>
+                    <Text style={styles.totalPaidBadge}>Held in escrow</Text>
+                  </View>
+                  <Text style={styles.totalValue}>
+                    ₱{totalEscrowAmount.toFixed(2)}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </DraggableSheet>
+
+          <Animated.View
+            style={[styles.dragFooter, { opacity: sheetAnim, paddingBottom: Math.max(insets.bottom, 16) }]}
+            onLayout={(e) => setFooterH(e.nativeEvent.layout.height)}
+          >
             <View style={styles.sheetFooter}>
-              {isWaitingForProviders ? (
-                <>
-                  <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
-                    <Text style={styles.confirmButtonText}>Wait in Background</Text>
-                    <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.cancelTextButton, { marginTop: 8 }]} onPress={handleCancelBooking} activeOpacity={0.85}>
-                    <Text style={styles.cancelTextButtonLabel}>Cancel Booking</Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
-                  <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
-                  <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
-                </TouchableOpacity>
-              )}
-            </View>
-          </Animated.View>
-        )}
-
-{/* --- NO MATCH STATE (10s elapsed -> Background Notification Mode) --- */}
-        {bookingState === 'no_match' && (
-          <Animated.View style={[styles.sheetCardNoMatch, sheetFadeUp, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-            <View style={styles.sheetHandle} />
-            <View style={styles.noMatchIconCircle}>
-              <Ionicons name="notifications-outline" size={34} color={ORANGE} />
-            </View>
-            <Text style={styles.noMatchTitle}>We'll Notify You When Matched!</Text>
-            <Text style={styles.noMatchSubtitle}>
-              Your delivery request is live and broadcasted to couriers along your route. You don't need to wait here — we'll send you a notification as soon as a provider accepts!
-            </Text>
-
-            <View style={styles.noMatchActions}>
-              <TouchableOpacity
-                style={[styles.noMatchBtn, styles.retryBtn]}
-                onPress={handleGoHome}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="checkmark-circle-outline" size={16} color="#FFFFFF" />
-                <Text style={styles.retryBtnText}>Got It, Go Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.noMatchBtn, styles.modifyBtn]}
-                onPress={handleTryAgain}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="refresh" size={15} color={colors.textSecondary} />
-                <Text style={styles.modifyBtnText}>Search 10s More</Text>
+              <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
+                <Text style={styles.confirmButtonText}>
+                  {isAcceptedByProvider ? 'Confirm & Proceed' : 'Keep Waiting in Background'}
+                </Text>
+                <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
           </Animated.View>
-        )}
-      </View>
+        </>
+      )}
 
       <TermsModal
         visible={termsOpen}
@@ -2432,6 +2286,19 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
   sheetCardCapped: { maxHeight: SHEET_MAX_H },
+  dragSheet: {
+    position: 'absolute', left: 0, right: 0,
+    backgroundColor: c.card, paddingHorizontal: 24,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
+  },
+  dragHandleHit: { alignItems: 'center', justifyContent: 'center', paddingTop: 10, paddingBottom: 10 },
+  dragHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
+  dragFooter: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 20,
+    backgroundColor: c.card, paddingHorizontal: 24, elevation: 14,
+  },
   sheetScroll: { flexGrow: 0, flexShrink: 1 },
   sheetScrollContent: { paddingBottom: 8 },
   sheetFooter: { paddingTop: 10, borderTopWidth: 1, borderTopColor: c.divider },
@@ -2571,27 +2438,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
-  waitingNote: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 10, borderRadius: 10,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, marginBottom: 10,
-  },
-  waitingNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 16 },
-  waitingProviderCard: {
-    padding: 10, borderRadius: 10, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, marginBottom: 8,
-  },
-  waitingProviderTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  waitingAvatar: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
-  },
-  waitingProviderName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  waitingProviderMeta: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
-  waitingScoreBadge: {
-    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: c.successBg,
-    borderWidth: 1, borderColor: c.success,
-  },
-  waitingScoreText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.success },
-  waitingProviderBottom: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 8, flexWrap: 'wrap' },
-  waitingInfoPill: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   matchedHeaderIcon: {
     width: 40, height: 40, borderRadius: 12, backgroundColor: c.successBg,
@@ -2618,10 +2464,38 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 2, borderColor: c.card,
   },
   matchedRightCol: { flex: 1 },
-  matchedName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6, letterSpacing: -0.2 },
+  matchedName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 4, letterSpacing: -0.2 },
   carDetailBox: { gap: 3 },
   carDetailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   carText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
+
+  waitingPulseBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  waitingPulseText: {
+    flex: 1, fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, lineHeight: 16,
+  },
+  multiProviderItem: {
+    backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: c.border,
+    padding: 12,
+  },
+  multiAvatarWrap: { width: 54, alignItems: 'center', marginRight: 12 },
+  multiAvatarCircle: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: ORANGE,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  multiScoreBadge: {
+    marginTop: -6, paddingHorizontal: 6, paddingVertical: 1,
+    borderRadius: 8, backgroundColor: c.success, borderWidth: 1.5, borderColor: c.card,
+  },
+  multiScoreText: { fontSize: 9.5, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  awaitingPill: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999,
+    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: ORANGE,
+  },
+  awaitingPillText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: ORANGE },
 
   departureBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 10,

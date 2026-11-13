@@ -381,6 +381,9 @@ export default function TaskScreen() {
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
+  // Track declined request IDs locally so optimistic removals stay hidden across refetches
+  const declinedReqIdsRef = useRef<Set<number>>(new Set());
+
   // --- Active Route Filter States (synced with JobsScreen via activeRouteStore) ---
   const [routes, setRoutes] = useState<any[]>([]);
   const [activeRoute, setActiveRoute] = useState<any | null>(null);
@@ -608,8 +611,15 @@ export default function TaskScreen() {
           ? overrideRouteId
           : (activeRouteRef.current?.route_id ?? (await getActiveRouteId()));
         const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
-        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
-        const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
+        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => Number(d.request_id)));
+
+        const filteredRows = rows.filter(m => {
+          const rId = Number(m.request?.request_id ?? m.request_id);
+          if (!m.request || !rId) return false;
+          if (doneIds.has(rId)) return false;
+          if (declinedReqIdsRef.current.has(rId)) return false;
+          return true;
+        });
 
         const senderIds = Array.from(new Set(filteredRows.map(m => m.request?.sender_id).filter(Boolean)));
         const senders: Record<number, any> = {};
@@ -2056,16 +2066,22 @@ export default function TaskScreen() {
     );
   };
 
-  // Decline a DIRECT request (the sender picked this provider from Explore). The sender is notified
-  // and the request is re-matched so another courier can pick it up.
+  // Decline a pending request (direct or route-matched) and immediately remove it from the Pending tab.
   const handleDeclinePendingMatch = (m: any) => {
     if (!providerId || decliningReqId != null || acceptingReqId != null) return;
-    const reqId = Number(m.request?.request_id);
+    const reqId = Number(m.request?.request_id ?? m.request_id);
     if (!reqId) return;
+
+    const isDirect =
+      m.request?.preferred_provider_id != null ||
+      m.request?.preferred_route_id != null ||
+      m.is_direct === true;
 
     Alert.alert(
       'Decline this request?',
-      'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.',
+      isDirect
+        ? 'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.'
+        : 'This request will be removed from your Pending list.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -2073,14 +2089,38 @@ export default function TaskScreen() {
           style: 'destructive',
           onPress: async () => {
             setDecliningReqId(reqId);
+
+            // 1. Optimistically remove from the Pending tab immediately and lock it out of future refetches
+            declinedReqIdsRef.current.add(reqId);
+            setPendingDeliveries(prev =>
+              prev.filter(item => Number(item.request?.request_id ?? item.request_id) !== reqId)
+            );
+
             try {
+              // 2. Call the matchingService helper to notify sender / release direct request
               const res = await declineDirectRequest(reqId, providerId);
-              if (!res.ok) {
-                Alert.alert('Could not decline', res.message);
-              } else if (!res.released) {
-                Alert.alert('Request unavailable', 'This request was already accepted, cancelled or reassigned.');
+
+              // 3. Ensure DB rows in route_request_matches and delivery_requests are cleaned up
+              // so fetchPendingRequestsForProvider never returns this request for this provider again.
+              await supabase
+                .from('route_request_matches')
+                .update({ status: 'revoked' })
+                .eq('request_id', reqId)
+                .eq('provider_id', providerId);
+
+              await supabase
+                .from('delivery_requests')
+                .update({ preferred_provider_id: null, preferred_route_id: null })
+                .eq('request_id', reqId)
+                .eq('preferred_provider_id', providerId);
+
+              if (!res.ok && isDirect) {
+                console.warn('[Task] declineDirectRequest warning:', res.message);
               }
+
               await fetchDeliveries(providerId);
+            } catch (err: any) {
+              console.warn('[Task] decline error:', err?.message || err);
             } finally {
               setDecliningReqId(null);
             }
@@ -2091,13 +2131,17 @@ export default function TaskScreen() {
   };
 
   const renderPendingCard = (m: any) => {
+    const reqId = Number(m.request?.request_id ?? m.request_id);
     const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
-    const isDirect = m.request?.preferred_provider_id != null;
-    const isBusy = acceptingReqId === m.request_id;
-    const isDeclining = decliningReqId === m.request_id;
+    const isDirect =
+      m.request?.preferred_provider_id != null ||
+      m.request?.preferred_route_id != null ||
+      m.is_direct === true;
+    const isBusy = acceptingReqId === reqId;
+    const isDeclining = decliningReqId === reqId;
 
     return (
-      <View key={`pending-${m.request_id}`} style={styles.oCard}>
+      <View key={`pending-${reqId}`} style={styles.oCard}>
         <View style={styles.oPad}>
           <View style={styles.oTopRow}>
             {renderServicePill(info)}
@@ -2157,7 +2201,7 @@ export default function TaskScreen() {
           <TouchableOpacity
             style={[styles.oRouteBtn, isBusy && { opacity: 0.7 }]}
             onPress={() => handleAcceptPendingMatch(m)}
-            disabled={isBusy}
+            disabled={isBusy || isDeclining}
             activeOpacity={0.9}
           >
             {isBusy ? (
@@ -2171,25 +2215,23 @@ export default function TaskScreen() {
           </TouchableOpacity>
         </View>
 
-        {isDirect && (
-          <View style={styles.oDeclineRow}>
-            <TouchableOpacity
-              style={[styles.oDeclineBtn, (isDeclining || isBusy) && { opacity: 0.6 }]}
-              onPress={() => handleDeclinePendingMatch(m)}
-              disabled={isDeclining || isBusy}
-              activeOpacity={0.85}
-            >
-              {isDeclining ? (
-                <ActivityIndicator size="small" color={colors.error} />
-              ) : (
-                <>
-                  <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
-                  <Text style={styles.oDeclineText}>Decline Request</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
+        <View style={styles.oDeclineRow}>
+          <TouchableOpacity
+            style={[styles.oDeclineBtn, (isDeclining || isBusy) && { opacity: 0.6 }]}
+            onPress={() => handleDeclinePendingMatch(m)}
+            disabled={isDeclining || isBusy}
+            activeOpacity={0.85}
+          >
+            {isDeclining ? (
+              <ActivityIndicator size="small" color={colors.error} />
+            ) : (
+              <>
+                <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
+                <Text style={styles.oDeclineText}>Decline Request</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
     );
   };
