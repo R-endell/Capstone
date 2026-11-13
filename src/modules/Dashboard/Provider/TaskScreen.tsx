@@ -15,6 +15,7 @@ import { formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries,
   fetchPendingRequestsForProvider,
+  declineDirectRequest,
   computeCargoVolumeLiters,
   SHIPMENT_SIZE_SPECS,
 } from '../../../services/matchingService';
@@ -395,6 +396,7 @@ export default function TaskScreen() {
 
   const [pingingId, setPingingId] = useState<number | null>(null);
   const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
+  const [decliningReqId, setDecliningReqId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -2054,10 +2056,45 @@ export default function TaskScreen() {
     );
   };
 
+  // Decline a DIRECT request (the sender picked this provider from Explore). The sender is notified
+  // and the request is re-matched so another courier can pick it up.
+  const handleDeclinePendingMatch = (m: any) => {
+    if (!providerId || decliningReqId != null || acceptingReqId != null) return;
+    const reqId = Number(m.request?.request_id);
+    if (!reqId) return;
+
+    Alert.alert(
+      'Decline this request?',
+      'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Decline',
+          style: 'destructive',
+          onPress: async () => {
+            setDecliningReqId(reqId);
+            try {
+              const res = await declineDirectRequest(reqId, providerId);
+              if (!res.ok) {
+                Alert.alert('Could not decline', res.message);
+              } else if (!res.released) {
+                Alert.alert('Request unavailable', 'This request was already accepted, cancelled or reassigned.');
+              }
+              await fetchDeliveries(providerId);
+            } finally {
+              setDecliningReqId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const renderPendingCard = (m: any) => {
     const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
     const isDirect = m.request?.preferred_provider_id != null;
     const isBusy = acceptingReqId === m.request_id;
+    const isDeclining = decliningReqId === m.request_id;
 
     return (
       <View key={`pending-${m.request_id}`} style={styles.oCard}>
@@ -2133,6 +2170,26 @@ export default function TaskScreen() {
             )}
           </TouchableOpacity>
         </View>
+
+        {isDirect && (
+          <View style={styles.oDeclineRow}>
+            <TouchableOpacity
+              style={[styles.oDeclineBtn, (isDeclining || isBusy) && { opacity: 0.6 }]}
+              onPress={() => handleDeclinePendingMatch(m)}
+              disabled={isDeclining || isBusy}
+              activeOpacity={0.85}
+            >
+              {isDeclining ? (
+                <ActivityIndicator size="small" color={colors.error} />
+              ) : (
+                <>
+                  <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
+                  <Text style={styles.oDeclineText}>Decline Request</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -3735,6 +3792,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   oPrice: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  oDeclineRow: { paddingHorizontal: 14, paddingBottom: 14 },
+  oDeclineBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error, borderRadius: 14, paddingVertical: 12 },
+  oDeclineText: { color: c.error, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
   oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },

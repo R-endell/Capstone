@@ -110,11 +110,46 @@ const formatDepartureTime = (isoString: string | null | undefined, routeFreq?: s
   }
 };
 
+interface MatchedProviderOption {
+  providerId: number;
+  routeId: number;
+  name: string;
+  vehicleType: string;
+  plateNumber: string;
+  departureTime: string | null;
+  routeFrequency: string | null;
+  matchScore: number | null;
+  ratingAvg: number;
+  ratingCount: number;
+}
+
 interface ProviderRating {
   avg: number;
   count: number;
   recent: { rating: number; comment: string | null; created_at: string }[];
 }
+
+const fireDirectDeclinedNotification = async (providerName: string, requestId: number) => {
+  try {
+    const trackingId = `PNS-${String(requestId).padStart(4, '0')}`;
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Courier declined your request',
+        body: `${providerName} can't take delivery #${trackingId}. We're finding another courier for you.`,
+        data: { type: 'direct_request_declined', requestId },
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: 1,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn('[BookingScreen] local declined notif failed:', err);
+  }
+};
 
 const fireMatchNotification = async (providerName: string, plate: string, deliveryId: number) => {
   try {
@@ -258,6 +293,10 @@ export default function BookingScreen({ route, navigation }: any) {
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
 
+  // Providers whose routes match this request. NONE of them is assigned automatically:
+  // the sender waits here until one of them accepts (which creates a `deliveries` row).
+  const [matchedProviders, setMatchedProviders] = useState<MatchedProviderOption[]>([]);
+
   const resumeRequestId: number | undefined = route.params?.requestId ?? route.params?.request_id;
   const isResume = !!route.params?.resume && !!resumeRequestId;
   const [resumeInfo, setResumeInfo] = useState<any>(null);
@@ -301,6 +340,15 @@ export default function BookingScreen({ route, navigation }: any) {
   });
 
   const [receiver, setReceiver] = useState<any>(state.receiver || null);
+
+  // "Waiting" = matched providers are listed, but nobody has accepted yet and it is not a direct request.
+  const isWaitingForProviders =
+    bookingState === 'matched' && matchFound && !isAcceptedByProvider && !isDirectPreferredProvider;
+  const waitingRef = useRef(false);
+  waitingRef.current = isWaitingForProviders;
+  const bookingStateRef = useRef(bookingState);
+  const declineHandledRef = useRef<number | null>(null);
+  bookingStateRef.current = bookingState;
 
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
   // --- PHASE 1: Pre-Authorization & Escrow Math ---
@@ -664,6 +712,211 @@ export default function BookingScreen({ route, navigation }: any) {
     }
   };
 
+  /**
+   * Turns `route_request_matches` rows into display cards (name, vehicle, departure, rating).
+   * Pure read - nothing is assigned to the request here.
+   */
+  const buildMatchedProviderOptions = async (matches: any[]): Promise<MatchedProviderOption[]> => {
+    if (!matches || matches.length === 0) return [];
+    const providerIds = Array.from(new Set(matches.map((m: any) => Number(m.provider_id))));
+    const routeIds = Array.from(new Set(matches.map((m: any) => Number(m.route_id))));
+
+    const [usersRes, routesRes, ratingsRes] = await Promise.all([
+      supabase.from('users').select('user_id, first_name, last_name').in('user_id', providerIds),
+      supabase
+        .from('provider_routes')
+        .select('route_id, departure_time, route_frequency, vehicle:vehicles!provider_routes_vehicle_id_fkey(vehicle_type, plate_number)')
+        .in('route_id', routeIds),
+      supabase.from('ratings_reviews').select('reviewee_id, rating').in('reviewee_id', providerIds),
+    ]);
+
+    const userMap = new Map<number, any>();
+    (usersRes.data || []).forEach((u: any) => userMap.set(Number(u.user_id), u));
+
+    const routeMap = new Map<number, any>();
+    (routesRes.data || []).forEach((r: any) => routeMap.set(Number(r.route_id), r));
+
+    const ratingAgg = new Map<number, { sum: number; count: number }>();
+    (ratingsRes.data || []).forEach((r: any) => {
+      const id = Number(r.reviewee_id);
+      const cur = ratingAgg.get(id) || { sum: 0, count: 0 };
+      cur.sum += Number(r.rating || 0);
+      cur.count += 1;
+      ratingAgg.set(id, cur);
+    });
+
+    const seen = new Set<number>();
+    const options: MatchedProviderOption[] = [];
+    for (const m of matches) {
+      const providerId = Number(m.provider_id);
+      if (seen.has(providerId)) continue; // one card per provider
+      seen.add(providerId);
+
+      const u = userMap.get(providerId);
+      const r = routeMap.get(Number(m.route_id));
+      const vehicle = r ? (Array.isArray(r.vehicle) ? r.vehicle[0] : r.vehicle) : null;
+      const agg = ratingAgg.get(providerId);
+
+      options.push({
+        providerId,
+        routeId: Number(m.route_id),
+        name: u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'Courier' : 'Courier',
+        vehicleType: vehicle?.vehicle_type || 'Courier Vehicle',
+        plateNumber: vehicle?.plate_number || '—',
+        departureTime: r?.departure_time ?? null,
+        routeFrequency: r?.route_frequency ?? null,
+        matchScore: m.match_score != null ? Number(m.match_score) : null,
+        ratingAvg: agg && agg.count > 0 ? Number((agg.sum / agg.count).toFixed(1)) : 0,
+        ratingCount: agg?.count ?? 0,
+      });
+    }
+    return options;
+  };
+
+  /**
+   * Shows every matched provider on the Booking screen and waits.
+   * Deliberately does NOT write preferred_provider_id / preferred_route_id, so the request stays
+   * open to all matched routes and the first provider to accept it wins.
+   */
+  const showMatchedProviders = async (matches: any[]) => {
+    const options = await buildMatchedProviderOptions(matches);
+    if (options.length === 0) return;
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    setMatchedProviders(options);
+    setProviderData(null);
+    setDepartureTime(null);
+    setRouteFrequency(null);
+    setProviderRating(null);
+    setIsDirectPreferredProvider(false);
+    setIsAcceptedByProvider(false);
+    setMatchFound(true);
+    setIsSearching(false);
+    setBookingState('matched');
+  };
+
+  /** Re-reads the live matches for a request (called on realtime changes to route_request_matches). */
+  const refreshMatchedProviders = async (requestId: number) => {
+    const state_ = bookingStateRef.current;
+    // Once a provider accepted, or the sender cancelled / is still reviewing, the list no longer matters.
+    if (state_ === 'review') return;
+    if (state_ === 'matched' && !waitingRef.current) return;
+
+    const { data: rows } = await supabase
+      .from('route_request_matches')
+      .select('match_id, route_id, provider_id, match_score, status')
+      .eq('request_id', requestId)
+      .eq('status', 'matched')
+      .order('match_score', { ascending: false });
+
+    if (!rows || rows.length === 0) {
+      setMatchedProviders([]);
+      if (waitingRef.current) {
+        // Every matched provider dropped out - go back to background-notification mode.
+        setMatchFound(false);
+        setBookingState('no_match');
+      }
+      return;
+    }
+    await showMatchedProviders(rows);
+  };
+
+  /** A provider accepted: a `deliveries` row now exists for this request. */
+  const handleProviderAccepted = async (delivery: any) => {
+    const [{ data: provider }, { data: vehicle }] = await Promise.all([
+      supabase.from('users').select('first_name, last_name, phone_number').eq('user_id', delivery.provider_id).single(),
+      supabase.from('vehicles').select('vehicle_type, plate_number, max_weight_kg').eq('vehicle_id', delivery.vehicle_id).single(),
+    ]);
+
+    if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
+    if (delivery.provider_id) loadProviderRating(delivery.provider_id);
+    await loadProviderDeparture(delivery.route_id, delivery.provider_id);
+
+    fireMatchNotification(
+      provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
+      vehicle?.plate_number || '—',
+      delivery.delivery_id,
+    );
+
+    setMatchedProviders([]);
+    setIsDirectPreferredProvider(false);
+    setIsAcceptedByProvider(true);
+    setMatchFound(true);
+    setIsSearching(false);
+    setBookingState('matched');
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+      searchTimeoutRef.current = null;
+    }
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+  };
+
+  /** One realtime channel per request: provider acceptance + changes to the matched-provider list. */
+  const attachRequestListener = (requestId: number) => {
+    supabase
+      .getChannels()
+      .filter((c: any) => c.topic === `realtime:match-listener-${requestId}`)
+      .forEach((c: any) => supabase.removeChannel(c));
+    if (matchChannelRef.current) {
+      supabase.removeChannel(matchChannelRef.current);
+      matchChannelRef.current = null;
+    }
+
+    const channel = supabase
+      .channel(`match-listener-${requestId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
+        async (payload) => { await handleProviderAccepted(payload.new); }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'route_request_matches', filter: `request_id=eq.${requestId}` },
+        async () => { await refreshMatchedProviders(requestId); }
+      )
+      .subscribe();
+
+    matchChannelRef.current = channel;
+  };
+
+  /**
+   * The preferred provider (picked from Explore) dismissed the request. Tell the sender and
+   * go back to searching for another courier for the SAME paid request.
+   */
+  const handleDirectProviderDeclined = async (requestId: number) => {
+    if (declineHandledRef.current === requestId) return;
+    declineHandledRef.current = requestId;
+
+    const name =
+      (providerData ? `${providerData.first_name || ''} ${providerData.last_name || ''}`.trim() : '') ||
+      state.preferredProviderName ||
+      'The courier you selected';
+
+    fireDirectDeclinedNotification(name, requestId);
+    Alert.alert('Courier declined', `${name} declined your request. We're finding another courier for you.`);
+
+    setIsDirectPreferredProvider(false);
+    setIsAcceptedByProvider(false);
+    setMatchFound(false);
+    setProviderData(null);
+    setDepartureTime(null);
+    setRouteFrequency(null);
+    setProviderRating(null);
+    setMatchedProviders([]);
+    preferredAtPaymentRef.current = { requestId: null, providerId: null, routeId: null, name: null };
+
+    searchStartRef.current = Date.now();
+    setIsSearching(true);
+    setBookingState('finding');
+    await startMatching({ reuseRequestId: requestId });
+  };
+
   const finalizePreferredProviderBooking = async (opts: {
     requestId: number;
     providerId: number;
@@ -795,41 +1048,6 @@ export default function BookingScreen({ route, navigation }: any) {
       setSavedRequestId(requestId);
       searchStartTimes.set(requestId, searchStartRef.current ?? Date.now());
 
-      // 1. Evaluate all active provider routes today that haven't departed yet
-      //    (e.g. booked at 8:00 AM, provider route leaves at 10:00 AM -> matches!
-      //     booked at 11:00 AM, provider route left at 10:00 AM -> does NOT match!)
-      let matchedRoutes: any[] = [];
-      try {
-        matchedRoutes = await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
-      } catch (e) {
-        console.warn('[BookingScreen] route matching failed:', e);
-      }
-
-      // 2. If a valid same-day route match was found before departure, immediately show the
-      //    Matched Provider card with their Time of Departure, and link the request so it
-      //    appears in the Provider's JobsScreen (realtime) and TaskScreen -> Pending tab!
-      if (matchedRoutes.length > 0) {
-        const bestMatch = matchedRoutes[0];
-        try {
-          await supabase
-            .from('delivery_requests')
-            .update({
-              preferred_provider_id: bestMatch.provider_id,
-              preferred_route_id: bestMatch.route_id,
-            })
-            .eq('request_id', requestId);
-        } catch {}
-
-        await finalizePreferredProviderBooking({
-          requestId,
-          providerId: bestMatch.provider_id,
-          routeId: bestMatch.route_id,
-          notifyProvider: false, // already notified inside syncAllActiveRoutesTodayForRequest
-          isAutoRouteMatch: true,
-        });
-        return;
-      }
-
       if (matchChannelRef.current) {
         supabase.removeChannel(matchChannelRef.current);
         matchChannelRef.current = null;
@@ -839,88 +1057,32 @@ export default function BookingScreen({ route, navigation }: any) {
         searchTimeoutRef.current = null;
       }
 
-      // 3. Otherwise, listen in real time for either:
-      //    - a provider accepting the request into `deliveries`, OR
-      //    - a new route match appearing in `route_request_matches`
-      const matchChannel = supabase
-        .channel(`match-listener-${requestId}`)
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
-          async (payload) => {
-            const delivery = payload.new;
+      // Listen first so a fast acceptance / new match is never missed. The channel reports:
+      //  - a provider accepting the request (new `deliveries` row)
+      //  - matched providers appearing / disappearing (`route_request_matches`)
+      attachRequestListener(requestId);
 
-            const { data: provider } = await supabase
-              .from('users')
-              .select('first_name, last_name, phone_number')
-              .eq('user_id', delivery.provider_id)
-              .single();
-            const { data: vehicle } = await supabase
-              .from('vehicles')
-              .select('vehicle_type, plate_number, max_weight_kg')
-              .eq('vehicle_id', delivery.vehicle_id)
-              .single();
+      // 1. Evaluate every active provider route running today that hasn't departed yet.
+      //    All matching providers are notified (inside the sync call) so any of them can accept.
+      let matchedRoutes: any[] = [];
+      try {
+        matchedRoutes = await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
+      } catch (e) {
+        console.warn('[BookingScreen] route matching failed:', e);
+      }
 
-            if (provider && vehicle) setProviderData({ ...provider, ...vehicle });
-            if (delivery.provider_id) loadProviderRating(delivery.provider_id);
+      // 2. One OR MORE routes match: DO NOT assign anyone. Show them all and wait for acceptance.
+      if (matchedRoutes.length > 0) {
+        await showMatchedProviders(matchedRoutes);
+        return;
+      }
 
-            await loadProviderDeparture(delivery.route_id, delivery.provider_id);
-
-            fireMatchNotification(
-              provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
-              vehicle?.plate_number || '—',
-              delivery.delivery_id,
-            );
-
-            setIsDirectPreferredProvider(false);
-            setIsAcceptedByProvider(true);
-            setMatchFound(true);
-            setBookingState('matched');
-            setIsSearching(false);
-
-            if (searchTimeoutRef.current) {
-              clearTimeout(searchTimeoutRef.current);
-              searchTimeoutRef.current = null;
-            }
-            supabase.removeChannel(matchChannel);
-            matchChannelRef.current = null;
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'route_request_matches', filter: `request_id=eq.${requestId}` },
-          async (payload) => {
-            const m: any = payload.new;
-            if (!m || m.status !== 'matched') return;
-
-            if (searchTimeoutRef.current) {
-              clearTimeout(searchTimeoutRef.current);
-              searchTimeoutRef.current = null;
-            }
-            supabase.removeChannel(matchChannel);
-            matchChannelRef.current = null;
-
-            await finalizePreferredProviderBooking({
-              requestId,
-              providerId: Number(m.provider_id),
-              routeId: Number(m.route_id),
-              notifyProvider: false,
-              isAutoRouteMatch: true,
-            });
-          }
-        )
-        .subscribe();
-
-      matchChannelRef.current = matchChannel;
-
+      // 3. No match yet: keep searching. The listener stays attached so a provider who matches or
+      //    accepts later still shows up; after the timeout we switch to background-notification mode.
       searchTimeoutRef.current = setTimeout(() => {
         searchTimeoutRef.current = null;
         setBookingState(prev => (prev === 'finding' ? 'no_match' : prev));
         setIsSearching(false);
-        if (matchChannelRef.current) {
-          supabase.removeChannel(matchChannelRef.current);
-          matchChannelRef.current = null;
-        }
       }, SEARCH_DURATION_MS);
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to process your booking. Please try again.');
@@ -1017,14 +1179,9 @@ export default function BookingScreen({ route, navigation }: any) {
 
       const matchedNow = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
       if (matchedNow.length > 0) {
-        const best = matchedNow[0];
-        await finalizePreferredProviderBooking({
-          requestId,
-          providerId: best.provider_id,
-          routeId: best.route_id,
-          notifyProvider: false,
-          isAutoRouteMatch: true,
-        });
+        // Several providers may match: list them all and wait for one to accept (no auto-assign).
+        setResumeSubId(requestId); // attaches the realtime listener
+        await showMatchedProviders(matchedNow);
         return;
       }
 
@@ -1046,54 +1203,52 @@ export default function BookingScreen({ route, navigation }: any) {
   }, [isResume, resumeRequestId]);
 
   useEffect(() => {
-    if (bookingState !== 'finding' || !resumeSubId) return;
+    if (!resumeSubId) return;
     const requestId = resumeSubId;
+    attachRequestListener(requestId);
 
-    supabase.getChannels().filter((c: any) => c.topic === `realtime:match-listener-${requestId}`).forEach((c: any) => supabase.removeChannel(c));
+    return () => {
+      supabase
+        .getChannels()
+        .filter((c: any) => c.topic === `realtime:match-listener-${requestId}`)
+        .forEach((c: any) => supabase.removeChannel(c));
+      matchChannelRef.current = null;
+    };
+  }, [resumeSubId]);
 
+  // While a request sits with the selected (direct) provider, watch for a decline or an acceptance.
+  const handleDirectDeclinedRef = useRef<(id: number) => void>(() => {});
+  handleDirectDeclinedRef.current = (id: number) => { void handleDirectProviderDeclined(id); };
+  const handleAcceptedRef = useRef<(d: any) => void>(() => {});
+  handleAcceptedRef.current = (d: any) => { void handleProviderAccepted(d); };
+
+  const directWatchActive =
+    bookingState === 'matched' && matchFound && isDirectPreferredProvider && !isAcceptedByProvider;
+
+  useEffect(() => {
+    if (!directWatchActive || !savedRequestId) return;
+    const requestId = savedRequestId;
     const channel = supabase
-      .channel(`match-listener-${requestId}`)
+      .channel(`direct-watch-${requestId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'delivery_requests', filter: `request_id=eq.${requestId}` },
+        (payload: any) => {
+          const row = payload.new;
+          if (row && row.preferred_provider_id == null && row.delivery_status === 'Pending') {
+            handleDirectDeclinedRef.current(requestId);
+          }
+        }
+      )
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'deliveries', filter: `request_id=eq.${requestId}` },
-        async (payload) => {
-          const delivery = payload.new;
-          await loadProviderForDelivery(delivery);
-
-          const { data: provider } = await supabase
-            .from('users')
-            .select('first_name, last_name')
-            .eq('user_id', delivery.provider_id)
-            .single();
-          const { data: vehicle } = await supabase
-            .from('vehicles')
-            .select('plate_number')
-            .eq('vehicle_id', delivery.vehicle_id)
-            .single();
-
-          fireMatchNotification(
-            provider ? `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'A courier' : 'A courier',
-            vehicle?.plate_number || '—',
-            delivery.delivery_id,
-          );
-
-          setIsDirectPreferredProvider(false);
-          setIsAcceptedByProvider(true);
-          setMatchFound(true);
-          setBookingState('matched');
-          setIsSearching(false);
-          supabase.removeChannel(channel);
-        }
+        (payload: any) => { handleAcceptedRef.current(payload.new); }
       )
       .subscribe();
 
-    matchChannelRef.current = channel;
-
-    return () => {
-      supabase.removeChannel(channel);
-      if (matchChannelRef.current === channel) matchChannelRef.current = null;
-    };
-  }, [bookingState, resumeSubId]);
+    return () => { supabase.removeChannel(channel); };
+  }, [directWatchActive, savedRequestId]);
 
   useEffect(() => {
     const justPaid = route.params?.paymentJustCompleted;
@@ -1435,6 +1590,7 @@ export default function BookingScreen({ route, navigation }: any) {
       }
 
       setResumeSubId(null);
+      setMatchedProviders([]);
       preferredAtPaymentRef.current = { requestId: null, providerId: null, routeId: null, name: null };
 
       if (cancelledRequestId != null) {
@@ -1967,16 +2123,95 @@ export default function BookingScreen({ route, navigation }: any) {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.matchedHeaderTitle}>
-                    {isAcceptedByProvider ? 'Provider Accepted!' : 'Provider Matched!'}
+                    {isAcceptedByProvider
+                      ? 'Provider Accepted!'
+                      : isWaitingForProviders
+                        ? `${matchedProviders.length} Provider${matchedProviders.length === 1 ? '' : 's'} Matched`
+                        : 'Provider Matched!'}
                   </Text>
                   <Text style={styles.matchedHeaderSub}>
                     {isAcceptedByProvider
                       ? 'Your delivery partner is on the way'
-                      : 'Matched with a provider traveling along your route today'}
+                      : isWaitingForProviders
+                        ? 'Waiting for one of them to accept your request'
+                        : 'Matched with a provider traveling along your route today'}
                   </Text>
                 </View>
               </View>
 
+              {isWaitingForProviders ? (
+                <View style={styles.matchedInnerCard}>
+                  <View style={styles.waitingNote}>
+                    <SolarIcon name="Clock" variant="bold" size={16} color={ORANGE} />
+                    <Text style={styles.waitingNoteText}>
+                      No provider is assigned yet. The first matched provider to accept will be confirmed here and you'll be notified.
+                    </Text>
+                  </View>
+
+                  {matchedProviders.map((p) => {
+                    const dep = formatDepartureTime(p.departureTime, p.routeFrequency);
+                    return (
+                      <View key={`${p.providerId}-${p.routeId}`} style={styles.waitingProviderCard}>
+                        <View style={styles.waitingProviderTop}>
+                          <View style={styles.waitingAvatar}>
+                            <SolarIcon name="User" variant="boldDuotone" size={20} color="#FFFFFF" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.waitingProviderName} numberOfLines={1}>{p.name}</Text>
+                            <Text style={styles.waitingProviderMeta} numberOfLines={1}>
+                              {p.vehicleType} · {p.plateNumber}
+                            </Text>
+                          </View>
+                          {p.matchScore != null && (
+                            <View style={styles.waitingScoreBadge}>
+                              <Text style={styles.waitingScoreText}>{p.matchScore}%</Text>
+                            </View>
+                          )}
+                        </View>
+                        <View style={styles.waitingProviderBottom}>
+                          <View style={styles.waitingInfoPill}>
+                            <SolarIcon name="Clock" variant="linear" size={12} color={colors.textSecondary} />
+                            <Text style={styles.waitingProviderMeta}>{dep ? `Departs ${dep}` : 'Departure time n/a'}</Text>
+                          </View>
+                          <View style={styles.waitingInfoPill}>
+                            <SolarIcon name="Star" variant={p.ratingCount > 0 ? 'boldDuotone' : 'linear'} size={12} color={colors.warning} />
+                            <Text style={styles.waitingProviderMeta}>
+                              {p.ratingCount > 0 ? `${p.ratingAvg.toFixed(1)} (${p.ratingCount})` : 'No reviews yet'}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+
+                  {receiver && (
+                    <>
+                      <View style={styles.matchedDivider} />
+                      <View style={styles.matchedReceiverRow}>
+                        <SolarIcon name="User" variant="linear" size={16} color={colors.textSecondary} />
+                        <View style={{ flex: 1, marginLeft: 8 }}>
+                          <Text style={styles.matchedReceiverLabel}>CONFIRMED RECEIVER</Text>
+                          <Text style={styles.matchedReceiverName} numberOfLines={1}>
+                            {receiver.receiver_name || `${receiver.first_name || ''} ${receiver.last_name || ''}`.trim() || 'Selected Receiver'}
+                          </Text>
+                          <Text style={styles.matchedReceiverPhone} numberOfLines={1}>
+                            {receiver.receiver_phone || receiver.phone_number || '—'}
+                          </Text>
+                        </View>
+                      </View>
+                    </>
+                  )}
+
+                  <View style={styles.matchedDivider} />
+                  <View style={styles.totalRow}>
+                    <View>
+                      <Text style={styles.totalLabel}>Total paid</Text>
+                      <Text style={styles.totalPaidBadge}>Held in escrow</Text>
+                    </View>
+                    <Text style={styles.totalValue}>₱{totalEscrowAmount.toFixed(2)}</Text>
+                  </View>
+                </View>
+              ) : (
               <View style={styles.matchedInnerCard}>
                 <View style={styles.matchedRow}>
                   <View style={styles.matchedLeftCol}>
@@ -2102,14 +2337,27 @@ export default function BookingScreen({ route, navigation }: any) {
                   </Text>
                 </View>
               </View>
+              )}
 
             </ScrollView>
 
             <View style={styles.sheetFooter}>
-              <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
-                <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
-                <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
-              </TouchableOpacity>
+              {isWaitingForProviders ? (
+                <>
+                  <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
+                    <Text style={styles.confirmButtonText}>Wait in Background</Text>
+                    <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.cancelTextButton, { marginTop: 8 }]} onPress={handleCancelBooking} activeOpacity={0.85}>
+                    <Text style={styles.cancelTextButtonLabel}>Cancel Booking</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity style={styles.confirmButton} onPress={handleConfirmAction} activeOpacity={0.9}>
+                  <Text style={styles.confirmButtonText}>Confirm & Proceed</Text>
+                  <SolarIcon name="AltArrowRight" variant="bold" size={16} color="#FFFFFF" />
+                </TouchableOpacity>
+              )}
             </View>
           </Animated.View>
         )}
@@ -2323,6 +2571,27 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: -6 },
     shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 12,
   },
+  waitingNote: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 10, borderRadius: 10,
+    backgroundColor: c.card, borderWidth: 1, borderColor: c.border, marginBottom: 10,
+  },
+  waitingNoteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, lineHeight: 16 },
+  waitingProviderCard: {
+    padding: 10, borderRadius: 10, backgroundColor: c.card, borderWidth: 1, borderColor: c.border, marginBottom: 8,
+  },
+  waitingProviderTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  waitingAvatar: {
+    width: 38, height: 38, borderRadius: 19, backgroundColor: ORANGE, justifyContent: 'center', alignItems: 'center',
+  },
+  waitingProviderName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  waitingProviderMeta: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  waitingScoreBadge: {
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: c.successBg,
+    borderWidth: 1, borderColor: c.success,
+  },
+  waitingScoreText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.success },
+  waitingProviderBottom: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 8, flexWrap: 'wrap' },
+  waitingInfoPill: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   matchedHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   matchedHeaderIcon: {
     width: 40, height: 40, borderRadius: 12, backgroundColor: c.successBg,

@@ -472,6 +472,8 @@ async function evaluatePairAndUpsertMatch(
     : Math.max(60, Math.min(99, Math.round(100 - (avgDistM / fallbackMaxM) * 35)));
 
   if (existingMatch) {
+    // The provider explicitly declined this request: never bring it back to them.
+    if (existingMatch.status === 'declined') return false;
     if (existingMatch.status === 'expired' || existingMatch.status === 'revoked') {
       await supabase
         .from('route_request_matches')
@@ -1059,5 +1061,85 @@ export async function getMatchingStats(providerId: number) {
   } catch (error) {
     console.error('Error getting matching stats:', error);
     return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Provider declines a DIRECT request (sender picked them on Explore)  */
+/* ------------------------------------------------------------------ */
+export type DeclineDirectResult =
+  | { ok: true; released: boolean } // released=false -> request was no longer addressed to this provider
+  | { ok: false; message: string };
+
+/**
+ * Releases a request the sender addressed to this provider, notifies the sender, and re-runs matching
+ * so another courier can pick it up. Used by JobsScreen (Dismiss) and TaskScreen (Pending -> Decline).
+ */
+export async function declineDirectRequest(
+  requestId: number,
+  providerId: number,
+): Promise<DeclineDirectResult> {
+  try {
+    const { data: reqRow } = await supabase
+      .from('delivery_requests')
+      .select('sender_id, delivery_status, preferred_provider_id')
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    // Already taken / cancelled / reassigned: nothing to release.
+    if (
+      !reqRow ||
+      reqRow.delivery_status !== 'Pending' ||
+      Number(reqRow.preferred_provider_id) !== Number(providerId)
+    ) {
+      return { ok: true, released: false };
+    }
+
+    const rpcRes = await supabase.rpc('decline_direct_request', { p_request_id: requestId });
+    if (!rpcRes.error) {
+      const released = rpcRes.data === true || (Array.isArray(rpcRes.data) && rpcRes.data[0] === true);
+      if (!released) return { ok: true, released: false };
+    } else {
+      // Fallback when the SQL function is not installed: plain updates (requires RLS to allow them).
+      const { data: upd, error: upErr } = await supabase
+        .from('delivery_requests')
+        .update({ preferred_provider_id: null, preferred_route_id: null })
+        .eq('request_id', requestId)
+        .eq('preferred_provider_id', providerId)
+        .eq('delivery_status', 'Pending')
+        .select('request_id');
+      if (upErr || !upd || upd.length === 0) {
+        return { ok: false, message: upErr?.message || 'The request could not be released. Please try again.' };
+      }
+      await supabase
+        .from('route_request_matches')
+        .update({ status: 'declined' })
+        .eq('request_id', requestId)
+        .eq('provider_id', providerId);
+    }
+
+    if (reqRow.sender_id) {
+      try {
+        await notifyUser(
+          reqRow.sender_id,
+          'Courier declined your request',
+          `The courier you selected can't take parcel #PNS-${String(requestId).padStart(4, '0')}. We're finding another courier for you.`,
+          { type: 'direct_request_declined', requestId, role: 'sender' },
+        );
+      } catch (err) {
+        console.warn('[matchingService] notify sender decline failed', err);
+      }
+    }
+
+    // Find another courier: re-run matching for the now-open request (notifies matching providers).
+    try {
+      await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
+    } catch (err) {
+      console.warn('[matchingService] re-match after decline failed', err);
+    }
+
+    return { ok: true, released: true };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Failed to decline this request.' };
   }
 }

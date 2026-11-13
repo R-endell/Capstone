@@ -391,6 +391,13 @@ export default function ActivityScreen() {
   const { dispatch: scheduleDispatch } = useSchedule();
 
   const hasLoadedRef = useRef(false);
+
+  // Direct requests (sender picked a courier on Explore) whose courier declined while still open.
+  const [declinedNotices, setDeclinedNotices] = useState<{ requestId: number; providerName: string; at: number }[]>([]);
+  const directStoreRef = useRef<{
+    picks: Record<string, string>;
+    declined: { requestId: number; providerName: string; at: number }[];
+  } | null>(null);
   // Guards against out-of-order responses when realtime fires several refreshes back-to-back.
   const fetchSeqRef = useRef(0);
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
@@ -590,6 +597,66 @@ export default function ActivityScreen() {
       const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).maybeSingle();
       return userRecord?.user_id || null;
     } catch { return null; }
+  };
+
+  const directStoreKey = (uid: number) => `packnship.activity.directPicks.${uid}`;
+
+  /**
+   * Remembers which open requests are waiting on a chosen courier. When one of them loses its chosen
+   * courier but is still Pending (the courier declined), the sender gets a notice on this screen.
+   * Persisted so the notice is still there if the app was closed when the courier declined.
+   */
+  const trackDirectProviderDeclines = async (uid: number, items: MappedDelivery[]) => {
+    try {
+      let store = directStoreRef.current;
+      if (!store) {
+        const raw = await AsyncStorage.getItem(directStoreKey(uid));
+        const parsed = raw ? JSON.parse(raw) : {};
+        store = { picks: parsed?.picks || {}, declined: Array.isArray(parsed?.declined) ? parsed.declined : [] };
+      }
+      const isOpen = (it: MappedDelivery) => !it.isMatched && String(it.rawData?.delivery_status) === 'Pending';
+      const byId = new Map(items.map(i => [i.request_id, i]));
+      const picks: Record<string, string> = { ...store.picks };
+      let declined = [...store.declined];
+
+      for (const [idStr, name] of Object.entries(picks)) {
+        const id = Number(idStr);
+        const it = byId.get(id);
+        if (!it || !isOpen(it)) { delete picks[idStr]; continue; } // gone, accepted, cancelled...
+        if (it.hasPreferredProvider) continue;                      // still waiting on the chosen courier
+        delete picks[idStr];                                        // chosen courier was released -> declined
+        if (!declined.some(d => d.requestId === id)) {
+          declined.push({ requestId: id, providerName: name || 'Your selected courier', at: Date.now() });
+        }
+      }
+
+      for (const it of items) {
+        if (it.hasPreferredProvider && isOpen(it)) {
+          picks[String(it.request_id)] = it.provider_name || 'Your selected courier';
+        }
+      }
+
+      // A notice only applies while the request is still open with no chosen courier.
+      declined = declined.filter(d => {
+        const it = byId.get(d.requestId);
+        return !!it && isOpen(it) && !it.hasPreferredProvider;
+      });
+
+      store = { picks, declined };
+      directStoreRef.current = store;
+      setDeclinedNotices(declined);
+      await AsyncStorage.setItem(directStoreKey(uid), JSON.stringify(store));
+    } catch {
+      // Tracking is best-effort; never block the list.
+    }
+  };
+
+  const dismissDeclinedNotice = async (requestId: number) => {
+    setDeclinedNotices(prev => prev.filter(n => n.requestId !== requestId));
+    const store = directStoreRef.current;
+    if (!store || !userId) return;
+    store.declined = store.declined.filter(n => n.requestId !== requestId);
+    try { await AsyncStorage.setItem(directStoreKey(userId), JSON.stringify(store)); } catch {}
   };
 
   const fetchData = async () => {
@@ -843,7 +910,10 @@ export default function ActivityScreen() {
       });
 
       // Ignore stale responses so an older fetch can never overwrite newer realtime data.
-      if (seq === fetchSeqRef.current) setDeliveries(mappedDeliveries);
+      if (seq === fetchSeqRef.current) {
+        await trackDirectProviderDeclines(currentUserId, mappedDeliveries);
+        if (seq === fetchSeqRef.current) setDeliveries(mappedDeliveries);
+      }
     } catch {
       // Keep showing the last good data on a transient realtime refetch failure.
       if (!hasLoadedRef.current) setDeliveries([]);
@@ -1869,6 +1939,34 @@ export default function ActivityScreen() {
         }
       >
         <Animated.View style={{ opacity: contentAnim }}>
+          {declinedNotices.map(n => {
+            const target = deliveries.find(d => d.request_id === n.requestId);
+            return (
+              <View key={`declined-${n.requestId}`} style={styles.declinedBanner}>
+                <View style={styles.declinedBannerTop}>
+                  <SolarIcon name="CloseCircle" variant="duotone" size={22} color={colors.error} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.declinedTitle}>Courier declined your request</Text>
+                    <Text style={styles.declinedSub}>
+                      {n.providerName} can't take #{trackingCode(n.requestId)}. We're finding another courier for you.
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => dismissDeclinedNotice(n.requestId)} hitSlop={10} activeOpacity={0.7}>
+                    <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+                {target && (
+                  <TouchableOpacity
+                    style={styles.declinedBtn}
+                    onPress={() => { void dismissDeclinedNotice(n.requestId); handleResumeFindingProvider(target); }}
+                    activeOpacity={0.9}
+                  >
+                    <Text style={styles.declinedBtnText}>Find Courier</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
           {filteredDeliveries.length === 0 ? (
             <View style={styles.emptyContainer}>
               {deliveries.length === 0 ? (
@@ -3103,6 +3201,18 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   tabCountText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textSecondary },
   tabCountTextActive: { color: c.accent },
 
+  declinedBanner: {
+    backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error, borderRadius: 16,
+    padding: 14, marginBottom: 14,
+  },
+  declinedBannerTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  declinedTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.error },
+  declinedSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2, lineHeight: 17 },
+  declinedBtn: {
+    marginTop: 12, alignItems: 'center', justifyContent: 'center', paddingVertical: 11,
+    borderRadius: 12, backgroundColor: c.accent,
+  },
+  declinedBtnText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100, paddingTop: 16 },
   bottomSpacer: { height: 80 },
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
