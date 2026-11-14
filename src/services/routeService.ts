@@ -3,17 +3,61 @@ import { ShipmentItem } from '../modules/Dashboard/Sender/Delivery/ScheduleConte
 import { supabase } from '../utils/supabase';
 import { getActiveRouteId, setActiveRouteId, getDemoMode } from './activeRouteStore';
 
-const BASE_FEE = 30;
-const PER_KM = 15;
-const SIZE_FEE: Record<'Small' | 'Medium' | 'Large', number> = {
+let CURBSIDE_BASE_FEE = 20;
+let DOOR_TO_DOOR_BASE_FEE = 35;
+let PER_KM = 8;
+let SIZE_FEE: Record<'Small' | 'Medium' | 'Large', number> = {
   Small: 0,
-  Medium: 30,
-  Large: 60,
+  Medium: 20,
+  Large: 45,
 };
-const FRAGILE_FEE = 20;
-const SCHEDULE_FEE = 30;
-const EMERGENCY_FEE = 50;
-const MIN_TOTAL = 60;
+const FRAGILE_FEE = 10;
+const SCHEDULE_FEE = 0;
+const EMERGENCY_FEE = 0;
+
+/**
+ * Pulls live tariff rows from `public.delivery_rates` in Supabase.
+ * Falls back to the defaults above if offline.
+ */
+export async function syncDeliveryRatesFromDB(): Promise<void> {
+  try {
+    const { data, error } = await supabase
+      .from('delivery_rates')
+      .select('delivery_type, base_rate, per_km_rate, small_box_fee, medium_box_fee, large_box_fee')
+      .order('rate_id', { ascending: true });
+
+    if (error || !data || data.length === 0) return;
+
+    for (const row of data) {
+      const dbBase = Number(row.base_rate);
+      const dbPerKm = Number(row.per_km_rate);
+      const dbSmall = Number(row.small_box_fee);
+      const dbMedium = Number(row.medium_box_fee);
+      const dbLarge = Number(row.large_box_fee);
+
+      if (Number.isFinite(dbBase) && dbBase > 0) {
+        if (/door/i.test(String(row.delivery_type || ''))) {
+          DOOR_TO_DOOR_BASE_FEE = dbBase;
+        } else {
+          CURBSIDE_BASE_FEE = dbBase;
+        }
+      }
+      if (Number.isFinite(dbPerKm) && dbPerKm > 0) {
+        PER_KM = dbPerKm;
+      }
+      SIZE_FEE = {
+        Small: Number.isFinite(dbSmall) && dbSmall >= 0 ? dbSmall : 0,
+        Medium: Number.isFinite(dbMedium) && dbMedium >= 0 ? dbMedium : 20,
+        Large: Number.isFinite(dbLarge) && dbLarge >= 0 ? dbLarge : 45,
+      };
+    }
+  } catch {
+    // Fallback to in-memory constants if offline
+  }
+}
+
+// Initial background sync when app loads
+void syncDeliveryRatesFromDB();
 
 // Road distance typically ~1.25–1.4× straight-line in urban Cebu
 const ROAD_FACTOR = 1.3;
@@ -64,14 +108,15 @@ export function quickEstimateKm(
 }
 
 /**
- * Real road distance via OSRM.
- * - Returns cached value if available (instant).
- * - Times out after 2.5s and falls back to the quick estimate.
+ * Real road distance via OSRM + live tariff sync from `public.delivery_rates`.
  */
 export async function getRoadDistanceKm(
   pickup: { latitude: number; longitude: number },
   dropoff: { latitude: number; longitude: number },
 ): Promise<number> {
+  // Always sync latest rates from Supabase delivery_rates first
+  await syncDeliveryRatesFromDB();
+
   const key = cacheKey(pickup, dropoff);
   const cached = distanceCache.get(key);
   if (cached !== undefined) return cached;
@@ -109,17 +154,19 @@ export function computePricing(input: {
   distanceKm: number;
   items: ShipmentItem[];
   scheduled: boolean;
+  dropoffType?: string | null;
   emergency?: boolean;
   refined?: boolean;
 }): PricingBreakdown {
-  const base = BASE_FEE;
+  const isDoorToDoor = /door/i.test(String(input.dropoffType || ''));
+  const base = isDoorToDoor ? DOOR_TO_DOOR_BASE_FEE : CURBSIDE_BASE_FEE;
   const distance = Math.round(input.distanceKm * PER_KM);
   const size = input.items.reduce((s, i) => s + (SIZE_FEE[i.size] ?? 0), 0);
   const fragile = input.items.some((i) => i.fragile) ? FRAGILE_FEE : 0;
   const schedule = input.scheduled ? SCHEDULE_FEE : 0;
   const emergency = input.emergency ? EMERGENCY_FEE : 0;
   const raw = base + distance + size + fragile + schedule + emergency;
-  const total = Math.max(raw, MIN_TOTAL);
+  const total = Math.max(raw, base);
 
   return {
     base,

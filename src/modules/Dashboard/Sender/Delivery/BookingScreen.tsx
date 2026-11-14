@@ -434,6 +434,7 @@ export default function BookingScreen({ route, navigation }: any) {
       distanceKm: quickKm,
       items: state.items,
       scheduled,
+      dropoffType: state.dropoffType,
       refined: false,
     });
     setPricing(quickResult);
@@ -447,15 +448,11 @@ export default function BookingScreen({ route, navigation }: any) {
         const realKm = await getRoadDistanceKm(state.pickupLocation!, state.dropoffLocation!);
         if (cancelled) return;
 
-        if (Math.abs(realKm - quickKm) < 0.05) {
-          setRefiningDistance(false);
-          return;
-        }
-
         const refinedResult = computePricing({
           distanceKm: realKm,
           items: state.items,
           scheduled,
+          dropoffType: state.dropoffType,
           refined: true,
         });
         setPricing(refinedResult);
@@ -468,7 +465,7 @@ export default function BookingScreen({ route, navigation }: any) {
     })();
 
     return () => { cancelled = true; };
-  }, [state.pickupLocation, state.dropoffLocation, state.items, mode, state.scheduledDate]);
+  }, [state.pickupLocation, state.dropoffLocation, state.items, mode, state.scheduledDate, state.dropoffType]);
 
   useEffect(() => {
     if (state.receiver) setReceiver(state.receiver);
