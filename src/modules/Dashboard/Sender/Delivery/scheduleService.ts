@@ -4,6 +4,25 @@ import { ScheduleState } from './ScheduleContext';
 import { getRoadDistanceKm } from '../../../../services/routeService';
 import { SHIPMENT_SIZE_SPECS, syncAllActiveRoutesTodayForRequest } from '../../../../services/matchingService';
 
+// `place_name` = the name the sender picked on the location screen. If the column has not been
+// added yet, retry without it so booking never breaks.
+async function insertLocation(row: any) {
+  const first = await supabase.from('locations').insert(row).select().single();
+  if (first.error && 'place_name' in row && /place_name/i.test(first.error.message || '')) {
+    const { place_name, ...rest } = row;
+    return supabase.from('locations').insert(rest).select().single();
+  }
+  return first;
+}
+
+async function updateLocation(locationId: number, row: any) {
+  const first = await supabase.from('locations').update(row).eq('location_id', locationId);
+  if (first.error && 'place_name' in row && /place_name/i.test(first.error.message || '')) {
+    const { place_name, ...rest } = row;
+    await supabase.from('locations').update(rest).eq('location_id', locationId);
+  }
+}
+
 // Storage bucket for package photos (create it in Supabase -> Storage, mark it Public)
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
@@ -177,33 +196,27 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
   const pickup = state.pickupLocation as any;
   const dropoff = state.dropoffLocation as any;
 
-  const { data: pickupLoc } = await supabase
-    .from('locations')
-    .insert({
-      street_address: pickup?.street_address || pickup?.address || 'Unknown',
-      barangay: pickup?.barangay || 'Unknown',
-      city: pickup?.city || 'Unknown',
-      province: pickup?.province || 'Unknown',
-      zip_code: pickup?.zip_code || '0000',
-      latitude: pickup?.latitude,
-      longitude: pickup?.longitude,
-    })
-    .select()
-    .single();
+  const { data: pickupLoc } = await insertLocation({
+    street_address: pickup?.street_address || pickup?.address || 'Unknown',
+    place_name: pickup?.name || null,
+    barangay: pickup?.barangay || 'Unknown',
+    city: pickup?.city || 'Unknown',
+    province: pickup?.province || 'Unknown',
+    zip_code: pickup?.zip_code || '0000',
+    latitude: pickup?.latitude,
+    longitude: pickup?.longitude,
+  });
 
-  const { data: dropoffLoc } = await supabase
-    .from('locations')
-    .insert({
-      street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
-      barangay: dropoff?.barangay || 'Unknown',
-      city: dropoff?.city || 'Unknown',
-      province: dropoff?.province || 'Unknown',
-      zip_code: dropoff?.zip_code || '0000',
-      latitude: dropoff?.latitude,
-      longitude: dropoff?.longitude,
-    })
-    .select()
-    .single();
+  const { data: dropoffLoc } = await insertLocation({
+    street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
+    place_name: dropoff?.name || null,
+    barangay: dropoff?.barangay || 'Unknown',
+    city: dropoff?.city || 'Unknown',
+    province: dropoff?.province || 'Unknown',
+    zip_code: dropoff?.zip_code || '0000',
+    latitude: dropoff?.latitude,
+    longitude: dropoff?.longitude,
+  });
 
   // Weight rules from screenshot: Small = 5 kg, Medium = 15 kg, Large = 25 kg
   const smallQty = state.items.filter(i => i.size === 'Small').length;
@@ -315,31 +328,27 @@ export async function updateScheduleInDB(
   const pickup = state.pickupLocation as any;
   const dropoff = state.dropoffLocation as any;
 
-  await supabase
-    .from('locations')
-    .update({
-      street_address: pickup?.street_address || pickup?.address || 'Unknown',
-      barangay: pickup?.barangay || 'Unknown',
-      city: pickup?.city || 'Unknown',
-      province: pickup?.province || 'Unknown',
-      zip_code: pickup?.zip_code || '0000',
-      latitude: pickup?.latitude,
-      longitude: pickup?.longitude,
-    })
-    .eq('location_id', existingIds.pickupLocId);
+  await updateLocation(existingIds.pickupLocId, {
+    street_address: pickup?.street_address || pickup?.address || 'Unknown',
+    ...(pickup?.name ? { place_name: pickup.name } : {}),
+    barangay: pickup?.barangay || 'Unknown',
+    city: pickup?.city || 'Unknown',
+    province: pickup?.province || 'Unknown',
+    zip_code: pickup?.zip_code || '0000',
+    latitude: pickup?.latitude,
+    longitude: pickup?.longitude,
+  });
 
-  await supabase
-    .from('locations')
-    .update({
-      street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
-      barangay: dropoff?.barangay || 'Unknown',
-      city: dropoff?.city || 'Unknown',
-      province: dropoff?.province || 'Unknown',
-      zip_code: dropoff?.zip_code || '0000',
-      latitude: dropoff?.latitude,
-      longitude: dropoff?.longitude,
-    })
-    .eq('location_id', existingIds.dropoffLocId);
+  await updateLocation(existingIds.dropoffLocId, {
+    street_address: dropoff?.street_address || dropoff?.address || 'Unknown',
+    ...(dropoff?.name ? { place_name: dropoff.name } : {}),
+    barangay: dropoff?.barangay || 'Unknown',
+    city: dropoff?.city || 'Unknown',
+    province: dropoff?.province || 'Unknown',
+    zip_code: dropoff?.zip_code || '0000',
+    latitude: dropoff?.latitude,
+    longitude: dropoff?.longitude,
+  });
 
   const smallQty = state.items.filter(i => i.size === 'Small').length;
   const mediumQty = state.items.filter(i => i.size === 'Medium').length;

@@ -117,12 +117,10 @@
       "expo-secure-store"
     ],
     "extra": {
-      "owner": "junjosephps-team",
-      "slug": "packnship",
       "eas": {
-        "projectId": "1c9f41a3-3eae-47b2-9aef-9ce9350c66e7"
+        "projectId": "dd3e78c6-d28a-47da-8d67-64c06e3b5a93"
       }
     },
-    "owner": "junjosephps-team"
+    "owner": "junjosephp"
   }
 }

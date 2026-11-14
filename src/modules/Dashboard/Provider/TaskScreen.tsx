@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput,
   StatusBar, ActivityIndicator, RefreshControl, Alert, Animated, Easing,
-  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform,
+  Dimensions, Image, Linking, Share, BackHandler, Pressable, Platform, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
@@ -15,6 +15,7 @@ import { formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries,
   fetchPendingRequestsForProvider,
+  declineDirectRequest,
   computeCargoVolumeLiters,
   SHIPMENT_SIZE_SPECS,
 } from '../../../services/matchingService';
@@ -259,7 +260,16 @@ const buildTaskInfo = (d: any) => {
     senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
-    earnings: Number(request?.estimated_cost) || 0,
+    earnings: (() => {
+      const status = String(request?.delivery_status || '');
+      const base = Number(request?.base_fare) || 0;
+      const deposit = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      const net = Math.round(base * 0.85 * 100) / 100;
+      if (status === 'Returned') return (net + deposit) || est;
+      if (status === 'Completed') return net || est;
+      return est;
+    })(),
   };
 };
 
@@ -296,18 +306,29 @@ const isCancelledDelivery = (d: any): boolean => {
   if (!d) return false;
   const req = d.delivery_requests || {};
   const status = String(req.delivery_status || '').toLowerCase();
+
+  // Completed or Returned is never "cancelled"
+  if (status === 'completed' || status === 'returned') return false;
+
+  // Explicit cancel wins
   if (status === 'cancelled' || status === 'canceled') return true;
 
+  // Only fall through to refund-state checks if no delivery record exists
+  const hasDeliveryRecord = !!d.delivery_id || !!d.completed_at;
+  if (hasDeliveryRecord) return false;
+
   const escrowStatus = String(d.escrow?.escrow_status || '').toLowerCase();
-  if (escrowStatus === 'refunded' || escrowStatus === 'cancelled' || escrowStatus === 'canceled') return true;
-
   const paymentStatus = String(req.payment_status || '').toLowerCase();
-  if (paymentStatus === 'refunded') return true;
-
   const refundStatus = String(req.refund_status || '').toLowerCase();
-  if (refundStatus === 'succeeded' || refundStatus === 'completed' || refundStatus === 'refunded') return true;
 
-  return false;
+  return (
+    escrowStatus === 'refunded' ||
+    escrowStatus === 'cancelled' ||
+    paymentStatus === 'refunded' ||
+    refundStatus === 'succeeded' ||
+    refundStatus === 'completed' ||
+    refundStatus === 'refunded'
+  );
 };
 
 const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null; size?: number }) => {
@@ -360,6 +381,9 @@ export default function TaskScreen() {
   const [cancelledDeliveries, setCancelledDeliveries] = useState<any[]>([]);
   const [userData, setUserData] = useState<any>(null);
 
+  // Track declined request IDs locally so optimistic removals stay hidden across refetches
+  const declinedReqIdsRef = useRef<Set<number>>(new Set());
+
   // --- Active Route Filter States (synced with JobsScreen via activeRouteStore) ---
   const [routes, setRoutes] = useState<any[]>([]);
   const [activeRoute, setActiveRoute] = useState<any | null>(null);
@@ -375,6 +399,7 @@ export default function TaskScreen() {
 
   const [pingingId, setPingingId] = useState<number | null>(null);
   const [acceptingReqId, setAcceptingReqId] = useState<number | null>(null);
+  const [decliningReqId, setDecliningReqId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -586,8 +611,15 @@ export default function TaskScreen() {
           ? overrideRouteId
           : (activeRouteRef.current?.route_id ?? (await getActiveRouteId()));
         const rows = await fetchPendingRequestsForProvider(pid, selectedRouteId);
-        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => d.request_id));
-        const filteredRows = rows.filter(m => m.request && !doneIds.has(m.request.request_id));
+        const doneIds = new Set([...acceptedActive, ...completed, ...cancelled].map(d => Number(d.request_id)));
+
+        const filteredRows = rows.filter(m => {
+          const rId = Number(m.request?.request_id ?? m.request_id);
+          if (!m.request || !rId) return false;
+          if (doneIds.has(rId)) return false;
+          if (declinedReqIdsRef.current.has(rId)) return false;
+          return true;
+        });
 
         const senderIds = Array.from(new Set(filteredRows.map(m => m.request?.sender_id).filter(Boolean)));
         const senders: Record<number, any> = {};
@@ -1556,10 +1588,11 @@ export default function TaskScreen() {
       const proofUrl = await uploadPodPhoto(failurePhotoUri, deliveryId);
 
       if (fallbackAction === 'leave_with_guard') {
-        await supabase
+        // Option B: the provider only submits proof of handover.
+        // NO completed_at and NO escrow settlement here — the sender must approve first.
+        const { error: proofErr } = await supabase
           .from('deliveries')
           .update({
-            completed_at: nowIso,
             pod_photo_url: proofUrl,
             failure_photo_url: proofUrl,
             failure_reason: `Left with ${fallbackRecipient}`,
@@ -1568,22 +1601,26 @@ export default function TaskScreen() {
             pod_seen_by_sender: false,
           })
           .eq('delivery_id', deliveryId);
+        if (proofErr) throw proofErr;
 
-        const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
-          p_delivery_id: deliveryId,
-          p_outcome: 'completed_safe_drop',
-        });
-        if (settleErr) throw settleErr;
+        const { error: awaitErr } = await supabase
+          .from('delivery_requests')
+          .update({ delivery_status: 'Awaiting Approval' })
+          .eq('request_id', requestId);
+        if (awaitErr) throw awaitErr;
 
         if (req.sender_id) {
           await notifyUser(
             req.sender_id,
-            'Delivery Left with Authorized Person 📦',
-            `Receiver was unreachable. Your courier has left the package with ${fallbackRecipient}. Tap for proof of delivery.`,
+            'Approve Handover 📦',
+            `Receiver was unreachable. Your courier left the package with ${fallbackRecipient} and uploaded a photo. Open Activity to review it and approve the delivery.`,
             { deliveryId, requestId }
           );
         }
-        Alert.alert('✅ Left with Authorized Recipient', `Photo proof saved and your payout has been released.`);
+        Alert.alert(
+          '📸 Proof Submitted',
+          `Waiting for the sender to confirm the package was left with ${fallbackRecipient}. Your payout will be released once they approve.`
+        );
       } else {
         await supabase
           .from('deliveries')
@@ -1638,21 +1675,48 @@ export default function TaskScreen() {
 
   const onRefresh = () => { setRefreshing(true); loadData(); };
 
+  // ── Realtime: no manual refresh needed ──────────────────────────────────────
+  const taskRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Coalesce bursts of DB events (one approval touches several tables) into a single refetch.
+  const scheduleTaskRefresh = useCallback((pid: number) => {
+    if (taskRefreshTimerRef.current) clearTimeout(taskRefreshTimerRef.current);
+    taskRefreshTimerRef.current = setTimeout(() => {
+      taskRefreshTimerRef.current = null;
+      void fetchDeliveries(pid);
+    }, 250);
+  }, [fetchDeliveries]);
+
   useEffect(() => {
     if (!providerId) return;
+    const refresh = () => scheduleTaskRefresh(providerId);
     const channel = supabase
       .channel(`task-realtime-${providerId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchDeliveries(providerId); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, () => { fetchDeliveries(providerId); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments', filter: `provider_id=eq.${providerId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => {
         fetchProviderRoutes(providerId).then((r) => fetchDeliveries(providerId, r?.route_id ?? null));
       })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [providerId, fetchDeliveries, fetchProviderRoutes]);
+      .subscribe((status) => {
+        // Catch up on anything missed while the socket was (re)connecting.
+        if (status === 'SUBSCRIBED') refresh();
+      });
+
+    // Catch up when the app returns to the foreground.
+    const appStateSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') refresh();
+    });
+
+    return () => {
+      if (taskRefreshTimerRef.current) { clearTimeout(taskRefreshTimerRef.current); taskRefreshTimerRef.current = null; }
+      appStateSub.remove();
+      supabase.removeChannel(channel);
+    };
+  }, [providerId, fetchDeliveries, fetchProviderRoutes, scheduleTaskRefresh]);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
@@ -1682,8 +1746,12 @@ export default function TaskScreen() {
       else if (qr.pickup_verified) return true;
     }
     const status = delivery?.delivery_requests?.delivery_status;
-    return status === 'In Transit' || status === 'Returning' || status === 'Completed' || status === 'Returned';
+    return status === 'In Transit' || status === 'Awaiting Approval' || status === 'Returning' || status === 'Completed' || status === 'Returned';
   };
+
+  // Option B: provider left the package with the authorized person; waiting for the sender to approve.
+  const isAwaitingApproval = (d: any): boolean =>
+    String(d?.delivery_requests?.delivery_status || '') === 'Awaiting Approval' && !d?.completed_at;
 
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
@@ -1691,7 +1759,10 @@ export default function TaskScreen() {
     return isPickupVerified(d) ? 'transit' : 'pickup';
   };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled') => {
+  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled', awaitingApproval = false) => {
+    if (awaitingApproval && stage === 'transit') {
+      return { label: 'Awaiting Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
+    }
     switch (stage) {
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
@@ -1914,7 +1985,7 @@ export default function TaskScreen() {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
     const stage = stageOf(d);
-    const meta = statusMeta(stage);
+    const meta = statusMeta(stage, isAwaitingApproval(d));
     const isCancelled = stage === 'cancelled';
     const active = stage === 'pickup' || stage === 'transit';
 
@@ -1995,13 +2066,82 @@ export default function TaskScreen() {
     );
   };
 
+  // Decline a pending request (direct or route-matched) and immediately remove it from the Pending tab.
+  const handleDeclinePendingMatch = (m: any) => {
+    if (!providerId || decliningReqId != null || acceptingReqId != null) return;
+    const reqId = Number(m.request?.request_id ?? m.request_id);
+    if (!reqId) return;
+
+    const isDirect =
+      m.request?.preferred_provider_id != null ||
+      m.request?.preferred_route_id != null ||
+      m.is_direct === true;
+
+    Alert.alert(
+      'Decline this request?',
+      isDirect
+        ? 'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.'
+        : 'This request will be removed from your Pending list.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Decline',
+          style: 'destructive',
+          onPress: async () => {
+            setDecliningReqId(reqId);
+
+            // 1. Optimistically remove from the Pending tab immediately and lock it out of future refetches
+            declinedReqIdsRef.current.add(reqId);
+            setPendingDeliveries(prev =>
+              prev.filter(item => Number(item.request?.request_id ?? item.request_id) !== reqId)
+            );
+
+            try {
+              // 2. Call the matchingService helper to notify sender / release direct request
+              const res = await declineDirectRequest(reqId, providerId);
+
+              // 3. Ensure DB rows in route_request_matches and delivery_requests are cleaned up
+              // so fetchPendingRequestsForProvider never returns this request for this provider again.
+              await supabase
+                .from('route_request_matches')
+                .update({ status: 'revoked' })
+                .eq('request_id', reqId)
+                .eq('provider_id', providerId);
+
+              await supabase
+                .from('delivery_requests')
+                .update({ preferred_provider_id: null, preferred_route_id: null })
+                .eq('request_id', reqId)
+                .eq('preferred_provider_id', providerId);
+
+              if (!res.ok && isDirect) {
+                console.warn('[Task] declineDirectRequest warning:', res.message);
+              }
+
+              await fetchDeliveries(providerId);
+            } catch (err: any) {
+              console.warn('[Task] decline error:', err?.message || err);
+            } finally {
+              setDecliningReqId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const renderPendingCard = (m: any) => {
+    const reqId = Number(m.request?.request_id ?? m.request_id);
     const info = buildTaskInfo(m.request ? { delivery_requests: m.request, sender: m.sender } : null);
-    const isDirect = m.request?.preferred_provider_id != null;
-    const isBusy = acceptingReqId === m.request_id;
+    const isDirect =
+      m.request?.preferred_provider_id != null ||
+      m.request?.preferred_route_id != null ||
+      m.is_direct === true;
+    const isBusy = acceptingReqId === reqId;
+    const isDeclining = decliningReqId === reqId;
 
     return (
-      <View key={`pending-${m.request_id}`} style={styles.oCard}>
+      <View key={`pending-${reqId}`} style={styles.oCard}>
         <View style={styles.oPad}>
           <View style={styles.oTopRow}>
             {renderServicePill(info)}
@@ -2061,7 +2201,7 @@ export default function TaskScreen() {
           <TouchableOpacity
             style={[styles.oRouteBtn, isBusy && { opacity: 0.7 }]}
             onPress={() => handleAcceptPendingMatch(m)}
-            disabled={isBusy}
+            disabled={isBusy || isDeclining}
             activeOpacity={0.9}
           >
             {isBusy ? (
@@ -2070,6 +2210,24 @@ export default function TaskScreen() {
               <>
                 <SolarIcon name="CheckCircle" variant="bold" size={16} color="#FFFFFF" />
                 <Text style={styles.oRouteText}>Accept Request</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.oDeclineRow}>
+          <TouchableOpacity
+            style={[styles.oDeclineBtn, (isDeclining || isBusy) && { opacity: 0.6 }]}
+            onPress={() => handleDeclinePendingMatch(m)}
+            disabled={isDeclining || isBusy}
+            activeOpacity={0.85}
+          >
+            {isDeclining ? (
+              <ActivityIndicator size="small" color={colors.error} />
+            ) : (
+              <>
+                <SolarIcon name="CloseCircle" variant="linear" size={16} color={colors.error} />
+                <Text style={styles.oDeclineText}>Decline Request</Text>
               </>
             )}
           </TouchableOpacity>
@@ -2379,7 +2537,10 @@ export default function TaskScreen() {
     const H = Dimensions.get('window').height;
     const mapH = Math.round(H * 0.46);
     const items: any[] = info.items || [];
-    const hintText = stage === 'pickup'
+    const awaitingApproval = isAwaitingApproval(d);
+    const hintText = awaitingApproval
+      ? 'Proof photo sent. Waiting for the sender to confirm the package was left with the authorized person. Your payout is released as soon as they approve.'
+      : stage === 'pickup'
       ? 'Meet the sender, then verify with their QR or 4-digit PIN.'
       : `Hand over ${/door/i.test(info.request?.pickup_type || '') ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`;
 
@@ -2412,7 +2573,7 @@ export default function TaskScreen() {
 
             <View style={styles.oTopRow}>
               {renderServicePill(info)}
-              {renderStatusPill(statusMeta(stage))}
+              {renderStatusPill(statusMeta(stage, isAwaitingApproval(d)))}
             </View>
 
             <View style={styles.dCodeRow}>
@@ -2530,7 +2691,7 @@ export default function TaskScreen() {
               </View>
             )}
 
-            {stage === 'transit' && d.delivery_requests?.delivery_status !== 'Returning' && (
+            {stage === 'transit' && !awaitingApproval && d.delivery_requests?.delivery_status !== 'Returning' && (
               <TouchableOpacity
                 style={[styles.mSoftBtn, { marginTop: 14, flex: 0, backgroundColor: colors.errorBg }]}
                 onPress={() => handleStartDropoffGracePeriod(d)}
@@ -2710,7 +2871,8 @@ export default function TaskScreen() {
               <Text style={styles.mSoftText}>Navigate</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }]}
+              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && { opacity: 0.55 }]}
+              disabled={awaitingApproval}
               onPress={() =>
                 stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
                   ? openVerifyModal(d)
@@ -2719,16 +2881,24 @@ export default function TaskScreen() {
               activeOpacity={0.9}
             >
               <Ionicons
-                name={stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning' ? 'qr-code-outline' : 'checkmark-circle'}
+                name={
+                  awaitingApproval
+                    ? 'time-outline'
+                    : stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
+                      ? 'qr-code-outline'
+                      : 'checkmark-circle'
+                }
                 size={18}
                 color="#FFFFFF"
               />
               <Text style={styles.mPrimaryText}>
-                { d.delivery_requests?.delivery_status === 'Returning'
-                  ? 'Verify Return QR'
-                  : stage === 'pickup'
-                    ? 'Verify Pickup'
-                    : 'Complete'}
+                {awaitingApproval
+                  ? 'Awaiting Sender Approval'
+                  : d.delivery_requests?.delivery_status === 'Returning'
+                    ? 'Verify Return QR'
+                    : stage === 'pickup'
+                      ? 'Verify Pickup'
+                      : 'Complete'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -3161,7 +3331,7 @@ export default function TaskScreen() {
 
   const navSessionId = useNavigationSession();
   const broadcastingDelivery = useMemo(() => {
-    const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit');
+    const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit' && !isAwaitingApproval(d));
     if (inTransit) return inTransit;
     if (navSessionId == null) return null;
     return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;
@@ -3664,6 +3834,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   oChipText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   oPrice: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.3, flexShrink: 0 },
   oActions: { flexDirection: 'row', gap: 10, padding: 14, borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  oDeclineRow: { paddingHorizontal: 14, paddingBottom: 14 },
+  oDeclineBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.errorBg, borderWidth: 1, borderColor: c.error, borderRadius: 14, paddingVertical: 12 },
+  oDeclineText: { color: c.error, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oChatBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14 },
   oChatText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
   oRouteBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14 },

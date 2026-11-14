@@ -540,7 +540,7 @@ export default function ExploreScreen() {
             activeOpacity={0.85}
           >
             <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
-            <Text style={styles.trackBtnText}>Track</Text>
+            <Text style={styles.trackBtnText}>View</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -577,7 +577,7 @@ export default function ExploreScreen() {
             <Image source={require('../../../../assets/package-icon.png')} style={styles.actionCustomIcon} resizeMode="contain" />
           </View>
           <View style={styles.actionTextContainer}>
-            <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
+            <Text style={styles.actionTitlePrimary}>Send Package Today</Text>
             <Text style={styles.actionSubtitlePrimary}>Instant booking & real-time tracking</Text>
           </View>
           <View style={styles.chevronPrimary}>

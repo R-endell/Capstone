@@ -1,9 +1,9 @@
 // src/modules/Dashboard/Sender/ActivityScreen.tsx
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity,
   Alert, ActivityIndicator, TextInput, RefreshControl, Animated, Easing, Modal,
-  BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable,
+  BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
@@ -17,8 +17,8 @@ import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
-import { PhIcon } from '../../../components/ui/PhIcon';
 import { createTicket } from '../../../services/ticketService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -26,6 +26,7 @@ const SEARCH_ICON = require('../../../../assets/empty-state-magnifying-glass-ico
 
 const BLUE = '#3B82F6';
 const PURPLE = '#8B5CF6';
+const BRAND_ORANGE = '#F27024';
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 
 let Clipboard: any = null;
@@ -33,6 +34,7 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const RATING_TAGS = ['On time', 'Careful handling', 'Friendly', 'Fast delivery', 'Good communication'];
 const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
+const REFUND_SEEN_KEY = '@pns/refund_popup_seen_ids';
 const EDIT_FLOW_ROUTE_NAMES = ['DropoffType', 'ScheduleDelivery'];
 
 const initials = (n?: string | null) =>
@@ -293,6 +295,8 @@ interface Delivery {
   vehicle_id: number;
   accepted_at: string;
   pod_photo_url?: string | null;
+  failure_photo_url?: string | null;
+  failure_reason?: string | null;
   pod_seen_by_sender?: boolean;
   pickup_photo_url?: string | null;
   pickup_photo_taken_at?: string | null;
@@ -307,6 +311,8 @@ interface QrRow {
   dropoff_qr: string;
   dropoff_pin: string;
   dropoff_verified: boolean;
+  bc_pickup_tx_hash?: string | null;
+  bc_dropoff_tx_hash?: string | null;
 }
 
 interface ReceiverInfo {
@@ -356,6 +362,9 @@ interface MappedDelivery {
   fragile: boolean;
   dims: string | null;
   price: string;
+  payout_base: number;
+  payout_fee: number;
+  payout_deposit: number;
   payment_method: string | null;
   coords: {
     pickup: { latitude: number | null; longitude: number | null };
@@ -372,6 +381,44 @@ interface MappedDelivery {
 /* ==================================================================== */
 /* ActivityScreen                                                       */
 /* ==================================================================== */
+// ---------------------------------------------------------------------------------------------
+// Readable place text for the pickup / drop-off lines on each card.
+//   top line    = the landmark / place name the sender picked (or the first readable part of the address)
+//   bottom line = the street name (+ barangay), never "Unknown" and never a Google Plus Code
+// ---------------------------------------------------------------------------------------------
+// Plus Codes ("8Q7X+V4", "J9X5+2V Mandaue City") and other random-looking codes are not place names.
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (t: string) => {
+  const x = (t ?? '').trim();
+  if (!x) return true;
+  if (/^unknown$/i.test(x)) return true;
+  if (PLUS_CODE.test(x)) return true;
+  // one "word" mixing letters and digits (ids, hashes); real names have spaces or are plain words
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+const readableParts = (a?: string | null): string[] =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p));
+
+const describePlace = (l: any): { main: string; sub: string; road: string } => {
+  const parts = readableParts(l?.street_address);
+  const name = typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : '';
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = typeof l?.barangay === 'string' && !isCodeLike(l.barangay) ? l.barangay.trim() : '';
+
+  // a bare city / province in the address is not a landmark or a street
+  const localities = [l?.city, l?.province, l?.barangay]
+    .filter((v: any) => typeof v === 'string').map((v: string) => v.trim().toLowerCase());
+  const placeParts = parts.filter(p => !localities.includes(p.toLowerCase()));
+
+  const main = name || placeParts[0] || road || brgy || parts[0] || 'Selected location';
+  // street name: the road column, else the first other readable part of the address
+  const street = road || placeParts.find(p => p !== main) || '';
+  const bottom = [street && street !== main ? street : '', brgy && brgy !== main ? brgy : '']
+    .filter(Boolean).join(', ');
+  return { main, sub: parts.slice(1).join(', '), road: bottom };
+};
+
 export default function ActivityScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -381,6 +428,8 @@ export default function ActivityScreen() {
   const { dispatch: scheduleDispatch } = useSchedule();
 
   const hasLoadedRef = useRef(false);
+  // Guards against out-of-order responses when realtime fires several refreshes back-to-back.
+  const fetchSeqRef = useRef(0);
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showPickupQR, setShowPickupQR] = useState(false);
@@ -389,8 +438,16 @@ export default function ActivityScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [userId, setUserId] = useState<number | null>(null);
 
+  const selectedDelivery = useMemo(
+    () => selectedId == null
+      ? null
+      : deliveries.find(delivery => delivery.request_id === selectedId) || null,
+    [deliveries, selectedId],
+  );
+
   const [activeTab, setActiveTab] = useState<'active' | 'pending' | 'completed' | 'cancelled' | 'all'>('active');
   const [openingChat, setOpeningChat] = useState(false);
+  const [approvingHandover, setApprovingHandover] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const copyHashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -408,6 +465,11 @@ export default function ActivityScreen() {
     } catch { /* ignore */ }
   };
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  // Handover-proof modal (Option B): request_id of the delivery whose proof is being reviewed
+  const [handoverProofId, setHandoverProofId] = useState<number | null>(null);
+  const [handoverImgLoading, setHandoverImgLoading] = useState(true);
+  const [handoverImgFailed, setHandoverImgFailed] = useState(false);
+  const handoverAutoShownRef = useRef<Set<number>>(new Set());
   const [pkgItem, setPkgItem] = useState<MappedDelivery | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -431,10 +493,54 @@ export default function ActivityScreen() {
   const contentAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
 
-  const selectedDelivery = useMemo(
-    () => (selectedId != null ? deliveries.find(d => d.request_id === selectedId) || null : null),
-    [deliveries, selectedId]
-  );
+  // ------------------------------------------------------------------
+  // Refund popup — fires once when the sender returns to the app after
+  // a delivery completes with a successful deposit refund.
+  // ------------------------------------------------------------------
+  const shownRefundIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (!deliveries.length) return;
+
+    const candidates = deliveries.filter(d =>
+      d.status === 'Completed' &&
+      (d.rawData?.refund_status === 'succeeded' || d.rawData?.refund_status === 'refunded') &&
+      d.payout_deposit > 0
+    );
+    if (!candidates.length) return;
+
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(REFUND_SEEN_KEY);
+        const persisted: number[] = raw ? JSON.parse(raw) : [];
+        const seenThisSession = Array.from(shownRefundIdsRef.current);
+
+        const unseen = candidates.filter(c =>
+          !persisted.includes(c.request_id) &&
+          !seenThisSession.includes(c.request_id)
+        );
+        if (!unseen.length) return;
+
+        // Mark immediately to prevent double-fire on concurrent re-renders.
+        unseen.forEach(u => shownRefundIdsRef.current.add(u.request_id));
+
+        const most = unseen[0];
+        const refundTotal = unseen.reduce((sum, u) => sum + (u.payout_deposit || 0), 0);
+
+        Alert.alert(
+          '📦 Delivery Complete!',
+          `Package #${trackingCode(most.request_id)} was delivered successfully.\n\n` +
+          `₱${refundTotal.toFixed(2)} return deposit has been refunded to your account.`,
+          [{ text: 'OK' }],
+        );
+
+        const updated = Array.from(new Set([...persisted, ...unseen.map(u => u.request_id)]));
+        await AsyncStorage.setItem(REFUND_SEEN_KEY, JSON.stringify(updated));
+      } catch (e) {
+        console.warn('[Activity] refund popup failed:', e);
+      }
+    })();
+  }, [deliveries]);
 
   useEffect(() => {
     const params = route.params;
@@ -524,6 +630,7 @@ export default function ActivityScreen() {
   };
 
   const fetchData = async () => {
+    const seq = ++fetchSeqRef.current;
     try {
       if (!hasLoadedRef.current) setIsLoading(true);
       const currentUserId = userId || await fetchUserRecord();
@@ -609,16 +716,10 @@ export default function ActivityScreen() {
         const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
         const delivery = deliveriesData.find((d: any) => d.request_id === item.request_id);
 
-        const parseAddr = (full: string) => {
-          if (!full) return { main: 'Selected location', sub: '' };
-          const parts = full.split(', ');
-          return { main: parts[0], sub: parts.slice(1).join(', ') };
-        };
-
-        const pickup = parseAddr(item.pickup_location?.street_address);
-        const dropoff = parseAddr(item.dropoff_location?.street_address);
-        const pickupRoad = [item.pickup_location?.road, item.pickup_location?.barangay].filter(Boolean).join(', ') || pickup.sub;
-        const dropoffRoad = [item.dropoff_location?.road, item.dropoff_location?.barangay].filter(Boolean).join(', ') || dropoff.sub;
+        const pickup = describePlace(item.pickup_location);
+        const dropoff = describePlace(item.dropoff_location);
+        const pickupRoad = pickup.road;
+        const dropoffRoad = dropoff.road;
 
         const qrRow = delivery ? qrByDeliveryId[delivery.delivery_id] : null;
         const confirmationRow = delivery ? confirmationByDeliveryId[delivery.delivery_id] : null;
@@ -630,15 +731,34 @@ export default function ActivityScreen() {
         let status = item.delivery_status;
         let statusDisplay = status;
 
+        // Source of truth: delivery_status.
+        const hasDeliveryRecord = !!delivery;
+        const hasCompletedOrReturned =
+          status === 'Completed' ||
+          status === 'Returned' ||
+          !!(delivery as any)?.returned_at ||
+          !!delivery?.completed_at;
+
+        // Cancelled in only two cases:
+        //   1. delivery_requests.delivery_status is explicitly 'Cancelled'
+        //   2. No courier ever picked it up (no delivery row) AND payment was refunded
+        const isExplicitlyCancelled = /^cancel/i.test(String(status || ''));
+        const refundedWithoutDelivery =
+          !hasDeliveryRecord &&
+          (
+            item.payment_status === 'refunded' ||
+            item.escrow_status === 'refunded' ||
+            item.refund_status === 'succeeded' ||
+            item.refund_status === 'refunded'
+          );
+
         const isCancelledReq =
-          /cancel/i.test(String(status || '')) ||
-          /refund/i.test(String(item.payment_status || '')) ||
-          /refund|cancel/i.test(String(item.escrow_status || '')) ||
-          /succeed|complet|refund/i.test(String(item.refund_status || ''));
+          !hasCompletedOrReturned && (isExplicitlyCancelled || refundedWithoutDelivery);
 
         if (isCancelledReq) statusDisplay = 'Cancelled';
-        else if (status === 'Returned') statusDisplay = 'Returned';
+        else if (status === 'Returned' || !!(delivery as any)?.returned_at) statusDisplay = 'Returned';
         else if (status === 'Returning') statusDisplay = 'Returning';
+        else if (status === 'Awaiting Approval' && !delivery?.completed_at) statusDisplay = 'Awaiting Approval';
         else if (delivery?.completed_at || status === 'Completed') statusDisplay = 'Completed';
         else if (qrRow?.pickup_verified || status === 'In Transit') statusDisplay = 'In Transit';
         else if (status === 'Accepted') statusDisplay = 'In Progress';
@@ -720,6 +840,9 @@ export default function ActivityScreen() {
           preferred_provider_id: prefProviderId,
           preferred_route_id: prefRouteId,
           hasPreferredProvider,
+          payout_base: Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0)),
+          payout_fee: Math.round((Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0))) * 0.15 * 100) / 100,
+          payout_deposit: Number(item.return_deposit) || 0,
           price: item.estimated_cost?.toFixed(2) || '0.00',
           payment_method: item.payment_provider || null,
           coords: {
@@ -742,15 +865,19 @@ export default function ActivityScreen() {
             dropoff_qr: qrRow.dropoff_qr,
             dropoff_pin: qrRow.dropoff_pin,
             dropoff_verified: qrRow.dropoff_verified,
+            bc_pickup_tx_hash: qrRow.bc_pickup_tx_hash ?? null,
+            bc_dropoff_tx_hash: qrRow.bc_dropoff_tx_hash ?? null,
           } : null,
           receiver: receiverInfo,
           confirmation: confirmationRow || null,
         };
       });
 
-      setDeliveries(mappedDeliveries);
+      // Ignore stale responses so an older fetch can never overwrite newer realtime data.
+      if (seq === fetchSeqRef.current) setDeliveries(mappedDeliveries);
     } catch {
-      setDeliveries([]);
+      // Keep showing the last good data on a transient realtime refetch failure.
+      if (!hasLoadedRef.current) setDeliveries([]);
     } finally {
       hasLoadedRef.current = true;
       setIsLoading(false);
@@ -758,24 +885,51 @@ export default function ActivityScreen() {
     }
   };
 
+  // ── Realtime: no manual refresh needed ──────────────────────────────────────
+  const fetchDataRef = useRef<() => Promise<void>>(async () => {});
+  fetchDataRef.current = fetchData;
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Coalesce bursts of DB events (a single approval touches several tables) into one refetch.
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void fetchDataRef.current();
+    }, 250);
+  }, []);
+
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel(`sender-activity-${userId}-${Date.now()}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, () => { fetchData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => { fetchData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, () => { fetchData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, () => { fetchData(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, () => { fetchData(); })
-      .subscribe();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets', filter: `reporter_id=eq.${userId}` }, scheduleRefresh)
+      .subscribe((status) => {
+        // Catch up on anything missed while the socket was (re)connecting.
+        if (status === 'SUBSCRIBED') scheduleRefresh();
+      });
 
-    return () => { supabase.removeChannel(channel); };
-  }, [userId]);
+    // Catch up when the app returns to the foreground.
+    const appStateSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') scheduleRefresh();
+    });
+
+    return () => {
+      if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
+      appStateSub.remove();
+      supabase.removeChannel(channel);
+    };
+  }, [userId, scheduleRefresh]);
 
   useEffect(() => {
     const pending = deliveries.filter(
-      (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp && d.status !== 'Cancelled',
+      (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp && d.status !== 'Cancelled' && d.status !== 'Awaiting Approval',
     );
 
     pending.forEach(async (d) => {
@@ -1147,12 +1301,93 @@ export default function ActivityScreen() {
     }
   };
 
+  // Photo the provider took showing where the item was handed over.
+  const getHandoverPhoto = (item: MappedDelivery): string | null => {
+    const del: any = item.deliveryData || {};
+    return del.pod_photo_url || del.failure_photo_url || null;
+  };
+
+  const openHandoverProof = (item: MappedDelivery) => {
+    setHandoverImgLoading(true);
+    setHandoverImgFailed(false);
+    setHandoverProofId(item.request_id);
+  };
+
+  const closeHandoverProof = () => setHandoverProofId(null);
+
+  // Option B (leave with guard): the sender must approve the handover before escrow is released.
+  const isAwaitingApproval = (item: MappedDelivery) =>
+    item.status === 'Awaiting Approval' && !item.deliveryData?.completed_at;
+
+  const handleApproveHandover = (item: MappedDelivery) => {
+    const deliveryId = item.deliveryData?.delivery_id;
+    if (!deliveryId || approvingHandover) return;
+    const recipient = item.rawData?.fallback_recipient_name || 'the authorized person';
+
+    Alert.alert(
+      'Approve Delivery?',
+      `Confirm that your package was left with ${recipient} at the drop-off location. Approving releases the payment to your courier and cannot be undone.`,
+      [
+        { text: 'Not yet', style: 'cancel' },
+        {
+          text: 'Yes, Approve',
+          onPress: async () => {
+            setApprovingHandover(true);
+            const nowIso = new Date().toISOString();
+            try {
+              const { error: doneErr } = await supabase
+                .from('deliveries')
+                .update({ completed_at: nowIso, pod_seen_by_sender: true })
+                .eq('delivery_id', deliveryId);
+              if (doneErr) throw doneErr;
+
+              const { error: settleErr } = await supabase.rpc('settle_delivery_escrow', {
+                p_delivery_id: deliveryId,
+                p_outcome: 'completed_safe_drop',
+              });
+              if (settleErr) {
+                // roll back so the sender can retry / dispute
+                await supabase.from('deliveries').update({ completed_at: null }).eq('delivery_id', deliveryId);
+                throw settleErr;
+              }
+
+              await supabase
+                .from('delivery_requests')
+                .update({ delivery_status: 'Completed' })
+                .eq('request_id', item.request_id);
+
+              if (item.provider_id) {
+                try {
+                  await notifyUser(
+                    item.provider_id,
+                    'Delivery Approved ✅',
+                    `The sender confirmed the handover for #PNS-${String(item.request_id).padStart(4, '0')}. Your payout has been released.`,
+                    { deliveryId, requestId: item.request_id, role: 'provider' },
+                  );
+                } catch { /* non-blocking */ }
+              }
+
+              Alert.alert('✅ Delivery Approved', 'Thanks! The payment has been released to your courier.');
+              fetchData();
+            } catch (e: any) {
+              Alert.alert('Could not approve', /unauthorized/i.test(String(e?.message || ''))
+                ? 'Your approval could not be processed right now. Please try again in a moment or contact support.'
+                : (e?.message || 'Could not approve the delivery. Please try again.'));
+            } finally {
+              setApprovingHandover(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleDisputePackageMissing = async (item: MappedDelivery) => {
     const deliveryId = item.deliveryData?.delivery_id;
     if (!deliveryId || !userId) return;
 
     Alert.alert(
-      'Dispute: Package Missing',
+      isAwaitingApproval(item) ? 'Package Not Received?' : 'Dispute: Package Missing',
       'This will immediately freeze the Escrow payment and submit the courier’s GPS logs, Call/SMS timestamps, and Proof Photo to Admin Support for review. Proceed?',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -1315,14 +1550,20 @@ export default function ActivityScreen() {
   const renderRoute = (item: MappedDelivery, opts: { notes?: boolean } = {}) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, color: colors.accent, note: item.pickup_note },
-        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, color: colors.textPrimary, note: item.dropoff_note },
+        { key: 'p', label: 'PICKUP', main: item.pickup_main, road: item.pickup_road, note: item.pickup_note, kind: 'pickup' as const },
+        { key: 'd', label: 'DROP-OFF', main: item.dropoff_main, road: item.dropoff_road, note: item.dropoff_note, kind: 'dropoff' as const },
       ].map((r, i) => (
         <View key={r.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
-            <View style={[styles.rtRing, { borderColor: r.color }]}>
-              <View style={[styles.rtRingDot, { backgroundColor: r.color }]} />
-            </View>
+            {r.kind === 'pickup' ? (
+              <View style={styles.rtPickPin}>
+                <Ionicons name="cube" size={14} color="#FFFFFF" />
+              </View>
+            ) : (
+              <View style={styles.rtDropPin}>
+                <Ionicons name="person" size={16} color="#000000" />
+              </View>
+            )}
             {i === 0 && (
               <View style={styles.rtDots}>
                 {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
@@ -1416,7 +1657,10 @@ export default function ActivityScreen() {
 
   const renderShipmentCard = (item: MappedDelivery) => {
     const stage = stageOf(item);
-    const meta = statusMeta(stage, item.hasPreferredProvider);
+    const awaitingApproval = isAwaitingApproval(item);
+    const meta = awaitingApproval
+      ? { label: 'Approve Delivery', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
+      : statusMeta(stage, item.hasPreferredProvider);
     const isCancelled = stage === 'cancelled';
     const isActive = stage === 'pickup' || stage === 'transit' || stage === 'pending';
     const receiverName = item.receiver?.receiver_name || item.receiver?.receiver_phone || 'Receiver';
@@ -1567,11 +1811,19 @@ export default function ActivityScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.oRouteBtn}
-              onPress={() => openLiveTrack(item)}
+              onPress={() => {
+                if (awaitingApproval) { setSelectedId(item.request_id); openHandoverProof(item); }
+                else if (stage === 'pickup') setSelectedId(item.request_id); // not picked up yet -> "View" first
+                else openLiveTrack(item); // picked up -> Live Track
+              }}
               activeOpacity={0.9}
             >
-              <SolarIcon name="Routing" variant="linear" size={16} color="#FFFFFF" />
-              <Text style={styles.oRouteText}>Live Track</Text>
+              {!awaitingApproval && stage === 'pickup'
+                ? <Ionicons name="eye-outline" size={16} color="#FFFFFF" />
+                : <SolarIcon name={awaitingApproval ? 'CheckCircle' : 'Routing'} variant="linear" size={16} color="#FFFFFF" />}
+              <Text style={styles.oRouteText}>
+                {awaitingApproval ? 'Review & Approve' : stage === 'pickup' ? 'View' : 'Live Track'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1692,7 +1944,10 @@ export default function ActivityScreen() {
   /* ---------------- Detail view: package-first, no top map, no Package Photos section ---------------- */
   const renderDetailView = (d: MappedDelivery) => {
     const stage = stageOf(d);
-    const meta = statusMeta(stage, d.hasPreferredProvider);
+    const awaitingApproval = isAwaitingApproval(d);
+    const meta = awaitingApproval
+      ? { label: 'Awaiting Your Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
+      : statusMeta(stage, d.hasPreferredProvider);
     const code = trackingCode(d.request_id);
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
@@ -1710,7 +1965,7 @@ export default function ActivityScreen() {
     const currentStep = stage === 'done' ? -1 : stage === 'transit' ? 3 : stage === 'pickup' ? 2 : 1;
 
     const vehicle: any = d.deliveryData?.vehicle;
-    const podPhotoUrl = d.deliveryData?.pod_photo_url || null;
+    const podPhotoUrl = getHandoverPhoto(d);
     const pickupPhotoUrl = (d.deliveryData as any)?.pickup_photo_url || null;
 
     const escrowStatus = String(escrowRow?.escrow_status || escrowRow?.status || d.rawData?.escrow_status || '');
@@ -1725,7 +1980,10 @@ export default function ActivityScreen() {
 
     const payoutProvider = escrowRow?.payment_method || d.payment_method;
 
-    const hintText = stage === 'pending'
+    const recipientName = d.rawData?.fallback_recipient_name || 'the authorized person';
+    const hintText = awaitingApproval
+      ? `Your courier couldn't reach the receiver and left the package with ${recipientName}. Check the photo below, then approve if it was handed to the right person.`
+      : stage === 'pending'
       ? d.hasPreferredProvider
         ? `Sent directly to ${d.provider_name}. Waiting for the provider to accept your delivery request along their route.`
         : 'Looking for a nearby courier partner to accept your delivery request.'
@@ -1734,6 +1992,21 @@ export default function ActivityScreen() {
         : 'Your package is on the way! Share the 6-digit Delivery OTP with the receiver so they can confirm arrival.';
 
     const canRate = d.isMatched && isCompleted;
+
+    const isReturnedToSender =
+      d.status === 'Returned' ||
+      !!(d.deliveryData as any)?.returned_at ||
+      !!(d.qr as any)?.return_verified;
+    const isApprovedSafeDrop =
+      d.rawData?.fallback_action === 'leave_with_guard' &&
+      isCompleted &&
+      !!(d.deliveryData as any)?.failure_reason;
+    // Returning: package still with courier -> can dispute. Returned: sender has it back -> no dispute.
+    // Awaiting approval: sender may reject the handover by disputing. Approved safe-drop: already confirmed.
+    const showDisputeButton =
+      !isReturnedToSender &&
+      !isApprovedSafeDrop &&
+      (isCompleted || d.status === 'Returning' || awaitingApproval);
     const ratingLabels = ['Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
     const shownRating = ratingSaved ? ratingSaved.rating : ratingValue;
 
@@ -1826,10 +2099,31 @@ export default function ActivityScreen() {
               <View style={styles.doneCard}>
                 <View style={styles.doneIcon}><SolarIcon name="Check" variant="linear" size={20} color={colors.success} /></View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.doneTitle}>Delivered successfully</Text>
+                  <Text style={styles.doneTitle}>
+                    {d.status === 'Returned' ? 'Returned to sender' : 'Delivered successfully'}
+                  </Text>
                   <Text style={styles.doneSub}>
                     {d.deliveryData?.completed_at ? formatDateTime(d.deliveryData.completed_at) : ''}
-                    {released ? `  ·  ${money(d.price)} released to courier` : ''}
+                    {released ? (
+                      <>
+                        {`  ·  ${money(
+                          d.status === 'Returned'
+                            ? d.payout_base * 0.85 + d.payout_deposit
+                            : d.payout_base * 0.85,
+                        )} released to courier`}
+                        {d.status === 'Returned'
+                          ? `  ·  deposit retained by courier for return trip`
+                          : `  ·  ${money(d.payout_fee)} platform fee`}
+                        {d.status !== 'Returned' && d.payout_deposit > 0 &&
+                          `  ·  ${money(d.payout_deposit)} ${
+                            d.rawData?.refund_status === 'succeeded'
+                              ? 'refunded to you'
+                              : d.rawData?.refund_status === 'failed'
+                                ? 'refund pending — contact support'
+                                : 'being refunded to you'
+                          }`}
+                      </>
+                    ) : ''}
                   </Text>
                 </View>
               </View>
@@ -1923,16 +2217,18 @@ export default function ActivityScreen() {
               <>
                 <View style={styles.dSecHead}>
                   <SolarIcon name="ShieldCheck" variant="duotone" size={18} color={colors.success} />
-                  <Text style={styles.dSecTitle}>Proof of Delivery</Text>
-                  <View style={[styles.sdRatedBadge, { backgroundColor: colors.successBg }]}>
-                    <SolarIcon name="CheckCircle" variant="linear" size={12} color={colors.success} />
-                    <Text style={[styles.sdRatedBadgeText, { color: colors.success }]}>Verified</Text>
+                  <Text style={styles.dSecTitle}>{awaitingApproval ? 'Proof of Handover' : 'Proof of Delivery'}</Text>
+                  <View style={[styles.sdRatedBadge, { backgroundColor: awaitingApproval ? colors.warningBg : colors.successBg }]}>
+                    <SolarIcon name={awaitingApproval ? 'Clock' : 'CheckCircle'} variant="linear" size={12} color={awaitingApproval ? colors.warning : colors.success} />
+                    <Text style={[styles.sdRatedBadgeText, { color: awaitingApproval ? colors.warning : colors.success }]}>
+                      {awaitingApproval ? 'Needs approval' : 'Verified'}
+                    </Text>
                   </View>
                 </View>
                 <TouchableOpacity
                   style={styles.podPhotoCard}
                   activeOpacity={0.9}
-                  onPress={() => setPhotoPreview(podPhotoUrl)}
+                  onPress={() => (awaitingApproval ? openHandoverProof(d) : setPhotoPreview(podPhotoUrl))}
                 >
                   <Image
                     source={{ uri: podPhotoUrl }}
@@ -1942,7 +2238,7 @@ export default function ActivityScreen() {
                   <View style={styles.podPhotoOverlay}>
                     <View style={styles.podPhotoBadge}>
                       <SolarIcon name="Maximize" variant="linear" size={13} color="#FFFFFF" />
-                      <Text style={styles.podPhotoBadgeText}>Tap to view full photo</Text>
+                      <Text style={styles.podPhotoBadgeText}>{awaitingApproval ? 'Tap to review handover proof' : 'Tap to view full photo'}</Text>
                     </View>
                     {!!d.deliveryData?.completed_at && (
                       <Text style={styles.podPhotoTime}>{formatDateTime(d.deliveryData.completed_at)}</Text>
@@ -2230,14 +2526,36 @@ export default function ActivityScreen() {
               </View>
             )}
 
-            {(isCompleted || d.status === 'Returning') && d.deliveryData?.delivery_id && (
+            {/* Option B: approve the handover (shown only while awaiting the sender's approval) */}
+            {awaitingApproval && d.deliveryData?.delivery_id && (
+              <TouchableOpacity
+                style={[styles.mPrimaryBtn, { marginTop: 18 }, approvingHandover && { opacity: 0.7 }]}
+                onPress={() => handleApproveHandover(d)}
+                disabled={approvingHandover}
+                activeOpacity={0.9}
+              >
+                {approvingHandover ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                    <Text style={styles.mPrimaryText}>Approve Delivery &amp; Release Payment</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Dispute is hidden once the package is back with the sender (Returned) and after an approved handover */}
+            {showDisputeButton && d.deliveryData?.delivery_id && (
               <TouchableOpacity
                 style={[styles.sdCancelBtn, { marginTop: 18, flex: 0 }]}
                 onPress={() => handleDisputePackageMissing(d)}
                 activeOpacity={0.9}
               >
                 <Ionicons name="shield-outline" size={16} color={colors.error} />
-                <Text style={styles.sdCancelBtnText}>Dispute: Package Missing (Freeze Escrow)</Text>
+                <Text style={styles.sdCancelBtnText}>
+                  {awaitingApproval ? 'Not received — Dispute (Freeze Escrow)' : 'Dispute: Package Missing (Freeze Escrow)'}
+                </Text>
               </TouchableOpacity>
             )}
           </Animated.View>
@@ -2253,34 +2571,47 @@ export default function ActivityScreen() {
             >
               {openingChat ? <ActivityIndicator size="small" color={colors.accent} /> : <SolarIcon name="ChatCircleText" variant="linear" size={20} color={colors.accent} />}
             </TouchableOpacity>
+            {stage === 'transit' && (
+              <TouchableOpacity
+                style={[styles.mSoftBtn, { flex: 1 }]}
+                onPress={() => openLiveTrack(d)}
+                activeOpacity={0.85}
+              >
+                <SolarIcon name="Routing" variant="linear" size={16} color={colors.accent} />
+                <Text style={styles.mSoftText}>Track</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
-              style={[styles.mSoftBtn, { flex: 1 }]}
-              onPress={() => openLiveTrack(d)}
-              activeOpacity={0.85}
-            >
-              <SolarIcon name="Routing" variant="linear" size={16} color={colors.accent} />
-              <Text style={styles.mSoftText}>Track</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }]}
+              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && approvingHandover && { opacity: 0.7 }]}
+              disabled={awaitingApproval && approvingHandover}
               onPress={() =>
-                stage === 'pickup' || d.status === 'Returning'
-                  ? setShowPickupQR(true)
-                  : setShowDeliveryOTP(true)
+                awaitingApproval
+                  ? (getHandoverPhoto(d) ? openHandoverProof(d) : handleApproveHandover(d))
+                  : stage === 'pickup' || d.status === 'Returning'
+                    ? setShowPickupQR(true)
+                    : setShowDeliveryOTP(true)
               }
               activeOpacity={0.9}
             >
               <Ionicons
-                name={stage === 'pickup' || d.status === 'Returning' ? 'qr-code-outline' : 'key-outline'}
+                name={
+                  awaitingApproval
+                    ? 'checkmark-circle'
+                    : stage === 'pickup' || d.status === 'Returning'
+                      ? 'qr-code-outline'
+                      : 'key-outline'
+                }
                 size={18}
                 color="#FFFFFF"
               />
               <Text style={styles.mPrimaryText}>
-                {stage === 'pickup'
-                  ? 'Pickup QR'
-                  : d.status === 'Returning'
-                    ? 'Return QR / PIN'
-                    : 'Delivery OTP'}
+                {awaitingApproval
+                  ? (getHandoverPhoto(d) ? 'Review & Approve' : 'Approve Delivery')
+                  : stage === 'pickup'
+                    ? 'Pickup QR'
+                    : d.status === 'Returning'
+                      ? 'Return QR / PIN'
+                      : 'Delivery OTP'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -2588,6 +2919,174 @@ export default function ActivityScreen() {
     </Modal>
   );
 
+  // Auto-open the proof modal once per delivery as soon as it reaches "Awaiting Approval" (works in real time).
+  useEffect(() => {
+    if (isLoading) return;
+    const next = deliveries.find(d =>
+      d.status === 'Awaiting Approval' &&
+      !d.deliveryData?.completed_at &&
+      !!((d.deliveryData as any)?.pod_photo_url || (d.deliveryData as any)?.failure_photo_url) &&
+      !handoverAutoShownRef.current.has(d.request_id),
+    );
+    if (next) {
+      handoverAutoShownRef.current.add(next.request_id);
+      setHandoverImgLoading(true);
+      setHandoverImgFailed(false);
+      setHandoverProofId(next.request_id);
+    }
+  }, [deliveries, isLoading]);
+
+  // Close the modal automatically once the delivery is no longer awaiting approval (approved / disputed elsewhere).
+  useEffect(() => {
+    if (handoverProofId == null) return;
+    const d = deliveries.find(x => x.request_id === handoverProofId);
+    if (!d || d.status !== 'Awaiting Approval' || !!d.deliveryData?.completed_at) {
+      setHandoverProofId(null);
+    }
+  }, [deliveries, handoverProofId]);
+
+  const renderHandoverProofModal = () => {
+    const item = handoverProofId == null ? null : deliveries.find(d => d.request_id === handoverProofId) || null;
+    const photo = item ? getHandoverPhoto(item) : null;
+    const visible = !!item && !!photo;
+    const recipient = item?.rawData?.fallback_recipient_name || 'the authorized person';
+    const senderNote: string | null = item?.rawData?.dropoff_note || null;
+    const takenAt: string | null = (item?.deliveryData as any)?.failed_at || (item?.deliveryData as any)?.dropoff_arrived_at || null;
+
+    return (
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={closeHandoverProof}>
+        <View style={styles.hpOverlay}>
+          <View style={[styles.hpCard, { maxHeight: '92%' }]}>
+            <View style={styles.hpHeader}>
+              <View style={styles.hpHeaderIcon}>
+                <SolarIcon name="ShieldCheck" variant="duotone" size={20} color={colors.warning} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.hpTitle}>Proof of Handover</Text>
+                <Text style={styles.hpSubtitle}>
+                  {item ? `${trackingCode(item.request_id)} • Awaiting your approval` : ''}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.hpCloseBtn} onPress={closeHandoverProof} activeOpacity={0.8}>
+                <Ionicons name="close" size={20} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
+              <Text style={styles.hpCaption}>
+                This is the photo taken by your courier showing where the item was handed over, based on your drop-off notes.
+              </Text>
+
+              <TouchableOpacity
+                style={styles.hpPhotoWrap}
+                activeOpacity={0.92}
+                onPress={() => photo && setPhotoPreview(photo)}
+              >
+                {!!photo && !handoverImgFailed && (
+                  <Image
+                    source={{ uri: photo }}
+                    style={styles.hpPhoto}
+                    resizeMode="cover"
+                    onLoadStart={() => setHandoverImgLoading(true)}
+                    onLoadEnd={() => setHandoverImgLoading(false)}
+                    onError={() => { setHandoverImgFailed(true); setHandoverImgLoading(false); }}
+                  />
+                )}
+                {handoverImgLoading && !handoverImgFailed && (
+                  <View style={styles.hpPhotoLoading}>
+                    <ActivityIndicator color={colors.accent} />
+                  </View>
+                )}
+                {handoverImgFailed && (
+                  <View style={styles.hpPhotoLoading}>
+                    <Ionicons name="image-outline" size={34} color={colors.textMuted} />
+                    <Text style={[styles.hpMetaLabel, { marginTop: 8 }]}>PHOTO COULD NOT BE LOADED</Text>
+                  </View>
+                )}
+                {!handoverImgFailed && (
+                  <View style={styles.hpPhotoBadge}>
+                    <Ionicons name="expand-outline" size={13} color="#FFFFFF" />
+                    <Text style={styles.hpPhotoBadgeText}>Tap to enlarge</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              <View style={styles.hpMetaBox}>
+                <View style={styles.hpMetaRow}>
+                  <Ionicons name="person-outline" size={16} color={colors.textMuted} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.hpMetaLabel}>LEFT WITH</Text>
+                    <Text style={styles.hpMetaValue}>{recipient}</Text>
+                  </View>
+                </View>
+                {!!senderNote && (
+                  <View style={[styles.hpMetaRow, styles.hpMetaRowBorder]}>
+                    <Ionicons name="document-text-outline" size={16} color={colors.textMuted} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hpMetaLabel}>YOUR DROP-OFF NOTE</Text>
+                      <Text style={styles.hpMetaValue}>{senderNote}</Text>
+                    </View>
+                  </View>
+                )}
+                {!!takenAt && (
+                  <View style={[styles.hpMetaRow, styles.hpMetaRowBorder]}>
+                    <Ionicons name="time-outline" size={16} color={colors.textMuted} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.hpMetaLabel}>PHOTO TAKEN</Text>
+                      <Text style={styles.hpMetaValue}>{formatDateTime(takenAt)}</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+
+              <Text style={styles.hpHint}>
+                Approving confirms the package was left with the right person and releases the payment to your courier. This cannot be undone.
+              </Text>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.mPrimaryBtn, { marginTop: 14 }, approvingHandover && { opacity: 0.7 }]}
+              disabled={approvingHandover || !item}
+              activeOpacity={0.9}
+              onPress={() => {
+                if (!item) return;
+                closeHandoverProof();
+                // let the modal dismiss before the confirmation alert appears (iOS)
+                setTimeout(() => handleApproveHandover(item), 350);
+              }}
+            >
+              {approvingHandover ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <Text style={styles.mPrimaryText}>Approve &amp; Release Payment</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.sdCancelBtn, { marginTop: 10, flex: 0 }]}
+              activeOpacity={0.9}
+              onPress={() => {
+                if (!item) return;
+                closeHandoverProof();
+                setTimeout(() => handleDisputePackageMissing(item), 350);
+              }}
+            >
+              <Ionicons name="shield-outline" size={16} color={colors.error} />
+              <Text style={styles.sdCancelBtnText}>Not received — Dispute</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.hpLaterBtn} onPress={closeHandoverProof} activeOpacity={0.7}>
+              <Text style={styles.hpLaterText}>Review later</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
   if (isLoading) {
     return (
       <View style={[styles.safeArea, styles.loadingContainer]}>
@@ -2605,6 +3104,7 @@ export default function ActivityScreen() {
       {renderEditModal()}
       {renderPickupQRModal()}
       {renderDeliveryOTPModal()}
+      {renderHandoverProofModal()}
       {renderPhotoPreviewModal()}
       {renderPkgModal()}
     </View>
@@ -2654,9 +3154,22 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
 
   rtRow: { flexDirection: 'row', gap: 14 },
-  rtRail: { alignItems: 'center', width: 26 },
-  rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
-  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
+  rtRail: { alignItems: 'center', width: 32 },
+  rtPickPin: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: BRAND_ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25, shadowRadius: 4, elevation: 4,
+  },
+  rtDropPin: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2, shadowRadius: 3, elevation: 3,
+  },
   rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
   rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
   rtText: { flex: 1 },
@@ -2880,6 +3393,28 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   mPrimaryText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
   mSoftBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accentSoft, paddingVertical: 14, borderRadius: 12 },
   mSoftText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_600SemiBold' },
+
+  hpOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 16 },
+  hpCard: { width: '100%', maxWidth: 400, backgroundColor: c.card, borderRadius: 20, padding: 18, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  hpHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
+  hpHeaderIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.warningBg, alignItems: 'center', justifyContent: 'center' },
+  hpTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  hpSubtitle: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.warning, marginTop: 1 },
+  hpCloseBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)' },
+  hpCaption: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 12 },
+  hpPhotoWrap: { width: '100%', aspectRatio: 4 / 3, borderRadius: 14, overflow: 'hidden', backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  hpPhoto: { width: '100%', height: '100%' },
+  hpPhotoLoading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
+  hpPhotoBadge: { position: 'absolute', right: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14 },
+  hpPhotoBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
+  hpMetaBox: { marginTop: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 14 },
+  hpMetaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 12 },
+  hpMetaRowBorder: { borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  hpMetaLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  hpMetaValue: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 2 },
+  hpHint: { fontSize: 12, lineHeight: 17, fontFamily: 'Poppins_400Regular', color: c.textMuted, marginTop: 12 },
+  hpLaterBtn: { alignItems: 'center', paddingVertical: 12, marginTop: 2 },
+  hpLaterText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
   previewImg: { width: '100%', height: '80%' },

@@ -95,8 +95,6 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 // Notifications Section
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
-// Support FAB, Proof of Delivery Modal & In-App Call Modal
-import SupportFab from './src/components/SupportFab';
 import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
 // Canonical background matcher
 import {
@@ -360,7 +358,6 @@ function MainTabs() {
         <Tab.Screen name="Account" component={AccountScreen} />
       </Tab.Navigator>
 
-      <SupportFab role="sender" />
       <ProofOfDeliveryModal
         isSenderMode={true}
         onViewDetails={(reqId) => {
@@ -442,8 +439,6 @@ function ProviderTabsInner() {
         />
         <ProviderTab.Screen name="Account" component={ProviderAccountScreen} />
       </ProviderTab.Navigator>
-
-      <SupportFab role="provider" />
     </View>
   );
 }

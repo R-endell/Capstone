@@ -24,7 +24,7 @@ import {
   subscribeDemoMode,
   syncSelectedRouteToDb,
 } from '../../../services/activeRouteStore';
-import { evaluateAndFetchRouteMatches, fetchDirectRequestMatches, computeCargoVolumeLiters, parseRequestCreatedTime, RouteMatchRow } from '../../../services/matchingService';
+import { evaluateAndFetchRouteMatches, fetchDirectRequestMatches, computeCargoVolumeLiters, parseRequestCreatedTime, declineDirectRequest as declineDirectRequestService, RouteMatchRow } from '../../../services/matchingService';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
@@ -2260,7 +2260,49 @@ export default function JobsScreen() {
   const offers = requests.filter(r => !dismissedIds.includes(r.request_id));
   const currentOffer = offers[0] ?? null;
 
-  const dismissOffer = (id: number) => setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+  const skipOfferLocally = (id: number) =>
+    setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+
+  const decliningRef = useRef<Set<number>>(new Set());
+
+  /**
+   * A sender picked THIS provider from Explore ("deliver along your route") and the provider
+   * dismissed it. The request is released from this provider (preferred_provider_id cleared),
+   * the sender is notified, and matching is re-run so another courier can be found.
+   */
+  const declineDirectRequest = async (req: JobRequest) => {
+    const pid = providerIdRef.current ?? providerId;
+    if (!pid || decliningRef.current.has(req.request_id)) return;
+    decliningRef.current.add(req.request_id);
+    try {
+      const res = await declineDirectRequestService(req.request_id, pid);
+      if (!res.ok) {
+        Alert.alert('Could not decline', res.message);
+        return;
+      }
+      skipOfferLocally(req.request_id);
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+    } finally {
+      decliningRef.current.delete(req.request_id);
+    }
+  };
+
+  const dismissOffer = (id: number) => {
+    const req = requests.find(r => r.request_id === id) ?? awaiting.find(r => r.request_id === id);
+    // Only requests addressed to this provider (sender chose them along their route) are declined for real.
+    if (req?.isDirectRequest) {
+      Alert.alert(
+        'Decline this request?',
+        'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Decline', style: 'destructive', onPress: () => { void declineDirectRequest(req); } },
+        ],
+      );
+      return;
+    }
+    skipOfferLocally(id);
+  };
 
   const openRequestList = () => {
     setRequestListOpen(true);

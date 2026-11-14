@@ -62,7 +62,7 @@ export default function SendNowIntroScreen() {
         </View>
 
         <View style={styles.textContentWrap}>
-          <Text style={styles.title}>Ship right now</Text>
+          <Text style={styles.title}>Ship Today</Text>
 
           <View style={styles.featureList}>
             <FeatureItem 
@@ -92,7 +92,7 @@ export default function SendNowIntroScreen() {
       {/* Sticky Bottom CTA */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16 }]}>
         <TouchableOpacity style={styles.primaryBtn} onPress={handleContinue} activeOpacity={0.9}>
-          <Text style={styles.primaryBtnText}>Send a package now</Text>
+          <Text style={styles.primaryBtnText}>Send a package Today</Text>
         </TouchableOpacity>
       </View>
     </View>
