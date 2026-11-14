@@ -54,6 +54,8 @@ interface LocationType {
   zip_code: string;
   latitude: number;
   longitude: number;
+  place_name?: string;
+  road?: string;
 }
 interface Vehicle {
   vehicle_id: number;
@@ -97,6 +99,76 @@ type Label = { name: string; sub?: string };
 /* ==================================================================== */
 /* Helpers                                                              */
 /* ==================================================================== */
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (t: string) => {
+  const x = (t ?? '').trim();
+  if (!x) return true;
+  if (PLUS_CODE.test(x)) return true;
+  // Matches strings like "8Q7X+V4" or arbitrary alphanumeric hashes
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+
+const cleanAddress = (a?: string | null): string =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p)).join(', ');
+
+const streetOf = (l: any, fallback: string): string => {
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = l?.barangay && l.barangay !== 'Unknown' ? String(l.barangay) : '';
+  return road || cleanAddress(l?.street_address) || brgy || fallback;
+};
+
+const nameOf = (l: any): string | null => {
+  const raw = typeof l?.place_name === 'string' ? l.place_name.trim() : '';
+  // Only return a landmark if it's NOT a code-like string
+  return raw && !isCodeLike(raw) ? raw : null;
+};
+
+const areaOf = (l: any): string =>
+  [l?.barangay, l?.city, l?.province].filter(v => v && v !== 'Unknown').join(', ');
+
+const toPlaceInfo = (l: any, fallback: string) => {
+  if (!l) {
+    return { landmark: '', street: fallback, area: '' };
+  }
+
+  const normalised = {
+    place_name: l.place_name ?? l.name ?? null,
+    road: l.road ?? null,
+    street_address: l.street_address ?? l.address ?? null,
+    barangay: l.barangay ?? null,
+    city: l.city ?? null,
+    province: l.province ?? null,
+  };
+
+  // 1. Try to get the real landmark. If it's a plus code, nameOf returns null.
+  let landmark = nameOf(normalised) ?? '';
+
+  // 2. Extract the street / area.
+  const street = streetOf(normalised, '');
+  const area = areaOf(normalised);
+
+  // 3. Fallback: If there is no valid landmark, use the first valid piece of the address as the title.
+  if (!landmark) {
+    const rawAddr = cleanAddress(normalised.street_address);
+    if (rawAddr) {
+      const parts = rawAddr.split(',').map((s: string) => s.trim());
+      landmark = parts[0] || '';
+    }
+  }
+
+  // If everything is empty, fall back to the provided string.
+  const finalLandmark = landmark || fallback;
+  const finalStreet = street === finalLandmark ? '' : street;
+  const finalArea = area === finalLandmark ? '' : area;
+
+  return {
+    landmark: finalLandmark,
+    street: finalStreet,
+    area: finalArea,
+  };
+};
+
 const splitAddress = (full?: string | null) => {
   if (!full) return { main: 'Selected location', sub: '' };
   const parts = full.split(', ');
@@ -609,15 +681,30 @@ const LocationPickerModal = ({
   };
 
   const confirm = () => {
-    const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
+    // 1. Clean the address name to ensure we don't save a Plus Code as the landmark
+    let finalName = addressName;
+    if (isCodeLike(finalName)) {
+      // If the current name is a code, try to grab the first valid part of the address
+      const cleaned = cleanAddress(structuredAddress.street_address || addressSub);
+      if (cleaned) {
+        finalName = cleaned.split(',')[0].trim();
+      }
+    }
+
+    const fullAddress = `${finalName}${addressSub && addressSub !== finalName ? ', ' + addressSub : ''}`;
+    
     const payload = {
       latitude: markerCoord.latitude,
       longitude: markerCoord.longitude,
       ...structuredAddress,
       address: fullAddress,
+      // Pass the cleaned name so the screen correctly maps it to the landmark
+      place_name: finalName, 
+      road: structuredAddress.street_address,
     };
+    
     saveRecent({
-      name: addressName, address: addressSub || addressName,
+      name: finalName, address: addressSub || finalName,
       latitude: markerCoord.latitude, longitude: markerCoord.longitude, ts: Date.now(),
     });
     onSelect(payload);
@@ -997,8 +1084,7 @@ export default function ManageRoutesScreen() {
 
   const handleLocationSelect = async (locData: any, type: 'start' | 'end') => {
     try {
-      const streetAddress =
-        locData.street_address || locData.address || 'Selected location';
+      const streetAddress = locData.street_address || locData.address || 'Selected location';
       const barangay = locData.barangay || 'Unknown';
       const city = locData.city || 'Unknown';
       const province = locData.province || 'Unknown';
@@ -1027,6 +1113,15 @@ export default function ManageRoutesScreen() {
           .single();
         if (error) throw error;
         location = newLoc as LocationType;
+      }
+
+      // Attach place_name and road to the location object so the UI can render the landmark properly
+      if (location) {
+        location = {
+          ...location,
+          place_name: locData.place_name || locData.address,
+          road: locData.road || streetAddress,
+        } as any;
       }
 
       if (type === 'start') setStartLocation(location);
@@ -1149,12 +1244,6 @@ export default function ManageRoutesScreen() {
             : 'Your route corridor is active and scanning for forward matches!',
         );
 
-        // Optimistic insert: the route row itself (is_active / is_deleted) is already
-        // correct the moment the insert returns, BEFORE the background
-        // `evaluate_route_matches` RPC runs. Add it to local state right away so the
-        // "Active" tab/badge reflects it instantly instead of waiting on a re-fetch
-        // that happens after that RPC — and isn't left stuck at 0 if that RPC is slow
-        // or (depending on backend config) touches the row.
         if (res.route) {
           const vehicleObj = vehicles.find(v => v.vehicle_id === selectedVehicleId) || null;
           const optimisticRoute: Route = {
@@ -1322,10 +1411,9 @@ export default function ManageRoutesScreen() {
     })();
 
     const meta = frequencyMeta(item.route_frequency, expired);
-    const startSplit = splitAddress(item.start_location?.street_address);
-    const endSplit = splitAddress(item.end_location?.street_address);
-    const startRoad = [item.start_location?.barangay, item.start_location?.city].filter(Boolean).join(', ') || startSplit.sub;
-    const endRoad = [item.end_location?.barangay, item.end_location?.city].filter(Boolean).join(', ') || endSplit.sub;
+    
+    const startPlace = toPlaceInfo(item.start_location, 'Starting point');
+    const endPlace = toPlaceInfo(item.end_location, 'Destination');
 
     return (
       <TouchableOpacity
@@ -1366,8 +1454,8 @@ export default function ManageRoutesScreen() {
 
           <View>
             {[
-              { key: 'p', label: 'STARTING POINT', main: startSplit.main, road: startRoad, color: colors.accent },
-              { key: 'd', label: 'DESTINATION', main: endSplit.main, road: endRoad, color: colors.textPrimary },
+              { key: 'p', label: 'STARTING POINT', main: startPlace.landmark, road: [startPlace.street, startPlace.area].filter(Boolean).join(', '), color: colors.accent },
+              { key: 'd', label: 'DESTINATION', main: endPlace.landmark, road: [endPlace.street, endPlace.area].filter(Boolean).join(', '), color: colors.textPrimary },
             ].map((r, i) => (
               <View key={r.key} style={styles.rtRow}>
                 <View style={styles.rtRail}>
@@ -1385,7 +1473,7 @@ export default function ManageRoutesScreen() {
                   <Text style={styles.rtMain} numberOfLines={1}>{r.main}</Text>
                   {!!r.road && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                      <SolarIcon name="Map" variant="bold" size={12} color={colors.textMuted} />
+                      <SolarIcon name="MapPoint" variant="bold" size={12} color={colors.textMuted} />
                       <Text style={styles.rtSub} numberOfLines={1}>{r.road}</Text>
                     </View>
                   )}
@@ -1475,7 +1563,6 @@ export default function ManageRoutesScreen() {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* Defense DEMO_MODE banner */}
       <View style={styles.demoStrip}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
           <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.accent} />
@@ -1591,23 +1678,52 @@ export default function ManageRoutesScreen() {
 
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Route Locations</Text>
-                <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('start'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: colors.accent }]}>
-                    <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
-                  </View>
-                  <Text style={styles.locationSelectorText} numberOfLines={1}>
-                    {startLocation ? startLocation.street_address : 'Set Starting Point'}
-                  </Text>
-                </TouchableOpacity>
+                
+                {/* Start Location Button */}
+                {(() => {
+                  const startPlace = toPlaceInfo(startLocation, 'Set Starting Point');
+                  const startMain = startPlace.landmark;
+                  const startSub = [startPlace.street, startPlace.area].filter(Boolean).join(', ');
+                  return (
+                    <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('start'); setPickerVisible(true); }}>
+                      <View style={[styles.locSelectorIcon, startLocation && { backgroundColor: colors.accent }]}>
+                        <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.locationSelectorText} numberOfLines={1}>
+                          {startLocation ? startMain : 'Set Starting Point'}
+                        </Text>
+                        {!!startLocation && !!startSub && (
+                          <Text style={styles.locationSelectorSub} numberOfLines={1}>{startSub}</Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })()}
+
                 <View style={{ height: 10 }} />
-                <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('end'); setPickerVisible(true); }}>
-                  <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: colors.textPrimary }]}>
-                    <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
-                  </View>
-                  <Text style={styles.locationSelectorText} numberOfLines={1}>
-                    {endLocation ? endLocation.street_address : 'Set Destination (≥3 km from other routes)'}
-                  </Text>
-                </TouchableOpacity>
+
+                {/* End Location Button */}
+                {(() => {
+                  const endPlace = toPlaceInfo(endLocation, 'Set Destination (≥3 km from other routes)');
+                  const endMain = endPlace.landmark;
+                  const endSub = [endPlace.street, endPlace.area].filter(Boolean).join(', ');
+                  return (
+                    <TouchableOpacity style={styles.locationSelectorBtn} onPress={() => { setPickerType('end'); setPickerVisible(true); }}>
+                      <View style={[styles.locSelectorIcon, endLocation && { backgroundColor: colors.textPrimary }]}>
+                        <SolarIcon name="MapPoint" variant="duotone" size={14} secondaryColor="#FFFFFF" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.locationSelectorText} numberOfLines={1}>
+                          {endLocation ? endMain : 'Set Destination (≥3 km from other routes)'}
+                        </Text>
+                        {!!endLocation && !!endSub && (
+                          <Text style={styles.locationSelectorSub} numberOfLines={1}>{endSub}</Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })()}
               </View>
 
               {startLocation && endLocation && (
@@ -2016,6 +2132,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center',
   },
   locationSelectorText: { flex: 1, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, fontSize: 14 },
+  locationSelectorSub: { flex: 1, fontFamily: 'Poppins_400Regular', color: c.textSecondary, fontSize: 12, marginTop: 2 },
 
   formGroup: { marginBottom: 20 },
   inputLabel: { marginBottom: 8, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontSize: 12, letterSpacing: 0.3 },

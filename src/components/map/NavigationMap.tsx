@@ -13,6 +13,7 @@ import {
 } from '../../services/navigationEngine';
 import type { RouteIndex } from '../../services/navigationEngine';
 import { useNavLocation } from '../../services/navLocationStore';
+import { useVoiceGuidance, usePersistedMute } from '../../services/useVoiceGuidance';
 
 export type LatLng = { latitude: number; longitude: number };
 export type NavInfo = { distanceM: number | null; durationS: number | null };
@@ -219,7 +220,7 @@ const NavigationMapInner = (
   const [arrived, setArrived] = useState(false);
   const [route, setRoute] = useState<RouteState | null>(null);
   const [rerouting, setRerouting] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = usePersistedMute();
 
   const targetRef = useRef(target);
   targetRef.current = target;
@@ -410,6 +411,15 @@ const NavigationMapInner = (
   })();
 
   const blocked = status === 'permission-denied' || status === 'services-off' || status === 'gps-error';
+
+  // Spoken guidance: only on the interactive navigation screen, not on preview maps.
+  useVoiceGuidance({
+    enabled: guidance && !muted && !blocked,
+    progress,
+    status,
+    targetKey: tKey,
+    targetLabel,
+  });
 
   return (
     <View style={[StyleSheet.absoluteFill, style]}>

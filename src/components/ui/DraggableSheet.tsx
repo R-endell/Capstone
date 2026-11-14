@@ -16,7 +16,7 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Animated, PanResponder, ScrollView, StyleProp, TouchableOpacity, View, ViewStyle } from 'react-native';
 
-export type DraggableSheetHandle = { open: () => void; close: () => void; toggle: () => void };
+export type DraggableSheetHandle = { open: () => void; close: () => void; toggle: () => void; scrollToEnd: () => void };
 
 type Props = {
   /** Shared translateY value: `collapsedY` = collapsed, `0` = fully expanded. Create it in the parent. */
@@ -94,6 +94,7 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
       bounciness: 0,
       speed: 16,
     }).start(({ finished }) => {
+      if (finished) curY.current = open ? 0 : collapsedRef.current;   // never trust a stale listener value
       if (finished && !open) {
         scrollRef.current?.scrollTo({ y: 0, animated: false });
         scrollYRef.current = 0;
@@ -110,7 +111,12 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
     open: () => snap(true),
     close: () => { if (openRef.current) snap(false); },
     toggle: () => snap(!openRef.current),
-  }), [snap]);
+    scrollToEnd: () => {
+      const max = Math.max(0, contentH.current - viewH.current);
+      if (max > 2) setScrollable(true);
+      scrollRef.current?.scrollTo({ y: max, animated: true });
+    },
+  }), [snap, setScrollable]);
 
   const finish = useCallback((vy: number) => {
     const raw = lastRaw.current;
@@ -119,11 +125,15 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
     snap(vy < -0.4 ? true : vy > 0.4 ? false : pos < collapsedRef.current / 2);
   }, [snap]);
 
-  const pan = useRef(PanResponder.create({
+  const scrollBase = useRef(0);           // content offset when a drag began
+
+  // `ownsWhenScrolled` = true for the handle / header: those areas can never scroll, so the sheet must
+  // always be draggable from there (otherwise a slightly scrolled sheet could not be pulled back down).
+  const makePan = (ownsWhenScrolled: boolean) => PanResponder.create({
     onMoveShouldSetPanResponderCapture: (_e, g) => {
       if (Math.abs(g.dy) < 6 || Math.abs(g.dx) > Math.abs(g.dy)) return false;
-      // content is scrolled down -> let the native ScrollView handle it
-      if (openRef.current && scrollYRef.current > 1) return false;
+      // body only: content is scrolled down -> let the native ScrollView handle it
+      if (!ownsWhenScrolled && openRef.current && scrollYRef.current > 1) return false;
       return true;
     },
     onPanResponderTerminationRequest: () => false,
@@ -131,15 +141,16 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
       y.stopAnimation();
       startY.current = curY.current;
       lastRaw.current = startY.current;
+      scrollBase.current = scrollYRef.current;
     },
     onPanResponderMove: (_e, g) => {
       const raw = startY.current + g.dy;
       lastRaw.current = raw;
       y.setValue(Math.min(collapsedRef.current, Math.max(0, raw)));
       if (raw < 0) {
-        // sheet is fully up and the finger keeps going up: scroll the content by hand
+        // sheet is fully up and the finger keeps going up: scroll the content by hand (only if it overflows)
         const max = Math.max(0, contentH.current - viewH.current);
-        const off = Math.min(max, -raw);
+        const off = max > 2 ? Math.min(max, scrollBase.current - raw) : 0;
         scrollRef.current?.scrollTo({ y: off, animated: false });
         scrollYRef.current = off;
         if (off > 2) setScrollable(true);
@@ -147,23 +158,28 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
     },
     onPanResponderRelease: (_e, g) => finish(g.vy),
     onPanResponderTerminate: () => finish(0),
-  })).current;
+  });
+  const pan = useRef(makePan(false)).current;
+  const headPan = useRef(makePan(true)).current;
 
   return (
     <Animated.View
       {...pan.panHandlers}
+      collapsable={false}
       style={[style, height != null && { height }, { transform: [{ translateY: y }] }]}
     >
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onPress={() => snap(!openRef.current)}
-        style={[DEFAULT_HIT_AREA, handleHitAreaStyle]}
-        hitSlop={{ top: 8, bottom: 8 }}
-      >
-        <View style={[DEFAULT_HANDLE, handleStyle]} />
-      </TouchableOpacity>
+      <View {...headPan.panHandlers} collapsable={false}>
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onPress={() => snap(!openRef.current)}
+          style={[DEFAULT_HIT_AREA, handleHitAreaStyle]}
+          hitSlop={{ top: 8, bottom: 8 }}
+        >
+          <View style={[DEFAULT_HANDLE, handleStyle]} />
+        </TouchableOpacity>
 
-      {header}
+        {header}
+      </View>
 
       <ScrollView
         ref={scrollRef}
@@ -173,6 +189,7 @@ const DraggableSheet = forwardRef<DraggableSheetHandle, Props>(function Draggabl
         bounces={false}
         overScrollMode="never"
         nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
         scrollEventThrottle={16}
         onScroll={(e) => {
           const yy = e.nativeEvent.contentOffset.y;

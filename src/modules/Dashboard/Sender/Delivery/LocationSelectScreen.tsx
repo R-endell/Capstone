@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   View, Text, TouchableOpacity, StyleSheet, Alert, StatusBar,
   ActivityIndicator, Animated, Easing, TextInput, FlatList, ScrollView,
-  Keyboard, Platform,
+  Keyboard, Platform, Modal, Pressable, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
@@ -11,6 +11,7 @@ import * as Location from 'expo-location';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import DraggableSheet from '../../../../components/ui/DraggableSheet';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS } from '../../../../utils/mapConfig';
@@ -260,8 +261,47 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const [note, setNote] = useState<string>(
     () => ((isPickup ? state.pickupLocation : state.dropoffLocation) as any)?.note ?? '',
   );
-  const [editingNote, setEditingNote] = useState(false);
+
+  // --- Note modal state ---
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(note);
+  const noteInputRef = useRef<TextInput>(null);
+
   const [kbH, setKbH] = useState(0);
+
+  // --- Draggable sheet: the nearby-places list slides up over the map; note + confirm stay pinned below it ---
+  const { height: winH } = useWindowDimensions();
+  const HANDLE_AREA_H = 40;
+  const LIST_COLLAPSED_H = 150;
+  const [footerH, setFooterH] = useState(150);
+  const [listContentH, setListContentH] = useState(0);
+  const sheetMaxH = Math.round(winH * 0.82) - footerH;
+  // only as tall as its content, so dragging up never shows empty space
+  const sheetH = listContentH > 0 ? Math.min(sheetMaxH, HANDLE_AREA_H + listContentH) : sheetMaxH;
+  const sheetVisibleH = Math.min(sheetH, HANDLE_AREA_H + LIST_COLLAPSED_H);
+  const sheetCollapsedY = Math.max(0, sheetH - sheetVisibleH);
+  const sheetY = useRef(new Animated.Value(sheetCollapsedY)).current;
+
+  // --- Note modal: keep the centred card clear of the keyboard ---
+  const noteCardRef = useRef<View>(null);
+  const [noteShift, setNoteShift] = useState(0);
+  useEffect(() => {
+    if (!noteModalVisible) { setNoteShift(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvt, (e) => {
+      const kbTop = e.endCoordinates.screenY;
+      setTimeout(() => {
+        noteCardRef.current?.measureInWindow((_x, y, _w, h) => {
+          // measured after the window settled; only lift the card if it still overlaps the keyboard
+          const overlap = y + h - kbTop + 16;
+          setNoteShift(prev => Math.max(0, prev + overlap));
+        });
+      }, 120);
+    });
+    const hide = Keyboard.addListener(hideEvt, () => setNoteShift(0));
+    return () => { show.remove(); hide.remove(); };
+  }, [noteModalVisible]);
 
   const [structuredAddress, setStructuredAddress] = useState({
     street_address: '', barangay: '', city: '', province: '', zip_code: '',
@@ -551,7 +591,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   const pickNearby = (p: NearbyPlace) => {
     Keyboard.dismiss();
-    setEditingNote(false);
     moveTo({ latitude: p.latitude, longitude: p.longitude }, { name: p.name, sub: p.address });
   };
 
@@ -587,7 +626,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   const onPanDrag = () => {
     if (!isDraggingMap) setIsDraggingMap(true);
-    if (editingNote) { Keyboard.dismiss(); setEditingNote(false); }
   };
 
   const onRegionChangeComplete = (region: Region) => {
@@ -608,11 +646,29 @@ export default function LocationSelectScreen({ route, navigation }: any) {
 
   const onMapPress = (e: any) => {
     Keyboard.dismiss();
-    setEditingNote(false);
     if (Date.now() - lastPoiTap.current < 500) return;
     const c = e.nativeEvent?.coordinate;
     if (!c) return;
     moveTo({ latitude: c.latitude, longitude: c.longitude });
+  };
+
+  // --- Note modal helpers ---
+  const openNoteModal = () => {
+    setNoteDraft(note);
+    setNoteModalVisible(true);
+    setTimeout(() => noteInputRef.current?.focus(), 250);
+  };
+
+  const closeNoteModal = () => {
+    Keyboard.dismiss();
+    setNoteModalVisible(false);
+    setNoteDraft(note); // discard draft
+  };
+
+  const commitNote = () => {
+    setNote(noteDraft.trim());
+    Keyboard.dismiss();
+    setNoteModalVisible(false);
   };
 
   const pinTranslateY = pinBounce.interpolate({ inputRange: [0, 1], outputRange: [0, -12] });
@@ -633,10 +689,10 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   }, [nearby, hasPreferredRoute, routePointA, routePointB, providerRouteCoords, maxCorridorM]);
 
   return (
-    <View style={[styles.container, { paddingBottom: kbH }]}>
+    <View style={styles.container}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor="transparent" translucent />
 
-      <View style={styles.mapArea}>
+      <View style={[styles.mapArea, { marginBottom: footerH + sheetVisibleH - 20 }]}>
         <MapView
           ref={mapRef}
           {...MAP_PROPS}
@@ -777,98 +833,83 @@ export default function LocationSelectScreen({ route, navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <Animated.View style={[styles.sheet, { opacity: sheetAnim }]}>
-        <View style={[styles.dragHandle, { backgroundColor: colors.border }]} />
-
-        {!editingNote && (
-          <ScrollView style={styles.list} keyboardShouldPersistTaps="handled" nestedScrollEnabled showsVerticalScrollIndicator={false}>
-            {hasPreferredRoute && routePointA && routePointB && preferredRoute && (
-              <View style={styles.quickEndpointsRow}>
-                <TouchableOpacity style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]} activeOpacity={0.85}
-                  onPress={() => moveTo(routePointA, { name: preferredRoute.pickup.split(',')[0] || 'Point A', sub: preferredRoute.pickup })}>
-                  <View style={[styles.quickDot, { backgroundColor: colors.accent }]} />
-                  <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>Point A: {preferredRoute.pickup.split(',')[0]}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]} activeOpacity={0.85}
-                  onPress={() => moveTo(routePointB, { name: preferredRoute.dropoff.split(',')[0] || 'Point B', sub: preferredRoute.dropoff })}>
-                  <View style={[styles.quickDot, { backgroundColor: BLACK }]} />
-                  <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>Point B: {preferredRoute.dropoff.split(',')[0]}</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            <TouchableOpacity style={[styles.row, { backgroundColor: tint }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
-              <View style={styles.rowIconCol}>
-                <View style={[styles.rowIcon, { backgroundColor: misaligned ? colors.error : pinColor }]}>
-                  <SolarIcon name="MapPoint" variant="boldDuotone" size={18} color="#FFFFFF" />
-                </View>
-              </View>
-              <View style={styles.rowText}>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{addressName}</Text>
-                <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>
-                  {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
-                </Text>
-              </View>
-              <SolarIcon name="Pen" variant="linear" size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
-
-            {alignedNearby.map(p => (
-              <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
-                <View style={styles.rowIconCol}>
-                  <View style={[styles.rowIconMuted, { backgroundColor: colors.background }]}>
-                    <SolarIcon name="MapPoint" variant="linear" size={18} color={colors.textSecondary} />
-                  </View>
-                  <Text style={[styles.rowDist, { color: colors.textSecondary }]}>{fmtDist(p.dist)}</Text>
-                </View>
-                <View style={styles.rowText}>
-                  <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{p.name}</Text>
-                  <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>{p.address}</Text>
-                </View>
+      <DraggableSheet
+        y={sheetY}
+        collapsedY={sheetCollapsedY}
+        height={sheetH}
+        contentPaddingBottom={8}
+        style={[styles.sheet, { bottom: footerH, opacity: sheetAnim } as any]}
+        handleHitAreaStyle={styles.dragHandleArea}
+        handleStyle={[styles.dragHandle, { backgroundColor: colors.border }]}
+        onContentHeight={(h) => setListContentH(prev => (Math.abs(prev - h) < 2 ? prev : h))}
+      >
+          {hasPreferredRoute && routePointA && routePointB && preferredRoute && (
+            <View style={styles.quickEndpointsRow}>
+              <TouchableOpacity style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]} activeOpacity={0.85}
+                onPress={() => moveTo(routePointA, { name: preferredRoute.pickup.split(',')[0] || 'Point A', sub: preferredRoute.pickup })}>
+                <View style={[styles.quickDot, { backgroundColor: colors.accent }]} />
+                <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>Point A: {preferredRoute.pickup.split(',')[0]}</Text>
               </TouchableOpacity>
-            ))}
-            {alignedNearby.length === 0 && (
-              <Text style={[styles.emptyNearby, { color: colors.textMuted }]}>
-                {busy
-                  ? 'Looking for nearby places...'
-                  : hasPreferredRoute
-                    ? `Drag the pin along the orange route line (max ${fmtDist(maxCorridorM)} away).`
-                    : 'No named places nearby. Drag the map or search.'}
-              </Text>
-            )}
-          </ScrollView>
-        )}
-
-        <View style={[styles.noteBar, { borderTopColor: colors.divider }]}>
-          {editingNote ? (
-            <View style={styles.noteEditRow}>
-              <SolarIcon name="Pen" variant="linear" size={22} color={pinColor} style={{ marginTop: 6 }} />
-              <TextInput
-                style={[styles.noteInput, { color: colors.textPrimary }]}
-                value={note}
-                onChangeText={setNote}
-                autoFocus
-                multiline
-                maxLength={200}
-                placeholder={isPickup ? 'e.g. Blue gate beside 7-Eleven, call when outside' : 'e.g. Leave with the guard, 3rd floor, unit 305'}
-                placeholderTextColor={colors.textMuted}
-                returnKeyType="done"
-                blurOnSubmit
-                onSubmitEditing={() => setEditingNote(false)}
-              />
-              <TouchableOpacity onPress={() => { Keyboard.dismiss(); setEditingNote(false); }} hitSlop={8}>
-                <Text style={[styles.noteDone, { color: pinColor }]}>Done</Text>
+              <TouchableOpacity style={[styles.quickEndpointChip, { backgroundColor: colors.background, borderColor: colors.border }]} activeOpacity={0.85}
+                onPress={() => moveTo(routePointB, { name: preferredRoute.dropoff.split(',')[0] || 'Point B', sub: preferredRoute.dropoff })}>
+                <View style={[styles.quickDot, { backgroundColor: BLACK }]} />
+                <Text style={[styles.quickEndpointText, { color: colors.textPrimary }]} numberOfLines={1}>Point B: {preferredRoute.dropoff.split(',')[0]}</Text>
               </TouchableOpacity>
             </View>
-          ) : (
-            <TouchableOpacity style={styles.noteRow} activeOpacity={0.8} onPress={() => setEditingNote(true)}>
-              <SolarIcon name="Pen" variant="linear" size={22} color={pinColor} />
-              <Text style={[styles.noteText, note ? { color: colors.textPrimary } : { color: pinColor }]} numberOfLines={2}>
-                {note || 'Enter note for driver.'}
-              </Text>
-              {!!note && <SolarIcon name="Pen" variant="linear" size={16} color={colors.textSecondary} />}
-            </TouchableOpacity>
           )}
-          {editingNote && <Text style={[styles.noteCount, { color: colors.textMuted }]}>{note.length}/200</Text>}
+
+          <TouchableOpacity style={[styles.row, { backgroundColor: tint }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
+            <View style={styles.rowIconCol}>
+              <View style={[styles.rowIcon, { backgroundColor: misaligned ? colors.error : pinColor }]}>
+                <SolarIcon name="MapPoint" variant="boldDuotone" size={18} color="#FFFFFF" />
+              </View>
+            </View>
+            <View style={styles.rowText}>
+              <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{addressName}</Text>
+              <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>
+                {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
+              </Text>
+            </View>
+            <SolarIcon name="Pen" variant="linear" size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
+
+          {alignedNearby.map(p => (
+            <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
+              <View style={styles.rowIconCol}>
+                <View style={[styles.rowIconMuted, { backgroundColor: colors.background }]}>
+                  <SolarIcon name="MapPoint" variant="linear" size={18} color={colors.textSecondary} />
+                </View>
+                <Text style={[styles.rowDist, { color: colors.textSecondary }]}>{fmtDist(p.dist)}</Text>
+              </View>
+              <View style={styles.rowText}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]} numberOfLines={1}>{p.name}</Text>
+                <Text style={[styles.rowSub, { color: colors.textSecondary }]} numberOfLines={1}>{p.address}</Text>
+              </View>
+            </TouchableOpacity>
+          ))}
+          {alignedNearby.length === 0 && (
+            <Text style={[styles.emptyNearby, { color: colors.textMuted }]}>
+              {busy
+                ? 'Looking for nearby places...'
+                : hasPreferredRoute
+                  ? `Drag the pin along the orange route line (max ${fmtDist(maxCorridorM)} away).`
+                  : 'No named places nearby. Drag the map or search.'}
+            </Text>
+          )}
+      </DraggableSheet>
+
+      <View
+        style={[styles.footer, { backgroundColor: colors.card }]}
+        onLayout={(e) => { const h = Math.round(e.nativeEvent.layout.height); setFooterH(prev => (Math.abs(prev - h) < 2 ? prev : h)); }}
+      >
+        <View style={[styles.noteBar, { borderTopColor: colors.divider }]}>
+          <TouchableOpacity style={styles.noteRow} activeOpacity={0.8} onPress={openNoteModal}>
+            <SolarIcon name="Pen" variant="linear" size={22} color={pinColor} />
+            <Text style={[styles.noteText, note ? { color: colors.textPrimary } : { color: pinColor }]} numberOfLines={2}>
+              {note || 'Enter note for driver.'}
+            </Text>
+            {!!note && <SolarIcon name="Pen" variant="linear" size={16} color={colors.textSecondary} />}
+          </TouchableOpacity>
         </View>
 
         <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
@@ -885,8 +926,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             </Text>
           </TouchableOpacity>
         </Animated.View>
-        <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
-      </Animated.View>
+        <View style={{ height: Math.max(insets.bottom, 12) }} />
+      </View>
 
       {isSearching && (
         <View style={[styles.searchOverlay, { paddingTop: insets.top + 10, backgroundColor: colors.background }]}>
@@ -953,6 +994,79 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           />
         </View>
       )}
+
+      {/* --- Note for driver: centred card, lifts clear of the keyboard --- */}
+      <Modal
+        visible={noteModalVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closeNoteModal}
+      >
+        <View style={styles.noteModalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeNoteModal} />
+
+          <View
+            ref={noteCardRef}
+            collapsable={false}
+            style={[
+              styles.noteCard,
+              { backgroundColor: colors.card, borderColor: colors.border, transform: [{ translateY: -noteShift }] },
+            ]}
+          >
+            <View style={styles.noteCardHeader}>
+              <View style={[styles.noteCardIcon, { backgroundColor: colors.background }]}>
+                <SolarIcon name="Pen" variant="boldDuotone" size={20} color={pinColor} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.noteModalTitle, { color: colors.textPrimary }]}>Note for driver</Text>
+                <Text style={[styles.noteCardSub, { color: colors.textSecondary }]} numberOfLines={2}>
+                  {isPickup ? 'Help the driver find you at pickup.' : 'Help the driver hand over at drop-off.'}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={closeNoteModal} hitSlop={10}>
+                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              ref={noteInputRef}
+              style={[styles.noteModalInput, { color: colors.textPrimary, backgroundColor: colors.background, borderColor: colors.border }]}
+              value={noteDraft}
+              onChangeText={setNoteDraft}
+              placeholder={isPickup
+                ? 'e.g. Blue gate beside 7-Eleven, call when outside'
+                : 'e.g. Leave with the guard, 3rd floor, unit 305'}
+              placeholderTextColor={colors.textMuted}
+              multiline
+              maxLength={250}
+              textAlignVertical="top"
+              autoFocus
+            />
+
+            <Text style={[styles.noteModalCount, { color: colors.textMuted }]}>
+              {noteDraft.length}/250
+            </Text>
+
+            <View style={styles.noteActions}>
+              <TouchableOpacity
+                style={[styles.noteBtn, { borderColor: colors.border, backgroundColor: colors.card }]}
+                onPress={closeNoteModal}
+                activeOpacity={0.85}
+              >
+                <Text style={[styles.noteBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.noteBtn, { backgroundColor: colors.accent, borderColor: colors.accent }]}
+                onPress={commitNote}
+                activeOpacity={0.9}
+              >
+                <Text style={[styles.noteBtnText, { color: '#FFFFFF' }]}>Save note</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -997,9 +1111,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   topPillDot: { width: 8, height: 8, borderRadius: 4 },
   topPillText: { fontSize: 13, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
   locateMeBtn: { position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center', zIndex: 5, borderWidth: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.12, shadowRadius: 10, elevation: 5 },
-  sheet: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -22, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 14, elevation: 12, zIndex: 6 },
-  dragHandle: { width: 44, height: 5, borderRadius: 3, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
-  list: { maxHeight: 232 },
+  sheet: { position: 'absolute', left: 0, right: 0, backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 14, elevation: 12, zIndex: 8 },
+  dragHandleArea: { height: 40, paddingVertical: 0, alignItems: 'center', justifyContent: 'center' },
+  dragHandle: { width: 44, height: 5, borderRadius: 3 },
+  footer: { position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 9, elevation: 14 },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 14 },
   rowIconCol: { width: 56, alignItems: 'center' },
   rowIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
@@ -1012,10 +1127,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   noteBar: { borderTopWidth: 1, paddingHorizontal: 20, paddingVertical: 14 },
   noteRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   noteText: { flex: 1, fontSize: 16, fontFamily: 'Poppins_600SemiBold' },
-  noteEditRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  noteInput: { flex: 1, fontSize: 15, minHeight: 40, maxHeight: 90, padding: 0, paddingTop: 8, textAlignVertical: 'top', fontFamily: 'Poppins_400Regular' },
-  noteDone: { fontSize: 15, fontFamily: 'Poppins_700Bold', marginTop: 8 },
-  noteCount: { fontSize: 10, textAlign: 'right', marginTop: 4, fontFamily: 'Poppins_500Medium' },
   confirmBtn: { marginHorizontal: 20, borderRadius: 14, paddingVertical: 16, alignItems: 'center', justifyContent: 'center', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 12, elevation: 6 },
   confirmBtnDisaligned: { backgroundColor: c.error, shadowColor: c.error },
   confirmBtnText: { color: '#FFF', fontSize: 17, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
@@ -1032,4 +1143,44 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   recentsHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
   recentsLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 1 },
   clearText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
+
+  // --- Note modal ---
+  noteModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  noteCard: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    elevation: 16,
+  },
+  noteCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  noteCardIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  noteModalTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold' },
+  noteCardSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', marginTop: 1 },
+  noteModalInput: {
+    minHeight: 110,
+    maxHeight: 170,
+    fontSize: 15,
+    fontFamily: 'Poppins_400Regular',
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+  },
+  noteModalCount: { fontSize: 11, fontFamily: 'Poppins_500Medium', textAlign: 'right', marginTop: 8 },
+  noteActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
+  noteBtn: { flex: 1, height: 48, borderRadius: 14, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  noteBtnText: { fontSize: 15, fontFamily: 'Poppins_700Bold' },
 });

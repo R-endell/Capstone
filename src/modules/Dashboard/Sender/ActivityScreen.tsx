@@ -6,7 +6,7 @@ import {
   BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, Pressable, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useRoute, CommonActions } from '@react-navigation/native';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
@@ -279,6 +279,8 @@ interface DeliveryRequest {
   refund_status?: string | null;
   preferred_provider_id?: number | null;
   preferred_route_id?: number | null;
+  fallback_action?: string | null;
+  fallback_recipient_name?: string | null;
   cargo_profiles: any;
   pickup_location: any;
   dropoff_location: any;
@@ -592,12 +594,26 @@ export default function ActivityScreen() {
       Alert.alert('Unavailable', 'Could not open the Booking screen.');
       return;
     }
-    target.owner.navigate(target.name, {
+    const params = {
       requestId: item.request_id,
       request_id: item.request_id,
       resume: true,
       fromActivity: true,
-    });
+    };
+    // An old Booking / ReceiverPicker left in the stack would be shown instead of a fresh "still searching"
+    // screen. Drop them and open a clean Booking on top of the app.
+    try {
+      const st = target.owner.getState?.();
+      const STALE = [...FINDING_PROVIDER_ROUTE_NAMES, 'ReceiverPicker'];
+      const routes: any[] = st?.routes || [];
+      if (routes.some(r => STALE.includes(r.name))) {
+        const keep = routes.filter(r => !STALE.includes(r.name));
+        const next = [...keep, { name: target.name, params }];
+        target.owner.dispatch(CommonActions.reset({ index: next.length - 1, routes: next }));
+        return;
+      }
+    } catch { /* fall back to a normal navigate */ }
+    target.owner.navigate(target.name, params);
   };
 
   const openLiveTrack = (item: MappedDelivery) => {
@@ -3404,7 +3420,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   hpCaption: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginBottom: 12 },
   hpPhotoWrap: { width: '100%', aspectRatio: 4 / 3, borderRadius: 14, overflow: 'hidden', backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
   hpPhoto: { width: '100%', height: '100%' },
-  hpPhotoLoading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
+  hpPhotoLoading: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: c.background },
   hpPhotoBadge: { position: 'absolute', right: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 14 },
   hpPhotoBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_600SemiBold' },
   hpMetaBox: { marginTop: 12, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', paddingHorizontal: 14 },
