@@ -1,7 +1,8 @@
 // src/modules/Dashboard/Provider/AccountHealthScreen.tsx
 //
 // Provider accountability hub. Shows:
-//   1. Account status (3-strike policy)
+//   1. Account status (3-strike policy — strikes are issued by admins and
+//      read from provider_strikes / provider_standing, not from open reports)
 //   2. Strike policy ladder
 //   3. Your numbers (deliveries, rating, active reports, strikes remaining)
 //   4. Reports against you — sender-filed, respond once
@@ -38,12 +39,29 @@ const MAX_STRIKES = 3;
 type StrikeLevel = 0 | 1 | 2 | 3;
 type Tab = 'active' | 'closed';
 
+type StrikeRow = {
+  strike_id: number;
+  reason_category: string;
+  reason: string;
+  weight: number;
+  consequence: 'warning' | 'suspension' | 'removal';
+  suspension_days: number | null;
+  status: 'active' | 'revoked';
+  issued_at: string;
+  revoked_at: string | null;
+};
+
 type AccountHealth = {
   totalDeliveries: number;
   avgRating: number | null;
   activeReports: number;
   strikes: StrikeLevel;
+  suspendedUntil: string | null;
+  removed: boolean;
 };
+
+const fmtDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
 
 export default function AccountHealthScreen() {
   const navigation = useNavigation<any>();
@@ -55,6 +73,7 @@ export default function AccountHealthScreen() {
   const [me, setMe] = useState<number | null>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [reportsAgainstMe, setReportsAgainstMe] = useState<Ticket[]>([]);
+  const [strikeList, setStrikeList] = useState<StrikeRow[]>([]);
   const [tab, setTab] = useState<Tab>('active');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -87,7 +106,10 @@ export default function AccountHealthScreen() {
       if (!userData?.user_id) throw new Error('Could not find your account.');
       const provId = userData.user_id;
 
-      const [id, deliveryRes, ratingRes, against, mine] = await Promise.all([
+      // Best-effort: restore routes if a suspension has just run out.
+      try { await supabase.rpc('lift_expired_suspensions'); } catch { /* ignore */ }
+
+      const [id, deliveryRes, ratingRes, strikeRes, standingRes, against, mine] = await Promise.all([
         getMyUserId(),
         supabase
           .from('deliveries')
@@ -95,9 +117,19 @@ export default function AccountHealthScreen() {
           .eq('provider_id', provId)
           .not('completed_at', 'is', null),
         supabase
-          .from('ratings')
+          .from('ratings_reviews')
           .select('rating')
-          .eq('provider_id', provId),
+          .eq('reviewee_id', provId),
+        supabase
+          .from('provider_strikes')
+          .select('strike_id, reason_category, reason, weight, consequence, suspension_days, status, issued_at, revoked_at')
+          .eq('provider_id', provId)
+          .order('issued_at', { ascending: false }),
+        supabase
+          .from('provider_standing')
+          .select('suspended_until, removed_by_strikes')
+          .eq('provider_id', provId)
+          .maybeSingle(),
         fetchReportsAgainstMe(),
         fetchMyTickets(),
       ]);
@@ -115,10 +147,28 @@ export default function AccountHealthScreen() {
         ? Number((numericRatings.reduce((a, b) => a + b, 0) / numericRatings.length).toFixed(2))
         : null;
 
-      const activeReports = against.length;
-      const strikes = Math.min(MAX_STRIKES, activeReports) as StrikeLevel;
+      // Strikes are issued by admins. A report alone is NOT a strike.
+      const strikeRows = (strikeRes.data || []) as StrikeRow[];
+      setStrikeList(strikeRows);
+      const points = strikeRows
+        .filter(s => s.status === 'active')
+        .reduce((sum, s) => sum + (s.weight || 1), 0);
+      const strikes = Math.min(MAX_STRIKES, points) as StrikeLevel;
 
-      setHealth({ totalDeliveries, avgRating, activeReports, strikes });
+      const standing = standingRes.data as
+        | { suspended_until: string | null; removed_by_strikes: boolean }
+        | null;
+
+      const activeReports = against.filter(t => !isClosed(t.status)).length;
+
+      setHealth({
+        totalDeliveries,
+        avgRating,
+        activeReports,
+        strikes,
+        suspendedUntil: standing?.suspended_until ?? null,
+        removed: !!standing?.removed_by_strikes,
+      });
     } catch (e: any) {
       setError(e?.message || 'Could not load account health.');
     } finally {
@@ -166,6 +216,9 @@ export default function AccountHealthScreen() {
   const startReport = () => navigation.navigate('ReportIssue', { role: 'provider' });
 
   // ---- strike presentation ----
+  const suspendedUntilDate = health?.suspendedUntil ? new Date(health.suspendedUntil) : null;
+  const isSuspended = !!suspendedUntilDate && suspendedUntilDate.getTime() > Date.now();
+
   const strikeView = (strikes: StrikeLevel) => {
     switch (strikes) {
       case 3:
@@ -174,16 +227,24 @@ export default function AccountHealthScreen() {
           color: colors.error,
           bg: colors.errorBg,
           headline: 'Your account has been removed',
-          body: 'Reaching strike 3 means removal from the platform. Contact support if you believe this is a mistake.',
+          body: 'Reaching strike 3 means removal from the platform. Your wallet balance can still be withdrawn. Contact support if you believe this is a mistake.',
         };
       case 2:
-        return {
-          label: 'Suspended',
-          color: colors.error,
-          bg: colors.errorBg,
-          headline: 'Your account is temporarily suspended',
-          body: 'One more strike removes your account from the platform. Respond to any open reports in the section below.',
-        };
+        return isSuspended
+          ? {
+              label: 'Suspended',
+              color: colors.error,
+              bg: colors.errorBg,
+              headline: 'Your account is temporarily suspended',
+              body: `You can't go online or accept new jobs until ${fmtDate(health!.suspendedUntil!)}. Finish any delivery already in progress. One more strike removes your account.`,
+            }
+          : {
+              label: 'Final warning',
+              color: colors.error,
+              bg: colors.errorBg,
+              headline: 'You are one strike away from removal',
+              body: 'Your suspension has ended, but one more strike removes your account from the platform.',
+            };
       case 1:
         return {
           label: 'Warning',
@@ -205,7 +266,7 @@ export default function AccountHealthScreen() {
 
   const STATUS_STEPS = [
     { n: 1 as const, title: 'Warning', sub: 'A warning is issued.', tone: 'warning' as const },
-    { n: 2 as const, title: 'Suspension', sub: 'Account temporarily suspended.', tone: 'error' as const },
+    { n: 2 as const, title: 'Suspension', sub: 'Suspended 3–30 days. No new jobs.', tone: 'error' as const },
     { n: 3 as const, title: 'Removal', sub: 'Removed from the platform.', tone: 'error' as const },
   ];
 
@@ -419,8 +480,9 @@ export default function AccountHealthScreen() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Strike policy</Text>
             <Text style={styles.cardSub}>
-              Each active report against your account counts as one strike. The consequences escalate
-              with every strike.
+              Strikes are issued by Pack-N-Ship staff after a report has been reviewed. A report on its
+              own is not a strike. The consequences escalate with every strike, and a severe violation
+              can lead straight to removal.
             </Text>
 
             <View style={styles.ladder}>
@@ -467,6 +529,45 @@ export default function AccountHealthScreen() {
               })}
             </View>
           </View>
+
+          {/* Strike history */}
+          {strikeList.length > 0 && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Strike history</Text>
+              <Text style={styles.cardSub}>Why each strike was issued, and what it led to.</Text>
+              <View style={{ gap: 10, marginTop: 4 }}>
+                {strikeList.map(s => {
+                  const live = s.status === 'active';
+                  const tone = !live
+                    ? { fg: colors.textMuted, bg: colors.divider }
+                    : s.consequence === 'warning'
+                      ? { fg: colors.warning, bg: colors.warningBg }
+                      : { fg: colors.error, bg: colors.errorBg };
+                  const outcome =
+                    s.consequence === 'warning' ? 'Warning'
+                    : s.consequence === 'suspension' ? `Suspension${s.suspension_days ? ` · ${s.suspension_days} days` : ''}`
+                    : 'Removal';
+                  return (
+                    <View key={s.strike_id} style={[styles.strikeRow, !live && { opacity: 0.65 }]}>
+                      <View style={styles.strikeTop}>
+                        <View style={[styles.strikePill, { backgroundColor: tone.bg }]}>
+                          <Text style={[styles.strikePillText, { color: tone.fg }]}>
+                            {live ? outcome : 'Revoked'}
+                          </Text>
+                        </View>
+                        <Text style={styles.strikeDate}>{fmtDate(s.issued_at)}</Text>
+                      </View>
+                      <Text style={styles.strikeTitle}>{s.reason_category}</Text>
+                      <Text style={styles.strikeBody}>{s.reason}</Text>
+                      {!live && s.revoked_at && (
+                        <Text style={styles.strikeMeta}>Removed on {fmtDate(s.revoked_at)} after review.</Text>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
 
           {/* 3. Numbers */}
           <View style={styles.card}>
@@ -735,4 +836,17 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1, borderColor: ORANGE,
   },
   newReportText: { flex: 1, fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: ORANGE },
+
+  // Strike history
+  strikeRow: {
+    backgroundColor: c.background, borderRadius: 12, padding: 14, gap: 6,
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  strikeTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  strikePill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  strikePillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.2 },
+  strikeDate: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textMuted },
+  strikeTitle: { fontSize: 13.5, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.1 },
+  strikeBody: { fontSize: 12.5, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18 },
+  strikeMeta: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
 });
