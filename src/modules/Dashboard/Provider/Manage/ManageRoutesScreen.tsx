@@ -1240,7 +1240,7 @@ export default function ManageRoutesScreen() {
   };
 
   const handleAdd = () => {
-    if (usedTodayCount >= MAX_DAILY_ROUTES) {
+    if (!demoMode && usedTodayCount >= MAX_DAILY_ROUTES) {
       Alert.alert(
         'Daily Route Limit Reached (3/3)',
         'You can post a maximum of 3 routes per day. Deleted routes still count toward your daily limit.',
@@ -1467,7 +1467,7 @@ export default function ManageRoutesScreen() {
           </Text>
         </View>
         <TouchableOpacity
-          style={[styles.headerAddBtn, usedTodayCount >= MAX_DAILY_ROUTES && { opacity: 0.45 }]}
+          style={[styles.headerAddBtn, !demoMode && usedTodayCount >= MAX_DAILY_ROUTES && { opacity: 0.45 }]}
           onPress={handleAdd}
           activeOpacity={0.9}
         >

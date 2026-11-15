@@ -408,8 +408,8 @@ export async function createProviderRouteWithGuardrails(
   const demoMode = await getDemoMode();
   const stats = await getTodayRouteStats(providerId);
 
-  // Guardrail 1: Daily cap (Max 3 routes/day)
-  if (stats.usedTodayCount >= MAX_DAILY_ROUTES) {
+  // Guardrail 1: Daily cap (Max 3 routes/day) — bypassed when DEMO_MODE is ON
+  if (!demoMode && stats.usedTodayCount >= MAX_DAILY_ROUTES) {
     throw new Error(
       `Daily limit reached (${stats.usedTodayCount}/${MAX_DAILY_ROUTES} routes today). Deleted and recurring routes count toward your daily limit.`,
     );

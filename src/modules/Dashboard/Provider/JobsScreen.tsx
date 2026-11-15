@@ -1967,7 +1967,8 @@ export default function JobsScreen() {
   const openAddRouteModal = async () => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
-    if (usedTodayCount >= 3) {
+    const isDemo = demoMode || (await getDemoMode());
+    if (!isDemo && usedTodayCount >= 3) {
       Alert.alert('Daily Limit Reached (3/3)', 'You cannot post more than 3 routes per day.');
       return;
     }
@@ -3815,7 +3816,7 @@ export default function JobsScreen() {
               <Text style={styles.routePickerTitle}>Select Active Route ({usedTodayCount}/3 today)</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <TouchableOpacity
-                  style={[styles.addRouteHeaderBtn, usedTodayCount >= 3 && { opacity: 0.45 }]}
+                  style={[styles.addRouteHeaderBtn, !demoMode && usedTodayCount >= 3 && { opacity: 0.45 }]}
                   onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
                   activeOpacity={0.85}
                   hitSlop={8}
