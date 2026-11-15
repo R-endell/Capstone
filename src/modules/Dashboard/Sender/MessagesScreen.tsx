@@ -94,6 +94,33 @@ const formatDateSeparator = (timestamp: string) => {
   return formatDate(timestamp, 'EEEE, MMM d');
 };
 
+type CallTarget = {
+  name: string;
+  role: string;
+  calleeId: number;
+  phone: string | null;
+  deliveryId: number | null;
+};
+
+// Asks before opening the phone dialer for the other party of the chat.
+const promptCallChoice = ({ name, role, phone }: CallTarget) => {
+  if (!phone) {
+    Alert.alert('No phone number', `No phone number is available for ${name}.`);
+    return;
+  }
+  Alert.alert(`Call ${role.toLowerCase()}`, `${name}\n${phone}`, [
+    { text: 'Cancel', style: 'cancel' },
+    {
+      text: 'Call',
+      onPress: () => {
+        Linking.openURL(`tel:${phone.replace(/\s+/g, '')}`).catch(() =>
+          Alert.alert('Unable to call', 'Your device cannot open the phone dialer.'),
+        );
+      },
+    },
+  ]);
+};
+
 const sortByLatest = (list: ChatRoom[]) =>
   [...list].sort((a, b) => {
     const aT = a.latest_sent_at ? new Date(a.latest_sent_at).getTime() : 0;
@@ -169,6 +196,13 @@ export default function MessagesScreen({ route: propsRoute }: any) {
 
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
+  const [kbVisible, setKbVisible] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKbVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKbVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
   useEffect(() => {
     const backAction = () => {
       if (previewImage) { setPreviewImage(null); return true; }
@@ -206,12 +240,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
     if (!selectedRoom) {
       listHeaderAnim.setValue(0);
       listAnim.setValue(0);
-      Animated.parallel([animate(listHeaderAnim, 0), animate(listAnim, 150)]).start();
+      Animated.parallel([animate(listHeaderAnim, 0, 300), animate(listAnim, 60, 300)]).start();
     } else {
       detailHeaderAnim.setValue(0);
       detailAnim.setValue(0);
       inputAnim.setValue(0);
-      Animated.parallel([animate(detailHeaderAnim, 0), animate(detailAnim, 100), animate(inputAnim, 150)]).start();
+      Animated.parallel([animate(detailHeaderAnim, 0, 300), animate(detailAnim, 40, 300), animate(inputAnim, 80, 300)]).start();
     }
   }, [selectedRoom, listHeaderAnim, listAnim, detailHeaderAnim, detailAnim, inputAnim]);
 
@@ -830,7 +864,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
           </View>
         )}
 
-        <View style={[styles.msgRow, isMe && styles.msgRowMe]}>
+        <View style={[styles.msgRow, isMe && styles.msgRowMe, { marginTop: olderSameSender && !showDateSeparator ? 2 : 10 }]}>
           {!isMe && (
             <View style={styles.msgAvatarSlot}>
               {showAvatar ? (
@@ -927,7 +961,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
   const renderAttachmentSheet = () => (
     <Modal visible={attachSheetOpen} transparent animationType="fade" onRequestClose={() => setAttachSheetOpen(false)}>
       <Pressable style={styles.attachBackdrop} onPress={() => setAttachSheetOpen(false)}>
-        <Pressable style={styles.attachSheet} onPress={() => {}}>
+        <Pressable style={[styles.attachSheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]} onPress={() => {}}>
           <View style={styles.attachHandle} />
           <Text style={styles.attachTitle}>Send a photo</Text>
 
@@ -985,14 +1019,30 @@ export default function MessagesScreen({ route: propsRoute }: any) {
               <SolarIcon name="ArrowLeft" variant="bold" size={22} color="#FFFFFF" />
             </TouchableOpacity>
 
+            <View style={styles.chatHeaderAvatar}>
+              {selectedRoom.is_support ? (
+                <View style={styles.chatHeaderSupportAvatar}>
+                  <SolarIcon name="HeadphonesRound" variant="duotone" size={20} color="#FFFFFF" />
+                </View>
+              ) : (
+                renderAvatar(selectedRoom.other, 40)
+              )}
+            </View>
+
             <View style={styles.chatHeaderInfo}>
               <Text style={styles.chatHeaderName} numberOfLines={1}>
                 {selectedRoom.is_support ? 'Pack-N-Ship' : `${selectedRoom.other.first_name} ${selectedRoom.other.last_name}`}
               </Text>
-              <Text style={styles.chatHeaderSubtitle}>
+              <Text style={styles.chatHeaderSubtitle} numberOfLines={1}>
                 {selectedRoom.is_support ? 'System' : selectedRoom.role === 'sender' ? 'Provider' : 'Sender'}
               </Text>
             </View>
+
+            {!selectedRoom.is_support && (
+              <TouchableOpacity onPress={handleCallPress} style={styles.callBtnFlat} activeOpacity={0.8}>
+                <SolarIcon name="Phone" variant="bold" size={18} color={colors.accent} />
+              </TouchableOpacity>
+            )}
           </Animated.View>
         </SafeAreaView>
 
@@ -1035,9 +1085,9 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
           )}
 
-          <Animated.View style={[styles.inputContainerFlat, { paddingBottom: Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
+          <Animated.View style={[styles.inputContainerFlat, { paddingBottom: kbVisible ? 10 : Math.max(insets.bottom, 12) }, fadeUp(inputAnim, 15)]}>
             <TouchableOpacity style={styles.attachBtnFlat} activeOpacity={0.7} onPress={openAttachmentSheet} disabled={sendingImage}>
-              <SolarIcon name="AddCircle" variant="duotone" size={32} />
+              <SolarIcon name="AddCircle" variant="duotone" size={30} />
             </TouchableOpacity>
 
             <View style={styles.inputWrapperFlat}>
@@ -1054,12 +1104,12 @@ export default function MessagesScreen({ route: propsRoute }: any) {
             </View>
 
             <TouchableOpacity
-              style={[styles.sendBtnFlat, !newMessage.trim() && { opacity: 0.5 }]}
+              style={[styles.sendBtnFlat, !newMessage.trim() && styles.sendBtnDisabled]}
               onPress={sendMessage}
               disabled={!newMessage.trim()}
-              activeOpacity={0.7}
+              activeOpacity={0.8}
             >
-              <SolarIcon name="PaperPlane" variant="bold" size={26} color={newMessage.trim() ? colors.accent : colors.textMuted} />
+              <SolarIcon name="PaperPlane" variant="bold" size={20} color={newMessage.trim() ? '#FFFFFF' : colors.textMuted} />
             </TouchableOpacity>
           </Animated.View>
         </KeyboardAvoidingView>
@@ -1131,10 +1181,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   listHeaderFlat: {
     backgroundColor: c.background,
-    paddingHorizontal: 24, paddingTop: 24, paddingBottom: 16,
+    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 14,
     borderBottomWidth: 1, borderBottomColor: c.divider,
   },
-  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  headerTopRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
 
   mainTitle: {
     fontSize: 26,
@@ -1144,7 +1194,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
 
   tabContainer: { flexDirection: 'row', backgroundColor: c.divider, borderRadius: 12, padding: 4 },
-  tabButton: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
+  tabButton: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 9 },
   tabText: { color: c.textSecondary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
   tabButtonActive: {
     backgroundColor: c.card,
@@ -1160,34 +1210,34 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8, letterSpacing: -0.3 },
   emptySubtext: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', marginTop: 10, lineHeight: 20 },
 
-  listContentFlat: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 20 },
+  listContentFlat: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 24 },
 
   chatRowWrapper: {
     flexDirection: 'row', alignItems: 'center',
-    backgroundColor: c.card, marginBottom: 12, borderRadius: 12,
+    backgroundColor: c.card, marginBottom: 10, borderRadius: 16,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02, shadowRadius: 1, elevation: 0,
+    shadowOpacity: isDark ? 0.2 : 0.04, shadowRadius: 8, elevation: isDark ? 0 : 1,
   },
-  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 18, paddingLeft: 16 },
-  optionsButton: { paddingHorizontal: 16, paddingVertical: 18, justifyContent: 'center', alignItems: 'center' },
+  chatRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingLeft: 14 },
+  optionsButton: { paddingHorizontal: 14, alignSelf: 'stretch', justifyContent: 'center', alignItems: 'center' },
 
-  avatarWrapper: { position: 'relative', marginRight: 14 },
-  avatarFallback: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
-  avatarImage: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.divider },
+  avatarWrapper: { position: 'relative', marginRight: 12 },
+  avatarFallback: { width: 52, height: 52, borderRadius: 26, backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center' },
+  avatarImage: { width: 52, height: 52, borderRadius: 26, backgroundColor: c.divider },
   avatarText: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
-  supportAvatar: { width: 54, height: 54, borderRadius: 27, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
+  supportAvatar: { width: 52, height: 52, borderRadius: 26, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   onlineDot: { position: 'absolute', bottom: 2, right: 2, width: 14, height: 14, borderRadius: 7, backgroundColor: c.success, borderWidth: 2.5, borderColor: c.card },
 
   chatInfo: { flex: 1, marginRight: 8 },
-  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
+  chatNameRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 },
 
-  chatName: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
+  chatName: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, flex: 1, marginRight: 8 },
   chatTime: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textMuted },
   chatTimeUnread: { color: c.accent, fontFamily: 'Poppins_700Bold' },
   chatMsgRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 
-  chatLastMsg: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, flex: 1 },
+  chatLastMsg: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, flex: 1 },
   chatLastMsgUnread: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
 
   supportTag: { backgroundColor: c.textPrimary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
@@ -1198,62 +1248,63 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   detailContainer: { flex: 1, backgroundColor: c.background },
   chatHeaderFlat: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.accent,
-    paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20,
-    borderBottomLeftRadius: 16, borderBottomRightRadius: 16,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
+    paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16, gap: 12,
+    borderBottomLeftRadius: 20, borderBottomRightRadius: 20,
   },
-  backBtnFlat: { padding: 8, marginRight: 12, marginLeft: -8, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20 },
-  chatHeaderInfo: { flex: 1 },
+  backBtnFlat: { width: 40, height: 40, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  chatHeaderAvatar: { width: 40, height: 40 },
+  chatHeaderSupportAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
+  chatHeaderInfo: { flex: 1, minWidth: 0 },
 
-  chatHeaderName: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
-  chatHeaderSubtitle: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+  chatHeaderName: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
+  chatHeaderSubtitle: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 1 },
 
-  callBtnFlat: { padding: 10, backgroundColor: '#FFFFFF', borderRadius: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 1 },
+  callBtnFlat: { width: 40, height: 40, backgroundColor: '#FFFFFF', borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
 
-  chatContentArea: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 32 },
-  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginVertical: 20, paddingHorizontal: 24, gap: 10 },
+  chatContentArea: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 20 },
+  dateSeparator: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8, paddingHorizontal: 8, gap: 10 },
   dateSeparatorLine: { flex: 1, height: 1, backgroundColor: c.border },
   dateSeparatorText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, letterSpacing: 0.3 },
 
-  msgRow: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 6, paddingHorizontal: 4 },
+  msgRow: { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 4 },
   msgRowMe: { justifyContent: 'flex-end' },
   msgAvatarSlot: { width: 32, marginRight: 8, justifyContent: 'flex-end' },
   supportMsgAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center' },
   avatarBadge: { position: 'absolute', bottom: -2, right: -2, width: 14, height: 14, borderRadius: 7, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: c.card },
 
-  msgBubble: { maxWidth: '78%', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 20 },
+  msgBubble: { maxWidth: '78%', paddingHorizontal: 14, paddingTop: 9, paddingBottom: 7, borderRadius: 18 },
   imageBubble: { padding: 4, overflow: 'hidden' },
-  myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6, shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 6, elevation: 2 },
-  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.02, shadowRadius: 2, elevation: 0 },
+  myMsg: { backgroundColor: c.accent, borderBottomRightRadius: 6 },
+  theirMsg: { backgroundColor: c.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', },
 
-  msgText: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 22 },
+  msgText: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary, lineHeight: 21 },
   myMsgText: { color: '#FFFFFF' },
 
   chatImage: { width: 220, height: 220, borderRadius: 16 },
-  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 6, paddingHorizontal: 4, gap: 4 },
+  msgMeta: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-end', marginTop: 2, paddingHorizontal: 2, gap: 4 },
   msgTime: { fontSize: 10, fontFamily: 'Poppins_500Medium', color: c.textMuted },
   myMsgTime: { color: 'rgba(255,255,255,0.8)' },
   loadingMore: { paddingVertical: 10, alignItems: 'center' },
 
   inputContainerFlat: {
-    flexDirection: 'row', alignItems: 'flex-end',
-    backgroundColor: c.card, paddingHorizontal: 16, paddingTop: 12,
+    flexDirection: 'row', alignItems: 'flex-end', gap: 10,
+    backgroundColor: c.card, paddingHorizontal: 12, paddingTop: 10,
     borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  attachBtnFlat: { paddingBottom: 8, marginRight: 10 },
+  attachBtnFlat: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   inputWrapperFlat: {
-    flex: 1, backgroundColor: c.background, borderRadius: 16,
-    paddingHorizontal: 16, marginBottom: 8,
+    flex: 1, backgroundColor: c.background, borderRadius: 22,
+    paddingHorizontal: 16,
     minHeight: 44, maxHeight: 120, justifyContent: 'center',
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   textInputFlat: {
-    flex: 1, fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
-    paddingTop: Platform.OS === 'ios' ? 12 : 10,
-    paddingBottom: Platform.OS === 'ios' ? 12 : 10,
+    fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textPrimary,
+    paddingTop: Platform.OS === 'ios' ? 12 : 9,
+    paddingBottom: Platform.OS === 'ios' ? 12 : 9,
   },
-  sendBtnFlat: { paddingBottom: 10, paddingLeft: 12, paddingRight: 4 },
+  sendBtnFlat: { width: 44, height: 44, borderRadius: 22, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+  sendBtnDisabled: { backgroundColor: c.divider },
 
   uploadingBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
@@ -1266,15 +1317,15 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   attachSheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 24, paddingTop: 12, paddingBottom: 32,
+    paddingHorizontal: 20, paddingTop: 12, paddingBottom: 32,
   },
-  attachHandle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
+  attachHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.border, marginBottom: 16 },
   attachTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16 },
-  attachRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 16, borderRadius: 16 },
+  attachRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 12, borderRadius: 16 },
   attachIcon: { width: 48, height: 48, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   attachRowTitle: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
   attachRowSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
-  attachCancel: { marginTop: 16, paddingVertical: 16, borderRadius: 16, alignItems: 'center', backgroundColor: c.divider },
+  attachCancel: { marginTop: 12, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', backgroundColor: c.divider },
   attachCancelText: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
 
   previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
