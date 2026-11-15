@@ -1,9 +1,9 @@
 // src/modules/Dashboard/Sender/ExploreScreen.tsx
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal,
   Dimensions, FlatList, RefreshControl, ActivityIndicator,
-  Alert, Image, Linking,
+  Alert, Image, Linking, AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -136,7 +136,11 @@ export default function ExploreScreen() {
   const [myCoords, setMyCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locStatus, setLocStatus] = useState<LocStatus>('loading');
 
+  // Out-of-order guard: a slow older fetch must never overwrite a newer one.
+  const fetchSeqRef = useRef(0);
+
   const fetchTrips = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
     try {
       let myUserId: number | null = user?.user_id != null ? Number(user.user_id) : null;
       if (myUserId == null) {
@@ -229,8 +233,11 @@ export default function ExploreScreen() {
           };
         });
 
+      if (seq !== fetchSeqRef.current) return;
       setTrips(mapped);
-      setFixes(await fetchLiveFixes(mapped.map((t) => t.providerId)));
+      const liveFixes = await fetchLiveFixes(mapped.map((t) => t.providerId));
+      if (seq !== fetchSeqRef.current) return;
+      setFixes(liveFixes);
     } catch (err) {
       console.error('Error fetching trips:', err);
       setTrips([]);
@@ -277,7 +284,34 @@ export default function ExploreScreen() {
         });
       });
       const tick = setInterval(() => setNow(Date.now()), 15_000);
-      return () => { unsub(); clearInterval(tick); };
+
+      // REALTIME: a provider switching their selected route (or posting / ending one) flips
+      // provider_routes.is_selected / is_active / is_deleted. Refetch silently, debounced so the
+      // two-step is_selected swap lands as one update instead of flickering.
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      const refetch = () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => { void fetchTrips(); }, 350);
+      };
+      let firstSubscribe = true;
+      const channel = supabase
+        .channel(`explore-routes-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes' }, refetch)
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            if (firstSubscribe) { firstSubscribe = false; return; }
+            refetch();   // reconnected: catch up on anything missed
+          }
+        });
+      const appSub = AppState.addEventListener('change', (s) => { if (s === 'active') refetch(); });
+
+      return () => {
+        unsub();
+        clearInterval(tick);
+        if (debounce) clearTimeout(debounce);
+        supabase.removeChannel(channel);
+        appSub.remove();
+      };
     }, [fetchTrips, locateMe]),
   );
 

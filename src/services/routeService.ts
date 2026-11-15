@@ -369,6 +369,9 @@ export function canEditRoute(
   departureTimeStr: string,
   demoMode = false,
 ): { allowed: boolean; reason?: string } {
+  // Demo mode: never lock edits, even for routes that already departed.
+  if (demoMode) return { allowed: true };
+
   const dep = parseNaiveRouteTime(departureTimeStr);
   const diffHours = (dep.getTime() - Date.now()) / (1000 * 60 * 60);
   const lockHours = demoMode ? 1 / 60 : 24;

@@ -26,6 +26,7 @@ import {
   softDeleteProviderRoute,
   MAX_DAILY_ROUTES,
 } from '../../../../services/routeService';
+import { DEMO_MODE } from '../../../../services/activeRouteStore';
 
 const EMPTY_COMPASS_ICON = require('../../../../../assets/empty-state-compass-icon.png');
 
@@ -1337,7 +1338,7 @@ export default function ManageRoutesScreen() {
   const handleEdit = (route: Route) => {
     const expired = isRouteExpired(route);
     if (!expired) {
-      const check = canEditRoute(route.departure_time, false);
+      const check = canEditRoute(route.departure_time, DEMO_MODE);
       if (!check.allowed) {
         Alert.alert('Route Edit Locked 🔒', check.reason);
         return;
@@ -1437,7 +1438,7 @@ export default function ManageRoutesScreen() {
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
     const expired = isRouteExpired(item);
-    const editLock = !expired ? canEditRoute(item.departure_time, false) : { allowed: true };
+    const editLock = !expired ? canEditRoute(item.departure_time, DEMO_MODE) : { allowed: true };
     const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const scheduleText = (() => {
       if (item.route_frequency === 'Daily') return `Every day · ${timeStr}`;
@@ -1565,7 +1566,7 @@ export default function ManageRoutesScreen() {
               <SolarIcon name="Lock" variant="bold" size={16} color="#FFFFFF" />
             )}
             <Text style={styles.oRouteText}>
-              {expired ? 'Reschedule' : editLock.allowed ? 'Edit Route' : 'Locked (24h)'}
+              {expired ? 'Reschedule' : editLock.allowed ? 'Edit Route' : (DEMO_MODE ? 'Locked (1 min)' : 'Locked (24h)')}
             </Text>
           </TouchableOpacity>
         </View>

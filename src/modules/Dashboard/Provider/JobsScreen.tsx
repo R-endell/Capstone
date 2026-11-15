@@ -1453,19 +1453,32 @@ export default function JobsScreen() {
     return subscribeDemoMode(setDemoModeState);
   }, []);
 
+  // ---- Route switching (single source of truth) ----------------------------------------------
+  // Timestamp of the last route switch made on this device. Background reloads use it to know
+  // that the provider's choice must win over whatever an older, slower load resolved.
+  const lastLocalSelectAtRef = useRef(0);
+  const applyRouteRef = useRef<(r: Route, persist: boolean) => Promise<void>>(async () => {});
+
+  // loadData() silently bails when another load is running or a modal is open. For reloads we
+  // really need (route list changed / unknown route selected), retry until it can run.
+  const reloadWhenIdle = useCallback(() => {
+    let attempt = 0;
+    const tryNow = () => {
+      if (!loadInFlightRef.current && !modalOpenRef.current) { void loadDataRef.current(true); return; }
+      if (++attempt < 10) setTimeout(tryNow, 500);
+    };
+    tryNow();
+  }, []);
+
+  // Route selected from somewhere else in the app (e.g. Manage Routes): follow it immediately.
   useEffect(() => {
     return subscribeActiveRoute((newRouteId) => {
       if (!newRouteId || activeRouteRef.current?.route_id === newRouteId) return;
       const found = routesRef.current.find(r => r.route_id === newRouteId);
-      if (found) {
-        setActiveRoute(found);
-        activeRouteRef.current = found;
-        void refreshMatches(providerIdRef.current, found);
-      } else {
-        void loadDataRef.current(true);
-      }
+      if (found) void applyRouteRef.current(found, false);
+      else reloadWhenIdle();
     });
-  }, []);
+  }, [reloadWhenIdle]);
 
   const fireLocalMatchNotification = async (body: string) => {
     try {
@@ -1796,6 +1809,23 @@ export default function JobsScreen() {
     }
   }, [loadAwaiting]);
 
+  // Switch the active route right now: update UI + refs synchronously, drop the previous route's
+  // requests, invalidate any in-flight fetch for the old route, then persist and re-match.
+  const applyActiveRoute = useCallback(async (r: Route, persist: boolean) => {
+    if (!r) return;
+    lastLocalSelectAtRef.current = Date.now();
+    refreshSeqRef.current += 1;      // stale refreshMatches() calls can no longer write state
+    awaitingSeqRef.current += 1;     // same for loadAwaiting()
+    setActiveRoute(r);
+    activeRouteRef.current = r;
+    setRequests([]);
+    setAwaiting([]);
+    setLapsedIds([]);
+    if (persist) await setActiveRouteId(r.route_id);
+    await refreshMatches(providerIdRef.current, r, true);
+  }, [refreshMatches]);
+  applyRouteRef.current = applyActiveRoute;
+
   modalOpenRef.current = addRouteModalVisible || routeLocationPickerVisible;
 
   const loadData = async (force = false) => {
@@ -1809,8 +1839,13 @@ export default function JobsScreen() {
       const pid = await getProviderData();
       if (pid) {
         void loadNotifs();
+        const switchedAt = lastLocalSelectAtRef.current;
         const { resolvedRoute } = await fetchRoutes(pid);
-        await refreshMatches(pid, resolvedRoute, true);
+        // If the provider switched route while this load was running, their choice wins.
+        const routeNow = lastLocalSelectAtRef.current !== switchedAt
+          ? activeRouteRef.current
+          : resolvedRoute;
+        await refreshMatches(pid, routeNow, true);
       }
     } catch (e) {
       console.warn('loadData error:', e);
@@ -1866,7 +1901,10 @@ export default function JobsScreen() {
     // my own routes changed (edited, ended, capacity changed, selected elsewhere): reload routes + matches
     const scheduleRouteReload = () => {
       if (routeTimer) clearTimeout(routeTimer);
-      routeTimer = setTimeout(() => { void loadDataRef.current(true); }, 800);
+      // our own is_selected writes echo back as provider_routes events: let a fresh local switch settle first
+      const sinceLocal = Date.now() - lastLocalSelectAtRef.current;
+      const delay = sinceLocal < 4000 ? 4000 - sinceLocal + 300 : 800;
+      routeTimer = setTimeout(() => { reloadWhenIdle(); }, delay);
     };
 
     // A change to someone else's request must not trigger a full refetch on every provider's phone.
@@ -1917,7 +1955,7 @@ export default function JobsScreen() {
       if (retryTimer) clearTimeout(retryTimer);
       supabase.removeChannel(channel);
     };
-  }, [providerId, rtEpoch, refreshMatches, loadNotifs]);
+  }, [providerId, rtEpoch, refreshMatches, loadNotifs, reloadWhenIdle]);
 
   // coming back from the background: the socket may have been suspended, so resync immediately
   useEffect(() => {
@@ -3437,12 +3475,10 @@ export default function JobsScreen() {
                     <TouchableOpacity
                       key={r.route_id}
                       style={[styles.routeOption, isSelected && styles.routeOptionSelected]}
-                      onPress={async () => {
-                        setActiveRoute(r);
-                        activeRouteRef.current = r;
-                        await setActiveRouteId(r.route_id);
+                      onPress={() => {
                         setRoutePickerVisible(false);
-                        await refreshMatches(providerIdRef.current, r, true);
+                        if (activeRouteRef.current?.route_id === r.route_id) return;
+                        void applyActiveRoute(r, true);
                       }}
                       activeOpacity={0.85}
                     >

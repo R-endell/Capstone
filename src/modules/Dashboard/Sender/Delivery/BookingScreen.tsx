@@ -30,6 +30,7 @@ import { notifyUser } from '../../../../services/pushService';
 import {
   syncAllActiveRoutesTodayForRequest,
   enrichRouteMatchRows,
+  explainMatchesForRequest,
   RouteMatchRow,
 } from '../../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../../utils/chatHelpers';
@@ -1880,6 +1881,19 @@ export default function BookingScreen({ route, navigation }: any) {
         matchedRoutes = await syncAllActiveRoutesTodayForRequest(requestId, { notify: true });
       } catch (e) {
         console.warn('[BookingScreen] route matching failed:', e);
+      }
+
+      if (matchedRoutes.length === 0) {
+        // Why did nothing match? Per-route reasons (day / time window / corridor / capacity) go to the log.
+        try {
+          console.log(
+            '[BookingScreen] NO MATCHES for request',
+            requestId,
+            JSON.stringify(await explainMatchesForRequest(requestId), null, 2),
+          );
+        } catch (e) {
+          console.warn('[BookingScreen] explainMatchesForRequest failed:', e);
+        }
       }
 
       if (searchTimeoutRef.current) {

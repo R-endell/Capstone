@@ -3,12 +3,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../utils/supabase';
 
 // Flip this one line to turn Demo Mode on (true) or off (false) for the whole app.
-export const DEMO_MODE = true;
+export const DEMO_MODE = false;
 
 const KEY = 'packnship.activeRouteId';
 
 let _cachedId: number | null | undefined = undefined; // undefined = not loaded yet
 let _lastSyncedId: number | null = null;
+
+// All is_selected writes run through this chain, one at a time, in call order.
+// Without it two quick switches (A -> B -> C) interleave their "unselect others / select me"
+// updates and the DB can end up with the wrong route selected (or two at once).
+let _syncChain: Promise<void> = Promise.resolve();
 
 const listeners = new Set<(id: number | null) => void>();
 
@@ -19,22 +24,18 @@ export async function getActiveRouteId(): Promise<number | null> {
   if (_cachedId !== undefined) return _cachedId;
   try {
     const raw = await AsyncStorage.getItem(KEY);
-    _cachedId = raw ? Number(raw) : null;
+    // A switch may have happened while we were reading storage: the cache wins.
+    if (_cachedId === undefined) _cachedId = raw ? Number(raw) : null;
   } catch (err) {
     console.warn('[activeRouteStore] read failed:', err);
-    _cachedId = null;
+    if (_cachedId === undefined) _cachedId = null;
   }
   return _cachedId ?? null;
 }
 
-/**
- * Mirrors the provider's selected route into `provider_routes.is_selected` so
- * OTHER users' devices (e.g. the sender's Explore screen) only see the one
- * route the provider has selected. Exactly one route per provider is selected.
- * Pass `force` to re-sync even if this id was already synced in this session.
- */
-export async function syncSelectedRouteToDb(id: number | null, force = false): Promise<void> {
-  if (id === null) return;
+async function doSync(id: number, force: boolean): Promise<void> {
+  // A newer selection already replaced this one: skip, the newer sync will do the work.
+  if (_cachedId !== undefined && _cachedId !== id) return;
   if (!force && _lastSyncedId === id) return;
   try {
     const { data: row, error: rowErr } = await supabase
@@ -44,23 +45,46 @@ export async function syncSelectedRouteToDb(id: number | null, force = false): P
       .maybeSingle();
     if (rowErr || !row) return;
 
-    await supabase
+    // Select the new route FIRST, then unselect the others, so a provider never has zero
+    // selected routes (senders' Explore list would otherwise flicker the provider away).
+    const { error } = await supabase
+      .from('provider_routes')
+      .update({ is_selected: true })
+      .eq('route_id', id);
+    if (error) {
+      console.warn('[activeRouteStore] is_selected sync failed:', error.message);
+      return; // _lastSyncedId stays unchanged so the next call retries
+    }
+
+    const { error: othersErr } = await supabase
       .from('provider_routes')
       .update({ is_selected: false })
       .eq('provider_id', row.provider_id)
       .neq('route_id', id)
       .eq('is_selected', true);
+    if (othersErr) {
+      console.warn('[activeRouteStore] unselect others failed:', othersErr.message);
+      return;
+    }
 
-    const { error } = await supabase
-      .from('provider_routes')
-      .update({ is_selected: true })
-      .eq('route_id', id);
-
-    if (error) console.warn('[activeRouteStore] is_selected sync failed:', error.message);
-    else _lastSyncedId = id;
+    _lastSyncedId = id;
   } catch (err) {
     console.warn('[activeRouteStore] is_selected sync error:', err);
   }
+}
+
+/**
+ * Mirrors the provider's selected route into `provider_routes.is_selected` so
+ * OTHER users' devices (e.g. the sender's Explore screen) only see the one
+ * route the provider has selected. Exactly one route per provider is selected.
+ * Pass `force` to re-sync even if this id was already synced in this session.
+ * Calls are serialized; the returned promise resolves when this sync has run.
+ */
+export function syncSelectedRouteToDb(id: number | null, force = false): Promise<void> {
+  if (id === null) return Promise.resolve();
+  const run = _syncChain.then(() => doSync(id, force)).catch(() => {});
+  _syncChain = run;
+  return run;
 }
 
 export async function setActiveRouteId(id: number | null): Promise<void> {

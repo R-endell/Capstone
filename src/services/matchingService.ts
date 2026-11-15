@@ -259,12 +259,70 @@ export function isSendNowRequest(req: any): boolean {
   }
 }
 
+/**
+ * The calendar day a request should be served on, as a naive local Date (same convention as
+ * parseNaiveRouteTime, so it can be passed straight to isRouteRunningToday).
+ * Send-Now requests are served today; Scheduled requests on the day the sender picked.
+ */
+export function getRequestServiceDate(req: any, fallbackNow = new Date()): Date {
+  if (!req || isSendNowRequest(req)) return fallbackNow;
+  const m = String(req.scheduled_time || '').match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return fallbackNow;
+  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  return isNaN(d.getTime()) ? fallbackNow : d;
+}
+
+// A scheduled pickup may be this many minutes before departure / after arrival and still match.
+export const SCHEDULE_WINDOW_GRACE_MIN = 15;
+// Routes without an end_time are treated as lasting this long (same default the Explore screen uses).
+const DEFAULT_ROUTE_DURATION_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * The [start, end] window a route is on the road on a given calendar day.
+ * Daily/Weekly routes repeat at the same time of day with the same duration;
+ * One-time/Custom routes use their exact stored times.
+ */
+export function getRouteWindowOnDay(route: any, day: Date): { start: Date; end: Date } {
+  const dep = parseNaiveRouteTime(route?.departure_time);
+  const endRaw = route?.end_time ? parseNaiveRouteTime(route.end_time) : null;
+  const durationMs =
+    endRaw && !isNaN(endRaw.getTime()) && endRaw.getTime() > dep.getTime()
+      ? endRaw.getTime() - dep.getTime()
+      : DEFAULT_ROUTE_DURATION_MS;
+  const freq = String(route?.route_frequency || '').trim().toLowerCase();
+  const start =
+    freq === 'daily' || freq === 'weekly'
+      ? new Date(day.getFullYear(), day.getMonth(), day.getDate(), dep.getHours(), dep.getMinutes(), 0, 0)
+      : dep;
+  return { start, end: new Date(start.getTime() + durationMs) };
+}
+
+/**
+ * Scheduled requests: does this route run on the scheduled day AND is the scheduled time inside
+ * the route's departure -> arrival window (plus a small grace)? The previous day's run is checked
+ * too, so a route that leaves at 23:00 and arrives at 02:00 covers a 01:00 pickup.
+ */
+export function isRouteCoveringScheduledTime(route: any, request: any, now = new Date()): boolean {
+  if (!route || route.is_deleted === true || route.is_active === false) return false;
+  const when = getRequestServiceDate(request, now).getTime();
+  const graceMs = SCHEDULE_WINDOW_GRACE_MIN * 60000;
+  const base = getRequestServiceDate(request, now);
+  for (const offset of [0, -1]) {
+    const day = new Date(base.getFullYear(), base.getMonth(), base.getDate() + offset, 12, 0, 0, 0);
+    if (!isRouteRunningToday(route, day)) continue;
+    const { start, end } = getRouteWindowOnDay(route, day);
+    if (when >= start.getTime() - graceMs && when <= end.getTime() + graceMs) return true;
+  }
+  return false;
+}
+
 export function isRouteTimeValidForRequest(route: any, request: any, now = new Date()): boolean {
   if (!route || !request) return false;
   if (request.preferred_provider_id != null) return true;
 
   if (!isSendNowRequest(request)) {
-    return true;
+    // Scheduled booking: the route must run that day AND cover the scheduled time of day.
+    return isRouteCoveringScheduledTime(route, request, now);
   }
 
   if (!isRouteRunningToday(route, now)) return false;
@@ -672,6 +730,10 @@ export async function syncAllActiveRoutesTodayForRequest(
 
     const now = new Date();
 
+    // Send-Now: routes running today. Scheduled: routes running on the day the sender picked.
+    const serviceDate = getRequestServiceDate(reqRow, now);
+    const isScheduledReq = !isSendNowRequest(reqRow);
+
     const routesByProvider = new Map<number, any[]>();
     for (const r of allRoutes || []) {
       if (!routesByProvider.has(r.provider_id)) routesByProvider.set(r.provider_id, []);
@@ -680,7 +742,16 @@ export async function syncAllActiveRoutesTodayForRequest(
 
     const candidateRoutes: any[] = [];
     routesByProvider.forEach((pRoutes) => {
-      const runningToday = pRoutes.filter((r) => isDemo || isRouteRunningToday(r, now));
+      const runningToday = pRoutes.filter((r) =>
+        isDemo ||
+        (isScheduledReq
+          ? isRouteCoveringScheduledTime(r, reqRow, now)
+          : isRouteRunningToday(r, serviceDate)));
+      if (isScheduledReq) {
+        // A provider's "selected" route today says nothing about which route they run on a future day.
+        candidateRoutes.push(...runningToday);
+        return;
+      }
       const selectedToday = runningToday.find((r) => r.is_selected === true);
       if (selectedToday) {
         candidateRoutes.push(selectedToday);
@@ -769,7 +840,9 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
     if (!route || route.is_deleted || route.is_active === false) return;
 
     const now = new Date();
-    if (!isDemo && !isRouteRunningToday(route, now)) return;
+    // No blanket "must run today" gate here: a route posted for a future day still has to pick up
+    // requests scheduled for that day. evaluatePairAndUpsertMatch applies the right per-request
+    // day check (today for Send-Now, the scheduled day for Scheduled).
 
     const { data: pendingReqs } = await supabase
       .from('delivery_requests')
@@ -796,6 +869,106 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
   } catch (e) {
     console.warn('[matchingService] syncOpenPendingRequestsForRoute warning:', e);
   }
+}
+
+/**
+ * Debug helper: for one request, explains for EVERY provider route why it did or did not match
+ * (own route, inactive, wrong day, outside time window, off corridor, wrong direction, capacity).
+ * Used by BookingScreen to log why a booking found no providers.
+ */
+export async function explainMatchesForRequest(requestId: number) {
+  const now = new Date();
+  const { data: reqRow } = await supabase
+    .from('delivery_requests')
+    .select(
+      `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*)`,
+    )
+    .eq('request_id', requestId)
+    .maybeSingle();
+  if (!reqRow) return { error: 'request not found' };
+
+  const { data: routes } = await supabase
+    .from('provider_routes')
+    .select(
+      `*, start_location:locations!provider_routes_start_location_id_fkey(*), end_location:locations!provider_routes_end_location_id_fkey(*)`,
+    )
+    .eq('is_deleted', false);
+
+  const sendNow = isSendNowRequest(reqRow);
+  const when = getRequestServiceDate(reqRow, now);
+  const puLoc = Array.isArray(reqRow.pickup_location) ? reqRow.pickup_location[0] : reqRow.pickup_location;
+  const doLoc = Array.isArray(reqRow.dropoff_location) ? reqRow.dropoff_location[0] : reqRow.dropoff_location;
+  const cargo = Array.isArray(reqRow.cargo) ? reqRow.cargo[0] : reqRow.cargo;
+  const reqWeight = Number(cargo?.total_weight_kg) || 5;
+  const reqVol = computeCargoVolumeLiters(cargo);
+  const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
+  const maxCorridorM = isDoorToDoor ? 3000 : 1500;
+
+  const report = (routes || []).map((route: any) => {
+    const reasons: string[] = [];
+    if (Number(route.provider_id) === Number(reqRow.sender_id)) reasons.push('own route (sender = provider)');
+    if (route.is_active === false) reasons.push('route inactive');
+    if (reqRow.preferred_provider_id != null && Number(reqRow.preferred_provider_id) !== Number(route.provider_id))
+      reasons.push('request is direct to another provider');
+
+    if (sendNow) {
+      if (!isRouteTimeValidForRequest(route, reqRow, now)) reasons.push('send-now: route not running / already departed today');
+    } else {
+      if (!isRouteRunningToday(route, when)) reasons.push(`route does not run on ${when.toDateString()} (${route.route_frequency})`);
+      else if (!isRouteCoveringScheduledTime(route, reqRow, now)) {
+        const w = getRouteWindowOnDay(route, when);
+        reasons.push(`scheduled time ${when.toLocaleString()} is outside route window ${w.start.toLocaleString()} -> ${w.end.toLocaleString()} (±${SCHEDULE_WINDOW_GRACE_MIN}min)`);
+      }
+    }
+
+    const sLoc = Array.isArray(route.start_location) ? route.start_location[0] : route.start_location;
+    const eLoc = Array.isArray(route.end_location) ? route.end_location[0] : route.end_location;
+    const corridor: { latitude: number; longitude: number }[] =
+      Array.isArray(route.corridor_path) && route.corridor_path.length >= 2
+        ? route.corridor_path
+        : sLoc && eLoc
+          ? [
+              { latitude: Number(sLoc.latitude), longitude: Number(sLoc.longitude) },
+              { latitude: Number(eLoc.latitude), longitude: Number(eLoc.longitude) },
+            ]
+          : [];
+    let pickupM: number | null = null;
+    let dropoffM: number | null = null;
+    if (corridor.length >= 2 && puLoc?.latitude != null && doLoc?.latitude != null) {
+      const pu = projectPointToPolyline({ lat: Number(puLoc.latitude), lng: Number(puLoc.longitude) }, corridor);
+      const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
+      pickupM = Math.round(pu.minDistanceM);
+      dropoffM = Math.round(dr.minDistanceM);
+      const limit = route.fallback_unlocked ? Math.max(3000, maxCorridorM) : maxCorridorM;
+      if (pu.minDistanceM > limit) reasons.push(`pickup ${pickupM} m from route (limit ${limit} m)`);
+      if (dr.minDistanceM > limit) reasons.push(`dropoff ${dropoffM} m from route (limit ${limit} m)`);
+      if (!(dr.fraction >= pu.fraction - 0.02)) reasons.push('dropoff comes BEFORE pickup along this route (wrong direction)');
+    } else {
+      reasons.push('no corridor / missing coordinates');
+    }
+    if (!(Number(route.remaining_weight_kg ?? 100) >= reqWeight))
+      reasons.push(`not enough weight capacity (${route.remaining_weight_kg} kg left, need ${reqWeight})`);
+    if (!(Number(route.remaining_volume_liters ?? 300) >= reqVol))
+      reasons.push(`not enough volume capacity (${route.remaining_volume_liters} L left, need ${reqVol})`);
+
+    return {
+      route_id: route.route_id,
+      provider_id: route.provider_id,
+      frequency: route.route_frequency,
+      departure_time: route.departure_time,
+      end_time: route.end_time,
+      verdict: reasons.length === 0 ? 'WOULD MATCH' : 'rejected',
+      reasons,
+    };
+  });
+
+  return {
+    request_id: requestId,
+    mode: sendNow ? 'send-now' : 'scheduled',
+    scheduled_time: reqRow.scheduled_time,
+    interpreted_service_time: when.toString(),
+    routes: report,
+  };
 }
 
 export async function evaluateAndFetchRouteMatches(
