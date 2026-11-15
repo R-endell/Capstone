@@ -1016,7 +1016,7 @@ export default function MessagesScreen({ route: propsRoute }: any) {
         <SafeAreaView edges={['top']} style={{ backgroundColor: colors.accent }}>
           <Animated.View style={[styles.chatHeaderFlat, fadeUp(detailHeaderAnim, -10)]}>
             <TouchableOpacity onPress={closeConversation} style={styles.backBtnFlat} activeOpacity={0.7}>
-              <SolarIcon name="ArrowLeft" variant="bold" size={22} color="#FFFFFF" />
+              <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
             </TouchableOpacity>
 
             <View style={styles.chatHeaderAvatar}>
@@ -1251,7 +1251,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16, gap: 12,
     borderBottomLeftRadius: 20, borderBottomRightRadius: 20,
   },
-  backBtnFlat: { width: 40, height: 40, backgroundColor: 'rgba(255,255,255,0.18)', borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  backBtnFlat: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
+  },
   chatHeaderAvatar: { width: 40, height: 40 },
   chatHeaderSupportAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.25)', alignItems: 'center', justifyContent: 'center' },
   chatHeaderInfo: { flex: 1, minWidth: 0 },
@@ -1259,7 +1265,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   chatHeaderName: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
   chatHeaderSubtitle: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: 'rgba(255,255,255,0.85)', marginTop: 1 },
 
-  callBtnFlat: { width: 40, height: 40, backgroundColor: '#FFFFFF', borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  callBtnFlat: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
+  },
 
   chatContentArea: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 20 },
   dateSeparator: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8, paddingHorizontal: 8, gap: 10 },

@@ -3,7 +3,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, Modal, StatusBar,
   Alert, ActivityIndicator, ScrollView, Platform, Animated, Easing,
-  TextInput, Keyboard, Switch, Image,
+  TextInput, Keyboard, Image,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -14,7 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { supabase } from '../../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
-import { GOOGLE_MAP_ID } from '../../../../utils/mapConfig';
+import { GOOGLE_MAP_ID, MAP_PROPS, BRAND_ORANGE } from '../../../../utils/mapConfig';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
 import TermsModal from '../../../../components/terms/TermsModal';
 import { needsAcceptance, recordTermsAcceptance } from '../../../../services/termsService';
@@ -26,7 +26,6 @@ import {
   softDeleteProviderRoute,
   MAX_DAILY_ROUTES,
 } from '../../../../services/routeService';
-import { getDemoMode, setDemoMode, subscribeDemoMode } from '../../../../services/activeRouteStore';
 
 const EMPTY_COMPASS_ICON = require('../../../../../assets/empty-state-compass-icon.png');
 
@@ -312,15 +311,65 @@ const fetchNearbyPlaces = async (coords: Coord): Promise<NearbyPlace[]> => {
   return [];
 };
 
+// Same start / destination pins and label pill as JobsScreen and LiveTrackingScreen.
+const PIN = 44, LABEL_H = 26, LABEL_H2 = 42, LABEL_GAP = 6;
+
 const previewMapStyles = StyleSheet.create({
-  mkDot: {
-    width: 26, height: 26, borderRadius: 13,
-    borderWidth: 3, borderColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+  placeWrap: { alignItems: 'center', paddingHorizontal: 4 },
+  pickPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: BRAND_ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 6, elevation: 8,
   },
-  mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+  dropPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.28, shadowRadius: 4, elevation: 6,
+  },
+  labelPill: {
+    maxWidth: 200, minHeight: LABEL_H, justifyContent: 'center', marginTop: LABEL_GAP, paddingVertical: 3,
+    backgroundColor: '#FFFFFF', borderRadius: 14, paddingHorizontal: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 5,
+  },
+  labelText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
+  labelSub: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: '#6B7280', marginTop: -1 },
+});
+
+const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
+  lat, lng, title, street, kind,
+}: { lat: number; lng: number; title: string; street?: string; kind: 'start' | 'end' }) {
+  const [track, setTrack] = useState(true);
+  useEffect(() => {
+    setTrack(true);
+    const t = setTimeout(() => setTrack(false), 800);
+    return () => clearTimeout(t);
+  }, [title, street]);
+  const labelH = street ? LABEL_H2 : LABEL_H;
+
+  return (
+    <Marker
+      coordinate={{ latitude: lat, longitude: lng }}
+      anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + labelH) }}
+      tracksViewChanges={track}
+      zIndex={5}
+    >
+      <View style={previewMapStyles.placeWrap}>
+        {kind === 'start' ? (
+          <View style={previewMapStyles.pickPin}>
+            <SolarIcon name="MapPoint" variant="bold" size={22} color="#FFFFFF" />
+          </View>
+        ) : (
+          <View style={previewMapStyles.dropPin}>
+            <SolarIcon name="Flag" variant="bold" size={22} color="#000000" />
+          </View>
+        )}
+        <View style={previewMapStyles.labelPill}>
+          <Text style={previewMapStyles.labelText} numberOfLines={1}>{title}</Text>
+          {!!street && <Text style={previewMapStyles.labelSub} numberOfLines={1}>{street}</Text>}
+        </View>
+      </View>
+    </Marker>
+  );
 });
 
 /* ==================================================================== */
@@ -981,7 +1030,6 @@ export default function ManageRoutesScreen() {
   const [userId, setUserId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<RouteTab>('active');
   const [usedTodayCount, setUsedTodayCount] = useState(0);
-  const [demoMode, setDemoModeState] = useState(false);
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editingRoute, setEditingRoute] = useState<Route | null>(null);
@@ -1011,11 +1059,6 @@ export default function ManageRoutesScreen() {
       Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
     Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
   }, [headerAnim, contentAnim]);
-
-  useEffect(() => {
-    getDemoMode().then(setDemoModeState);
-    return subscribeDemoMode(setDemoModeState);
-  }, []);
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
@@ -1077,10 +1120,9 @@ export default function ManageRoutesScreen() {
 
   const displayedRoutes = activeTab === 'active' ? activeRoutes : expiredRoutes;
 
-  const handleToggleDemo = async (val: boolean) => {
-    setDemoModeState(val);
-    await setDemoMode(val);
-  };
+  // Landmark / street labels for the preview map pins (same data the location buttons show).
+  const startPlaceInfo = useMemo(() => toPlaceInfo(startLocation, 'Starting point'), [startLocation]);
+  const endPlaceInfo = useMemo(() => toPlaceInfo(endLocation, 'Destination'), [endLocation]);
 
   const handleLocationSelect = async (locData: any, type: 'start' | 'end') => {
     try {
@@ -1295,7 +1337,7 @@ export default function ManageRoutesScreen() {
   const handleEdit = (route: Route) => {
     const expired = isRouteExpired(route);
     if (!expired) {
-      const check = canEditRoute(route.departure_time, demoMode);
+      const check = canEditRoute(route.departure_time, false);
       if (!check.allowed) {
         Alert.alert('Route Edit Locked 🔒', check.reason);
         return;
@@ -1382,7 +1424,7 @@ export default function ManageRoutesScreen() {
         ];
     const t = setTimeout(() => {
       previewMapRef.current?.fitToCoordinates(pts, {
-        edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+        edgePadding: { top: 90, right: 60, bottom: 90, left: 60 },
         animated: true,
       });
     }, 250);
@@ -1402,7 +1444,7 @@ export default function ManageRoutesScreen() {
   const renderRouteCard = ({ item }: { item: Route }) => {
     const dt = parseNaiveIsoString(item.departure_time);
     const expired = isRouteExpired(item);
-    const editLock = !expired ? canEditRoute(item.departure_time, demoMode) : { allowed: true };
+    const editLock = !expired ? canEditRoute(item.departure_time, false) : { allowed: true };
     const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const scheduleText = (() => {
       if (item.route_frequency === 'Daily') return `Every day · ${timeStr}`;
@@ -1459,14 +1501,12 @@ export default function ManageRoutesScreen() {
             ].map((r, i) => (
               <View key={r.key} style={styles.rtRow}>
                 <View style={styles.rtRail}>
-                  <View style={[styles.rtRing, { borderColor: r.color }]}>
-                    <View style={[styles.rtRingDot, { backgroundColor: r.color }]} />
-                  </View>
-                  {i === 0 && (
-                    <View style={styles.rtDots}>
-                      {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
-                    </View>
+                  {i === 0 ? (
+                    <View style={styles.rtPickPin}><SolarIcon name="MapPoint" variant="bold" size={15} color="#FFFFFF" /></View>
+                  ) : (
+                    <View style={styles.rtDropPin}><SolarIcon name="Flag" variant="bold" size={15} color="#000000" /></View>
                   )}
+                  {i === 0 && <View style={styles.rtLine} />}
                 </View>
                 <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
                   <Text style={styles.rtLabel}>{r.label}</Text>
@@ -1562,20 +1602,6 @@ export default function ManageRoutesScreen() {
           <SolarIcon name="Plus" variant="bold" size={22} color="#FFFFFF" />
         </TouchableOpacity>
       </Animated.View>
-
-      <View style={styles.demoStrip}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-          <SolarIcon name="InfoCircle" variant="linear" size={16} color={colors.accent} />
-          <Text style={styles.demoStripText}>
-            Defense DEMO_MODE (1-min fallback & edit lock)
-          </Text>
-        </View>
-        <Switch
-          value={demoMode}
-          onValueChange={handleToggleDemo}
-          trackColor={{ false: colors.border, true: colors.accent }}
-        />
-      </View>
 
       <View style={styles.tabContainer}>
         <TouchableOpacity
@@ -1730,40 +1756,45 @@ export default function ManageRoutesScreen() {
                 <View style={styles.modalMapContainer}>
                   <MapView
                     ref={previewMapRef}
-                    style={StyleSheet.absoluteFill}
-                    provider={PROVIDER_GOOGLE}
-                    googleMapId={GOOGLE_MAP_ID}
+                    {...MAP_PROPS}
                     userInterfaceStyle="light"
+                    style={StyleSheet.absoluteFill}
                     initialRegion={{
                       latitude: startLocation.latitude,
                       longitude: startLocation.longitude,
                       latitudeDelta: 0.05,
                       longitudeDelta: 0.05,
                     }}
+                    showsUserLocation={false}
+                    showsMyLocationButton={false}
                     showsCompass={false}
                     toolbarEnabled={false}
+                    rotateEnabled={false}
+                    pitchEnabled={false}
                   >
-                    <Marker
-                      coordinate={{ latitude: startLocation.latitude, longitude: startLocation.longitude }}
-                      anchor={{ x: 0.5, y: 0.5 }}
-                      tracksViewChanges={false}
-                    >
-                      <View style={[previewMapStyles.mkDot, { backgroundColor: colors.info }]}>
-                        <Text style={previewMapStyles.mkDotText}>S</Text>
-                      </View>
-                    </Marker>
-                    <Marker
-                      coordinate={{ latitude: endLocation.latitude, longitude: endLocation.longitude }}
-                      anchor={{ x: 0.5, y: 0.5 }}
-                      tracksViewChanges={false}
-                    >
-                      <View style={[previewMapStyles.mkDot, { backgroundColor: colors.error }]}>
-                        <Text style={previewMapStyles.mkDotText}>E</Text>
-                      </View>
-                    </Marker>
-                    {previewCoords.length > 0 && (
-                      <Polyline coordinates={previewCoords} strokeColor={colors.info} strokeWidth={4} />
+                    {previewCoords.length > 1 && (
+                      <Polyline
+                        coordinates={previewCoords}
+                        strokeColor={BRAND_ORANGE}
+                        strokeWidth={6}
+                        lineCap="round"
+                        lineJoin="round"
+                      />
                     )}
+                    <RoutePlaceMarker
+                      lat={startLocation.latitude}
+                      lng={startLocation.longitude}
+                      title={startPlaceInfo.landmark}
+                      street={[startPlaceInfo.street, startPlaceInfo.area].filter(Boolean).join(', ')}
+                      kind="start"
+                    />
+                    <RoutePlaceMarker
+                      lat={endLocation.latitude}
+                      lng={endLocation.longitude}
+                      title={endPlaceInfo.landmark}
+                      street={[endPlaceInfo.street, endPlaceInfo.area].filter(Boolean).join(', ')}
+                      kind="end"
+                    />
                   </MapView>
                 </View>
               )}
@@ -1961,7 +1992,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingBottom: 16,
+    paddingHorizontal: 16, paddingBottom: 16,
     backgroundColor: c.card, borderBottomWidth: 1,
     borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
@@ -1978,16 +2009,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     shadowColor: c.accent, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
 
-  demoStrip: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    marginHorizontal: 20, marginTop: 12, paddingHorizontal: 14, paddingVertical: 8,
-    backgroundColor: c.accentSoft, borderRadius: 12, borderWidth: 1, borderColor: c.accent,
-  },
-  demoStripText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-
   tabContainer: {
     flexDirection: 'row',
-    marginHorizontal: 20, marginTop: 10, marginBottom: 4,
+    marginHorizontal: 16, marginTop: 10, marginBottom: 4,
     padding: 4, backgroundColor: c.divider, borderRadius: 12,
     gap: 6,
   },
@@ -2003,7 +2027,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   tabButtonText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   tabButtonTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
 
-  listContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 60 },
+  listContent: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 60 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
@@ -2018,10 +2042,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyAddBtnText: { color: '#FFF', fontFamily: 'Poppins_700Bold', fontSize: 14 },
 
   oCard: {
-    backgroundColor: c.card, borderRadius: 12, marginBottom: 14,
+    backgroundColor: c.card, borderRadius: 16, marginBottom: 14,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   oCardExpired: { opacity: 0.88 },
   oPad: { padding: 16 },
@@ -2052,14 +2074,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   flagBannerText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.warning },
 
   rtRow: { flexDirection: 'row', gap: 14 },
-  rtRail: { alignItems: 'center', width: 26 },
-  rtRing: {
-    width: 26, height: 26, borderRadius: 13, borderWidth: 3,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
-  },
-  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
-  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
-  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
+  rtRail: { alignItems: 'center', width: 30 },
+  rtPickPin: { width: 30, height: 30, borderRadius: 15, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
+  rtDropPin: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center' },
+  rtLine: { position: 'absolute', top: 34, bottom: -4, width: 2, borderRadius: 1, backgroundColor: c.border },
   rtText: { flex: 1 },
   rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
   rtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: 0, marginTop: 1 },
@@ -2095,12 +2113,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     paddingTop: 8, maxHeight: '94%', flex: 1,
   },
   modalHandle: {
-    alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
-    backgroundColor: c.border, marginTop: 6, marginBottom: 6,
+    alignSelf: 'center', width: 40, height: 4, borderRadius: 2,
+    backgroundColor: c.border, marginTop: 8, marginBottom: 8,
   },
   modalHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingVertical: 12,
+    paddingHorizontal: 16, paddingVertical: 12,
     borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   modalCloseBtn: {
@@ -2118,7 +2136,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   guardrailNoticeText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textPrimary, lineHeight: 17 },
 
   modalMapContainer: {
-    height: 180, borderRadius: 12, overflow: 'hidden', marginBottom: 20,
+    height: 240, borderRadius: 16, overflow: 'hidden', marginBottom: 20,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
 
