@@ -4,7 +4,7 @@ import {
   View, Text, StyleSheet, Image, TouchableOpacity,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
   Animated, Linking, StatusBar, FlatList, Pressable,
-  TextInput, Keyboard, useWindowDimensions, Easing,
+  TextInput, Keyboard, useWindowDimensions, Easing, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
@@ -29,6 +29,7 @@ import {
   computeCargoVolumeLiters,
   parseRequestCreatedTime,
   declineDirectRequest as declineDirectRequestService,
+  declineMatchedRequest as declineMatchedRequestService,
   RouteMatchRow,
 } from '../../../services/matchingService';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
@@ -45,6 +46,10 @@ import DraggableSheet, { DraggableSheetHandle } from '../../../components/ui/Dra
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
 const AWAITING_MAX_AGE_HOURS = 24;
+const DISMISSED_KEY = '@pns:dismissed_requests:v1';   // per provider: requests this provider declined
+const DISMISSED_TTL_MS = 48 * 3600 * 1000;
+const POLL_INTERVAL_MS = 20000;                       // safety net in case a realtime event is missed
+const POLL_EVALUATE_EVERY = 3;                        // every 3rd poll also re-evaluates the corridor
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
@@ -1377,6 +1382,9 @@ export default function JobsScreen() {
   const modalOpenRef = useRef(false);
   const loadDataRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissedRef = useRef<Map<number, number>>(new Map());   // request_id -> declined at (ms)
+  const [rtEpoch, setRtEpoch] = useState(0);                      // bump to rebuild the realtime channel
+  const screenFocused = useIsFocused();
 
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
   useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
@@ -1414,7 +1422,9 @@ export default function JobsScreen() {
   const sheetRef = useRef<DraggableSheetHandle>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const awaitingIdsRef = useRef<Set<number>>(new Set());
-  useEffect(() => { awaitingIdsRef.current = new Set(awaiting.map(r => r.request_id)); }, [awaiting]);
+  useEffect(() => {
+    awaitingIdsRef.current = new Set([...awaiting, ...requests].map(r => Number(r.request_id)));
+  }, [awaiting, requests]);
   // opening the details page unmounts the sheet, so its open state must not linger
   useEffect(() => { if (detailRequestId != null) setSheetOpen(false); }, [detailRequestId]);
 
@@ -1688,7 +1698,9 @@ export default function JobsScreen() {
       });
 
       if (!isLatest()) return;
-      const normalized = rows.map(m => normalizeMatchRow(m, senders, pid));
+      const normalized = rows
+        .map(m => normalizeMatchRow(m, senders, pid))
+        .filter(r => !dismissedRef.current.has(Number(r.request_id)));
       setAwaiting(normalized);
       setLapsedIds(rows.filter(m => lapsed.has(Number(m.request_id))).map(m => Number(m.request_id)));
     } catch (e) {
@@ -1700,6 +1712,7 @@ export default function JobsScreen() {
     overridePid?: number | null,
     overrideActiveRoute?: Route | null,
     evaluate = false,
+    silent = false,
   ) => {
     const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
@@ -1709,7 +1722,7 @@ export default function JobsScreen() {
     const isLatest = () => seq === refreshSeqRef.current;
 
     try {
-      setCheckingMatches(true);
+      if (!silent) setCheckingMatches(true);
 
       // Rule 1: no posted/selected route => zero requests shown.
       if (!selected) {
@@ -1747,7 +1760,10 @@ export default function JobsScreen() {
         .select('request_id')
         .in('request_id', candidateIds);
       const claimedSet = new Set((claimedRows || []).map((c: any) => Number(c.request_id)));
-      const openMatches = allMatches.filter(m => !claimedSet.has(Number(m.request_id)) && m.request?.delivery_status === 'Pending');
+      const openMatches = allMatches.filter(m =>
+        !claimedSet.has(Number(m.request_id)) &&
+        !dismissedRef.current.has(Number(m.request_id)) &&
+        m.request?.delivery_status === 'Pending');
 
       if (!isLatest()) return;
 
@@ -1813,34 +1829,65 @@ export default function JobsScreen() {
     }, [])
   );
 
+  // Requests this provider declined stay hidden even if a later re-evaluation would match them again.
   useEffect(() => {
     if (!providerId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(`${DISMISSED_KEY}:${providerId}`);
+        const stored: Record<string, number> = raw ? JSON.parse(raw) : {};
+        const cutoff = Date.now() - DISMISSED_TTL_MS;
+        Object.entries(stored).forEach(([id, ts]) => {
+          if (Number(ts) > cutoff && !dismissedRef.current.has(Number(id))) dismissedRef.current.set(Number(id), Number(ts));
+        });
+        if (cancelled || dismissedRef.current.size === 0) return;
+        const hide = (r: JobRequest) => !dismissedRef.current.has(Number(r.request_id));
+        setAwaiting(prev => prev.filter(hide));
+        setRequests(prev => prev.filter(hide));
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [providerId]);
+
+  // LIVE UPDATES: realtime channel (+ resync on connect, app foreground and a light poll as a safety net)
+  useEffect(() => {
+    if (!providerId) return;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let routeTimer: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleRefresh = () => {
       if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
       realtimeDebounceRef.current = setTimeout(() => {
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
-      }, 450);
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, false, true);
+      }, 250);
+    };
+
+    // my own routes changed (edited, ended, capacity changed, selected elsewhere): reload routes + matches
+    const scheduleRouteReload = () => {
+      if (routeTimer) clearTimeout(routeTimer);
+      routeTimer = setTimeout(() => { void loadDataRef.current(true); }, 800);
     };
 
     // A change to someone else's request must not trigger a full refetch on every provider's phone.
     const concernsMe = (payload: any) => {
       const rec = payload?.new && Object.keys(payload.new).length ? payload.new : payload?.old;
       if (!rec || rec.request_id == null) return true;                       // cannot tell: be safe
-      if (awaitingIdsRef.current.has(Number(rec.request_id))) return true;   // one of my awaiting requests changed
+      if (awaitingIdsRef.current.has(Number(rec.request_id))) return true;   // one of the requests on my screen changed
       return rec.preferred_provider_id != null && Number(rec.preferred_provider_id) === Number(providerIdRef.current);
     };
 
     const channel = supabase
-      .channel(`jobs-unified-${providerId}`)
+      .channel(`jobs-unified-${providerId}-${rtEpoch}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'route_request_matches' }, scheduleRefresh)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'delivery_requests' }, scheduleRefresh)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'delivery_requests' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'delivery_requests' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
-      // another provider accepting a request inserts a deliveries row: drop it from my awaiting list right away
+      // another provider accepting a request inserts a deliveries row: drop it from my list right away
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, scheduleRouteReload)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
         void loadNotifs();
         const row: any = payload.new;
@@ -1853,13 +1900,46 @@ export default function JobsScreen() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => {
         void loadNotifs();
       })
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          // anything that happened while the socket was down or still connecting
+          scheduleRefresh();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('[jobs] realtime', status, '- retrying');
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => setRtEpoch(e => e + 1), 5000);
+        }
+      });
 
     return () => {
       if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+      if (routeTimer) clearTimeout(routeTimer);
+      if (retryTimer) clearTimeout(retryTimer);
       supabase.removeChannel(channel);
     };
-  }, [providerId, refreshMatches, loadNotifs]);
+  }, [providerId, rtEpoch, refreshMatches, loadNotifs]);
+
+  // coming back from the background: the socket may have been suspended, so resync immediately
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !providerIdRef.current) return;
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, true, true);
+      void loadNotifs();
+    });
+    return () => sub.remove();
+  }, [refreshMatches, loadNotifs]);
+
+  // light safety-net poll while this screen is on top (silent: no spinner)
+  useEffect(() => {
+    if (!providerId || !screenFocused) return;
+    let tick = 0;
+    const id = setInterval(() => {
+      if (modalOpenRef.current || loadInFlightRef.current) return;
+      tick += 1;
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, tick % POLL_EVALUATE_EVERY === 0, true);
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [providerId, screenFocused, refreshMatches]);
 
   const fetchVehiclesForNewRoute = async (pid: number) => {
     const { data } = await supabase
@@ -1873,11 +1953,6 @@ export default function JobsScreen() {
   const openAddRouteModal = async () => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
-    const isDemo = demoMode || (await getDemoMode());
-    if (!isDemo && usedTodayCount >= 3) {
-      Alert.alert('Daily Limit Reached (3/3)', 'You cannot post more than 3 routes per day.');
-      return;
-    }
     setRoutePickerVisible(false);
     const initial = new Date(Date.now() + 135 * 60 * 1000);
     setNewRouteStart(null);
@@ -2124,29 +2199,54 @@ export default function JobsScreen() {
 
   const decliningRef = useRef<Set<number>>(new Set());
 
-  const declineDirectRequest = async (req: JobRequest) => {
+  const persistDismissed = (pid: number) => {
+    const obj: Record<string, number> = {};
+    dismissedRef.current.forEach((ts, id) => { obj[String(id)] = ts; });
+    AsyncStorage.setItem(`${DISMISSED_KEY}:${pid}`, JSON.stringify(obj)).catch(() => {});
+  };
+
+  // Works for every request: a direct request is released back to the sender, a normal route match is simply dropped for me.
+  const declineRequest = async (req: JobRequest) => {
     const pid = providerIdRef.current ?? providerId;
     if (!pid || decliningRef.current.has(req.request_id)) return;
     decliningRef.current.add(req.request_id);
+
+    // remove it from the screen right away so the list feels live
+    const id = Number(req.request_id);
+    dismissedRef.current.set(id, Date.now());
+    setAwaiting(prev => prev.filter(r => Number(r.request_id) !== id));
+    setRequests(prev => prev.filter(r => Number(r.request_id) !== id));
+    setLapsedIds(prev => prev.filter(x => x !== id));
+    if (detailRequestId === id) setDetailRequestId(null);
+
     try {
-      const res = await declineDirectRequestService(req.request_id, pid);
+      const res = req.isDirectRequest
+        ? await declineDirectRequestService(id, pid)
+        : await declineMatchedRequestService(id, pid);
       if (!res.ok) {
+        dismissedRef.current.delete(id);
         Alert.alert('Could not decline', res.message);
-        return;
+      } else {
+        persistDismissed(pid);
       }
-      void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
+    } catch (e: any) {
+      dismissedRef.current.delete(id);
+      Alert.alert('Could not decline', e?.message || 'Please try again.');
     } finally {
-      decliningRef.current.delete(req.request_id);
+      decliningRef.current.delete(id);
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, false, true);
     }
   };
 
   const confirmDecline = (req: JobRequest) => {
     Alert.alert(
       'Decline this request?',
-      'It will be removed from your list so another provider can take it.',
+      req.isDirectRequest
+        ? "The sender will be told, and we'll look for another courier for them."
+        : 'It will be removed from your list. Other providers on the route can still accept it.',
       [
         { text: 'Keep', style: 'cancel' },
-        { text: 'Decline', style: 'destructive', onPress: () => { void declineDirectRequest(req); } },
+        { text: 'Decline', style: 'destructive', onPress: () => { void declineRequest(req); } },
       ],
     );
   };
@@ -2654,21 +2754,31 @@ export default function JobsScreen() {
             <Text style={styles.eyebrow}>YOU EARN</Text>
             <Text style={styles.acceptPrice}>{money(o.estimated_cost)}</Text>
           </View>
-          <TouchableOpacity
-            style={[styles.acceptBtn, accepting && { opacity: 0.7 }]}
-            onPress={() => acceptRequest(o)}
-            disabled={accepting}
-            activeOpacity={0.9}
-          >
-            {accepting ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <>
-                <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
-                <Text style={styles.acceptBtnText}>Accept Along Route</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <View style={styles.detailActions}>
+            <TouchableOpacity
+              style={styles.detailDeclineBtn}
+              onPress={() => confirmDecline(o)}
+              disabled={accepting}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.declineText}>Decline</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.acceptBtn, { flex: 1, minWidth: 0 }, accepting && { opacity: 0.7 }]}
+              onPress={() => acceptRequest(o)}
+              disabled={accepting}
+              activeOpacity={0.9}
+            >
+              {accepting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <SolarIcon name="CheckCircle" variant="linear" size={18} color="#FFFFFF" />
+                  <Text style={styles.acceptBtnText} numberOfLines={1}>Accept</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -2697,11 +2807,9 @@ export default function JobsScreen() {
         <View style={{ marginTop: 14 }}>{renderRingRoute(r)}</View>
 
         <View style={styles.reqActions}>
-          {r.isDirectRequest && (
-            <TouchableOpacity style={styles.declineBtn} onPress={() => confirmDecline(r)} disabled={accepting} activeOpacity={0.85}>
-              <Text style={styles.declineText}>Decline</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity style={styles.declineBtn} onPress={() => confirmDecline(r)} disabled={accepting} activeOpacity={0.85}>
+            <Text style={styles.declineText}>Decline</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.detailsBtn} onPress={() => setDetailRequestId(r.request_id)} activeOpacity={0.85}>
             <Text style={styles.detailsText}>Details</Text>
           </TouchableOpacity>
@@ -3275,7 +3383,6 @@ export default function JobsScreen() {
               <Text style={styles.routePickerTitle}>Select Active Route ({usedTodayCount}/3 today)</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                 <TouchableOpacity
-                  style={[styles.addRouteHeaderBtn, !demoMode && usedTodayCount >= 3 && { opacity: 0.45 }]}
                   onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
                   activeOpacity={0.85}
                   hitSlop={8}
@@ -3680,7 +3787,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     reqTags: { flex: 1, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
     reqPrice: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
     reqActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
-    declineBtn: { height: 46, paddingHorizontal: 14, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
+    declineBtn: { height: 46, paddingHorizontal: 16, borderRadius: 23, borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)', alignItems: 'center', justifyContent: 'center' },
+    detailActions: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, marginLeft: 16 },
+    detailDeclineBtn: { height: 48, paddingHorizontal: 18, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)', alignItems: 'center', justifyContent: 'center' },
     declineText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.error },
     detailsBtn: { flex: 1, height: 46, borderRadius: 23, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
     detailsText: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.accent },

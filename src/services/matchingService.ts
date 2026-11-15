@@ -1308,3 +1308,49 @@ export async function declineDirectRequest(
     return { ok: false, message: e?.message || 'Failed to decline this request.' };
   }
 }
+
+/**
+ * Decline ANY request shown to a provider.
+ * - Direct request (sender picked this provider): released back to the sender via declineDirectRequest.
+ * - Normal route match: only this provider's match row is marked 'declined', so other providers
+ *   on the corridor can still accept it and this provider is never re-matched to it.
+ */
+export async function declineMatchedRequest(
+  requestId: number,
+  providerId: number,
+): Promise<DeclineDirectResult> {
+  try {
+    const { data: reqRow } = await supabase
+      .from('delivery_requests')
+      .select('delivery_status, preferred_provider_id')
+      .eq('request_id', requestId)
+      .maybeSingle();
+
+    if (reqRow && reqRow.preferred_provider_id != null && Number(reqRow.preferred_provider_id) === Number(providerId)) {
+      return await declineDirectRequest(requestId, providerId);
+    }
+
+    const { error } = await supabase
+      .from('route_request_matches')
+      .update({ status: 'declined' })
+      .eq('request_id', requestId)
+      .eq('provider_id', providerId)
+      .in('status', ['matched', 'expired']);
+
+    if (error) {
+      // 'declined' not allowed by the CHECK constraint yet (run live_jobs_setup.sql): fall back to 'revoked'.
+      // The app also hides the request locally, so the provider will not see it again either way.
+      const { error: revokeErr } = await supabase
+        .from('route_request_matches')
+        .update({ status: 'revoked' })
+        .eq('request_id', requestId)
+        .eq('provider_id', providerId)
+        .in('status', ['matched', 'expired']);
+      if (revokeErr) return { ok: false, message: revokeErr.message };
+    }
+
+    return { ok: true, released: false };
+  } catch (e: any) {
+    return { ok: false, message: e?.message || 'Failed to decline this request.' };
+  }
+}
