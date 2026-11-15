@@ -523,18 +523,6 @@ export default function LoginScreen() {
                   >
                     {loading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.loginText}>Log In</Text>}
                   </TouchableOpacity>
-
-                  <View style={styles.dividerContainer}>
-                    <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>or</Text>
-                    <View style={styles.dividerLine} />
-                  </View>
-
-                  <TouchableOpacity style={[styles.googleButton, loading && styles.buttonDisabled]} onPress={handleGoogleLogin} disabled={loading} activeOpacity={0.8}>
-                    <Image source={require('../../../assets/google.png')} style={styles.googleIcon} resizeMode="contain" />
-                    <Text style={styles.googleText}>Continue With Google</Text>
-                  </TouchableOpacity>
-
                   <TouchableOpacity style={styles.signUpContainer} onPress={() => navigation.navigate('Register')} disabled={loading}>
                     <Text style={styles.signUpText}>Don't have an account? <Text style={styles.signUpTextBold}>Sign Up</Text></Text>
                   </TouchableOpacity>

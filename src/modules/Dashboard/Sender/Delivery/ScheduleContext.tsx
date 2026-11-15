@@ -14,6 +14,7 @@ export interface ShipmentItem {
 }
 
 interface LocationInfo {
+  name?: string;
   address: string;
   latitude: number;
   longitude: number;

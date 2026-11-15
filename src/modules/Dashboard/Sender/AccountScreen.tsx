@@ -371,10 +371,11 @@ export default function AccountScreen() {
             </Animated.View>
 
             <View style={styles.nameContainer}>
+              <Text style={styles.profileName} numberOfLines={1}>
+                {firstName} {lastName}
+              </Text>
+              <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
               <View style={styles.nameAndBadgeRow}>
-                <Text style={styles.profileName} numberOfLines={1}>
-                  {firstName} {lastName}
-                </Text>
                 <View style={styles.roleBadgeSender}>
                   <Text style={[styles.roleBadgeTextInline, { color: colors.accent }]}>SENDER</Text>
                 </View>
@@ -384,7 +385,6 @@ export default function AccountScreen() {
                   </View>
                 )}
               </View>
-              <Text style={styles.profileEmail} numberOfLines={1}>{userEmail}</Text>
             </View>
 
             <TouchableOpacity style={styles.editIconBtn} onPress={() => navigation.navigate('EditProfile')} activeOpacity={0.8}>
@@ -586,24 +586,19 @@ export default function AccountScreen() {
 const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
 
-  fixedTopContainer: { backgroundColor: 'transparent', paddingHorizontal: 20, paddingBottom: 12 },
+  fixedTopContainer: { backgroundColor: 'transparent', paddingHorizontal: 16, paddingBottom: 12 },
   headerTopBar: { marginBottom: 16 },
 
   headerTitle: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4 },
 
   profileContainerCard: {
     backgroundColor: c.card,
-    borderRadius: 12,
-    padding: 18,
+    borderRadius: 16,
+    padding: 16,
     borderWidth: 1,
     borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 1,
-    elevation: 0,
   },
-  profileRow: { flexDirection: 'row', alignItems: 'center' },
+  profileRow: { flexDirection: 'row', alignItems: 'flex-start' },
   profilePicContainer: {
     width: 58, height: 58, borderRadius: 29,
     backgroundColor: c.accentSoft,
@@ -612,13 +607,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1.5, borderColor: c.accent,
   },
   profileImage: { width: '100%', height: '100%' },
-  nameContainer: { flex: 1, marginRight: 8, justifyContent: 'center' },
-  nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  nameContainer: { flex: 1, minWidth: 0, marginRight: 8, justifyContent: 'center' },
+  nameAndBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 },
 
-  profileName: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  profileName: { fontSize: 18, lineHeight: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   profileEmail: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
   editIconBtn: {
-    width: 38, height: 38, borderRadius: 19,
+    width: 42, height: 42, borderRadius: 21,
     backgroundColor: c.background,
     justifyContent: 'center', alignItems: 'center',
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
@@ -630,7 +625,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
 
   mainContent: { flex: 1 },
   mainScrollContent: { paddingBottom: 40 },
-  bodyContentWrapper: { paddingHorizontal: 20, paddingTop: 8 },
+  bodyContentWrapper: { paddingHorizontal: 16, paddingTop: 8 },
 
   rejectionAlertBanner: {
     flexDirection: 'row',
@@ -638,7 +633,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.errorBg,
     borderWidth: 1,
     borderColor: c.error,
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
     marginBottom: 20,
     gap: 12,
@@ -653,19 +648,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   rejectionBannerActionPill: { backgroundColor: c.error, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10 },
   rejectionBannerActionText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_700Bold' },
 
-  sectionTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16, letterSpacing: -0.2 },
+  sectionTitle: { fontSize: 20, lineHeight: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 16, letterSpacing: -0.2 },
 
   menuCard: {
     backgroundColor: c.card,
-    borderRadius: 12,
+    borderRadius: 16,
     paddingHorizontal: 6, paddingVertical: 6,
     borderWidth: 1,
     borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 1,
-    elevation: 0,
   },
   menuItem: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -809,11 +799,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center', alignItems: 'center',
     gap: 8,
-    shadowColor: c.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
   },
   modalPrimaryBtnText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
 });

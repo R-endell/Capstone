@@ -344,46 +344,59 @@ serve(async (req: Request) => {
 
       let requestId: number | null = null
       let provider: string | null = null
+      let estimatedCost = 0
 
       if (refundId) {
         const { data: r1 } = await supabase
           .from('delivery_requests')
-          .select('request_id, payment_provider')
+          .select('request_id, payment_provider, estimated_cost')
           .eq('refund_id', refundId)
           .maybeSingle()
         requestId = r1?.request_id ?? null
         provider = r1?.payment_provider ?? null
+        estimatedCost = Number(r1?.estimated_cost ?? 0)
       }
       if (!requestId && paymentId) {
         const { data: r2 } = await supabase
           .from('delivery_requests')
-          .select('request_id, payment_provider')
+          .select('request_id, payment_provider, estimated_cost')
           .eq('payment_reference', paymentId)
           .maybeSingle()
         requestId = r2?.request_id ?? null
         provider = r2?.payment_provider ?? null
+        estimatedCost = Number(r2?.estimated_cost ?? 0)
       }
 
       if (!requestId) return new Response('OK', { status: 200 })
 
+      // Partial refund (deposit only) = refund amount < total charged.
+      // Full refund = cancellation → mark the whole payment as refunded.
+      const isPartial = amount > 0 && estimatedCost > 0 && amount < estimatedCost
+
+      const update: Record<string, unknown> = {
+        refund_status: 'succeeded',
+        refund_id: refundId,
+        escrow_refunded_at: new Date().toISOString(),
+      }
+      if (!isPartial) {
+        update.payment_status = 'refunded'
+        update.escrow_status = 'refunded'
+      }
+
       await supabase
         .from('delivery_requests')
-        .update({
-          payment_status: 'refunded',
-          escrow_status: 'refunded',
-          escrow_refunded_at: new Date().toISOString(),
-          refund_status: 'succeeded',
-          refund_id: refundId,
-        })
+        .update(update)
         .eq('request_id', requestId)
 
       await supabase.from('escrow_transactions').insert({
         request_id: requestId,
-        event: 'refunded',
+        event: isPartial ? 'deposit_refunded_to_sender' : 'refunded',
         amount,
         provider,
         xendit_reference: refundId ?? paymentId,
-        notes: 'Xendit refund settled',
+        notes: isPartial
+          ? `Xendit deposit refund settled (partial: ₱${amount} of ₱${estimatedCost})`
+          : 'Xendit refund settled (full cancellation)',
       })
 
       return new Response('OK', { status: 200 })
@@ -406,13 +419,26 @@ serve(async (req: Request) => {
         .maybeSingle()
 
       if (reqRow?.request_id) {
+        // For a deposit refund after completion, don't roll escrow back to 'held'
+        // (the courier was already paid). Only update refund_status.
+        const { data: current } = await supabase
+          .from('delivery_requests')
+          .select('payment_status, escrow_status')
+          .eq('request_id', reqRow.request_id)
+          .maybeSingle()
+
+        const alreadyReleased =
+          current?.payment_status === 'released' || current?.escrow_status === 'released'
+
+        const update: Record<string, unknown> = { refund_status: 'failed' }
+        if (!alreadyReleased) {
+          update.payment_status = 'held'
+          update.escrow_status = 'held'
+        }
+
         await supabase
           .from('delivery_requests')
-          .update({
-            refund_status: 'failed',
-            payment_status: 'held',
-            escrow_status: 'held',
-          })
+          .update(update)
           .eq('request_id', reqRow.request_id)
 
         await supabase.from('escrow_transactions').insert({

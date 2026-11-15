@@ -1,9 +1,9 @@
 // src/modules/Dashboard/Sender/Delivery/ReceiverPickerScreen.tsx
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList, TextInput,
-  ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Modal, ScrollView,
-  StatusBar,
+  ActivityIndicator, Alert, Platform, Modal, ScrollView, StatusBar,
+  Animated, PanResponder, Keyboard, Easing, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../../../utils/supabase';
@@ -40,6 +40,74 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   const [newEmail, setNewEmail] = useState('');
 
   const selectedId = route.params?.selectedReceiverId || null;
+
+  // ---- draggable add-receiver sheet ----
+  const { height: winH } = useWindowDimensions();
+  const dragY = useRef(new Animated.Value(0)).current;
+  const sheetRef = useRef<View>(null);
+  const kbShiftRef = useRef(0);
+  const [kbShift, setKbShift] = useState(0);
+  const [kbH, setKbH] = useState(0);
+
+  const closeSheet = useCallback(() => {
+    Keyboard.dismiss();
+    Animated.timing(dragY, { toValue: winH, duration: 200, easing: Easing.in(Easing.cubic), useNativeDriver: true })
+      .start(() => { setShowAddModal(false); dragY.setValue(0); });
+  }, [dragY, winH]);
+
+  const openSheet = useCallback(() => {
+    dragY.setValue(winH);
+    setShowAddModal(true);
+  }, [dragY, winH]);
+
+  useEffect(() => {
+    if (showAddModal) {
+      Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 16 }).start();
+    }
+  }, [showAddModal, dragY]);
+
+  // lift the sheet exactly as far as the keyboard covers it (works with or without window resizing)
+  useEffect(() => {
+    if (!showAddModal) { kbShiftRef.current = 0; setKbShift(0); setKbH(0); return; }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    let timer: any;
+    const onShow = (e: any) => {
+      const h = e?.endCoordinates?.height ?? 0;
+      const kbTop = e?.endCoordinates?.screenY ?? (winH - h);
+      setKbH(h);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        sheetRef.current?.measureInWindow((_x, y, _w, hh) => {
+          const overlap = y + hh - kbTop + 8;
+          const next = Math.max(0, kbShiftRef.current + overlap);
+          kbShiftRef.current = next;
+          setKbShift(next);
+        });
+      }, 120);
+    };
+    const onHide = () => { clearTimeout(timer); kbShiftRef.current = 0; setKbShift(0); setKbH(0); };
+    const a = Keyboard.addListener(showEvt, onShow);
+    const b = Keyboard.addListener(hideEvt, onHide);
+    return () => { clearTimeout(timer); a.remove(); b.remove(); };
+  }, [showAddModal, winH]);
+
+  // dragging the handle / title area pulls the sheet down; release past the threshold closes it
+  const closeRef = useRef(closeSheet);
+  closeRef.current = closeSheet;
+  const pan = useRef(PanResponder.create({
+    onMoveShouldSetPanResponder: (_e, g) => g.dy > 4 && Math.abs(g.dy) > Math.abs(g.dx),
+    onPanResponderGrant: () => { Keyboard.dismiss(); dragY.stopAnimation(); },
+    onPanResponderMove: (_e, g) => { dragY.setValue(Math.max(0, g.dy)); },
+    onPanResponderRelease: (_e, g) => {
+      if (g.dy > 110 || g.vy > 0.8) closeRef.current();
+      else Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 }).start();
+    },
+    onPanResponderTerminate: () => {
+      Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0, speed: 20 }).start();
+    },
+  })).current;
+  const backdropOpacity = dragY.interpolate({ inputRange: [0, winH * 0.6], outputRange: [1, 0], extrapolate: 'clamp' });
 
   const fetchUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -149,7 +217,9 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
 
       if (error) throw error;
 
+      Keyboard.dismiss();
       setShowAddModal(false);
+      dragY.setValue(0);
       setNewName('');
       setNewPhone('');
       setNewEmail('');
@@ -248,7 +318,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
   }, [selectedId, colors, styles]);
 
   const renderAddRow = () => (
-    <TouchableOpacity style={[styles.row, styles.addRow]} activeOpacity={0.85} onPress={() => setShowAddModal(true)}>
+    <TouchableOpacity style={[styles.row, styles.addRow]} activeOpacity={0.85} onPress={() => openSheet()}>
       <View style={styles.rowMain}>
         <View style={styles.rowIconCol}>
           <View style={[styles.avatar, { backgroundColor: colors.accent, borderColor: colors.accent }]}>
@@ -316,7 +386,7 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
               : 'Try a different name or phone number.'}
           </Text>
           {receivers.length === 0 && (
-            <TouchableOpacity style={styles.emptyCta} onPress={() => setShowAddModal(true)} activeOpacity={0.9}>
+            <TouchableOpacity style={styles.emptyCta} onPress={() => openSheet()} activeOpacity={0.9}>
               <Text style={styles.emptyCtaText}>Add new receiver</Text>
             </TouchableOpacity>
           )}
@@ -337,25 +407,45 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
       <Modal
         visible={showAddModal}
         transparent
-        animationType="slide"
-        onRequestClose={() => setShowAddModal(false)}
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={closeSheet}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}
-        >
-          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setShowAddModal(false)} />
-          <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-            <View style={styles.dragHandle} />
+        <View style={styles.modalOverlay}>
+          <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: backdropOpacity }]}>
+            <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeSheet} />
+          </Animated.View>
 
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Add new receiver</Text>
-              <TouchableOpacity onPress={() => setShowAddModal(false)} hitSlop={10}>
-                <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
-              </TouchableOpacity>
+          <Animated.View
+            ref={sheetRef as any}
+            collapsable={false}
+            style={[
+              styles.sheet,
+              {
+                paddingBottom: kbH > 0 ? 12 : Math.max(insets.bottom, 12),
+                marginBottom: kbShift,
+                maxHeight: kbH > 0 ? Math.max(260, winH - kbH - insets.top - 16) : winH * 0.88,
+                transform: [{ translateY: dragY }],
+              },
+            ]}
+          >
+            <View {...pan.panHandlers}>
+              <View style={styles.dragHandleHit}><View style={styles.dragHandle} /></View>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Add new receiver</Text>
+                <TouchableOpacity onPress={closeSheet} hitSlop={10}>
+                  <SolarIcon name="CloseCircle" variant="linear" size={24} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              overScrollMode="never"
+              nestedScrollEnabled
+            >
               <View style={styles.fieldRow}>
                 <SolarIcon name="User" variant="linear" size={22} color={colors.accent} />
                 <View style={{ flex: 1 }}>
@@ -425,8 +515,8 @@ export default function ReceiverPickerScreen({ route, navigation }: any) {
                 </Text>
               )}
             </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
+          </Animated.View>
+        </View>
       </Modal>
     </View>
   );
@@ -502,12 +592,13 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   emptyCtaText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
 
   /* add sheet */
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '88%',
+    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: isDark ? 0.5 : 0.08, shadowRadius: 12, elevation: 12,
   },
-  dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, alignSelf: 'center', marginTop: 8, marginBottom: 6 },
+  dragHandleHit: { alignItems: 'center', paddingTop: 10, paddingBottom: 8 },
+  dragHandle: { width: 44, height: 5, borderRadius: 3, backgroundColor: c.border },
   sheetHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 20, paddingTop: 6, paddingBottom: 12,

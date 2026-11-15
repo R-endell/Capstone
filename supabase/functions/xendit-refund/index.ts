@@ -105,7 +105,7 @@ serve(async (req: Request) => {
     if (!XENDIT_SECRET) return json({ success: false, error: 'XENDIT_SECRET_KEY not set' });
     const auth = 'Basic ' + btoa(`${XENDIT_SECRET}:`);
 
-    const { request_id, reason } = await req.json();
+    const { request_id, reason, amount: requestedAmount } = await req.json();
     if (!request_id) return json({ success: false, error: 'request_id required' });
 
     console.log('[REFUND] Looking up request:', request_id, typeof request_id);
@@ -113,7 +113,8 @@ serve(async (req: Request) => {
     const { data: reqRow, error: reqErr } = await supabase
       .from('delivery_requests')
       .select(`
-        request_id, estimated_cost, payment_reference, payment_request_id,
+        request_id, estimated_cost, base_fare, return_deposit,
+        payment_reference, payment_request_id,
         payment_status, escrow_status, refund_status, refund_id, payment_provider
       `)
       .eq('request_id', request_id)
@@ -128,15 +129,37 @@ serve(async (req: Request) => {
     if (reqRow.refund_status === 'pending' || reqRow.refund_status === 'processing') {
       return json({ success: true, already_pending: true, refund_id: reqRow.refund_id });
     }
-    if (reqRow.payment_status !== 'held' && reqRow.escrow_status !== 'held') {
+
+    // Allow refunds when:
+    //   (a) payment is held (cancellation) OR
+    //   (b) delivery completed but deposit refund pending (partial deposit refund)
+    const isHeld =
+      reqRow.payment_status === 'held' || reqRow.escrow_status === 'held';
+    const isDepositRefundPending = reqRow.refund_status === 'deposit_refund_pending';
+
+    if (!isHeld && !isDepositRefundPending) {
       return json({
         success: false,
-        error: `Cannot refund — status was ${reqRow.payment_status}/${reqRow.escrow_status}`,
+        error: `Cannot refund — status was ${reqRow.payment_status}/${reqRow.escrow_status}, refund_status=${reqRow.refund_status}`,
       });
     }
     if (!reqRow.payment_reference && !reqRow.payment_request_id) {
       return json({ success: false, error: 'No payment identifier on this request' });
     }
+
+    // Compute refund amount:
+    //   - explicit `amount` wins (partial)
+    //   - else if deposit-refund-pending → refund only return_deposit
+    //   - else → full estimated_cost (cancellation)
+    const fullAmount = Number(reqRow.estimated_cost) || 0;
+    const depositAmount = Number(reqRow.return_deposit) || 0;
+    let refundAmount = fullAmount;
+    if (typeof requestedAmount === 'number' && requestedAmount > 0) {
+      refundAmount = requestedAmount;
+    } else if (isDepositRefundPending && depositAmount > 0) {
+      refundAmount = depositAmount;
+    }
+    const isPartialRefund = refundAmount < fullAmount;
 
     // ---- Resolve payment_request_id ----
     let paymentRequestId = reqRow.payment_request_id as string | null;
@@ -198,18 +221,25 @@ serve(async (req: Request) => {
           const now = new Date().toISOString();
           const isSucceeded = live.status === 'SUCCEEDED';
 
+          const partialExisting = Number(live.amount ?? 0) < fullAmount;
+          const liveUpdate: Record<string, unknown> = {
+            refund_id: live.id,
+            refund_status: isSucceeded ? 'succeeded' : 'pending',
+            refund_requested_at: live.created
+              ? new Date(live.created).toISOString()
+              : now,
+          };
+          if (!partialExisting) {
+            liveUpdate.payment_status = isSucceeded ? 'refunded' : 'refund_pending';
+            liveUpdate.escrow_status = isSucceeded ? 'refunded' : 'held';
+            if (isSucceeded) liveUpdate.escrow_refunded_at = now;
+          } else if (isSucceeded) {
+            liveUpdate.escrow_refunded_at = now;
+          }
+
           await supabase
             .from('delivery_requests')
-            .update({
-              refund_id: live.id,
-              refund_status: isSucceeded ? 'succeeded' : 'pending',
-              payment_status: isSucceeded ? 'refunded' : 'refund_pending',
-              escrow_status: isSucceeded ? 'refunded' : 'held',
-              refund_requested_at: live.created
-                ? new Date(live.created).toISOString()
-                : now,
-              ...(isSucceeded ? { escrow_refunded_at: now } : {}),
-            })
+            .update(liveUpdate)
             .eq('request_id', request_id);
 
           return json({
@@ -226,10 +256,9 @@ serve(async (req: Request) => {
     }
 
     // ---- Submit refund ----
-    const amount = Number(reqRow.estimated_cost) || 0;
     const refundBody = {
       payment_request_id: paymentRequestId,
-      amount,
+      amount: refundAmount,
       reason: reason || 'REQUESTED_BY_CUSTOMER',
     };
 
@@ -284,15 +313,21 @@ serve(async (req: Request) => {
       });
     }
 
+    const updatePayload: Record<string, unknown> = {
+      refund_id: refundData.id,
+      refund_status: 'pending',
+      refund_requested_at: new Date().toISOString(),
+      payment_request_id: paymentRequestId,
+    };
+    // Only flip payment_status if this is a FULL refund.
+    // For partial (deposit-only), the delivery is already 'released' — leave it.
+    if (!isPartialRefund) {
+      updatePayload.payment_status = 'refund_pending';
+    }
+
     await supabase
       .from('delivery_requests')
-      .update({
-        refund_id: refundData.id,
-        refund_status: 'pending',
-        refund_requested_at: new Date().toISOString(),
-        payment_status: 'refund_pending',
-        payment_request_id: paymentRequestId,
-      })
+      .update(updatePayload)
       .eq('request_id', request_id);
 
     return json({ success: true, refund_id: refundData.id, status: refundData.status });
