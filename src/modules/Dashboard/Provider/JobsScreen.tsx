@@ -3,8 +3,8 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   View, Text, StyleSheet, Image, TouchableOpacity,
   Platform, Modal, Alert, ActivityIndicator, ScrollView,
-  Animated, Easing, Linking, StatusBar, FlatList, Pressable, Dimensions,
-  TextInput, Keyboard, Switch,
+  Animated, Linking, StatusBar, FlatList, Pressable,
+  TextInput, Keyboard, useWindowDimensions, Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
@@ -20,28 +20,30 @@ import {
   setActiveRouteId,
   subscribeActiveRoute,
   getDemoMode,
-  setDemoMode,
   subscribeDemoMode,
   syncSelectedRouteToDb,
 } from '../../../services/activeRouteStore';
-import { evaluateAndFetchRouteMatches, fetchDirectRequestMatches, computeCargoVolumeLiters, parseRequestCreatedTime, declineDirectRequest as declineDirectRequestService, RouteMatchRow } from '../../../services/matchingService';
+import {
+  evaluateAndFetchRouteMatches,
+  fetchDirectRequestMatches,
+  computeCargoVolumeLiters,
+  parseRequestCreatedTime,
+  declineDirectRequest as declineDirectRequestService,
+  RouteMatchRow,
+} from '../../../services/matchingService';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
-import { MAP_PROPS } from '../../../utils/mapConfig';
+import { MAP_PROPS, BRAND_ORANGE } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
 import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
+import DraggableSheet, { DraggableSheetHandle } from '../../../components/ui/DraggableSheet';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
-// No countdown any more: a request stays available until the sender cancels it or a provider accepts it.
-// Requests whose live route match has lapsed (e.g. server-side window closed) are still listed under
-// "Awaiting acceptance" as MISSED. Set to false to show them but block accepting them.
-const ALLOW_LATE_ACCEPT = true;
-// Lapsed (non-live) requests older than this are treated as abandoned drafts and hidden.
 const AWAITING_MAX_AGE_HOURS = 24;
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -55,6 +57,13 @@ const SAME_SPOT_METERS = 8;
 const NEARBY_RADIUS_M = 200;
 const LABEL_SNAP_M = 60;
 const REJECTED_PLACE_TYPES = new Set(['route', 'street_address', 'postal_code', 'plus_code']);
+const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
+
+// Pin dimensions matching ProviderTrackModal.tsx
+const PIN = 44;
+const LABEL_H = 26;
+const LABEL_H2 = 42;
+const LABEL_GAP = 6;
 
 const GOOGLE_MAPS_API_KEY: string =
   (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string | undefined) ||
@@ -189,7 +198,6 @@ const randPin = () => String(Math.floor(1000 + Math.random() * 9000));
 const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
 const requestCode = (id: number) => `PNS-${String(id).padStart(4, '0')}`;
 const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
-
 const isLocalPhoto = (v: any) => typeof v === 'string' && /^(file|content):/i.test(v);
 
 const toPhotoUrl = (v: any): string | null => {
@@ -205,6 +213,39 @@ const splitAddress = (full?: string | null) => {
   if (!full) return { main: 'Selected Location', sub: '' };
   const parts = full.split(', ');
   return { main: parts[0], sub: parts.slice(1).join(', ') };
+};
+
+// Plus Codes and random-looking ids are not place names.
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (s: string) => {
+  const x = (s ?? '').trim();
+  if (!x) return true;
+  if (/^unknown$/i.test(x)) return true;
+  if (PLUS_CODE.test(x)) return true;
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+const readableParts = (a?: string | null): string[] =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p));
+
+// main = the place the sender picked, sub = the street / avenue (+ barangay) shown right under it
+const describePlace = (l: any): { main: string; sub: string } => {
+  const parts = readableParts(l?.street_address);
+  const name = typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : '';
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = typeof l?.barangay === 'string' && !isCodeLike(l.barangay) ? l.barangay.trim() : '';
+  const city = typeof l?.city === 'string' && !isCodeLike(l.city) ? l.city.trim() : '';
+  const localities = [l?.city, l?.province, l?.barangay]
+    .filter((v: any) => typeof v === 'string').map((v: string) => v.trim().toLowerCase());
+  const placeParts = parts.filter(p => !localities.includes(p.toLowerCase()));
+
+  const main = name || placeParts[0] || road || brgy || parts[0] || 'Selected Location';
+  const street = road || placeParts.find(p => p !== main) || '';
+  const sub = [street && street !== main ? street : '', brgy && brgy !== main ? brgy : '']
+    .filter(Boolean).join(', ')
+    || parts.slice(1, 3).join(', ')
+    || (city && city !== main ? city : '');
+  return { main, sub };
 };
 
 const whenLabel = (r: JobRequest) => {
@@ -237,51 +278,30 @@ const metersBetween = (a: Coord, b: Coord) => {
 };
 const fmtDist = (m: number) => (m < 1000 ? `${Math.max(1, Math.round(m))} m` : `${(m / 1000).toFixed(1)} km`);
 
-const ago = (iso: string) => {
-  const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
-  if (m < 1) return 'Just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-};
-
 const iconForNotif = (n: Notif): SolarIconName => {
   if (isWithdrawalNotif(n)) return 'Wallet';
   const t = (n.type || '').toLowerCase();
   if (t.startsWith('dispute')) return 'ShieldCheck';
   if (t.startsWith('delivery')) return 'Package';
   if (t === 'match' || t.includes('direct')) return 'Lightning';
-  if (t.startsWith('message') || t.startsWith('chat')) return 'ChatCircleText';
-  if (t.startsWith('support')) return 'ChatCircleText';
+  if (t.startsWith('message') || t.startsWith('chat') || t.startsWith('support')) return 'ChatCircleText';
   if (t === 'payment' || t === 'escrow') return 'Card';
   return 'Bell';
 };
 
 const titleForNotif = (n: Notif): string => {
   const rawTitle = (n.title || '').trim();
-
   if (isWithdrawalNotif(n)) {
     if (!rawTitle || /dispute/i.test(rawTitle)) {
       const b = (n.body || '').toLowerCase();
-      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) {
-        return 'Cashout Completed';
-      }
-      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) {
-        return 'Cashout Refunded';
-      }
-      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) {
-        return 'Cashout Processing';
-      }
+      if (b.includes('completed') || b.includes('sent') || b.includes('credited')) return 'Cashout Completed';
+      if (b.includes('failed') || b.includes('rejected') || b.includes('reversed') || b.includes('restored')) return 'Cashout Refunded';
+      if (b.includes('processing') || b.includes('submitted') || b.includes('requested')) return 'Cashout Processing';
       return 'Cashout Update';
     }
     return rawTitle;
   }
-
   if (rawTitle) return rawTitle;
-
   const t = (n.type || '').toLowerCase();
   if (t === 'match') return 'New Delivery Match';
   if (t.includes('direct')) return 'Direct Route Request';
@@ -302,7 +322,26 @@ const summarizeSizes = (sizes: (string | null | undefined)[]): string => {
     .join(' · ');
 };
 
-const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, currentProviderId?: number | null): JobRequest => {
+const fetchSenderMap = async (senderIds: number[]): Promise<Record<number, string>> => {
+  const unique = Array.from(new Set(senderIds.filter(Boolean)));
+  if (unique.length === 0) return {};
+  const { data: users } = await supabase
+    .from('users')
+    .select('user_id, first_name, last_name')
+    .in('user_id', unique);
+  const map: Record<number, string> = {};
+  (users || []).forEach((u: any) => {
+    const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
+    map[u.user_id] = `${u.first_name || 'Sender'}${last}`;
+  });
+  return map;
+};
+
+const normalizeMatchRow = (
+  m: RouteMatchRow,
+  senders: Record<number, string>,
+  currentProviderId?: number | null,
+): JobRequest => {
   const r = m.request;
   const cargo = Array.isArray(r.cargo) ? r.cargo[0] : r.cargo;
 
@@ -312,7 +351,9 @@ const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, cu
   }
 
   const sizeCounts: [string, any][] = [
-    ['Small', cargo?.small_box_qty], ['Medium', cargo?.medium_box_qty], ['Large', cargo?.large_box_qty],
+    ['Small', cargo?.small_box_qty],
+    ['Medium', cargo?.medium_box_qty],
+    ['Large', cargo?.large_box_qty],
   ];
   const boxes = sizeCounts.filter(([, q]) => Number(q) > 0).map(([l, q]) => `${l} ×${q}`).join(' · ');
   const boxTotal = sizeCounts.reduce((s, [, q]) => s + (Number(q) || 0), 0);
@@ -343,8 +384,8 @@ const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, cu
 
   const d = [cargo?.cargo_length_cm, cargo?.cargo_width_cm, cargo?.cargo_height_cm];
   const dims = d.every(v => Number(v) > 0) ? `${d[0]} × ${d[1]} × ${d[2]} cm` : null;
-  const pu = splitAddress(r.pickup_location?.street_address);
-  const dr = splitAddress(r.dropoff_location?.street_address);
+  const pu = describePlace(r.pickup_location);
+  const dr = describePlace(r.dropoff_location);
 
   const prefProviderId = r.preferred_provider_id != null ? Number(r.preferred_provider_id) : null;
   const isDirectRequest =
@@ -384,38 +425,15 @@ const normalizeMatchRow = (m: RouteMatchRow, senders: Record<number, string>, cu
   };
 };
 
-const DEFAULT_CENTER = { latitude: 10.3157, longitude: 123.8854 };
-
-const makeMapStyles = (c: ThemeColors) => StyleSheet.create({
-  mkDot: {
-    width: 26, height: 26, borderRadius: 13,
-    borderWidth: 3, borderColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
-  meMarker: { width: 76, height: 76, alignItems: 'center', justifyContent: 'center' },
-  meHalo: {
-    position: 'absolute', width: 76, height: 76, borderRadius: 38,
-    backgroundColor: 'rgba(242,112,36,0.35)',
-  },
-  meDot: {
-    position: 'absolute', left: 27, top: 27,
-    width: 22, height: 22, borderRadius: 11,
-    backgroundColor: c.accent, borderWidth: 3, borderColor: '#FFFFFF',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  meArrowWrap: { position: 'absolute', width: 76, height: 76 },
-  meArrow: {
-    position: 'absolute', left: 31, top: 6,
-    width: 0, height: 0,
-    borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 16,
-    borderLeftColor: 'transparent', borderRightColor: 'transparent',
-    borderBottomColor: c.accent,
-  },
-});
+/** Keep at most `max` points so the polyline stays cheap to draw. */
+const thin = <T,>(pts: T[], max = 220): T[] => {
+  if (pts.length <= max) return pts;
+  const step = (pts.length - 1) / (max - 1);
+  const out: T[] = [];
+  for (let i = 0; i < max - 1; i++) out.push(pts[Math.round(i * step)]);
+  out.push(pts[pts.length - 1]);
+  return out;
+};
 
 const fetchRoadCoords = async (
   a: { lat: number; lng: number },
@@ -432,68 +450,112 @@ const fetchRoadCoords = async (
     const res = await fetch(url);
     const data = await res.json();
     if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-      return data.routes[0].geometry.coordinates.map((c: number[]) => ({
+      return thin(data.routes[0].geometry.coordinates.map((c: number[]) => ({
         latitude: c[1],
         longitude: c[0],
-      }));
+      })));
     }
   } catch { /* fall through */ }
   return fallback;
 };
 
-const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online = true }: any) => {
-  const { colors, isDark } = useTheme();
-  const mapStyles = useMemo(() => makeMapStyles(colors), [colors]);
-  
-  const mapRef = useRef<MapView>(null);
-  const haloAnim = useRef(new Animated.Value(0)).current;
-  const focused = useIsFocused();
-  useEffect(() => {
-    haloAnim.setValue(0);
-    if (!online || !focused) return;
-    const loop = Animated.loop(
-      Animated.timing(haloAnim, { toValue: 1, duration: 1800, easing: Easing.out(Easing.ease), useNativeDriver: false }),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [online, focused, haloAnim]);
-  const haloScale = haloAnim.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1.5] });
-  const haloOpacity = haloAnim.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.55, 0.18, 0] });
+/* ------------------------------- map markers ------------------------------- */
 
-  const [compass, setCompass] = useState<number | null>(null);
-  const compassRaw = useRef<number | null>(null);
-  const compassShown = useRef<number | null>(null);
+// Identical pins to ProviderTrackModal.tsx: orange start pin / white destination pin with label pill underneath.
+const makeMapStyles = () => StyleSheet.create({
+  placeWrap: { alignItems: 'center', paddingHorizontal: 4 },
+  pickPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: BRAND_ORANGE,
+    borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 6, elevation: 8,
+  },
+  dropPin: {
+    width: PIN, height: PIN, borderRadius: PIN / 2, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.28, shadowRadius: 4, elevation: 6,
+  },
+  courierPin: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 6,
+  },
+  labelPill: {
+    maxWidth: 200, minHeight: LABEL_H, justifyContent: 'center', marginTop: LABEL_GAP, paddingVertical: 3,
+    backgroundColor: '#FFFFFF', borderRadius: 14, paddingHorizontal: 12,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 5,
+  },
+  labelText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
+  labelSub: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: '#6B7280', marginTop: -1 },
+});
+
+type MapMarkerStyles = ReturnType<typeof makeMapStyles>;
+
+const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
+  lat, lng, title, street, kind, mk,
+}: { lat: number; lng: number; title: string; street?: string; kind: 'start' | 'end'; mk: MapMarkerStyles }) {
+  const [track, setTrack] = useState(true);
   useEffect(() => {
-    if (!focused) return;
-    let sub: Location.LocationSubscription | null = null;
-    let gone = false;
-    (async () => {
-      try {
-        sub = await Location.watchHeadingAsync(h => {
-          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
-          if (deg != null && deg >= 0) compassRaw.current = deg;
-        });
-        if (gone) sub.remove();
-      } catch { /* no compass on this device */ }
-    })();
-    const tick = setInterval(() => {
-      const raw = compassRaw.current;
-      if (raw == null) return;
-      const prev = compassShown.current;
-      const next = prev == null ? raw : (prev + ((((raw - prev) % 360) + 540) % 360 - 180) * 0.3 + 360) % 360;
-      if (prev == null || Math.abs(((next - prev + 540) % 360) - 180) > 0.5) {
-        compassShown.current = next;
-        setCompass(next);
-      }
-    }, 100);
-    return () => { gone = true; sub?.remove(); clearInterval(tick); };
-  }, [focused]);
-  const facing = compass ?? provider?.heading ?? null;
+    setTrack(true);
+    const t = setTimeout(() => setTrack(false), 800);
+    return () => clearTimeout(t);
+  }, [title, street]);
+  const labelH = street ? LABEL_H2 : LABEL_H;
+
+  return (
+    <Marker
+      coordinate={{ latitude: lat, longitude: lng }}
+      anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + labelH) }}
+      tracksViewChanges={track}
+      zIndex={5}
+    >
+      <View style={mk.placeWrap}>
+        {kind === 'start' ? (
+          <View style={mk.pickPin}>
+            <SolarIcon name="MapPoint" variant="bold" size={22} color="#FFFFFF" />
+          </View>
+        ) : (
+          <View style={mk.dropPin}>
+            <SolarIcon name="Flag" variant="bold" size={22} color="#000000" />
+          </View>
+        )}
+        <View style={mk.labelPill}>
+          <Text style={mk.labelText} numberOfLines={1}>{title}</Text>
+          {!!street && <Text style={mk.labelSub} numberOfLines={1}>{street}</Text>}
+        </View>
+      </View>
+    </Marker>
+  );
+});
+
+// The provider's own position: white circle with a vehicle icon (same container as the courier pin elsewhere).
+const ProviderPin = React.memo(function ProviderPin({
+  lat, lng, online, accent, mk,
+}: { lat: number; lng: number; online: boolean; accent: string; mk: MapMarkerStyles }) {
+  const [track, setTrack] = useState(true);
+  useEffect(() => {
+    setTrack(true);
+    const t = setTimeout(() => setTrack(false), 1000);
+    return () => clearTimeout(t);
+  }, [online]);
+
+  return (
+    <Marker coordinate={{ latitude: lat, longitude: lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={10}>
+      <View style={mk.courierPin}>
+        <SolarIcon name="Car" variant="bold" size={26} color={online ? accent : '#64748B'} />
+      </View>
+    </Marker>
+  );
+});
+
+// Shows the provider's selected route (start pin, destination pin, road line) and the provider's live position.
+const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, online = true }: any) => {
+  const { colors } = useTheme();
+  const mapStyles = useMemo(() => makeMapStyles(), []);
+
+  const mapRef = useRef<MapView>(null);
   const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
-  const [orderCoords, setOrderCoords] = useState<{ latitude: number; longitude: number }[]>([]);
 
   const lastRouteKey = useRef('');
-  const lastOrderKey = useRef('');
   const lastFitKey = useRef('');
   const firstFix = useRef(true);
 
@@ -504,76 +566,58 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
     lastRouteKey.current = key;
 
     let cancelled = false;
-    (async () => {
-      const coords = await fetchRoadCoords(route.start, route.end);
+    fetchRoadCoords(route.start, route.end).then((coords) => {
       if (!cancelled) setRouteCoords(coords);
-    })();
+    });
     return () => { cancelled = true; };
   }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng]);
 
+  // frame the whole selected route above the bottom sheet
   useEffect(() => {
-    if (!order) { setOrderCoords([]); lastOrderKey.current = ''; return; }
-    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
-    if (key === lastOrderKey.current) return;
-    lastOrderKey.current = key;
-
-    let cancelled = false;
-    (async () => {
-      const coords = await fetchRoadCoords(order.pickup, order.dropoff);
-      if (!cancelled) setOrderCoords(coords);
-    })();
-    return () => { cancelled = true; };
-  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng]);
-
-  useEffect(() => {
-    if (!order) return;
-    const key = `${order.pickup.lat},${order.pickup.lng},${order.dropoff.lat},${order.dropoff.lng}`;
+    if (!route) { lastFitKey.current = ''; return; }
+    const key = `${route.start.lat.toFixed(4)},${route.start.lng.toFixed(4)}|${route.end.lat.toFixed(4)},${route.end.lng.toFixed(4)}|${padBottom}`;
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
 
-    const pts: { latitude: number; longitude: number }[] = [
-      { latitude: order.pickup.lat, longitude: order.pickup.lng },
-      { latitude: order.dropoff.lat, longitude: order.dropoff.lng },
-    ];
-    if (provider) pts.push({ latitude: provider.lat, longitude: provider.lng });
-
     const t = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(pts, {
-        edgePadding: { top: 120, right: 70, bottom: padBottom || 260, left: 30 },
-        animated: true,
-      });
-    }, 150);
+      mapRef.current?.fitToCoordinates(
+        [
+          { latitude: route.start.lat, longitude: route.start.lng },
+          { latitude: route.end.lat, longitude: route.end.lng },
+        ],
+        { edgePadding: { top: 190, right: 64, bottom: padBottom || 260, left: 64 }, animated: true },
+      );
+    }, 180);
     return () => clearTimeout(t);
-  }, [order?.pickup?.lat, order?.pickup?.lng, order?.dropoff?.lat, order?.dropoff?.lng, padBottom, provider]);
+  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng, padBottom]);
 
   useEffect(() => {
-    if (!provider || order) return;
-    if (!firstFix.current) return;
+    if (!provider || route || !firstFix.current) return;
     firstFix.current = false;
 
     const t = setTimeout(() => {
       mapRef.current?.animateToRegion(
         { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.02, longitudeDelta: 0.02 },
-        500,
+        450,
       );
     }, 150);
     return () => clearTimeout(t);
-  }, [provider?.lat, provider?.lng, order]);
+  }, [provider?.lat, provider?.lng, route]);
 
   useEffect(() => {
     if (!recenterTick || !provider) return;
     mapRef.current?.animateToRegion(
-      { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
-      400,
+      { latitude: provider.lat, longitude: provider.lng, latitudeDelta: 0.012, longitudeDelta: 0.012 },
+      350,
     );
-  }, [recenterTick, provider]);
+  }, [recenterTick]);
 
   return (
     <MapView
       ref={mapRef}
       {...MAP_PROPS}
       userInterfaceStyle="light"
-      style={{ flex: 1 }}
+      style={StyleSheet.absoluteFill}
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
         longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
@@ -584,70 +628,45 @@ const ProviderMap = ({ provider, route, order, recenterTick, padBottom, online =
       showsMyLocationButton={false}
       showsCompass={false}
       toolbarEnabled={false}
+      rotateEnabled={false}
+      pitchEnabled={false}
     >
       {route && (
         <>
-          <Marker coordinate={{ latitude: route.start.lat, longitude: route.start.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: colors.info }]}>
-              <Text style={mapStyles.mkDotText}>S</Text>
-            </View>
-          </Marker>
-          <Marker coordinate={{ latitude: route.end.lat, longitude: route.end.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: colors.error }]}>
-              <Text style={mapStyles.mkDotText}>E</Text>
-            </View>
-          </Marker>
           {routeCoords.length > 1 && (
-            <Polyline coordinates={routeCoords} strokeColor={colors.info} strokeWidth={4} />
-          )}
-        </>
-      )}
-
-      {order && (
-        <>
-          <Marker coordinate={{ latitude: order.pickup.lat, longitude: order.pickup.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: colors.accent }]}>
-              <Text style={mapStyles.mkDotText}>P</Text>
-            </View>
-          </Marker>
-          <Marker coordinate={{ latitude: order.dropoff.lat, longitude: order.dropoff.lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-            <View style={[mapStyles.mkDot, { backgroundColor: colors.textPrimary }]}>
-              <Text style={mapStyles.mkDotText}>D</Text>
-            </View>
-          </Marker>
-          {orderCoords.length > 1 && (
-            <Polyline coordinates={orderCoords} strokeColor={colors.accent} strokeWidth={5} />
-          )}
-          {provider && (
             <Polyline
-              coordinates={[
-                { latitude: provider.lat, longitude: provider.lng },
-                { latitude: order.pickup.lat, longitude: order.pickup.lng },
-              ]}
-              strokeColor={colors.textPrimary}
-              strokeWidth={2}
-              lineDashPattern={[6, 8]}
+              coordinates={routeCoords}
+              strokeColor={BRAND_ORANGE}
+              strokeWidth={6}
+              lineCap="round"
+              lineJoin="round"
             />
           )}
+          <RoutePlaceMarker
+            lat={route.start.lat}
+            lng={route.start.lng}
+            title={route.start.title || 'Starting Point'}
+            street={route.start.sub}
+            kind="start"
+            mk={mapStyles}
+          />
+          <RoutePlaceMarker
+            lat={route.end.lat}
+            lng={route.end.lng}
+            title={route.end.title || 'Destination'}
+            street={route.end.sub}
+            kind="end"
+            mk={mapStyles}
+          />
         </>
       )}
 
       {provider && (
-        <Marker coordinate={{ latitude: provider.lat, longitude: provider.lng }} anchor={{ x: 0.5, y: 0.5 }} flat tracksViewChanges zIndex={10}>
-          <View style={mapStyles.meMarker}>
-            <Animated.View style={[mapStyles.meHalo, !online && { backgroundColor: 'rgba(100,116,139,0.22)' }, { transform: [{ scale: haloScale }], opacity: haloOpacity }]} />
-            {facing != null && (
-              <View style={[mapStyles.meArrowWrap, { transform: [{ rotate: `${facing}deg` }] }]}>
-                <View style={[mapStyles.meArrow, !online && { borderBottomColor: '#64748B' }]} />
-              </View>
-            )}
-            <View style={[mapStyles.meDot, !online && { backgroundColor: '#64748B' }]} />
-          </View>
-        </Marker>
+        <ProviderPin lat={provider.lat} lng={provider.lng} online={online} accent={colors.accent} mk={mapStyles} />
       )}
     </MapView>
   );
-};
+});
 
 const reverseGeocodeGoogle = async (coords: Coord) => {
   if (!HAS_API_KEY) return null;
@@ -741,11 +760,6 @@ const RouteLocationPickerModal = ({
   initialCoords?: Coord | null;
   title: string;
   pinColor: string;
-  /**
-   * Render as a full-screen overlay INSIDE the parent's Modal instead of opening a second
-   * native Modal. Swapping one native Modal for another (dismiss + present at the same time)
-   * is what made the sheet flash / re-open in a loop on Android.
-   */
   asOverlay?: boolean;
 }) => {
   const insets = useSafeAreaInsets();
@@ -758,8 +772,6 @@ const RouteLocationPickerModal = ({
   const resolveSeq = useRef(0);
   const lastResolved = useRef<Coord | null>(null);
   const lastPoiTap = useRef(0);
-  // Camera moves WE trigger (moveTo / animateToRegion) must not feed back into
-  // onRegionChangeComplete -> resolveAt -> moveTo ... (that feedback is the "loop").
   const ignoreRegionUntil = useRef(0);
   const markerRef = useRef<Coord>(initialCoords || DEFAULT_CENTER);
 
@@ -786,7 +798,6 @@ const RouteLocationPickerModal = ({
   const [kbH, setKbH] = useState(0);
 
   const pinBounce = useRef(new Animated.Value(0)).current;
-  const pinPulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     if (!visible) return;
@@ -812,23 +823,11 @@ const RouteLocationPickerModal = ({
       } catch { if (!cancelled) resolveAt(markerRef.current); }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, initialCoords?.latitude, initialCoords?.longitude]);
 
   useEffect(() => {
     Animated.spring(pinBounce, { toValue: isDraggingMap ? 1 : 0, friction: 6, tension: 40, useNativeDriver: true }).start();
   }, [isDraggingMap, pinBounce]);
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pinPulse, { toValue: 1, duration: 1500, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-        Animated.timing(pinPulse, { toValue: 0, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pinPulse]);
 
   useEffect(() => () => {
     if (searchDebounce.current) clearTimeout(searchDebounce.current);
@@ -894,7 +893,7 @@ const RouteLocationPickerModal = ({
 
   const moveTo = (coords: Coord, label?: Label) => {
     if (settleTimer.current) clearTimeout(settleTimer.current);
-    ignoreRegionUntil.current = Date.now() + 900; // 450ms animation + settle margin
+    ignoreRegionUntil.current = Date.now() + 900;
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
     resolveAt(coords, label);
@@ -1011,7 +1010,6 @@ const RouteLocationPickerModal = ({
 
   const onRegionChangeComplete = (region: Region, details?: { isGesture?: boolean }) => {
     setIsDraggingMap(false);
-    // Only react to the USER moving the map. Programmatic animations are already resolved by moveTo().
     if (details?.isGesture === false) return;
     if (details?.isGesture !== true && Date.now() < ignoreRegionUntil.current) return;
     const center = { latitude: region.latitude, longitude: region.longitude };
@@ -1041,202 +1039,197 @@ const RouteLocationPickerModal = ({
 
   const pinTranslateY = pinBounce.interpolate({ inputRange: [0, 1], outputRange: [0, -12] });
   const pinScale = pinBounce.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] });
-  const pulseScale = pinPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] });
-  const pulseOpacity = pinPulse.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0] });
 
   const displayList: (SearchResult | RecentEntry)[] = searchQuery.trim().length > 0 ? searchResults : recents;
   const busy = validatingPin || isDraggingMap;
 
   const body = (
-      <View style={[styles.container, { paddingBottom: kbH }]}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
+    <View style={[styles.container, { paddingBottom: kbH }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
 
-        <View style={styles.mapArea}>
-          <MapView
-            ref={mapRef}
-            provider={PROVIDER_GOOGLE}
-            userInterfaceStyle="light"
-            style={StyleSheet.absoluteFill}
-            initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
-            onMapReady={() => setMapLoaded(true)}
-            onPanDrag={onPanDrag}
-            onRegionChangeComplete={onRegionChangeComplete}
-            onPoiClick={onPoiClick}
-            onPress={onMapPress}
-            showsUserLocation
-            showsMyLocationButton={false}
-            showsCompass={false}
-            toolbarEnabled={false}
-            rotateEnabled={false}
-            pitchEnabled={false}
-          />
+      <View style={styles.mapArea}>
+        <MapView
+          ref={mapRef}
+          provider={PROVIDER_GOOGLE}
+          userInterfaceStyle="light"
+          style={StyleSheet.absoluteFill}
+          initialRegion={{ ...markerCoord, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }}
+          onMapReady={() => setMapLoaded(true)}
+          onPanDrag={onPanDrag}
+          onRegionChangeComplete={onRegionChangeComplete}
+          onPoiClick={onPoiClick}
+          onPress={onMapPress}
+          showsUserLocation
+          showsMyLocationButton={false}
+          showsCompass={false}
+          toolbarEnabled={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+        />
 
-          {!mapLoaded && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color={colors.accent} />
+        {!mapLoaded && (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator size="large" color={colors.accent} />
+          </View>
+        )}
+
+        <View style={styles.centerStack} pointerEvents="box-none">
+          <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
+            <TouchableOpacity style={styles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
+              <Text style={styles.bubbleText} numberOfLines={1}>{addressName}</Text>
+              {busy
+                ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
+                : <SolarIcon name="AltArrowRight" variant="bold" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
+            </TouchableOpacity>
+          </Animated.View>
+
+          <View style={styles.pinContainer} pointerEvents="none">
+            <Animated.View style={[styles.pinWrapper, { transform: [{ translateY: pinTranslateY }, { scale: pinScale }] }]}>
+              <View style={[styles.pinDot, { backgroundColor: pinColor }]}>
+                <View style={styles.pinDotInner} />
+              </View>
+              <View style={[styles.pinStem, { backgroundColor: pinColor }]} />
+            </Animated.View>
+            <View style={styles.pinShadow} />
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={[styles.iconBtn, { top: insets.top + 10 }]}
+          onPress={onClose}
+          activeOpacity={0.85}
+        >
+          <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
+          {locating ? <ActivityIndicator size="small" color={colors.textPrimary} /> : <SolarIcon name="Compass" variant="linear" size={24} color={colors.textPrimary} />}
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.sheet}>
+        <View style={styles.dragHandle} />
+
+        <ScrollView
+          style={styles.list}
+          keyboardShouldPersistTaps="handled"
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+        >
+          <TouchableOpacity style={[styles.row, { backgroundColor: colors.accentSoft }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
+            <View style={styles.rowIconCol}>
+              <View style={[styles.rowIcon, { backgroundColor: pinColor }]}>
+                <SolarIcon name="MapPoint" variant="boldDuotone" size={18} color="#FFFFFF" />
+              </View>
+            </View>
+            <View style={styles.rowText}>
+              <Text style={styles.rowTitle} numberOfLines={1}>{addressName}</Text>
+              <Text style={styles.rowSub} numberOfLines={1}>
+                {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
+              </Text>
+            </View>
+            <SolarIcon name="Pen" variant="linear" size={18} color={colors.textSecondary} />
+          </TouchableOpacity>
+
+          {nearby.map(p => (
+            <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
+              <View style={styles.rowIconCol}>
+                <View style={[styles.rowIconMuted, { backgroundColor: colors.background }]}>
+                  <SolarIcon name="MapPoint" variant="linear" size={18} color={colors.textSecondary} />
+                </View>
+                <Text style={styles.rowDist}>{fmtDist(p.dist)}</Text>
+              </View>
+              <View style={styles.rowText}>
+                <Text style={styles.rowTitle} numberOfLines={1}>{p.name}</Text>
+                <Text style={styles.rowSub} numberOfLines={1}>{p.address}</Text>
+              </View>
+            </TouchableOpacity>
+          ))}
+          {nearby.length === 0 && (
+            <Text style={styles.emptyNearby}>
+              {busy ? 'Looking for nearby places...' : 'No named places nearby. Drag the map or search.'}
+            </Text>
+          )}
+        </ScrollView>
+
+        <TouchableOpacity
+          style={[styles.confirmBtn, { backgroundColor: pinColor }, busy && { opacity: 0.6 }]}
+          onPress={() => { Keyboard.dismiss(); confirm(); }}
+          activeOpacity={0.9}
+          disabled={busy}
+        >
+          <Text style={styles.confirmBtnText}>
+            {busy ? 'Updating...' : `Confirm ${title}`}
+          </Text>
+        </TouchableOpacity>
+        <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
+      </View>
+
+      {isSearching && (
+        <View style={[styles.searchOverlay, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
+          <View style={styles.searchModalHeader}>
+            <TouchableOpacity style={styles.searchBackBtn} onPress={closeSearch}>
+              <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={styles.searchInputWrapper}>
+              <SolarIcon name="Magnifier" variant="linear" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search mall, school, landmark..."
+                placeholderTextColor={colors.textMuted}
+                value={searchQuery}
+                onChangeText={handleSearchChange}
+                autoFocus
+                returnKeyType="search"
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
+                  <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {searchLoading && <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 20 }} />}
+          {!!searchError && !searchLoading && <Text style={styles.searchErrorText}>{searchError}</Text>}
+
+          {searchQuery.trim().length === 0 && recents.length > 0 && (
+            <View style={styles.recentsHeader}>
+              <Text style={styles.recentsLabel}>RECENT</Text>
+              <TouchableOpacity onPress={async () => { try { await AsyncStorage.removeItem(RECENTS_KEY); setRecents([]); } catch { /* ignore */ } }}>
+                <Text style={styles.clearText}>Clear</Text>
+              </TouchableOpacity>
             </View>
           )}
 
-          <View style={styles.centerStack} pointerEvents="box-none">
-            <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
-              <TouchableOpacity style={styles.bubble} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
-                <Text style={styles.bubbleText} numberOfLines={1}>{addressName}</Text>
-                {busy
-                  ? <ActivityIndicator size="small" color={colors.textMuted} style={{ marginLeft: 8 }} />
-                  : <SolarIcon name="AltArrowRight" variant="bold" size={16} color={colors.textMuted} style={{ marginLeft: 6 }} />}
-              </TouchableOpacity>
-            </Animated.View>
-
-            <View style={styles.pinContainer} pointerEvents="none">
-              <Animated.View style={[styles.pinWrapper, { transform: [{ translateY: pinTranslateY }, { scale: pinScale }] }]}>
-                <Animated.View
-                  style={[styles.pinHalo, { backgroundColor: pinColor, transform: [{ scale: pulseScale }], opacity: pulseOpacity }]}
-                />
-                <View style={[styles.pinDot, { backgroundColor: pinColor }]}>
-                  <View style={styles.pinDotInner} />
-                </View>
-                <View style={[styles.pinStem, { backgroundColor: pinColor }]} />
-              </Animated.View>
-              <View style={styles.pinShadow} />
-            </View>
-          </View>
-
-          <TouchableOpacity
-            style={[styles.iconBtn, { top: insets.top + 10 }]}
-            onPress={onClose}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.locateMeBtn} onPress={handleLocateMe} disabled={locating} activeOpacity={0.85}>
-            {locating ? <ActivityIndicator size="small" color={colors.textPrimary} /> : <SolarIcon name="Compass" variant="linear" size={24} color={colors.textPrimary} />}
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.sheet}>
-          <View style={styles.dragHandle} />
-
-          <ScrollView
-            style={styles.list}
+          <FlatList
+            data={displayList}
+            keyExtractor={(item: any, index) => (item.place_id || item.name) + index}
             keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-            showsVerticalScrollIndicator={false}
-          >
-            <TouchableOpacity style={[styles.row, { backgroundColor: colors.accentSoft }]} activeOpacity={0.85} onPress={() => setIsSearching(true)}>
-              <View style={styles.rowIconCol}>
-                <View style={[styles.rowIcon, { backgroundColor: pinColor }]}>
-                  <SolarIcon name="MapPoint" variant="boldDuotone" size={18} color="#FFFFFF" />
-                </View>
-              </View>
-              <View style={styles.rowText}>
-                <Text style={styles.rowTitle} numberOfLines={1}>{addressName}</Text>
-                <Text style={styles.rowSub} numberOfLines={1}>
-                  {busy ? 'Updating address...' : addressSub || 'Fetching address details...'}
-                </Text>
-              </View>
-              <SolarIcon name="Pen" variant="linear" size={18} color={colors.textSecondary} />
-            </TouchableOpacity>
-
-            {nearby.map(p => (
-              <TouchableOpacity key={p.id} style={styles.row} activeOpacity={0.7} onPress={() => pickNearby(p)}>
-                <View style={styles.rowIconCol}>
-                  <View style={[styles.rowIconMuted, { backgroundColor: colors.background }]}>
-                    <SolarIcon name="MapPoint" variant="linear" size={18} color={colors.textSecondary} />
+            contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 40 }}
+            renderItem={({ item }) => {
+              const isRecent = !('place_id' in item);
+              return (
+                <TouchableOpacity
+                  style={styles.searchResultItem}
+                  onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
+                >
+                  <View style={styles.searchResultIconBox}>
+                    <SolarIcon name={isRecent ? 'History' : 'MapPoint'} variant="linear" size={18} color={pinColor} />
                   </View>
-                  <Text style={styles.rowDist}>{fmtDist(p.dist)}</Text>
-                </View>
-                <View style={styles.rowText}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>{p.name}</Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>{p.address}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-            {nearby.length === 0 && (
-              <Text style={styles.emptyNearby}>
-                {busy ? 'Looking for nearby places...' : 'No named places nearby. Drag the map or search.'}
-              </Text>
-            )}
-          </ScrollView>
-
-          <TouchableOpacity
-            style={[styles.confirmBtn, { backgroundColor: pinColor }, busy && { opacity: 0.6 }]}
-            onPress={() => { Keyboard.dismiss(); confirm(); }}
-            activeOpacity={0.9}
-            disabled={busy}
-          >
-            <Text style={styles.confirmBtnText}>
-              {busy ? 'Updating...' : `Confirm ${title}`}
-            </Text>
-          </TouchableOpacity>
-          <View style={{ height: kbH > 0 ? 8 : Math.max(insets.bottom, 12) }} />
-        </View>
-
-        {isSearching && (
-          <View style={[styles.searchOverlay, { backgroundColor: colors.background, paddingTop: insets.top + 10 }]}>
-            <View style={styles.searchModalHeader}>
-              <TouchableOpacity style={styles.searchBackBtn} onPress={closeSearch}>
-                <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
-              </TouchableOpacity>
-              <View style={styles.searchInputWrapper}>
-                <SolarIcon name="Magnifier" variant="linear" size={18} color={colors.textMuted} style={{ marginRight: 8 }} />
-                <TextInput
-                  style={styles.searchInput}
-                  placeholder="Search mall, school, landmark..."
-                  placeholderTextColor={colors.textMuted}
-                  value={searchQuery}
-                  onChangeText={handleSearchChange}
-                  autoFocus
-                  returnKeyType="search"
-                />
-                {searchQuery.length > 0 && (
-                  <TouchableOpacity onPress={() => handleSearchChange('')} hitSlop={10}>
-                    <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.textMuted} />
-                  </TouchableOpacity>
-                )}
-              </View>
-            </View>
-
-            {searchLoading && <ActivityIndicator size="small" color={colors.accent} style={{ marginTop: 20 }} />}
-            {!!searchError && !searchLoading && <Text style={styles.searchErrorText}>{searchError}</Text>}
-
-            {searchQuery.trim().length === 0 && recents.length > 0 && (
-              <View style={styles.recentsHeader}>
-                <Text style={styles.recentsLabel}>RECENT</Text>
-                <TouchableOpacity onPress={async () => { try { await AsyncStorage.removeItem(RECENTS_KEY); setRecents([]); } catch { /* ignore */ } }}>
-                  <Text style={styles.clearText}>Clear</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.searchResultTitle} numberOfLines={1}>{item.name}</Text>
+                    <Text style={styles.searchResultSub} numberOfLines={2}>
+                      {isRecent ? (item as RecentEntry).address : (item as SearchResult).formatted_address}
+                    </Text>
+                  </View>
                 </TouchableOpacity>
-              </View>
-            )}
-
-            <FlatList
-              data={displayList}
-              keyExtractor={(item: any, index) => (item.place_id || item.name) + index}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 10, paddingBottom: 40 }}
-              renderItem={({ item }) => {
-                const isRecent = !('place_id' in item);
-                return (
-                  <TouchableOpacity
-                    style={styles.searchResultItem}
-                    onPress={() => (isRecent ? pickRecent(item as RecentEntry) : selectSearchResult(item as SearchResult))}
-                  >
-                    <View style={styles.searchResultIconBox}>
-                      <SolarIcon name={isRecent ? 'History' : 'MapPoint'} variant="linear" size={18} color={pinColor} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.searchResultTitle} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.searchResultSub} numberOfLines={2}>
-                        {isRecent ? (item as RecentEntry).address : (item as SearchResult).formatted_address}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          </View>
-        )}
-      </View>
+              );
+            }}
+          />
+        </View>
+      )}
+    </View>
   );
 
   if (asOverlay) {
@@ -1263,17 +1256,14 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   bubble: {
     height: 42, maxWidth: '78%', flexDirection: 'row', alignItems: 'center',
     backgroundColor: c.card, borderRadius: 21, paddingHorizontal: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   bubbleText: { flexShrink: 1, fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
   pinContainer: { marginTop: 8, alignItems: 'center' },
   pinWrapper: { alignItems: 'center' },
-  pinHalo: { position: 'absolute', top: 0, width: 24, height: 24, borderRadius: 12, opacity: 0.3 },
   pinDot: {
     width: 24, height: 24, borderRadius: 12, borderWidth: 3, borderColor: '#FFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1, zIndex: 2,
+    alignItems: 'center', justifyContent: 'center', zIndex: 2,
   },
   pinDotInner: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#FFF' },
   pinStem: { width: 2, height: 8, marginTop: -2, zIndex: 1 },
@@ -1281,19 +1271,16 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   iconBtn: {
     position: 'absolute', left: 16, width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   locateMeBtn: {
     position: 'absolute', right: 16, bottom: 34, width: 52, height: 52, borderRadius: 14, backgroundColor: c.card,
     justifyContent: 'center', alignItems: 'center', zIndex: 5,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
     borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
   sheet: {
     backgroundColor: c.card,
     borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.04, shadowRadius: 12, elevation: 1,
     zIndex: 6,
     borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
@@ -1311,7 +1298,6 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   confirmBtn: {
     marginHorizontal: 20, marginTop: 6, borderRadius: 14, paddingVertical: 16,
     alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
   },
   confirmBtnText: { color: '#FFF', fontSize: 17, fontFamily: 'Poppins_700Bold', letterSpacing: 0.2 },
   searchOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20 },
@@ -1332,6 +1318,40 @@ const makePickerStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create(
   clearText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent },
 });
 
+// Green status dot with an expanding halo. The loop is restarted every time the screen gains focus, so it keeps
+// pulsing after the provider switches to another tab and comes back (native loops can be paused while blurred).
+const OnlinePulseDot = React.memo(function OnlinePulseDot({ online, color }: { online: boolean; color: string }) {
+  const focused = useIsFocused();
+  const halo = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    halo.setValue(0);
+    if (!online || !focused) return;
+    const loop = Animated.loop(
+      Animated.timing(halo, { toValue: 1, duration: 1600, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [online, focused, halo]);
+
+  const scale = halo.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] });
+  const opacity = halo.interpolate({ inputRange: [0, 0.7, 1], outputRange: [0.55, 0.18, 0] });
+
+  return (
+    <View style={{ width: 22, height: 22, alignItems: 'center', justifyContent: 'center' }}>
+      {online && (
+        <Animated.View
+          style={{
+            position: 'absolute', width: 10, height: 10, borderRadius: 5,
+            backgroundColor: color, opacity, transform: [{ scale }],
+          }}
+        />
+      )}
+      <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: online ? color : '#94A3B8' }} />
+    </View>
+  );
+});
+
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -1345,19 +1365,18 @@ export default function JobsScreen() {
   const [routes, setRoutes] = useState<Route[]>([]);
   const [activeRoute, setActiveRoute] = useState<Route | null>(null);
   const [usedTodayCount, setUsedTodayCount] = useState(0);
-  const [demoMode, setDemoModeState] = useState(false);
+  const [, setDemoModeState] = useState(false);
 
   const providerIdRef = useRef<number | null>(null);
   const activeRouteRef = useRef<Route | null>(null);
   const routesRef = useRef<Route[]>([]);
 
-  // --- load control: the full-screen loader is for the FIRST load only. Re-showing it on every
-  // focus/refresh replaced the whole tree, which destroyed every open native Modal (the "glitch").
   const hasLoadedRef = useRef(false);
   const loadInFlightRef = useRef(false);
   const lastLoadAtRef = useRef(0);
   const modalOpenRef = useRef(false);
   const loadDataRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
   useEffect(() => { activeRouteRef.current = activeRoute; }, [activeRoute]);
@@ -1376,22 +1395,28 @@ export default function JobsScreen() {
   const [locDenied, setLocDenied] = useState(false);
   const [recenterTick, setRecenterTick] = useState(0);
 
-  const [dismissedIds, setDismissedIds] = useState<number[]>([]);
-  const [requestListOpen, setRequestListOpen] = useState(false);
   const [awaiting, setAwaiting] = useState<JobRequest[]>([]);
   const [lapsedIds, setLapsedIds] = useState<number[]>([]);
   const awaitingSeqRef = useRef(0);
-  const [todayStats, setTodayStats] = useState<{ count: number; earned: number; rating: number | null }>({ count: 0, earned: 0, rating: null });
 
   const [notifModalOpen, setNotifModalOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const notifChannelRef = useRef<string>(
-    `provider-notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  );
-
   const [fullListOpen, setFullListOpen] = useState(false);
+
+  // bottom sheet (same geometry as LiveTrackingScreen)
+  const { height: winH } = useWindowDimensions();
+  const sheetHeight = Math.round(winH * 0.4);
+  const expandedH = Math.round(winH * 0.9);
+  const collapsedY = expandedH - sheetHeight;
+  const sheetY = useRef(new Animated.Value(collapsedY)).current;
+  const sheetRef = useRef<DraggableSheetHandle>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const awaitingIdsRef = useRef<Set<number>>(new Set());
+  useEffect(() => { awaitingIdsRef.current = new Set(awaiting.map(r => r.request_id)); }, [awaiting]);
+  // opening the details page unmounts the sheet, so its open state must not linger
+  useEffect(() => { if (detailRequestId != null) setSheetOpen(false); }, [detailRequestId]);
 
   const [addRouteModalVisible, setAddRouteModalVisible] = useState(false);
   const [routeLocationPickerVisible, setRouteLocationPickerVisible] = useState(false);
@@ -1413,19 +1438,6 @@ export default function JobsScreen() {
   const addRoutePreviewMapRef = useRef<MapView>(null);
   const notifiedMatchIdsRef = useRef<Set<number>>(new Set());
 
-  const headerAnim = useRef(new Animated.Value(0)).current;
-  const contentAnim = useRef(new Animated.Value(0)).current;
-  const onlinePulse = useRef(new Animated.Value(0)).current;
-  const bellPulse = useRef(new Animated.Value(0)).current;
-  const signal = useRef(new Animated.Value(0)).current;
-  const dotBlink = useRef(new Animated.Value(0)).current;
-  const shine = useRef(new Animated.Value(0)).current;
-  const modeAnim = useRef(new Animated.Value(0)).current;
-  const modeFade = useRef(new Animated.Value(1)).current;
-  const swapAnim = useRef(new Animated.Value(0)).current;
-  const [ctaW, setCtaW] = useState(320);
-  const isFocused = useIsFocused();
-
   useEffect(() => {
     getDemoMode().then(setDemoModeState);
     return subscribeDemoMode(setDemoModeState);
@@ -1433,91 +1445,41 @@ export default function JobsScreen() {
 
   useEffect(() => {
     return subscribeActiveRoute((newRouteId) => {
-      if (!newRouteId) return;
-      if (activeRouteRef.current?.route_id === newRouteId) return;
+      if (!newRouteId || activeRouteRef.current?.route_id === newRouteId) return;
       const found = routesRef.current.find(r => r.route_id === newRouteId);
       if (found) {
-        // Selection changed (here or in Manage Routes): show ONLY that route's requests, automatically.
         setActiveRoute(found);
         activeRouteRef.current = found;
-        void refreshMatches(providerIdRef.current, found, routesRef.current);
+        void refreshMatches(providerIdRef.current, found);
       } else {
-        // A brand-new route we haven't loaded yet.
         void loadDataRef.current(true);
       }
     });
   }, []);
 
-  useEffect(() => {
-    const animate = (v: Animated.Value, delay: number, duration = 600) =>
-      Animated.timing(v, { toValue: 1, duration, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true });
-    Animated.parallel([animate(headerAnim, 0), animate(contentAnim, 180)]).start();
-  }, [headerAnim, contentAnim]);
-
-  useEffect(() => {
-    Animated.timing(modeAnim, { toValue: isOnline ? 1 : 0, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
-    modeFade.setValue(0);
-    Animated.timing(modeFade, { toValue: 1, duration: 350, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  }, [isOnline, modeAnim, modeFade]);
-
-  useEffect(() => {
-    signal.setValue(0); dotBlink.setValue(0);
-    if (!isOnline || !isFocused) return;
-    const ring = Animated.loop(Animated.timing(signal, { toValue: 1, duration: 2000, easing: Easing.out(Easing.ease), useNativeDriver: true }));
-    const blink = Animated.loop(Animated.sequence([
-      Animated.timing(dotBlink, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      Animated.timing(dotBlink, { toValue: 0, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-    ]));
-    ring.start(); blink.start();
-    return () => { ring.stop(); blink.stop(); };
-  }, [isOnline, isFocused, signal, dotBlink]);
-
-  useEffect(() => {
-    shine.setValue(0);
-    if (isOnline || !isFocused) return;
-    const sweep = Animated.loop(Animated.sequence([
-      Animated.timing(shine, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      Animated.delay(1500),
-      Animated.timing(shine, { toValue: 0, duration: 0, useNativeDriver: true }),
-    ]));
-    sweep.start();
-    return () => sweep.stop();
-  }, [isOnline, isFocused, shine]);
-
-  useEffect(() => {
-    onlinePulse.setValue(0);
-    if (!isOnline || !isFocused) return;
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(onlinePulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(onlinePulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
-    );
-    pulse.start();
-    return () => pulse.stop();
-  }, [isOnline, isFocused, onlinePulse]);
-
-  useEffect(() => {
-    bellPulse.setValue(0);
-    if (!isFocused) return;
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(bellPulse, { toValue: 1, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(bellPulse, { toValue: 0, duration: 1400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ]),
-    );
-    pulse.start();
-    return () => pulse.stop();
-  }, [isFocused, bellPulse]);
+  const fireLocalMatchNotification = async (body: string) => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'Route Match Available',
+          body,
+          data: { type: 'match' },
+          sound: true,
+        },
+        trigger: null,
+      });
+    } catch { /* ignore */ }
+  };
 
   const loadNotifs = useCallback(async () => {
-    if (!providerId) return;
+    const pid = providerIdRef.current;
+    if (!pid) return;
     setNotifLoading(true);
     try {
       const { data, error } = await supabase
         .from('notification_log')
         .select('notif_id, title, body, type, is_read, created_at, ref_id')
-        .eq('user_id', providerId)
+        .eq('user_id', pid)
         .order('created_at', { ascending: false })
         .limit(30);
       if (error) throw error;
@@ -1526,43 +1488,7 @@ export default function JobsScreen() {
       setUnreadCount(list.filter(n => !n.is_read).length);
     } catch (e) { console.warn('[jobs] notif load failed', e); }
     finally { setNotifLoading(false); }
-  }, [providerId]);
-
-  useEffect(() => { if (providerId) loadNotifs(); }, [providerId, loadNotifs]);
-
-  useEffect(() => {
-    if (!providerId) return;
-    const ch = supabase
-      .channel(notifChannelRef.current)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
-        loadNotifs();
-        const row: any = payload.new;
-        const t = (row?.type || '').toLowerCase();
-        if (t === 'match' || t.includes('direct')) {
-          fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
-          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-        }
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => loadNotifs())
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [providerId, loadNotifs]);
-
-  const fireLocalMatchNotification = async (body: string) => {
-    try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: '🎯 Route Match Available!',
-          body,
-          data: { type: 'match' },
-          sound: true,
-        },
-        trigger: null,
-      });
-    } catch (err) {
-      console.warn('[jobs] local notif failed:', err);
-    }
-  };
+  }, []);
 
   const handleOpenNotifs = () => { setNotifModalOpen(true); loadNotifs(); };
 
@@ -1571,7 +1497,7 @@ export default function JobsScreen() {
     setNotifs(prev => prev.map(x => x.notif_id === n.notif_id ? { ...x, is_read: true } : x));
     setUnreadCount(c => Math.max(0, c - 1));
     try { await supabase.from('notification_log').update({ is_read: true }).eq('notif_id', n.notif_id); }
-    catch (e) { console.warn('mark read failed', e); }
+    catch { /* ignore */ }
   };
 
   const handleNotifPress = async (n: Notif) => {
@@ -1583,51 +1509,30 @@ export default function JobsScreen() {
     if (!handled) { Alert.alert(titleForNotif(n), n.body || ''); }
   };
 
-  const loadTodayStats = async (pid: number) => {
-    try {
-      const start = new Date(); start.setHours(0, 0, 0, 0);
-      const { data } = await supabase
-        .from('deliveries')
-        .select('completed_at, delivery_requests:request_id(estimated_cost)')
-        .eq('provider_id', pid)
-        .gte('completed_at', start.toISOString());
-      const rows: any[] = data || [];
-      const earned = rows.reduce((sum, r) => {
-        const dr = Array.isArray(r.delivery_requests) ? r.delivery_requests[0] : r.delivery_requests;
-        return sum + (Number(dr?.estimated_cost) || 0);
-      }, 0);
-      let rating: number | null = null;
-      try {
-        const { data: rv } = await supabase.from('ratings_reviews').select('rating').eq('reviewee_id', pid);
-        const list: any[] = rv || [];
-        if (list.length > 0) rating = list.reduce((a, r) => a + (Number(r.rating) || 0), 0) / list.length;
-      } catch { /* no ratings yet */ }
-      setTodayStats({ count: rows.length, earned, rating });
-    } catch { /* keep zeros */ }
-  };
-
   const getProviderData = async (): Promise<number | null> => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return null;
-      const { data: userData, error } = await supabase.from('users').select('user_id, is_online').eq('auth_id', user.id).single();
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('user_id, is_online')
+        .eq('auth_id', user.id)
+        .single();
       if (error) throw error;
       setProviderId(userData.user_id);
       providerIdRef.current = userData.user_id;
       setIsOnline(!!(userData as any).is_online);
-      void loadTodayStats(userData.user_id);
       return userData.user_id;
     } catch { return null; }
   };
 
-  const hasDirectOffers = requests.some(r => r.isDirectRequest && !dismissedIds.includes(r.request_id));
-  const hasAnyActiveOffers = requests.some(r => !dismissedIds.includes(r.request_id) && (isOnline || r.isDirectRequest));
+  const hasOffers = awaiting.length > 0;
 
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline && !hasDirectOffers && !hasAnyActiveOffers);
+      setTabBarHidden(!loading && !isOnline && !hasOffers);
       return () => setTabBarHidden(false);
-    }, [isOnline, loading, hasDirectOffers, hasAnyActiveOffers]),
+    }, [isOnline, loading, hasOffers]),
   );
 
   const goToTasks = () => {
@@ -1652,25 +1557,23 @@ export default function JobsScreen() {
 
   const fetchRoutes = async (pid: number): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
     try {
-      const stats = await getTodayRouteStats(pid);
+      const [stats, { data, error }] = await Promise.all([
+        getTodayRouteStats(pid),
+        supabase
+          .from('provider_routes')
+          .select(`
+            *,
+            start_location:locations!provider_routes_start_location_id_fkey(*),
+            end_location:locations!provider_routes_end_location_id_fkey(*),
+            vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
+          `)
+          .eq('provider_id', pid)
+          .order('created_at', { ascending: false }),
+      ]);
       setUsedTodayCount(stats.usedTodayCount);
-
-      const { data, error } = await supabase
-        .from('provider_routes')
-        .select(`
-          *,
-          start_location:locations!provider_routes_start_location_id_fkey(*),
-          end_location:locations!provider_routes_end_location_id_fkey(*),
-          vehicle:vehicles!provider_routes_vehicle_id_fkey(*)
-        `)
-        .eq('provider_id', pid)
-        .order('created_at', { ascending: false });
-
       if (error) throw error;
 
-      const nonDeleted = (data || []).filter((r: Route) => r.is_deleted !== true);
-      const validRoutes = nonDeleted.filter((r) => !isRouteExpired(r));
-
+      const validRoutes = ((data || []) as Route[]).filter((r) => r.is_deleted !== true && !isRouteExpired(r));
       setRoutes(validRoutes);
       routesRef.current = validRoutes;
 
@@ -1680,7 +1583,6 @@ export default function JobsScreen() {
       if (restored) {
         setActiveRoute(restored);
         activeRouteRef.current = restored;
-        // Keep the shared flag in sync so senders' Explore shows only this route.
         if (restored.is_selected !== true) void syncSelectedRouteToDb(restored.route_id, true);
         return { resolvedRoute: restored, validRoutes };
       } else if (validRoutes.length > 0) {
@@ -1703,17 +1605,10 @@ export default function JobsScreen() {
 
   const refreshSeqRef = useRef(0);
 
-  /**
-   * Loads the requests for the provider's SELECTED route only (plus requests a
-   * sender addressed straight to this provider). It never switches the selected
-   * route by itself: whatever is selected is what appears.
-   */
-  // Everything this provider could still accept: direct requests + every Pending request that was
-  // matched to one of their live routes (even if the live match has since lapsed).
-  const loadAwaiting = useCallback(async (pid: number | null) => {
+  const loadAwaiting = useCallback(async (pid: number | null, selectedRoute?: Route | null) => {
     const seq = ++awaitingSeqRef.current;
     const isLatest = () => seq === awaitingSeqRef.current;
-    if (!pid) { setAwaiting([]); setLapsedIds([]); return; }
+    if (!pid || !selectedRoute) { setAwaiting([]); setLapsedIds([]); return; }
     try {
       const sel = `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`;
       const [directRes, matchRes] = await Promise.all([
@@ -1723,11 +1618,10 @@ export default function JobsScreen() {
         supabase.from('route_request_matches')
           .select(`*, route:provider_routes(route_id, is_active, is_deleted), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
+          .eq('route_id', selectedRoute.route_id)
           .in('status', ['matched', 'expired'])
           .order('match_score', { ascending: false }),
       ]);
-      if (directRes.error) console.warn('[Jobs] awaiting direct read failed:', directRes.error.message);
-      if (matchRes.error) console.warn('[Jobs] awaiting match read failed:', matchRes.error.message);
 
       const byReq = new Map<number, RouteMatchRow>();
       const lapsed = new Set<number>();
@@ -1753,10 +1647,11 @@ export default function JobsScreen() {
       }
 
       for (const dr of (directRes.data || []) as any[]) {
+        if (dr.delivery_status !== 'Pending') continue;
         const id = Number(dr.request_id);
         if (byReq.has(id) && byReq.get(id)!.status === 'matched') continue;
         byReq.set(id, {
-          match_id: 0, route_id: Number(dr.preferred_route_id || 0), request_id: id, provider_id: pid,
+          match_id: 0, route_id: Number(dr.preferred_route_id || selectedRoute.route_id), request_id: id, provider_id: pid,
           match_score: 100, is_fallback: false, fallback_type: null,
           pickup_dist_m: 0, dropoff_dist_m: 0, pickup_fraction: 0, dropoff_fraction: 1, extra_detour_km: 0,
           status: 'matched', request: dr,
@@ -1764,27 +1659,27 @@ export default function JobsScreen() {
         lapsed.delete(id);
       }
 
-      const ids = Array.from(byReq.keys());
-      if (ids.length === 0) {
+      const candidateIds = Array.from(byReq.keys());
+      if (candidateIds.length > 0) {
+        const { data: claimedRows } = await supabase
+          .from('deliveries')
+          .select('request_id')
+          .in('request_id', candidateIds);
+        for (const c of (claimedRows || []) as any[]) {
+          const cid = Number(c.request_id);
+          byReq.delete(cid);
+          lapsed.delete(cid);
+        }
+      }
+
+      const rows = Array.from(byReq.values());
+      if (rows.length === 0) {
         if (isLatest()) { setAwaiting([]); setLapsedIds([]); }
         return;
       }
 
-      const { data: taken } = await supabase.from('deliveries').select('request_id').in('request_id', ids);
-      const takenSet = new Set((taken || []).map((d: any) => Number(d.request_id)));
-      const rows = ids.filter(id => !takenSet.has(id)).map(id => byReq.get(id)!);
+      const senders = await fetchSenderMap(rows.map(m => m.request?.sender_id));
 
-      const senderIds = Array.from(new Set(rows.map(m => m.request?.sender_id).filter(Boolean)));
-      const senders: Record<number, string> = {};
-      if (senderIds.length > 0) {
-        const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
-        (users || []).forEach((u: any) => {
-          const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
-          senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
-        });
-      }
-
-      // live ones first (best score first), lapsed ones after
       rows.sort((a, b) => {
         const al = lapsed.has(Number(a.request_id)) ? 1 : 0;
         const bl = lapsed.has(Number(b.request_id)) ? 1 : 0;
@@ -1793,7 +1688,8 @@ export default function JobsScreen() {
       });
 
       if (!isLatest()) return;
-      setAwaiting(rows.map(m => normalizeMatchRow(m, senders, pid)));
+      const normalized = rows.map(m => normalizeMatchRow(m, senders, pid));
+      setAwaiting(normalized);
       setLapsedIds(rows.filter(m => lapsed.has(Number(m.request_id))).map(m => Number(m.request_id)));
     } catch (e) {
       console.warn('[Jobs] loadAwaiting error:', e);
@@ -1803,12 +1699,10 @@ export default function JobsScreen() {
   const refreshMatches = useCallback(async (
     overridePid?: number | null,
     overrideActiveRoute?: Route | null,
-    _overrideAllRoutes?: Route[],
+    evaluate = false,
   ) => {
     const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
-
-    void loadAwaiting(pid);
 
     const selected = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
     const seq = ++refreshSeqRef.current;
@@ -1817,18 +1711,23 @@ export default function JobsScreen() {
     try {
       setCheckingMatches(true);
 
-      // Rule 1: no posted/selected route => no requests.
+      // Rule 1: no posted/selected route => zero requests shown.
       if (!selected) {
-        if (isLatest()) setRequests([]);
+        if (isLatest()) {
+          setRequests([]);
+          setAwaiting([]);
+          setLapsedIds([]);
+        }
         return;
       }
 
       const isDemo = await getDemoMode();
       const [directMatches, standardMatches] = await Promise.all([
         fetchDirectRequestMatches(pid, selected.route_id),
-        // Add { evaluate: false } here so Realtime events don't trigger a new RPC loop
-        evaluateAndFetchRouteMatches(selected.route_id, isDemo, { evaluate: false }),
+        evaluateAndFetchRouteMatches(selected.route_id, isDemo, { evaluate }),
       ]);
+
+      await loadAwaiting(pid, selected);
 
       const allMatches: RouteMatchRow[] = [...directMatches];
       for (const sm of standardMatches) {
@@ -1842,19 +1741,25 @@ export default function JobsScreen() {
         return;
       }
 
-      const senderIds = Array.from(new Set(allMatches.map(m => m.request?.sender_id).filter(Boolean)));
-      const senders: Record<number, string> = {};
-      if (senderIds.length > 0) {
-        const { data: users } = await supabase.from('users').select('user_id, first_name, last_name').in('user_id', senderIds);
-        (users || []).forEach((u: any) => {
-          const last = u.last_name ? ` ${String(u.last_name).charAt(0)}.` : '';
-          senders[u.user_id] = `${u.first_name || 'Sender'}${last}`;
-        });
-      }
+      const candidateIds = allMatches.map(m => Number(m.request_id));
+      const { data: claimedRows } = await supabase
+        .from('deliveries')
+        .select('request_id')
+        .in('request_id', candidateIds);
+      const claimedSet = new Set((claimedRows || []).map((c: any) => Number(c.request_id)));
+      const openMatches = allMatches.filter(m => !claimedSet.has(Number(m.request_id)) && m.request?.delivery_status === 'Pending');
 
       if (!isLatest()) return;
 
-      const hydrated = allMatches.map(m => normalizeMatchRow(m, senders, pid));
+      if (openMatches.length === 0) {
+        setRequests([]);
+        return;
+      }
+
+      const senders = await fetchSenderMap(openMatches.map(m => m.request?.sender_id));
+      if (!isLatest()) return;
+
+      const hydrated = openMatches.map(m => normalizeMatchRow(m, senders, pid));
 
       for (const req of hydrated) {
         if (!notifiedMatchIdsRef.current.has(req.request_id)) {
@@ -1873,27 +1778,23 @@ export default function JobsScreen() {
     } finally {
       if (isLatest()) setCheckingMatches(false);
     }
-  }, []);
+  }, [loadAwaiting]);
 
-  // Read live (not from a stale closure) so every caller sees the current modal state.
   modalOpenRef.current = addRouteModalVisible || routeLocationPickerVisible;
 
   const loadData = async (force = false) => {
-    // Never reload underneath an open modal.
     if (modalOpenRef.current) return;
-    // One load at a time, and de-bounce back-to-back focus events.
     if (loadInFlightRef.current) return;
     if (!force && hasLoadedRef.current && Date.now() - lastLoadAtRef.current < 2000) return;
 
     loadInFlightRef.current = true;
-    // Full-screen loader ONLY for the very first load. Later reloads update data in place,
-    // so the tree (and any native Modal in it) is never unmounted.
     if (!hasLoadedRef.current) setLoading(true);
     try {
       const pid = await getProviderData();
       if (pid) {
-        const { resolvedRoute, validRoutes } = await fetchRoutes(pid);
-        await refreshMatches(pid, resolvedRoute, validRoutes);
+        void loadNotifs();
+        const { resolvedRoute } = await fetchRoutes(pid);
+        await refreshMatches(pid, resolvedRoute, true);
       }
     } catch (e) {
       console.warn('loadData error:', e);
@@ -1906,7 +1807,6 @@ export default function JobsScreen() {
   };
   loadDataRef.current = loadData;
 
-  // Stable callback: runs when the screen actually gains focus, NOT whenever a modal opens/closes.
   useFocusEffect(
     useCallback(() => {
       void loadDataRef.current();
@@ -1916,44 +1816,50 @@ export default function JobsScreen() {
   useEffect(() => {
     if (!providerId) return;
 
+    const scheduleRefresh = () => {
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+      realtimeDebounceRef.current = setTimeout(() => {
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
+      }, 450);
+    };
+
+    // A change to someone else's request must not trigger a full refetch on every provider's phone.
+    const concernsMe = (payload: any) => {
+      const rec = payload?.new && Object.keys(payload.new).length ? payload.new : payload?.old;
+      if (!rec || rec.request_id == null) return true;                       // cannot tell: be safe
+      if (awaitingIdsRef.current.has(Number(rec.request_id))) return true;   // one of my awaiting requests changed
+      return rec.preferred_provider_id != null && Number(rec.preferred_provider_id) === Number(providerIdRef.current);
+    };
+
     const channel = supabase
-      .channel(`jobs-realtime-${providerId}-${Date.now()}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'route_request_matches' },
-        () => {
-          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'delivery_requests' },
-        () => {
-          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-        },
-      )
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'deliveries' },
-        () => {
-          void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-        },
-      )
+      .channel(`jobs-unified-${providerId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'route_request_matches' }, scheduleRefresh)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'delivery_requests' }, scheduleRefresh)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'delivery_requests' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'delivery_requests' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
+      // another provider accepting a request inserts a deliveries row: drop it from my awaiting list right away
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
+        void loadNotifs();
+        const row: any = payload.new;
+        const t = (row?.type || '').toLowerCase();
+        if (t === 'match' || t.includes('direct')) {
+          fireLocalMatchNotification(row?.body || 'A new sender request matches your route.');
+          scheduleRefresh();
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, () => {
+        void loadNotifs();
+      })
       .subscribe();
 
     return () => {
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
       supabase.removeChannel(channel);
     };
-  }, [providerId, refreshMatches]);
-
-  // Automatic: re-scan the selected route while this screen is open, so nothing has to be pressed.
-  useEffect(() => {
-    if (!providerId || !isFocused) return;
-    const t = setInterval(() => {
-      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-    }, 15000);
-    return () => clearInterval(t);
-  }, [providerId, isFocused, refreshMatches]);
+  }, [providerId, refreshMatches, loadNotifs]);
 
   const fetchVehiclesForNewRoute = async (pid: number) => {
     const { data } = await supabase
@@ -2005,8 +1911,7 @@ export default function JobsScreen() {
 
       if (!location) {
         const { data: newLoc, error } = await supabase.from('locations').insert({
-          // Fallback to 'Pinned location' if street_address is somehow empty
-          street_address: locData.street_address || 'Pinned location', 
+          street_address: locData.street_address || 'Pinned location',
           barangay: locData.barangay || 'Unknown',
           city: locData.city || 'Unknown',
           province: locData.province || 'Unknown',
@@ -2031,33 +1936,14 @@ export default function JobsScreen() {
   useEffect(() => {
     if (!newRouteStart || !newRouteEnd) { setNewRoutePreviewCoords([]); return; }
     let cancelled = false;
-    (async () => {
-      try {
-        const url = `https://router.project-osrm.org/route/v1/driving/${newRouteStart.longitude},${newRouteStart.latitude};${newRouteEnd.longitude},${newRouteEnd.latitude}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        const data = await res.json();
-        if (cancelled) return;
-        if (data?.routes?.[0]?.geometry?.coordinates) {
-          setNewRoutePreviewCoords(
-            data.routes[0].geometry.coordinates.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })),
-          );
-        } else {
-          setNewRoutePreviewCoords([
-            { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude },
-            { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude },
-          ]);
-        }
-      } catch {
-        if (!cancelled) {
-          setNewRoutePreviewCoords([
-            { latitude: newRouteStart.latitude, longitude: newRouteStart.longitude },
-            { latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude },
-          ]);
-        }
-      }
-    })();
+    fetchRoadCoords(
+      { lat: newRouteStart.latitude, lng: newRouteStart.longitude },
+      { lat: newRouteEnd.latitude, lng: newRouteEnd.longitude },
+    ).then((coords) => {
+      if (!cancelled) setNewRoutePreviewCoords(coords);
+    });
     return () => { cancelled = true; };
-  }, [newRouteStart?.location_id, newRouteEnd?.location_id, newRouteStart?.latitude, newRouteStart?.longitude, newRouteEnd?.latitude, newRouteEnd?.longitude]);
+  }, [newRouteStart?.location_id, newRouteEnd?.location_id]);
 
   useEffect(() => {
     if (!newRouteStart || !newRouteEnd) return;
@@ -2105,7 +1991,6 @@ export default function JobsScreen() {
       0,
       0,
     );
-
     const endTimeObj = new Date(combined.getTime() + newRouteDurationHours * 60 * 60 * 1000);
 
     setNewRouteSubmitting(true);
@@ -2143,18 +2028,8 @@ export default function JobsScreen() {
         const vehicleObj = newRouteVehicles.find(v => v.vehicle_id === newRouteVehicleId) || null;
         const optimisticRoute: Route = {
           ...res.route,
-          start_location: {
-            location_id: newRouteStart.location_id,
-            latitude: newRouteStart.latitude,
-            longitude: newRouteStart.longitude,
-            street_address: newRouteStart.street_address,
-          } as any,
-          end_location: {
-            location_id: newRouteEnd.location_id,
-            latitude: newRouteEnd.latitude,
-            longitude: newRouteEnd.longitude,
-            street_address: newRouteEnd.street_address,
-          } as any,
+          start_location: newRouteStart,
+          end_location: newRouteEnd,
           vehicle: vehicleObj as any,
         };
 
@@ -2168,8 +2043,8 @@ export default function JobsScreen() {
         await setActiveRouteId(optimisticRoute.route_id);
       }
 
-      const { resolvedRoute, validRoutes } = await fetchRoutes(providerId);
-      await refreshMatches(providerId, resolvedRoute, validRoutes);
+      const { resolvedRoute } = await fetchRoutes(providerId);
+      await refreshMatches(providerId, resolvedRoute, true);
     } catch (err: any) {
       console.error('handleAddRouteSubmit error:', err);
       Alert.alert('Guardrail Check', err?.message || 'Failed to save route.');
@@ -2196,37 +2071,22 @@ export default function JobsScreen() {
           return;
         }
       }
-      if (!currentRoute) { Alert.alert('Route Error', 'Unable to set an active route.'); return; }
 
       await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
       setIsOnline(true);
-      await refreshMatches(pid, currentRoute, routesRef.current);
+      await refreshMatches(pid, currentRoute, true);
     } else {
-      Alert.alert('Go Offline', 'Going offline will stop matching new requests.', [
+      Alert.alert('Go Offline', 'Going offline will pause new corridor matching.', [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
             await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
             setIsOnline(false);
             setRequests(prev => prev.filter(r => r.isDirectRequest));
-            void loadTodayStats(pid);
           },
         },
       ]);
     }
-  };
-
-  const goToTaskTab = (): boolean => {
-    let current: any = navigation;
-    while (current) {
-      try {
-        const names: string[] = current.getState?.()?.routeNames || [];
-        const match = names.find(n => /task/i.test(n));
-        if (match) { current.navigate(match); return true; }
-      } catch { /* ignore */ }
-      current = current.getParent?.();
-    }
-    return false;
   };
 
   useFocusEffect(
@@ -2238,18 +2098,22 @@ export default function JobsScreen() {
         lng: p.coords.longitude,
         heading: p.coords.heading != null && p.coords.heading >= 0 ? p.coords.heading : null,
       });
+      const lastSet = { lat: 0, lng: 0 };
+      const accept = (loc: { lat: number; lng: number; heading: number | null }) => {
+        if (Math.abs(loc.lat - lastSet.lat) < 0.00012 && Math.abs(loc.lng - lastSet.lng) < 0.00012) return;   // ~13 m
+        lastSet.lat = loc.lat; lastSet.lng = loc.lng;
+        setMyLoc(loc);
+      };
       (async () => {
         try {
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status !== 'granted') { if (!cancelled) setLocDenied(true); return; }
           if (!cancelled) setLocDenied(false);
           const last = await Location.getLastKnownPositionAsync();
-          if (last && !cancelled) setMyLoc(toLoc(last));
-          const cur = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          if (!cancelled) setMyLoc(toLoc(cur));
+          if (last && !cancelled) accept(toLoc(last));
           const watcher = await Location.watchPositionAsync(
-            { accuracy: Location.Accuracy.Balanced, timeInterval: 4000, distanceInterval: 10 },
-            (p) => { if (!cancelled) setMyLoc(toLoc(p)); },
+            { accuracy: Location.Accuracy.Balanced, timeInterval: 8000, distanceInterval: 20 },
+            (p) => { if (!cancelled) accept(toLoc(p)); },
           );
           if (cancelled) watcher.remove(); else sub = watcher;
         } catch (e) { console.warn('Location error:', e); }
@@ -2258,19 +2122,8 @@ export default function JobsScreen() {
     }, []),
   );
 
-  const offers = requests.filter(r => !dismissedIds.includes(r.request_id));
-  const currentOffer = offers[0] ?? null;
-
-  const skipOfferLocally = (id: number) =>
-    setDismissedIds(prev => (prev.includes(id) ? prev : [...prev, id]));
-
   const decliningRef = useRef<Set<number>>(new Set());
 
-  /**
-   * A sender picked THIS provider from Explore ("deliver along your route") and the provider
-   * dismissed it. The request is released from this provider (preferred_provider_id cleared),
-   * the sender is notified, and matching is re-run so another courier can be found.
-   */
   const declineDirectRequest = async (req: JobRequest) => {
     const pid = providerIdRef.current ?? providerId;
     if (!pid || decliningRef.current.has(req.request_id)) return;
@@ -2281,36 +2134,22 @@ export default function JobsScreen() {
         Alert.alert('Could not decline', res.message);
         return;
       }
-      skipOfferLocally(req.request_id);
-      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
     } finally {
       decliningRef.current.delete(req.request_id);
     }
   };
 
-  const dismissOffer = (id: number) => {
-    const req = requests.find(r => r.request_id === id) ?? awaiting.find(r => r.request_id === id);
-    // Only requests addressed to this provider (sender chose them along their route) are declined for real.
-    if (req?.isDirectRequest) {
-      Alert.alert(
-        'Decline this request?',
-        'The sender chose you for this delivery. They will be notified that you declined and we will find another courier for them.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Decline', style: 'destructive', onPress: () => { void declineDirectRequest(req); } },
-        ],
-      );
-      return;
-    }
-    skipOfferLocally(id);
+  const confirmDecline = (req: JobRequest) => {
+    Alert.alert(
+      'Decline this request?',
+      'It will be removed from your list so another provider can take it.',
+      [
+        { text: 'Keep', style: 'cancel' },
+        { text: 'Decline', style: 'destructive', onPress: () => { void declineDirectRequest(req); } },
+      ],
+    );
   };
-
-  const openRequestList = () => {
-    setRequestListOpen(true);
-    void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-  };
-
-  useEffect(() => { setDismissedIds([]); }, [isOnline, activeRoute?.route_id]);
 
   const triggerSOS = () => {
     Alert.alert('Emergency', 'Do you need emergency help? You can call the national emergency hotline now.', [
@@ -2383,64 +2222,36 @@ export default function JobsScreen() {
 
       if (claimErr) {
         Alert.alert('Could not accept request', `Please try again. (${claimErr.message})`);
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
         return;
       }
 
       if (!claimed) {
         const [existingRes, stillRes] = await Promise.all([
-          supabase
-            .from('deliveries')
-            .select('delivery_id, provider_id')
-            .eq('request_id', req.request_id)
-            .limit(1),
-          supabase
-            .from('delivery_requests')
-            .select('delivery_status, preferred_provider_id')
-            .eq('request_id', req.request_id)
-            .maybeSingle(),
+          supabase.from('deliveries').select('delivery_id, provider_id').eq('request_id', req.request_id).limit(1),
+          supabase.from('delivery_requests').select('delivery_status, preferred_provider_id').eq('request_id', req.request_id).maybeSingle(),
         ]);
         const existing = existingRes.data;
         const still = stillRes.data;
-        console.warn('[Jobs] accept: claim matched 0 rows', {
-          request_id: req.request_id,
-          providerId,
-          deliveriesError: existingRes.error?.message ?? null,
-          requestReadError: stillRes.error?.message ?? null,
-          deliveryRows: existing?.length ?? 0,
-          requestStatus: still?.delivery_status ?? null,
-        });
 
         if (existingRes.error || stillRes.error) {
-          Alert.alert(
-            'Could not verify request',
-            `We couldn't check this request's status (${(stillRes.error || existingRes.error)!.message}). Please try again.`,
-          );
+          Alert.alert('Could not verify request', `We couldn't check this request's status. Please try again.`);
         } else if (existing && existing.length > 0) {
           if (Number(existing[0].provider_id) === Number(providerId)) {
             setDetailRequestId(null);
-            void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-            if (!goToTaskTab()) Alert.alert('Already accepted', 'You already accepted this delivery. Find it in the Task tab.');
+            void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
+            goToTasks();
             return;
           }
           Alert.alert('Request unavailable', 'This request was already accepted by another provider.');
         } else if (!still) {
-          Alert.alert(
-            'Request unavailable',
-            'The sender cancelled or removed this request. Pull to refresh to see current requests.',
-          );
+          Alert.alert('Request unavailable', 'The sender cancelled or removed this request.');
         } else if (still.delivery_status === 'Pending') {
-          Alert.alert(
-            'Could not accept request',
-            'This request is still open, but the server refused the update. Please contact support - the accept permission is not set up for providers.',
-          );
+          Alert.alert('Could not accept request', 'Server refused the update. Please contact support.');
         } else {
-          Alert.alert(
-            'Request unavailable',
-            `This request is now "${still.delivery_status}", so it can no longer be accepted.`,
-          );
+          Alert.alert('Request unavailable', `This request is now "${still.delivery_status}".`);
         }
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
+        void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
         return;
       }
 
@@ -2470,19 +2281,19 @@ export default function JobsScreen() {
         throw qrError;
       }
 
-      try {
-        await supabase
+      await Promise.all([
+        supabase
           .from('route_request_matches')
           .update({ status: 'accepted' })
           .eq('request_id', req.request_id)
-          .eq('provider_id', providerId);
-        await supabase
+          .eq('provider_id', providerId),
+        supabase
           .from('route_request_matches')
           .update({ status: 'expired' })
           .eq('request_id', req.request_id)
           .neq('provider_id', providerId)
-          .eq('status', 'matched');
-      } catch (e) { console.warn('[Jobs] match status update failed', e); }
+          .eq('status', 'matched'),
+      ]);
 
       const capacityRoute = routes.find(r => r.route_id === resolvedRouteId) ?? activeRoute;
       if (capacityRoute) {
@@ -2525,18 +2336,13 @@ export default function JobsScreen() {
               `Your courier accepted parcel #${code} along the declared route.`,
               { deliveryId: delivery.delivery_id },
             );
-          } catch (err) {
-            console.warn('[Jobs] notify sender accept failed', err);
-          }
+          } catch { /* ignore */ }
         }
       }
 
       setDetailRequestId(null);
-      setDismissedIds(prev => [...prev, req.request_id]);
-      void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-      if (!goToTaskTab()) {
-        Alert.alert('Delivery accepted', 'Find it in the Task tab. Ask the sender to show their pickup QR when you arrive.');
-      }
+      void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
+      goToTasks();
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to accept delivery.');
     } finally { setAccepting(false); }
@@ -2555,12 +2361,7 @@ export default function JobsScreen() {
     );
   };
 
-  const pulseScale = onlinePulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
-  const bellScale = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
-  const bellOpacity = bellPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] });
-
   const markFailed = (uri: string) => setFailedPhotos(prev => ({ ...prev, [uri]: true }));
-  const SCREEN_H = Dimensions.get('window').height;
 
   const distancesFor = (o: JobRequest) => {
     const me = myLoc;
@@ -2574,7 +2375,7 @@ export default function JobsScreen() {
 
   const renderServicePill = (r: JobRequest) => (
     <View style={styles.svcPill}>
-      <SolarIcon name="Package" variant="duotone" size={13} color={colors.info} />
+      <SolarIcon name="Package" variant="duotone" size={12} color={colors.info} />
       <Text style={styles.svcPillText}>{serviceLabel(r.pickup_type)}</Text>
     </View>
   );
@@ -2582,22 +2383,27 @@ export default function JobsScreen() {
   const renderRingRoute = (r: JobRequest, notes = false) => (
     <View>
       {[
-        { key: 'p', label: 'PICKUP', pt: r.pickup, color: colors.info, note: r.pickupNote },
-        { key: 'd', label: 'DROP-OFF', pt: r.dropoff, color: colors.error, note: r.dropoffNote },
+        { key: 'p', label: 'PICKUP', pt: r.pickup, note: r.pickupNote, kind: 'pickup' as const },
+        { key: 'd', label: 'DROP-OFF', pt: r.dropoff, note: r.dropoffNote, kind: 'dropoff' as const },
       ].map((x, i) => (
         <View key={x.key} style={styles.rtRow}>
           <View style={styles.rtRail}>
-            <View style={[styles.rtRing, { borderColor: x.color }]}><View style={[styles.rtRingDot, { backgroundColor: x.color }]} /></View>
-            {i === 0 && (
-              <View style={styles.rtDots}>
-                {[0, 1, 2, 3].map(k => <View key={k} style={styles.rtDot} />)}
-              </View>
+            {x.kind === 'pickup' ? (
+              <View style={styles.rtPickPin}><SolarIcon name="Package" variant="bold" size={15} color="#FFFFFF" /></View>
+            ) : (
+              <View style={styles.rtDropPin}><SolarIcon name="User" variant="bold" size={15} color="#000000" /></View>
             )}
+            {i === 0 && <View style={styles.rtLine} />}
           </View>
-          <View style={[styles.rtText, i === 0 && { paddingBottom: 14 }]}>
+          <View style={[styles.rtText, i === 0 && { paddingBottom: 12 }]}>
             <Text style={styles.rtLabel}>{x.label}</Text>
             <Text style={styles.rtMain} numberOfLines={1}>{x.pt.main}</Text>
-            {!!x.pt.sub && <Text style={styles.rtSub} numberOfLines={1}>{x.pt.sub}</Text>}
+            {!!x.pt.sub && (
+              <View style={styles.rtStreetRow}>
+                <SolarIcon name="MapPoint" variant="linear" size={12} color={colors.textMuted} />
+                <Text style={styles.rtSub} numberOfLines={2}>{x.pt.sub}</Text>
+              </View>
+            )}
             {notes && !!x.note && (
               <View style={styles.routeNote}>
                 <SolarIcon name="ChatCircleText" variant="duotone" size={13} color={colors.accent} />
@@ -2631,7 +2437,7 @@ export default function JobsScreen() {
 
   const renderFullDetails = () => {
     const o = detailRequestId != null
-      ? (requests.find(r => r.request_id === detailRequestId) ?? awaiting.find(r => r.request_id === detailRequestId))
+      ? (awaiting.find(r => r.request_id === detailRequestId) ?? requests.find(r => r.request_id === detailRequestId))
       : null;
     if (!o) return null;
 
@@ -2676,7 +2482,7 @@ export default function JobsScreen() {
               {renderServicePill(o)}
               {o.matchScore != null && (
                 <View style={styles.scoreBadge}>
-                  <SolarIcon name="Info" variant="linear" size={13} color={colors.success} />
+                  <SolarIcon name="CheckCircle" variant="linear" size={13} color={colors.success} />
                   <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
                 </View>
               )}
@@ -2706,7 +2512,7 @@ export default function JobsScreen() {
               <View style={styles.cardHeaderIcon}>
                 <SolarIcon name="Routing" variant="duotone" size={15} color={colors.accent} />
               </View>
-              <Text style={styles.cardTitle}>Corridor & Trip Summary</Text>
+              <Text style={styles.cardTitle}>Corridor &amp; Trip Summary</Text>
             </View>
             <View style={styles.tileGrid}>
               <View style={styles.tile}>
@@ -2868,433 +2674,217 @@ export default function JobsScreen() {
     );
   };
 
-  const renderOfferPopup = (o: JobRequest) => {
-    const SHEET_H = Math.round(SCREEN_H * 0.50);
+  const renderTag = (label: string, color: string, bg: string) => (
+    <View style={[styles.tag, { backgroundColor: bg }]}>
+      <Text style={[styles.tagText, { color }]}>{label}</Text>
+    </View>
+  );
 
+  const renderRequestCard = (r: JobRequest) => {
+    const lapsed = lapsedIds.includes(r.request_id);
     return (
-      <View
-        style={{
-          height: SHEET_H,
-          backgroundColor: colors.card,
-          borderTopLeftRadius: 24,
-          borderTopRightRadius: 24,
-          overflow: 'hidden',
-          borderTopWidth: 1,
-          borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: -4 },
-          shadowOpacity: 0.05,
-          shadowRadius: 12,
-          elevation: 1,
-        }}
-      >
-        <View style={{ flex: 1, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 90 + insets.bottom }}>
-          <View style={styles.oTopRow}>
-            {renderServicePill(o)}
-            {o.matchScore != null && (
-              <View style={styles.scoreBadge}>
-                <SolarIcon name="CheckCircle" variant="linear" size={13} color={colors.success} />
-                <Text style={[styles.scoreBadgeText, { color: colors.success }]}>{Math.round(o.matchScore)}% Match</Text>
-              </View>
-            )}
-            {o.isFallback && (
-              <View style={styles.fallbackBadge}>
-                <SolarIcon name="Routing" variant="linear" size={12} color="#FFFFFF" />
-                <Text style={styles.fallbackBadgeText}>FALLBACK</Text>
-              </View>
-            )}
-            {awaiting.length > 1 && (
-              <TouchableOpacity
-                onPress={openRequestList}
-                activeOpacity={0.8}
-                hitSlop={8}
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 4,
-                  paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
-                  backgroundColor: colors.accentSoft,
-                }}
-              >
-                <Text style={[styles.offerCount, { color: colors.accent }]}>
-                  {offers.length > 1 ? `1 of ${offers.length} · ` : ''}View all ({awaiting.length})
-                </Text>
-              </TouchableOpacity>
-            )}
-            <View style={{ flex: 1 }} />
+      <View key={r.request_id} style={styles.reqCard}>
+        <View style={styles.reqTop}>
+          <View style={styles.reqTags}>
+            {renderServicePill(r)}
+            {r.matchScore != null && renderTag(`${Math.round(r.matchScore)}% MATCH`, colors.success, 'rgba(34,197,94,0.12)')}
+            {r.isDirectRequest && renderTag('DIRECT', colors.accent, colors.accentSoft)}
+            {lapsed && renderTag('BACKUP', colors.warning, 'rgba(245,158,11,0.12)')}
           </View>
-
-          <View style={[styles.offerMainRow, { marginTop: 4 }]}>
-            <View>
-              <Text style={styles.eyebrow}>TOTAL PAY</Text>
-              <Text style={styles.offerPrice}>{money(o.estimated_cost)}</Text>
-            </View>
-            <Text style={styles.offerCode}>{requestCode(o.request_id)}</Text>
-          </View>
-
-          <View style={{ marginTop: 12 }}>
-            {renderRingRoute(o)}
-          </View>
-
-          <TouchableOpacity
-            style={[styles.viewDetailsBtn, { marginTop: 14 }]}
-            onPress={() => setDetailRequestId(o.request_id)}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="DocumentText" variant="linear" size={18} color={colors.accent} />
-            <Text style={styles.viewDetailsText}>View Route Corridor Details</Text>
-            <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.accent} />
-          </TouchableOpacity>
+          <Text style={styles.reqPrice}>{money(r.estimated_cost)}</Text>
         </View>
 
-        <View
-          style={[
-            styles.offerBtnRow,
-            {
-              position: 'absolute', left: 0, right: 0, bottom: 0,
-              paddingHorizontal: 18, paddingTop: 12, paddingBottom: 16,
-              backgroundColor: colors.card,
-              borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-            },
-          ]}
-        >
-          <TouchableOpacity
-            style={[styles.declineBtn, { flex: 1 }]}
-            onPress={() => dismissOffer(o.request_id)}
-            disabled={accepting}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="CloseCircle" variant="linear" size={18} color={colors.error} />
-            <Text style={styles.declineBtnText}>Dismiss</Text>
+        <View style={{ marginTop: 14 }}>{renderRingRoute(r)}</View>
+
+        <View style={styles.reqActions}>
+          {r.isDirectRequest && (
+            <TouchableOpacity style={styles.declineBtn} onPress={() => confirmDecline(r)} disabled={accepting} activeOpacity={0.85}>
+              <Text style={styles.declineText}>Decline</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.detailsBtn} onPress={() => setDetailRequestId(r.request_id)} activeOpacity={0.85}>
+            <Text style={styles.detailsText}>Details</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.offerAcceptBtn, { flex: 1 }, accepting && { opacity: 0.7 }]}
-            onPress={() => acceptRequest(o)}
+            style={[styles.acceptBtnPill, accepting && { opacity: 0.6 }]}
+            onPress={() => acceptRequest(r)}
             disabled={accepting}
             activeOpacity={0.9}
           >
-            {accepting ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <>
-                <SolarIcon name="CheckCircle" variant="linear" size={20} color="#FFFFFF" />
-                <Text style={styles.offerAcceptText}>Accept Match</Text>
-              </>
-            )}
+            {accepting ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.acceptPillText}>Accept</Text>}
           </TouchableOpacity>
         </View>
       </View>
     );
   };
 
-  const renderBottomPanel = () => {
-    const startAddr = splitAddress(activeRoute?.start_location?.street_address);
-    const endAddr = splitAddress(activeRoute?.end_location?.street_address);
-
-    const OFF = { title: '#E2E8F0', sub: '#94A3B8', label: '#64748B' };
-    const panelBg = modeAnim.interpolate({ inputRange: [0, 1], outputRange: ['#232A3B', colors.card] });
-    const ringScale = signal.interpolate({ inputRange: [0, 1], outputRange: [1, 1.9] });
-    const ringOpacity = signal.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] });
-    const dotOpacity = dotBlink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.4] });
-    const swapRotate = swapAnim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
-    const shineX = shine.interpolate({ inputRange: [0, 1], outputRange: [-ctaW, ctaW] });
-
-    const onSwap = () => {
-      swapAnim.setValue(0);
-      Animated.timing(swapAnim, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start(() => swapAnim.setValue(0));
-      setRoutePickerVisible(true);
-    };
-
-    const handleToggleDemo = async (val: boolean) => {
-      setDemoModeState(val);
-      await setDemoMode(val);
-      setTimeout(() => {
-        void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current);
-      }, 150);
-    };
+  const renderSheetHeader = () => {
+    const start = describePlace(activeRoute?.start_location);
+    const end = describePlace(activeRoute?.end_location);
+    const rDate = activeRoute ? parseNaiveIsoString(activeRoute.departure_time) : null;
+    const timeStr = rDate ? rDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
     return (
-      <Animated.View style={[styles.dashPanel, { backgroundColor: panelBg, borderTopColor: isOnline ? colors.success : 'rgba(255,255,255,0.05)', paddingBottom: isOnline ? 14 : 22 + insets.bottom, paddingTop: isOnline ? 14 : 20, borderTopWidth: isOnline ? 2 : 1 }]}>
-        <View style={[styles.dashBar, { backgroundColor: isOnline ? colors.success : 'rgba(100,116,139,0.35)' }]} />
-
-        <Animated.View style={{ opacity: modeFade }}>
-          <View style={[styles.dashHead, { marginBottom: 10 }]}>
-            <View style={styles.dashHeadLeft}>
-              <View style={styles.liveBadge}>
-                {isOnline && (
-                  <Animated.View style={[styles.liveRing, { transform: [{ scale: ringScale }], opacity: ringOpacity }]} />
-                )}
-                <View style={[styles.liveCore, { backgroundColor: isOnline ? colors.success : '#475569' }]} />
-              </View>
-              <View>
-                <Text style={[styles.dashTitle, !isOnline && { color: OFF.title }]}>My Route Requests</Text>
-                <Text style={[styles.dashSub, !isOnline && { color: OFF.sub }]}>
-                  {!activeRoute
-                    ? 'Post a route to see matched deliveries.'
-                    : checkingMatches
-                      ? 'Scanning route corridor...'
-                      : awaiting.length === 0 && requests.length === 0
-                        ? 'No matches on your route yet.'
-                        : `${Math.max(awaiting.length, requests.length)} request${Math.max(awaiting.length, requests.length) === 1 ? '' : 's'} awaiting your acceptance`}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.statusPill, isOnline ? styles.statusPillOn : styles.statusPillOff]}>
-              <Animated.View style={[styles.statusPillDot, { backgroundColor: isOnline ? colors.success : '#64748B' }, isOnline && { opacity: dotOpacity }]} />
-              <Text style={[styles.statusPillText, { color: isOnline ? colors.success : OFF.sub }]}>{isOnline ? 'ONLINE' : 'OFFLINE'}</Text>
-            </View>
+      <View style={styles.sheetHeader}>
+        <View style={[styles.statusBanner, isOnline && styles.statusBannerOnline]}>
+          <OnlinePulseDot online={isOnline} color={colors.success} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.statusTitle} numberOfLines={1}>{isOnline ? 'You are online' : 'You are offline'}</Text>
+            <Text style={styles.statusSub} numberOfLines={1}>
+              {isOnline
+                ? (checkingMatches ? 'Scanning your route…' : `${awaiting.length} matched request${awaiting.length === 1 ? '' : 's'}`)
+                : 'Go online to receive requests'}
+            </Text>
           </View>
-
           <TouchableOpacity
-            onPress={openRequestList}
+            style={isOnline ? styles.offlineBtn : styles.onlineBtn}
+            onPress={() => toggleOnlineStatus(!isOnline)}
             activeOpacity={0.85}
-            style={{
-              flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-              paddingHorizontal: 14, paddingVertical: 12, marginBottom: 10, borderRadius: 12,
-              backgroundColor: colors.accent,
-            }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <SolarIcon name="DocumentText" variant="linear" size={18} color="#FFFFFF" />
-              <Text style={{ fontSize: 14, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' }}>Awaiting acceptance</Text>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <View style={{
-                minWidth: 26, height: 24, paddingHorizontal: 8, borderRadius: 12,
-                alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.25)',
-              }}>
-                <Text style={{ fontSize: 12.5, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' }}>{awaiting.length}</Text>
-              </View>
-              <SolarIcon name="AltArrowRight" variant="linear" size={16} color="#FFFFFF" />
-            </View>
+            <Text style={isOnline ? styles.offlineBtnText : styles.onlineBtnText}>{isOnline ? 'Go offline' : 'Go online'}</Text>
           </TouchableOpacity>
+        </View>
 
-          <View style={{
-            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-            paddingHorizontal: 12, paddingVertical: 6, marginBottom: 10, borderRadius: 12,
-            backgroundColor: isOnline ? colors.accentSoft : 'rgba(242,112,36,0.14)',
-            borderWidth: 1, borderColor: 'rgba(242,112,36,0.35)',
-          }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-              <SolarIcon name="InfoCircle" variant="linear" size={14} color={colors.accent} />
-              <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: isOnline ? colors.textPrimary : '#E2E8F0' }}>
-                Defense DEMO_MODE (1-min fallback & lock)
-              </Text>
-            </View>
-            <Switch
-              value={demoMode}
-              onValueChange={handleToggleDemo}
-              trackColor={{ false: colors.border, true: colors.accent }}
-            />
-          </View>
+        <View style={styles.sheetTitleRow}>
+          <Text style={styles.sheetTitle}>Awaiting Acceptance</Text>
+          <View style={styles.countBadge}><Text style={styles.countBadgeText}>{awaiting.length}</Text></View>
+          <View style={{ flex: 1 }} />
+          {checkingMatches && <ActivityIndicator size="small" color={colors.accent} />}
+        </View>
 
-          <View style={[styles.routeBlock, isOnline ? { backgroundColor: colors.background, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 10, marginBottom: 10 } : styles.routeBlockOff]}>
-            <View style={[styles.vehicleChip, isOnline ? { backgroundColor: colors.accentSoft } : { backgroundColor: 'rgba(100,116,139,0.15)', opacity: 0.7 }]}>
-              <SolarIcon name="Package" variant="duotone" size={22} color={isOnline ? colors.accent : '#475569'} />
-              <Animated.View
-                style={[
-                  styles.vehicleDot,
-                  { backgroundColor: isOnline ? colors.success : '#475569', borderColor: isOnline ? colors.card : '#232A3B' },
-                  isOnline && { transform: [{ scale: pulseScale }] },
-                ]}
-              />
+        {activeRoute ? (
+          <TouchableOpacity style={styles.routeRow} onPress={() => setRoutePickerVisible(true)} activeOpacity={0.85}>
+            <View style={styles.routeRowIcon}>
+              <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={[styles.routeLabel, !isOnline && { color: OFF.label }]}>
-                ACTIVE CORRIDOR ({usedTodayCount}/3 ROUTES TODAY)
+              <Text style={styles.routeRowTitle} numberOfLines={1}>{start.main} → {end.main}</Text>
+              <Text style={styles.routeRowSub} numberOfLines={1}>
+                {activeRoute.route_frequency} · {timeStr} · {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg left
               </Text>
-              {activeRoute ? (
-                <>
-                  <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
-                    {startAddr.main} <Text style={{ color: isOnline ? colors.accent : OFF.label, fontFamily: 'Poppins_800ExtraBold' }}>→</Text> {endAddr.main}
-                  </Text>
-                  <Text style={[styles.routeDetail, !isOnline && { color: OFF.label }]} numberOfLines={1}>
-                    Trunk: {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg · {Number(activeRoute.remaining_volume_liters ?? 200).toFixed(0)} L left
-                    {activeRoute.fallback_unlocked ? ` · Fallback: ${activeRoute.fallback_used ? 'Used' : 'Unlocked'}` : ''}
-                  </Text>
-                </>
-              ) : (
-                <Text style={[styles.routeTitle, !isOnline && { color: OFF.sub }]} numberOfLines={1}>
-                  Post a route to see matched deliveries.
-                </Text>
-              )}
             </View>
-            <TouchableOpacity
-              style={[styles.swapBtn, isOnline ? { backgroundColor: colors.card, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' } : styles.swapBtnOff]}
-              onPress={onSwap}
-              activeOpacity={0.85}
-            >
-              <Animated.View style={{ transform: [{ rotate: swapRotate }] }}>
-                <SolarIcon name="TransferHorizontal" variant="linear" size={18} color={isOnline ? colors.textPrimary : OFF.sub} />
-              </Animated.View>
-            </TouchableOpacity>
-          </View>
-
-          {!activeRoute ? (
-            <View style={{
-              marginBottom: 12, backgroundColor: 'rgba(242,112,36,0.12)',
-              padding: 14, borderRadius: 12, borderWidth: 1, borderColor: colors.accent,
-              alignItems: 'center',
-            }}>
-              <Text style={{ fontSize: 14, fontFamily: 'Poppins_800ExtraBold', color: colors.accent, textAlign: 'center' }}>
-                Post a route to see matched deliveries.
-              </Text>
-              <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: isOnline ? colors.textSecondary : '#94A3B8', textAlign: 'center', marginTop: 4, lineHeight: 16 }}>
-                Rule 1: Providers see zero requests until they post a forward route.
-              </Text>
-              <TouchableOpacity
-                style={{
-                  marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
-                  backgroundColor: colors.accent, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 12,
-                }}
-                onPress={openAddRouteModal}
-                activeOpacity={0.9}
-              >
-                <SolarIcon name="AddCircle" variant="linear" size={16} color="#FFFFFF" />
-                <Text style={{ color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_800ExtraBold' }}>
-                  Post Route ({Math.max(0, 3 - usedTodayCount)} left today)
-                </Text>
-              </TouchableOpacity>
+            <View style={styles.changePill}>
+              <Text style={styles.changePillText}>Change</Text>
             </View>
-          ) : isOnline && requests.length === 0 ? (
-            <View style={{
-              marginBottom: 4, backgroundColor: colors.background,
-              padding: 12, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-              flexDirection: 'row', alignItems: 'center', gap: 10,
-            }}>
-              <Image source={EMPTY_COMPASS_ICON} style={{ width: 44, height: 44 }} resizeMode="contain" />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13, fontFamily: 'Poppins_700Bold', color: colors.textPrimary }}>
-                  No matches on your route yet.
-                </Text>
-                <Text style={{ fontSize: 11, fontFamily: 'Poppins_500Medium', color: colors.textSecondary, marginTop: 1 }}>
-                  Filtering for ≤500 m (Curb-side) or ≤1.5 km (Door-to-Door), forward direction, ≥60% score.
-                </Text>
-              </View>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.routeRow} onPress={openAddRouteModal} activeOpacity={0.85}>
+            <View style={styles.routeRowIcon}>
+              <SolarIcon name="AddCircle" variant="bold" size={16} color="#FFFFFF" />
             </View>
-          ) : null}
-
-          {isOnline ? null : (
-            <View style={{ marginTop: 4 }}>
-              <TouchableOpacity
-                style={styles.ctaBtn}
-                onPress={() => (activeRoute ? toggleOnlineStatus(true) : openAddRouteModal())}
-                activeOpacity={0.9}
-                onLayout={e => setCtaW(e.nativeEvent.layout.width)}
-              >
-                <Animated.View pointerEvents="none" style={[styles.ctaShineWrap, { transform: [{ translateX: shineX }] }]}><View style={styles.ctaShine} /></Animated.View>
-                <Text style={styles.ctaText}>{activeRoute ? 'Go Online & Scan Corridor' : 'Post Route to Start'}</Text>
-                <SolarIcon name="AltArrowRight" variant="bold" size={20} color="#FFFFFF" />
-              </TouchableOpacity>
-
-              <View style={styles.statsGrid}>
-                <View style={styles.statCard}>
-                  <Text style={styles.statVal}>{todayStats.count}</Text>
-                  <Text style={styles.statLbl}>TODAY</Text>
-                </View>
-                <View style={styles.statCard}>
-                  <Text style={[styles.statVal, { color: colors.accent }]}>{money(todayStats.earned).replace('.00', '')}</Text>
-                  <Text style={styles.statLbl}>EARNED</Text>
-                </View>
-                <View style={styles.statCard}>
-                  <Text style={styles.statVal}>{todayStats.rating != null ? `${todayStats.rating.toFixed(1)}★` : '—'}</Text>
-                  <Text style={styles.statLbl}>RATING</Text>
-                </View>
-              </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.routeRowTitle}>No route posted yet</Text>
+              <Text style={styles.routeRowSub} numberOfLines={1}>Post a route to match with sender packages.</Text>
             </View>
-          )}
-
-          {locDenied && (
-            <TouchableOpacity style={styles.locWarnBottom} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
-              <SolarIcon name="MapPoint" variant="linear" size={16} color={colors.warning} />
-              <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
-            </TouchableOpacity>
-          )}
-        </Animated.View>
-      </Animated.View>
+          </TouchableOpacity>
+        )}
+      </View>
     );
   };
 
   const renderMain = () => {
     const fallback = {
-      lat: activeRoute?.start_location?.latitude ?? 10.3157,
-      lng: activeRoute?.start_location?.longitude ?? 123.8854,
+      lat: activeRoute?.start_location?.latitude ?? DEFAULT_CENTER.latitude,
+      lng: activeRoute?.start_location?.longitude ?? DEFAULT_CENTER.longitude,
       heading: null as number | null,
     };
     const loc = myLoc ?? fallback;
     const sLoc = activeRoute?.start_location;
     const eLoc = activeRoute?.end_location;
+    const sAddr = describePlace(sLoc);
+    const eAddr = describePlace(eLoc);
+
     const mapRoute = sLoc?.latitude != null && sLoc?.longitude != null && eLoc?.latitude != null && eLoc?.longitude != null
-      ? { start: { lat: sLoc.latitude, lng: sLoc.longitude }, end: { lat: eLoc.latitude, lng: eLoc.longitude } }
-      : null;
-    const mapOrder = currentOffer
-      && currentOffer.pickup.lat != null && currentOffer.pickup.lng != null
-      && currentOffer.dropoff.lat != null && currentOffer.dropoff.lng != null
       ? {
-          pickup: { lat: currentOffer.pickup.lat, lng: currentOffer.pickup.lng },
-          dropoff: { lat: currentOffer.dropoff.lat, lng: currentOffer.dropoff.lng },
+          start: { lat: sLoc.latitude, lng: sLoc.longitude, title: sAddr.main, sub: sAddr.sub },
+          end: { lat: eLoc.latitude, lng: eLoc.longitude, title: eAddr.main, sub: eAddr.sub },
         }
       : null;
+
+    // top controls fade out while the sheet is pulled up
+    const topOpacity = sheetY.interpolate({ inputRange: [collapsedY * 0.5, collapsedY], outputRange: [0, 1], extrapolate: 'clamp' });
 
     return (
       <View style={{ flex: 1, backgroundColor: colors.background }}>
         <ProviderMap
           provider={loc}
           route={mapRoute}
-          order={mapOrder}
           online={isOnline}
           recenterTick={recenterTick}
-          padBottom={currentOffer ? Math.round(SCREEN_H * 0.50) + 30 : (isOnline ? 150 : 200)}
+          padBottom={sheetHeight + 24}
         />
 
         <Animated.View
-          pointerEvents="none"
-          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(18,23,36,0.55)', opacity: modeAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0] }) }]}
-        />
+          style={[styles.topOverlayWrap, { top: insets.top + 10, opacity: topOpacity }]}
+          pointerEvents={sheetOpen ? 'none' : 'box-none'}
+        >
+          {/* Back button (offline only); the online status now lives in the bottom sheet so the map stays clear */}
+          {!isOnline && (
+            <View style={styles.topRow} pointerEvents="box-none">
+              <TouchableOpacity onPress={goToTasks} style={styles.floatingBackBtn} activeOpacity={0.85}>
+                <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+          )}
 
-        {!isOnline && (
-          <TouchableOpacity
-            style={[styles.offlineBack, { top: insets.top + 16 }]}
-            onPress={goToTasks}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="ArrowLeft" variant="linear" size={22} color="#E2E8F0" />
-          </TouchableOpacity>
-        )}
-
-        <View style={[styles.mapTools, { top: insets.top + 16 }]} pointerEvents="box-none">
-          <Animated.View style={{ transform: [{ scale: bellScale }], opacity: bellOpacity }}>
-            <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={handleOpenNotifs} activeOpacity={0.85}>
-              <SolarIcon name="Bell" variant="linear" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
+          {/* Map tools */}
+          <View style={styles.sideToolsCol} pointerEvents="box-none">
+            <TouchableOpacity style={styles.mapToolBtn} onPress={handleOpenNotifs} activeOpacity={0.85}>
+              <SolarIcon name="Bell" variant="duotone" size={20} color={BRAND_ORANGE} />
               {unreadCount > 0 && (
-                <View style={[styles.mapToolBadge, !isOnline && { backgroundColor: '#64748B', borderColor: '#1A1F2B' }]}>
-                  {unreadCount <= 9 && (<Text style={styles.mapToolBadgeText}>{unreadCount}</Text>)}
+                <View style={styles.mapToolBadge}>
+                  {unreadCount <= 9 && <Text style={styles.mapToolBadgeText}>{unreadCount}</Text>}
                 </View>
               )}
             </TouchableOpacity>
-          </Animated.View>
-          <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={goToManageRoutes} activeOpacity={0.85}>
-            <SolarIcon name="Settings" variant="linear" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
-          </TouchableOpacity>
-          <View style={{ height: 4 }} />
-          <TouchableOpacity style={[styles.mapToolBtn, !isOnline && styles.mapToolBtnOff]} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
-            <SolarIcon name="Compass" variant="linear" size={20} color={isOnline ? colors.textPrimary : '#94A3B8'} />
-          </TouchableOpacity>
 
-          <View style={!isOnline && styles.toolDim} pointerEvents={isOnline ? 'auto' : 'none'}>
-            <TouchableOpacity style={[styles.mapToolBtn, styles.sosBtn, !isOnline && { backgroundColor: '#475569', borderColor: '#475569' }]} onPress={triggerSOS} activeOpacity={0.85}>
-              <SolarIcon name="ShieldCheck" variant="linear" size={20} color={isOnline ? '#FFFFFF' : '#94A3B8'} />
+            <TouchableOpacity style={styles.mapToolBtn} onPress={goToManageRoutes} activeOpacity={0.85}>
+              <SolarIcon name="Settings" variant="duotone" size={20} color={colors.info} />
             </TouchableOpacity>
+
+            <TouchableOpacity style={styles.mapToolBtn} onPress={() => setRecenterTick(t => t + 1)} activeOpacity={0.85}>
+              <SolarIcon name="Compass" variant="duotone" size={20} color={colors.textPrimary} />
+            </TouchableOpacity>
+
+            {isOnline && (
+              <TouchableOpacity style={[styles.mapToolBtn, styles.sosToolBtn]} onPress={triggerSOS} activeOpacity={0.85}>
+                <SolarIcon name="ShieldCheck" variant="bold" size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            )}
           </View>
 
-          {isOnline && (
-            <TouchableOpacity style={[styles.mapToolBtn, styles.powerBtn, { width: 50, height: 50, borderRadius: 25 }]} onPress={() => toggleOnlineStatus(false)} activeOpacity={0.85}>
-              <SolarIcon name="Logout" variant="linear" size={24} color={colors.error} />
+          {locDenied && (
+            <TouchableOpacity style={styles.locWarn} onPress={() => Linking.openSettings()} activeOpacity={0.85}>
+              <SolarIcon name="MapPoint" variant="linear" size={15} color={colors.warning} />
+              <Text style={styles.locWarnText}>Location is off. Tap to enable.</Text>
             </TouchableOpacity>
           )}
-        </View>
-
-        <Animated.View style={[styles.bottomWrap, { opacity: contentAnim }]} pointerEvents="box-none">
-          {currentOffer ? renderOfferPopup(currentOffer) : renderBottomPanel()}
         </Animated.View>
+
+        <DraggableSheet
+          ref={sheetRef}
+          y={sheetY}
+          collapsedY={collapsedY}
+          height={expandedH}
+          contentPaddingBottom={insets.bottom + 24}
+          style={styles.sheet}
+          handleHitAreaStyle={styles.grabberWrap}
+          handleStyle={styles.grabber}
+          onOpenChange={setSheetOpen}
+          header={renderSheetHeader()}
+        >
+          {awaiting.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <Image source={EMPTY_COMPASS_ICON} style={{ width: 64, height: 64 }} resizeMode="contain" />
+              <Text style={styles.emptyTitle}>Nothing awaiting acceptance</Text>
+              <Text style={styles.emptySub}>
+                Sender requests that match your selected route appear here until you or another provider accepts them.
+              </Text>
+            </View>
+          ) : (
+            awaiting.map(renderRequestCard)
+          )}
+        </DraggableSheet>
       </View>
     );
   };
@@ -3302,7 +2892,7 @@ export default function JobsScreen() {
   const renderNotifModal = () => (
     <Modal visible={notifModalOpen} transparent animationType="fade" onRequestClose={() => setNotifModalOpen(false)}>
       <Pressable style={styles.notifBackdrop} onPress={() => setNotifModalOpen(false)}>
-        <Pressable style={[styles.notifCard, { marginTop: insets.top + 60 }]} onPress={() => { /* swallow */ }}>
+        <Pressable style={[styles.notifCard, { marginTop: insets.top + 60 }]} onPress={() => {}}>
           <View style={styles.notifHeader}>
             <Text style={styles.notifHeaderTitle}>Notifications</Text>
             <TouchableOpacity onPress={() => setNotifModalOpen(false)} hitSlop={10}>
@@ -3372,145 +2962,12 @@ export default function JobsScreen() {
     </Modal>
   );
 
-  const renderRequestListModal = () => {
-    const isLapsed = (r: JobRequest) => lapsedIds.includes(r.request_id);
-    const active = awaiting.filter(r => !dismissedIds.includes(r.request_id) && !isLapsed(r));
-    const skipped = awaiting.filter(r => dismissedIds.includes(r.request_id) && !isLapsed(r));
-    const missed = awaiting.filter(r => isLapsed(r));
-    const data = [...active, ...skipped, ...missed];
-    const border = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
-
-    const tag = (label: string, color: string, bg: string) => (
-      <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: bg }}>
-        <Text style={{ fontSize: 10.5, fontFamily: 'Poppins_700Bold', color, letterSpacing: 0.4 }}>{label}</Text>
-      </View>
-    );
-
-    const renderRow = ({ item: r }: { item: JobRequest }) => {
-      const isSkipped = dismissedIds.includes(r.request_id);
-      const lapsed = lapsedIds.includes(r.request_id);
-      const canAccept = !lapsed || ALLOW_LATE_ACCEPT;
-      return (
-        <View style={{
-          backgroundColor: colors.card, borderRadius: 16, padding: 14,
-          borderWidth: 1, borderColor: border, opacity: isSkipped ? 0.85 : 1,
-        }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-            {renderServicePill(r)}
-            {r.matchScore != null && tag(`${Math.round(r.matchScore)}% MATCH`, colors.success, 'rgba(34,197,94,0.12)')}
-            {r.isDirectRequest && tag('DIRECT', colors.accent, colors.accentSoft)}
-            {isSkipped && tag('SKIPPED', colors.textSecondary, 'rgba(100,116,139,0.15)')}
-            {lapsed && tag('MISSED', colors.error, 'rgba(239,68,68,0.12)')}
-            <View style={{ flex: 1 }} />
-            <Text style={{ fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: colors.textSecondary }}>
-              {requestCode(r.request_id)}
-            </Text>
-          </View>
-
-          <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 }}>
-            <View style={{ flex: 1, paddingRight: 10 }}>
-              <Text style={{ fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }} numberOfLines={1}>
-                {r.pickup.main}
-              </Text>
-              <Text style={{ fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary, marginVertical: 1 }}>↓</Text>
-              <Text style={{ fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }} numberOfLines={1}>
-                {r.dropoff.main}
-              </Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={{ fontSize: 10.5, fontFamily: 'Poppins_600SemiBold', color: colors.textSecondary, letterSpacing: 0.6 }}>PAY</Text>
-              <Text style={{ fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: colors.textPrimary }}>{money(r.estimated_cost)}</Text>
-            </View>
-          </View>
-
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <TouchableOpacity
-              style={{
-                flex: 1, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-                borderWidth: 1, borderColor: colors.accent,
-              }}
-              onPress={() => { setRequestListOpen(false); setDetailRequestId(r.request_id); }}
-              activeOpacity={0.85}
-            >
-              <Text style={{ fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: colors.accent }}>Details</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[{
-                flex: 1, height: 42, borderRadius: 12, alignItems: 'center', justifyContent: 'center',
-                backgroundColor: colors.accent,
-              }, (accepting || !canAccept) && { opacity: 0.6 }]}
-              onPress={() => acceptRequest(r)}
-              disabled={accepting || !canAccept}
-              activeOpacity={0.9}
-            >
-              {accepting
-                ? <ActivityIndicator size="small" color="#FFFFFF" />
-                : <Text style={{ fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' }}>Accept</Text>}
-            </TouchableOpacity>
-          </View>
-        </View>
-      );
-    };
-
-    return (
-      <Modal visible={requestListOpen} animationType="slide" onRequestClose={() => setRequestListOpen(false)}>
-        <View style={{ flex: 1, backgroundColor: colors.background }}>
-          <View style={{
-            flexDirection: 'row', alignItems: 'center',
-            paddingHorizontal: 16, paddingTop: insets.top + 8, paddingBottom: 12,
-            backgroundColor: colors.card, borderBottomWidth: 1, borderBottomColor: colors.divider,
-          }}>
-            <TouchableOpacity
-              onPress={() => setRequestListOpen(false)}
-              style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center' }}
-              activeOpacity={0.7} hitSlop={10}
-            >
-              <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={{ fontSize: 18, fontFamily: 'Poppins_700Bold', color: colors.textPrimary, letterSpacing: -0.3 }}>
-                Route Requests
-              </Text>
-              <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
-                {awaiting.length} awaiting{skipped.length > 0 ? ` · ${skipped.length} skipped` : ''}{missed.length > 0 ? ` · ${missed.length} missed` : ''}
-              </Text>
-            </View>
-            <View style={{ width: 42 }} />
-          </View>
-
-          <FlatList
-            data={data}
-            keyExtractor={(r) => String(r.request_id)}
-            renderItem={renderRow}
-            ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
-            refreshing={checkingMatches}
-            onRefresh={() => { void refreshMatches(providerIdRef.current, activeRouteRef.current, routesRef.current); }}
-            contentContainerStyle={{ padding: 16, paddingBottom: 24 + insets.bottom }}
-            showsVerticalScrollIndicator={false}
-            ListEmptyComponent={
-              <View style={{ alignItems: 'center', paddingTop: 60 }}>
-                <Image source={EMPTY_COMPASS_ICON} style={{ width: 72, height: 72 }} resizeMode="contain" />
-                <Text style={{ marginTop: 10, fontSize: 14, fontFamily: 'Poppins_700Bold', color: colors.textPrimary }}>
-                  Nothing awaiting acceptance
-                </Text>
-                <Text style={{ marginTop: 2, fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
-                  New matches on your route will show up here.
-                </Text>
-              </View>
-            }
-          />
-        </View>
-      </Modal>
-    );
-  };
-
   const renderAddRouteModal = () => (
     <Modal
       visible={addRouteModalVisible}
       transparent
       animationType="slide"
       onRequestClose={() => {
-        // Hardware back closes the map picker first, then the sheet.
         if (routeLocationPickerVisible) setRouteLocationPickerVisible(false);
         else setAddRouteModalVisible(false);
       }}
@@ -3580,13 +3037,17 @@ export default function JobsScreen() {
                   toolbarEnabled={false}
                 >
                   <Marker coordinate={{ latitude: newRouteStart.latitude, longitude: newRouteStart.longitude }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-                    <View style={[styles.mkDot, { backgroundColor: colors.info }]}><Text style={styles.mkDotText}>S</Text></View>
+                    <View style={[styles.mkDot, { backgroundColor: BRAND_ORANGE }]}>
+                      <SolarIcon name="MapPoint" variant="bold" size={15} color="#FFFFFF" />
+                    </View>
                   </Marker>
                   <Marker coordinate={{ latitude: newRouteEnd.latitude, longitude: newRouteEnd.longitude }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
-                    <View style={[styles.mkDot, { backgroundColor: colors.error }]}><Text style={styles.mkDotText}>E</Text></View>
+                    <View style={[styles.mkDot, { backgroundColor: '#FFFFFF' }]}>
+                      <SolarIcon name="Flag" variant="bold" size={15} color="#000000" />
+                    </View>
                   </Marker>
                   {newRoutePreviewCoords.length > 0 && (
-                    <Polyline coordinates={newRoutePreviewCoords} strokeColor={colors.info} strokeWidth={4} />
+                    <Polyline coordinates={newRoutePreviewCoords} strokeColor={BRAND_ORANGE} strokeWidth={4} />
                   )}
                 </MapView>
               </View>
@@ -3769,7 +3230,6 @@ export default function JobsScreen() {
           </ScrollView>
         </View>
 
-        {/* Map picker lives INSIDE this Modal as an overlay: no second native Modal, no dismiss/present race. */}
         <RouteLocationPickerModal
           asOverlay
           key={routeLocationPickerType}
@@ -3806,7 +3266,6 @@ export default function JobsScreen() {
 
       {renderNotifModal()}
       {renderFullListModal()}
-      {renderRequestListModal()}
 
       <Modal visible={routePickerVisible} transparent animationType="slide" onRequestClose={() => setRoutePickerVisible(false)}>
         <View style={styles.modalOverlay}>
@@ -3876,7 +3335,7 @@ export default function JobsScreen() {
                         activeRouteRef.current = r;
                         await setActiveRouteId(r.route_id);
                         setRoutePickerVisible(false);
-                        await refreshMatches(providerIdRef.current, r, routesRef.current);
+                        await refreshMatches(providerIdRef.current, r, true);
                       }}
                       activeOpacity={0.85}
                     >
@@ -3914,361 +3373,327 @@ export default function JobsScreen() {
   );
 }
 
-const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
-  mapTools: { position: 'absolute', right: 12, gap: 10 },
-  mapToolBtn: {
-    width: 44, height: 44, borderRadius: 22, backgroundColor: c.card,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6, elevation: 1,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+const makeStyles = (c: ThemeColors, isDark: boolean) => {
+  const hair = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+  return StyleSheet.create({
+    topOverlayWrap: { position: 'absolute', left: 16, right: 16, zIndex: 10 },
+    floatingBackBtn: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: hair,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
   },
-  sosBtn: { backgroundColor: c.error, borderColor: c.error },
-  mapToolBadge: {
-    position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18,
-    borderRadius: 9, paddingHorizontal: 4, backgroundColor: c.error,
-    borderWidth: 1, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
+    sideToolsCol: { alignSelf: 'flex-end', marginTop: 12, gap: 10 },
+    mapToolBtn: {
+    width: 46, height: 46, borderRadius: 14, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: hair,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 8, elevation: 4,
   },
-  mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
-
-  bottomWrap: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-  offlineBack: { position: 'absolute', left: 14, width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(30,38,54,0.88)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', zIndex: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
-  mapToolBtnOff: { backgroundColor: 'rgba(30,38,54,0.88)', borderColor: 'rgba(255,255,255,0.05)' },
-  toolDim: { opacity: 0.35 },
-
-  dashPanel: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 22, borderTopWidth: 1, overflow: 'hidden', borderTopLeftRadius: 24, borderTopRightRadius: 24, shadowColor: '#000', shadowOffset: { width: 0, height: -12 }, shadowOpacity: 0.05, shadowRadius: 12, elevation: 1 },
-  dashBar: { position: 'absolute', top: 0, left: 0, right: 0, height: 3 },
-  dashHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
-  dashHeadLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  liveBadge: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  liveRing: { position: 'absolute', width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.success },
-  liveCore: { width: 24, height: 24, borderRadius: 12 },
-  dashTitle: { fontSize: 17, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
-  dashSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
-  statusPillOn: { backgroundColor: c.successBg },
-  statusPillOff: { backgroundColor: 'rgba(100,116,139,0.15)' },
-  statusPillDot: { width: 6, height: 6, borderRadius: 3 },
-  statusPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
-  routeBlock: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, borderRadius: 12, borderWidth: 1, marginBottom: 14 },
-  routeBlockOff: { backgroundColor: 'rgba(15,20,32,0.6)', borderColor: 'rgba(255,255,255,0.04)' },
-  vehicleChip: { width: 48, height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  vehicleDot: { position: 'absolute', top: -2, right: -2, width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
-  routeLabel: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8, color: c.textMuted },
-  routeTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 3, letterSpacing: -0.2 },
-  routeDetail: { fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 3 },
-  swapBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  swapBtnOff: { backgroundColor: 'rgba(30,38,54,0.8)', borderColor: 'rgba(255,255,255,0.06)' },
-  powerBtn: { borderColor: 'rgba(239,68,68,0.35)' },
-  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 18, borderRadius: 14, backgroundColor: c.accent, overflow: 'hidden', shadowColor: c.accent, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 1 },
-  ctaShineWrap: { position: 'absolute', top: 0, bottom: 0, left: 0, width: 90 },
-  ctaShine: { flex: 1, backgroundColor: 'rgba(255,255,255,0.3)', transform: [{ skewX: '-20deg' }] },
-  ctaText: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.2 },
-  statsGrid: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  statCard: { flex: 1, alignItems: 'center', paddingVertical: 12, borderRadius: 12, backgroundColor: 'rgba(15,20,32,0.6)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
-  statVal: { fontSize: 16, fontFamily: 'Poppins_800ExtraBold', color: '#E2E8F0', letterSpacing: -0.3 },
-  statLbl: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: '#64748B', letterSpacing: 0.6, marginTop: 4 },
-  locWarnBottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 6 },
-  locWarnText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.warning },
-  svcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  svcPillText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.info },
-  oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
-  rtRow: { flexDirection: 'row', gap: 14 },
-  rtRail: { alignItems: 'center', width: 26 },
-  rtRing: { width: 26, height: 26, borderRadius: 13, borderWidth: 3, alignItems: 'center', justifyContent: 'center', backgroundColor: c.card },
-  rtRingDot: { width: 8, height: 8, borderRadius: 4 },
-  rtDots: { position: 'absolute', top: 30, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
-  rtDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
-  rtText: { flex: 1 },
-  rtLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  rtMain: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2, marginTop: 1 },
-  rtSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 2 },
-  mcRow: { flexDirection: 'row', gap: 10 },
-  mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
-  mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_800ExtraBold' },
-  mcRole: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  mcName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  dCode: { fontSize: 26, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.5 },
-  dWhen: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 2 },
-  dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
-  dItemText: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 20 },
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 12, padding: 14 },
-  tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4 },
-
-  card: {
-    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 14,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6, elevation: 1,
+    sosToolBtn: {
+        backgroundColor: c.error, borderColor: c.error,
+      },
+    mapToolBadge: {
+        position: 'absolute', top: -4, right: -4, minWidth: 18, height: 18,
+        borderRadius: 9, paddingHorizontal: 4, backgroundColor: c.error,
+        borderWidth: 1.5, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
+      },
+    mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+    locWarnText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.warning },
+    svcPill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8 },
+    svcPillText: { fontSize: 11.5, fontFamily: 'Poppins_800ExtraBold', color: c.info },
+    oTopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' },
+    rtRow: { flexDirection: 'row', gap: 12 },
+    rtRail: { alignItems: 'center', width: 30 },
+    rtText: { flex: 1 },
+    rtLabel: { fontSize: 9.5, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.7 },
+    rtMain: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 1 },
+    rtSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
+    mcRow: { flexDirection: 'row', gap: 10 },
+    mcCard: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.background, borderRadius: 12, borderWidth: 1, borderColor: c.divider, padding: 10 },
+    mcAvatar: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+    mcAvatarText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_800ExtraBold' },
+    mcRole: { fontSize: 9, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+    mcName: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    dCode: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.5 },
+    dWhen: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 2 },
+    dPhoto: { width: 92, height: 92, borderRadius: 12, backgroundColor: c.background, borderWidth: 1, borderColor: c.border },
+    dItemText: { fontSize: 14, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 20 },
+    tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+    tile: { width: '48%', flexGrow: 1, backgroundColor: c.background, borderWidth: 1, borderColor: c.divider, borderRadius: 12, padding: 14 },
+    tileLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+    tileValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 4 },
+    card: {
+        backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 14,
+        borderWidth: 1, borderColor: hair,
+      },
+    eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
+    cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
+    cardHeaderIcon: {
+        width: 26, height: 26, borderRadius: 8, backgroundColor: c.accentSoft,
+        alignItems: 'center', justifyContent: 'center',
+      },
+    cardTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    scoreBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        backgroundColor: c.successBg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+      },
+    scoreBadgeText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold' },
+    fallbackBadge: {
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        backgroundColor: c.secondary, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+      },
+    fallbackBadgeText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF', letterSpacing: 0.4 },
+    routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+    routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_500Medium' },
+    privacyNote: { marginTop: 14, fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted },
+    earnCard: { backgroundColor: c.accent, borderRadius: 12, padding: 18, marginBottom: 14 },
+    earnLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
+    earnValue: { color: '#FFFFFF', fontSize: 32, fontFamily: 'Poppins_800ExtraBold', marginTop: 4 },
+    earnNote: {
+        flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginTop: 12,
+        backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 12, padding: 10,
+      },
+    earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_500Medium', lineHeight: 16 },
+    acceptBar: {
+        position: 'absolute', left: 0, right: 0, bottom: 0,
+        backgroundColor: c.card,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 16, paddingTop: 16,
+        borderTopWidth: 1, borderTopColor: c.border,
+      },
+    acceptPrice: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.accent, marginTop: 2 },
+    acceptBtn: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+        backgroundColor: c.accent, paddingHorizontal: 22, paddingVertical: 14, borderRadius: 14, minWidth: 180,
+      },
+    acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
+    offerNoPhoto: {
+        flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+        backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+        borderRadius: 12, padding: 12,
+      },
+    offerNoPhotoText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', lineHeight: 17, color: c.warning },
+    loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
+    loadingText: { color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
+    previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
+    previewImg: { width: '100%', height: '80%' },
+    previewClose: {
+        position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
+        backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center',
+      },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+    routePickerSheet: {
+        backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+        paddingHorizontal: 20, paddingTop: 10,
+        paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+        maxHeight: '80%',
+      },
+    routePickerHandle: {
+        width: 40, height: 4, borderRadius: 2, backgroundColor: c.border,
+        alignSelf: 'center', marginBottom: 14,
+      },
+    routePickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+    routePickerTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    routePickerEmpty: { alignItems: 'center', paddingVertical: 40, gap: 10 },
+    routePickerEmptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8 },
+    routePickerEmptySub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
+    addRouteHeaderBtn: {
+        width: 34, height: 34, borderRadius: 17, backgroundColor: c.accent,
+        alignItems: 'center', justifyContent: 'center',
+      },
+    emptyManageRouteBtn: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
+        backgroundColor: c.accentSoft, marginTop: 6,
+      },
+    emptyManageRouteText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
+    createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
+    createQuickRouteBtnText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
+    routeOption: {
+        flexDirection: 'row', alignItems: 'center', gap: 12,
+        paddingVertical: 14, paddingHorizontal: 12,
+        backgroundColor: c.background, borderRadius: 12, marginBottom: 8,
+        borderWidth: 1, borderColor: 'transparent',
+      },
+    routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
+    routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
+    routeOptionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    routeOptionSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
+    weekdayRow: { flexDirection: 'row', gap: 6 },
+    weekdayChip: {
+        flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1,
+        borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
+      },
+    weekdayChipActive: { backgroundColor: c.accent, borderColor: c.accent },
+    weekdayChipText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
+    weekdayChipTextActive: { color: '#FFF' },
+    dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
+    inputGroup: { flex: 1 },
+    inputLabel: { marginBottom: 6, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontSize: 11, letterSpacing: 0.2 },
+    dateTimeButton: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
+        borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+      },
+    dateTimeValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    notifBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
+    notifCard: {
+        backgroundColor: c.card, borderRadius: 16,
+        paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
+        borderWidth: 1, borderColor: hair,
+      },
+    notifHeader: {
+        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+        paddingHorizontal: 16, paddingVertical: 12,
+        borderBottomWidth: 1, borderBottomColor: c.divider,
+      },
+    notifHeaderTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    notifCenter: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
+    notifEmptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontFamily: 'Poppins_500Medium' },
+    notifRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
+    notifRowUnread: { backgroundColor: c.accentSoft },
+    notifIconBox: {
+        width: 36, height: 36, borderRadius: 18,
+        backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
+      },
+    notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    notifTitle: { flex: 1, fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: c.accent },
+    notifBody: { fontSize: 12.5, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 3, lineHeight: 17 },
+    notifFooter: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+        paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider,
+      },
+    notifFooterText: { color: c.accent, fontFamily: 'Poppins_700Bold', fontSize: 13 },
+    addRouteSheet: {
+        borderTopLeftRadius: 24, borderTopRightRadius: 24,
+        paddingTop: 8, maxHeight: '94%', flex: 1,
+      },
+    addRouteHandle: {
+        alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
+        backgroundColor: c.border, marginTop: 6, marginBottom: 6,
+      },
+    addRouteHeader: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 20, paddingVertical: 12,
+        borderBottomWidth: 1, borderBottomColor: c.divider,
+      },
+    addRouteCloseBtn: {
+        width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
+        justifyContent: 'center', alignItems: 'center',
+      },
+    addRouteTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    addRouteScroll: { padding: 20, paddingBottom: 40 },
+    guardrailNotice: {
+        flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+        backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
+        borderWidth: 1, borderColor: c.accent, marginBottom: 16,
+      },
+    guardrailNoticeText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textPrimary, lineHeight: 17 },
+    formGroup: { marginBottom: 20 },
+    locationSelectorBtn: {
+        flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
+        padding: 14, borderRadius: 12, borderWidth: 1, borderColor: hair, gap: 12,
+      },
+    locSelectorIcon: {
+        width: 26, height: 26, borderRadius: 13, backgroundColor: c.divider,
+        justifyContent: 'center', alignItems: 'center',
+      },
+    locationSelectorText: { flex: 1, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, fontSize: 14 },
+    modalMapContainer: {
+        height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 20,
+        borderWidth: 1, borderColor: hair,
+      },
+    frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    frequencyOption: {
+        paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
+        borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
+      },
+    frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
+    frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
+    frequencyOptionTextSelected: { color: c.accent, fontFamily: 'Poppins_700Bold' },
+    vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    vehicleOption: {
+        flexDirection: 'row', alignItems: 'center', gap: 6,
+        backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
+        borderRadius: 999, borderWidth: 1, borderColor: c.border,
+      },
+    vehicleOptionActive: { backgroundColor: c.accent, borderColor: c.accent },
+    vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
+    vehicleOptionTextActive: { color: '#FFF' },
+    noVehiclesBox: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
+        borderRadius: 12, padding: 12,
+      },
+    noVehiclesText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.warning },
+    submitBtn: {
+        backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14,
+        alignItems: 'center', marginTop: 6,
+      },
+    submitBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
+    mkDot: {
+        width: 30, height: 30, borderRadius: 15,
+        borderWidth: 3, borderColor: '#FFFFFF',
+        alignItems: 'center', justifyContent: 'center',
+      },
+    topRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    statusBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12,
+    backgroundColor: c.background, borderRadius: 16, borderWidth: 1, borderColor: hair,
+    paddingLeft: 12, paddingRight: 8, paddingVertical: 8,
   },
-  eyebrow: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 0.8 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
-  cardHeaderIcon: {
-    width: 26, height: 26, borderRadius: 8, backgroundColor: c.accentSoft,
-    alignItems: 'center', justifyContent: 'center',
+    statusBannerOnline: { backgroundColor: c.successBg, borderColor: 'rgba(34,197,94,0.35)' },
+    statusDot: { width: 10, height: 10, borderRadius: 5 },
+    statusTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    statusSub: { fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: -1 },
+    offlineBtn: { height: 36, paddingHorizontal: 14, borderRadius: 18, backgroundColor: c.card, borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)', alignItems: 'center', justifyContent: 'center' },
+    offlineBtnText: { fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: c.error },
+    onlineBtn: { height: 36, paddingHorizontal: 16, borderRadius: 18, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+    onlineBtnText: { fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
+    locWarn: {
+    alignSelf: 'flex-start', marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: hair, paddingHorizontal: 12, paddingVertical: 8,
   },
-  cardTitle: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  scoreBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.successBg, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
+    sheet: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: c.card,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 4,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -6 }, shadowOpacity: isDark ? 0.5 : 0.1, shadowRadius: 16, elevation: 14,
   },
-  scoreBadgeText: { fontSize: 11.5, fontFamily: 'Poppins_800ExtraBold' },
-  fallbackBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.secondary, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8,
-  },
-  fallbackBadgeText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF', letterSpacing: 0.4 },
-  routeNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
-  routeNoteText: { flex: 1, fontSize: 12, lineHeight: 17, color: c.textPrimary, fontFamily: 'Poppins_500Medium' },
-  privacyNote: { marginTop: 14, fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted },
-  earnCard: { backgroundColor: c.accent, borderRadius: 12, padding: 18, marginBottom: 14 },
-  earnLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.8 },
-  earnValue: { color: '#FFFFFF', fontSize: 34, fontFamily: 'Poppins_800ExtraBold', marginTop: 4 },
-  earnNote: {
-    flexDirection: 'row', gap: 8, alignItems: 'flex-start', marginTop: 12,
-    backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 12, padding: 10,
-  },
-  earnNoteText: { flex: 1, color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_500Medium', lineHeight: 16 },
-
-  acceptBar: {
-    position: 'absolute', left: 0, right: 0, bottom: 0,
-    backgroundColor: c.card,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 16,
-    borderTopWidth: 1, borderTopColor: c.border,
-    shadowColor: '#000', shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-  },
-  acceptPrice: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.accent, marginTop: 2 },
-  acceptBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: c.accent, paddingHorizontal: 22, paddingVertical: 14, borderRadius: 14, minWidth: 180,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-  },
-  acceptBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
-
-  offerCount: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
-  offerMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 12 },
-  offerPrice: { fontSize: 32, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -1, marginTop: 2 },
-  offerCode: { fontSize: 13, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted },
-  offerNoPhoto: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14,
-    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
-    borderRadius: 12, padding: 12,
-  },
-  offerNoPhotoText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', lineHeight: 17, color: c.warning },
-  offerBtnRow: { flexDirection: 'row', gap: 10, borderTopWidth: 1, borderTopColor: c.divider },
-  declineBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 15, borderRadius: 14, backgroundColor: c.errorBg,
-    borderWidth: 1, borderColor: c.error,
-  },
-  declineBtnText: { fontSize: 15, fontFamily: 'Poppins_700Bold', color: c.error },
-  offerAcceptBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 15, borderRadius: 14, backgroundColor: c.accent,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-  },
-  offerAcceptText: { fontSize: 16, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
-
-  viewDetailsBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    marginTop: 18, paddingVertical: 14, borderRadius: 12,
-    backgroundColor: c.accentSoft, borderWidth: 1, borderColor: c.accent,
-  },
-  viewDetailsText: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.accent },
-
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10 },
-  loadingText: { color: c.textSecondary, fontFamily: 'Poppins_500Medium' },
-
-  previewOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
-  previewImg: { width: '100%', height: '80%' },
-  previewClose: {
-    position: 'absolute', right: 16, width: 40, height: 40, borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center',
-  },
-
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
-  routePickerSheet: {
-    backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingHorizontal: 20, paddingTop: 10,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-    maxHeight: '80%',
-  },
-  routePickerHandle: {
-    width: 40, height: 4, borderRadius: 2, backgroundColor: c.border,
-    alignSelf: 'center', marginBottom: 14,
-  },
-  routePickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  routePickerTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  routePickerEmpty: { alignItems: 'center', paddingVertical: 40, gap: 10 },
-  routePickerEmptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8 },
-  routePickerEmptySub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', paddingHorizontal: 20, marginBottom: 8 },
-  addRouteHeaderBtn: {
-    width: 34, height: 34, borderRadius: 17, backgroundColor: c.accent,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  emptyManageRouteBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12,
-    backgroundColor: c.accentSoft, marginTop: 6,
-  },
-  emptyManageRouteText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
-  createQuickRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 14, marginTop: 10 },
-  createQuickRouteBtnText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold' },
-
-  routeOption: {
+    grabberWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
+    grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
+    sheetHeader: { paddingBottom: 10 },
+    sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12, paddingHorizontal: 4 },
+    sheetTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+    countBadge: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 7, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+    countBadgeText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
+    routeRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    paddingVertical: 14, paddingHorizontal: 12,
-    backgroundColor: c.background, borderRadius: 12, marginBottom: 8,
-    borderWidth: 1, borderColor: 'transparent',
+    backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: hair, padding: 12,
   },
-  routeOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
-  routeOptionDot: { width: 10, height: 10, borderRadius: 5 },
-  routeOptionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  routeOptionSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
-
-  weekdayRow: { flexDirection: 'row', gap: 6 },
-  weekdayChip: {
-    flex: 1, paddingVertical: 10, borderRadius: 12, borderWidth: 1,
-    borderColor: c.border, alignItems: 'center', backgroundColor: c.card,
-  },
-  weekdayChipActive: { backgroundColor: c.accent, borderColor: c.accent },
-  weekdayChipText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
-  weekdayChipTextActive: { color: '#FFF' },
-
-  dateTimeRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
-  inputGroup: { flex: 1 },
-  inputLabel: { marginBottom: 6, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontSize: 11, letterSpacing: 0.2 },
-  dateTimeButton: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.card, borderWidth: 1, borderColor: c.border,
-    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
-  },
-  dateTimeValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-
-  notifBackdrop: { flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', paddingHorizontal: 16 },
-  notifCard: {
-    backgroundColor: c.card, borderRadius: 16,
-    paddingTop: 6, paddingBottom: 4, maxHeight: '78%',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.05,
-    shadowRadius: 12, elevation: 1,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  notifHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 16, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: c.divider,
-  },
-  notifHeaderTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  notifCenter: { paddingVertical: 40, alignItems: 'center', justifyContent: 'center' },
-  notifEmptyText: { marginTop: 10, color: c.textMuted, fontSize: 13, fontFamily: 'Poppins_500Medium' },
-  notifRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
-  notifRowUnread: { backgroundColor: c.accentSoft },
-  notifIconBox: {
-    width: 36, height: 36, borderRadius: 18,
-    backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center',
-  },
-  notifTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  notifTitle: { flex: 1, fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  notifDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: c.accent },
-  notifBody: { fontSize: 12.5, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 3, lineHeight: 17 },
-  notifTime: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: c.textMuted, marginTop: 5 },
-  notifFooter: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    paddingVertical: 14, borderTopWidth: 1, borderTopColor: c.divider,
-  },
-  notifFooterText: { color: c.accent, fontFamily: 'Poppins_700Bold', fontSize: 13 },
-
-  addRouteSheet: {
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    paddingTop: 8, maxHeight: '94%', flex: 1,
-  },
-  addRouteHandle: {
-    alignSelf: 'center', width: 44, height: 5, borderRadius: 3,
-    backgroundColor: c.border, marginTop: 6, marginBottom: 6,
-  },
-  addRouteHeader: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingVertical: 12,
-    borderBottomWidth: 1, borderBottomColor: c.divider,
-  },
-  addRouteCloseBtn: {
-    width: 40, height: 40, borderRadius: 20, backgroundColor: c.divider,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  addRouteTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  addRouteScroll: { padding: 20, paddingBottom: 40 },
-
-  guardrailNotice: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
-    backgroundColor: c.accentSoft, padding: 12, borderRadius: 12,
-    borderWidth: 1, borderColor: c.accent, marginBottom: 16,
-  },
-  guardrailNoticeText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.textPrimary, lineHeight: 17 },
-
-  formGroup: { marginBottom: 20 },
-  locationSelectorBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: c.background,
-    padding: 14, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 12,
-  },
-  locSelectorIcon: {
-    width: 26, height: 26, borderRadius: 13, backgroundColor: c.divider,
-    justifyContent: 'center', alignItems: 'center',
-  },
-  locationSelectorText: { flex: 1, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, fontSize: 14 },
-  modalMapContainer: {
-    height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 20,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-
-  frequencyOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  frequencyOption: {
-    paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999,
-    borderWidth: 1, borderColor: c.border, backgroundColor: c.card,
-  },
-  frequencyOptionSelected: { backgroundColor: c.accentSoft, borderColor: c.accent },
-  frequencyOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
-  frequencyOptionTextSelected: { color: c.accent, fontFamily: 'Poppins_700Bold' },
-
-  vehicleOptions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  vehicleOption: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.background, paddingHorizontal: 14, paddingVertical: 10,
-    borderRadius: 999, borderWidth: 1, borderColor: c.border,
-  },
-  vehicleOptionActive: { backgroundColor: c.accent, borderColor: c.accent },
-  vehicleOptionText: { fontSize: 13, color: c.textSecondary, fontFamily: 'Poppins_600SemiBold' },
-  vehicleOptionTextActive: { color: '#FFF' },
-
-  noVehiclesBox: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning,
-    borderRadius: 12, padding: 12,
-  },
-  noVehiclesText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.warning },
-
-  submitBtn: {
-    backgroundColor: c.accent, paddingVertical: 16, borderRadius: 14,
-    alignItems: 'center', marginTop: 6,
-    shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-  },
-  submitBtnText: { color: '#FFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
-
-  mkDot: {
-    width: 26, height: 26, borderRadius: 13,
-    borderWidth: 3, borderColor: '#FFFFFF',
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
-  },
-  mkDotText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
-});
+    routeRowIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
+    routeRowTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    routeRowSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
+    changePill: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+    changePillText: { fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: c.accent },
+    reqCard: { backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: hair, padding: 16, marginBottom: 14 },
+    reqTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+    reqTags: { flex: 1, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
+    reqPrice: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -0.4 },
+    reqActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+    declineBtn: { height: 46, paddingHorizontal: 14, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
+    declineText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.error },
+    detailsBtn: { flex: 1, height: 46, borderRadius: 23, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
+    detailsText: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.accent },
+    acceptBtnPill: { flex: 1.4, height: 46, borderRadius: 23, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+    acceptPillText: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
+    tag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+    tagText: { fontSize: 10.5, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
+    rtPickPin: { width: 30, height: 30, borderRadius: 15, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
+    rtDropPin: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center' },
+    rtLine: { position: 'absolute', top: 34, bottom: -4, width: 2, borderRadius: 1, backgroundColor: c.border },
+    rtStreetRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5, marginTop: 3 },
+    emptyWrap: { alignItems: 'center', paddingTop: 24, paddingBottom: 8 },
+    emptyTitle: { marginTop: 10, fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    emptySub: { marginTop: 4, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, textAlign: 'center', paddingHorizontal: 24, lineHeight: 18 },
+  });
+};

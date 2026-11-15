@@ -1,3 +1,4 @@
+// @ts-nocheck
 // supabase/functions/google-routes/index.ts
 // Server-side proxy for the Google Routes API (computeRoutes).
 //

@@ -23,6 +23,7 @@ try { Location = require('expo-location'); } catch { Location = null; }
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 const BLUE = '#3B82F6';
+const BRAND_ORANGE = '#FF751F';   // same orange as the pickup pin in LiveTrackingScreen
 
 const HIDE_DEPARTED_AFTER_MIN = 180;
 const SEND_NOW_WINDOW_MIN = 60;
@@ -441,115 +442,111 @@ export default function ExploreScreen() {
     const pickupMain = splitAddress(item.pickup).main;
     const dropoffMain = splitAddress(item.dropoff).main;
     const isFinished = item.state === 'finished';
-    const mutedColor = isFinished ? colors.textSecondary : ORANGE;
+    const timeIcon: SolarIconName = isFinished ? 'Flag' : item.state === 'scheduled' ? 'Calendar' : 'Clock';
 
     return (
       <TouchableOpacity
-        style={[styles.oCard, isFinished && { opacity: 0.65 }]}
+        style={[styles.tcCard, isFinished && { opacity: 0.65 }]}
         activeOpacity={0.92}
         onPress={() => setTrackRouteId(item.routeId)}
       >
-        <View style={styles.oPad}>
-          <View style={styles.oTopRow}>
-            <View style={styles.svcPill}>
-              <SolarIcon name="Routing" variant="duotone" size={14} color={BLUE} />
-              <Text style={styles.svcPillText} numberOfLines={1}>{item.vehicleType}</Text>
-            </View>
-            <View style={[styles.statusPill, { backgroundColor: badge.bg }]}>
-              <SolarIcon name={badge.icon} variant="bold" size={12} color={badge.color} />
-              <Text style={[styles.statusPillText, { color: badge.color }]}>{badge.label}</Text>
-            </View>
+        {/* Status + distance */}
+        <View style={styles.tcTopRow}>
+          <View style={[styles.tcStatusPill, { backgroundColor: badge.bg }]}>
+            <SolarIcon name={badge.icon} variant="bold" size={12} color={badge.color} />
+            <Text style={[styles.tcStatusText, { color: badge.color }]} numberOfLines={1}>{badge.label}</Text>
           </View>
+          {item.distanceKm !== null && (
+            <View style={styles.tcDistance}>
+              <SolarIcon name="MapPoint" variant="bold" size={14} color={isFinished ? colors.textMuted : colors.accent} />
+              <Text style={styles.tcDistanceText}>{formatKm(item.distanceKm)} away</Text>
+            </View>
+          )}
+        </View>
 
-          <View>
-            {[
-              { key: 'p', label: 'START', main: pickupMain, sub: item.pickupSub, color: ORANGE },
-              { key: 'd', label: 'DESTINATION', main: dropoffMain, sub: item.dropoffSub, color: colors.textPrimary },
-            ].map((r, i) => (
-              <View key={r.key} style={styles.routeRow}>
-                <View style={styles.routeRail}>
-                  <View style={[styles.routeRing, { borderColor: r.color }]}>
-                    <View style={[styles.routeRingDot, { backgroundColor: r.color }]} />
-                  </View>
-                  {i === 0 && (
-                    <View style={styles.routeDots}>
-                      {[0, 1, 2].map(k => <View key={k} style={styles.routeDot} />)}
-                    </View>
-                  )}
-                </View>
-                <View style={[styles.routeTextWrap, i === 0 && { paddingBottom: 16 }]}>
-                  <Text style={styles.routeLabel}>{r.label}</Text>
-                  <Text style={styles.routeMain} numberOfLines={1}>{r.main}</Text>
-                  {!!r.sub && (
-                    <Text style={styles.routeSub} numberOfLines={1}>{r.sub}</Text>
-                  )}
-                </View>
-              </View>
-            ))}
+        {/* Provider */}
+        <View style={styles.tcProfile}>
+          <View style={[styles.tcAvatar, isFinished && { backgroundColor: '#94A3B8' }]}>
+            <Text style={styles.tcAvatarText}>{initials(item.name)}</Text>
           </View>
-
-          <View style={styles.oContacts}>
-            <View style={styles.mcCard}>
-              <View style={[styles.mcAvatar, { backgroundColor: BLUE }]}>
-                <Text style={styles.mcAvatarText}>{initials(item.name)}</Text>
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.mcRole}>COURIER PARTNER</Text>
-                <Text style={styles.mcName} numberOfLines={1}>{item.name}</Text>
-              </View>
-              <View style={styles.mcRatingBadge}>
-                <SolarIcon name="Star" variant="duotone" size={13} color={colors.warning} />
-                <Text style={styles.mcRatingText}>{item.rating}</Text>
-              </View>
+          <View style={styles.tcProfileText}>
+            <Text style={styles.tcName} numberOfLines={1}>{item.name}</Text>
+            <View style={styles.tcMetaRow}>
+              <SolarIcon name="Star" variant="bold" size={13} color={colors.warning} />
+              <Text style={styles.tcMetaStrong}>{item.rating}</Text>
+              <Text style={styles.tcMetaDot}>•</Text>
+              <Text style={styles.tcMeta} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
           </View>
         </View>
 
-        <View style={styles.oFooter}>
-          <View style={styles.oChip}>
-            <SolarIcon
-              name={isFinished ? 'Flag' : item.state === 'scheduled' ? 'Calendar' : 'Clock'}
-              variant="bold"
-              size={14}
-              color={mutedColor}
-            />
-            <Text style={[styles.oChipText, isFinished && { color: colors.textSecondary }]} numberOfLines={1}>
-              {isFinished ? 'Arrived at destination' : item.timeLabel}
-            </Text>
+        <View style={styles.tcDivider} />
+
+        {/* Route timeline */}
+        <View style={styles.tcTlRow}>
+          <View style={styles.tcTlRail}>
+            <View style={styles.tcPickIcon}>
+              <SolarIcon name="MapPoint" variant="bold" size={18} color="#FFFFFF" />
+            </View>
+            <View style={styles.tcTlLine} />
+          </View>
+          <View style={styles.tcTlBody}>
+            <Text style={styles.tcTlLabel}>START</Text>
+            <Text style={styles.tcTlTitle} numberOfLines={1}>{pickupMain}</Text>
+            {!!item.pickupSub && <Text style={styles.tcTlSub} numberOfLines={1}>{item.pickupSub}</Text>}
+          </View>
+        </View>
+
+        <View style={styles.tcTlRow}>
+          <View style={styles.tcTlRail}>
+            <View style={styles.tcDropIcon}>
+              <SolarIcon name="Flag" variant="bold" size={16} color="#000000" />
+            </View>
+          </View>
+          <View style={[styles.tcTlBody, { paddingBottom: 0 }]}>
+            <Text style={styles.tcTlLabel}>DESTINATION</Text>
+            <Text style={styles.tcTlTitle} numberOfLines={1}>{dropoffMain}</Text>
+            {!!item.dropoffSub && <Text style={styles.tcTlSub} numberOfLines={1}>{item.dropoffSub}</Text>}
+          </View>
+        </View>
+
+        {/* Departure + capacity */}
+        <View style={styles.tcInfo}>
+          <View style={styles.tcInfoCell}>
+            <SolarIcon name={timeIcon} variant="bold" size={16} color={isFinished ? colors.textMuted : colors.accent} />
+            <View style={styles.tcInfoText}>
+              <Text style={styles.tcInfoLabel}>{isFinished ? 'STATUS' : 'DEPARTURE'}</Text>
+              <Text style={styles.tcInfoValue} numberOfLines={1}>{isFinished ? 'Arrived' : item.timeLabel}</Text>
+            </View>
           </View>
           {item.maxWeightKg != null && (
-            <View style={styles.oChip}>
-              <SolarIcon name="Package" variant="bold" size={14} color={mutedColor} />
-              <Text style={[styles.oChipText, isFinished && { color: colors.textSecondary }]} numberOfLines={1}>
-                {item.maxWeightKg} kg
-              </Text>
-            </View>
-          )}
-          <View style={{ flex: 1 }} />
-          {item.distanceKm !== null && (
-            <Text style={[styles.oDistPrice, isFinished && { color: colors.textSecondary }]}>
-              {formatKm(item.distanceKm)}
-            </Text>
+            <>
+              <View style={styles.tcInfoSep} />
+              <View style={styles.tcInfoCell}>
+                <SolarIcon name="Package" variant="bold" size={16} color={isFinished ? colors.textMuted : colors.accent} />
+                <View style={styles.tcInfoText}>
+                  <Text style={styles.tcInfoLabel}>CAPACITY</Text>
+                  <Text style={styles.tcInfoValue} numberOfLines={1}>{item.maxWeightKg} kg</Text>
+                </View>
+              </View>
+            </>
           )}
         </View>
 
-        <View style={styles.oActions}>
-          <TouchableOpacity
-            style={styles.trackBtn}
-            onPress={() => setTrackRouteId(item.routeId)}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
-            <Text style={styles.trackBtnText}>View</Text>
+        {/* Actions */}
+        <View style={styles.tcActions}>
+          <TouchableOpacity style={styles.tcViewBtn} onPress={() => setTrackRouteId(item.routeId)} activeOpacity={0.85}>
+            <SolarIcon name="Routing" variant="duotone" size={16} color={colors.accent} />
+            <Text style={styles.tcViewText}>View</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.oRouteBtn, isFinished && { backgroundColor: '#94A3B8' }]}
+            style={[styles.tcRequestBtn, isFinished && { backgroundColor: '#94A3B8' }]}
             onPress={() => requestAlongRoute(item)}
             activeOpacity={0.9}
           >
             <SolarIcon name={isFinished ? 'CloseCircle' : 'PaperPlane'} variant="duotone" size={16} color="#FFFFFF" />
-            <Text style={styles.oRouteText}>
+            <Text style={styles.tcRequestText} numberOfLines={1}>
               {isFinished ? 'Route Finished' : 'Request Delivery'}
             </Text>
           </TouchableOpacity>
@@ -946,165 +943,82 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  /* ---------- TRIP CARD ---------- */
-  oCard: {
+  /* ---------- TRIP CARD (matches LiveTrackingScreen card language) ---------- */
+  tcCard: {
     backgroundColor: c.card,
-    borderRadius: 22,
-    marginBottom: 14,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: c.border,
-    overflow: 'hidden',
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.04,
+    shadowRadius: 8,
+    elevation: isDark ? 0 : 1,
   },
-  oPad: { padding: 16 },
-  oTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-    gap: 8,
-  },
-
-  svcPill: {
+  tcTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 14 },
+  tcStatusPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    flexShrink: 1,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, flexShrink: 1,
   },
-  svcPillText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_700Bold',
-    color: BLUE,
-    flexShrink: 1,
-  },
-  statusPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    flexShrink: 0,
-  },
-  statusPillText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_700Bold',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
+  tcStatusText: { fontSize: 11, fontFamily: 'Poppins_700Bold', textTransform: 'uppercase', letterSpacing: 0.3, flexShrink: 1 },
+  tcDistance: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
+  tcDistanceText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
-  routeRow: { flexDirection: 'row', gap: 14 },
-  routeRail: { alignItems: 'center', width: 24 },
-  routeRing: {
-    width: 24, height: 24, borderRadius: 12, borderWidth: 3,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
+  tcProfile: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tcAvatar: {
+    width: 48, height: 48, borderRadius: 24, backgroundColor: c.success,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },
-  routeRingDot: { width: 8, height: 8, borderRadius: 4 },
-  routeDots: { position: 'absolute', top: 26, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
-  routeDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
-  routeTextWrap: { flex: 1, minWidth: 0 },
-  routeLabel: {
-    fontSize: 10,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textMuted,
-    letterSpacing: 0.6,
-  },
-  routeMain: {
-    fontSize: 16,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-    marginTop: 1,
-  },
-  routeSub: {
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 2,
-  },
+  tcAvatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 16 },
+  tcProfileText: { flex: 1, minWidth: 0 },
+  tcName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
+  tcMetaStrong: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcMetaDot: { fontSize: 12, color: c.textMuted },
+  tcMeta: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, flexShrink: 1 },
 
-  /* Courier mini-card */
-  oContacts: { marginTop: 12 },
-  mcCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: c.background, borderRadius: 14, padding: 12,
-    borderWidth: 1, borderColor: c.divider,
-  },
-  mcAvatar: {
-    width: 40, height: 40, borderRadius: 20,
+  tcDivider: { height: 1, backgroundColor: c.border, marginVertical: 14 },
+
+  tcTlRow: { flexDirection: 'row', gap: 12 },
+  tcTlRail: { width: 34, alignItems: 'center' },
+  tcPickIcon: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE,
     alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0,
   },
-  mcAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
+  tcDropIcon: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
   },
-  mcRole: {
-    fontSize: 9,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textMuted,
-    letterSpacing: 0.5,
-  },
-  mcName: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textPrimary,
-  },
-  mcRatingBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.card, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
-    borderWidth: 1, borderColor: c.border,
-    flexShrink: 0,
-  },
-  mcRatingText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-  },
+  tcTlLine: { flex: 1, width: 2, backgroundColor: c.border, marginTop: 4, marginBottom: -4 },
+  tcTlBody: { flex: 1, minWidth: 0, paddingBottom: 14 },
+  tcTlLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  tcTlTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcTlSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
 
-  /* Footer chips */
-  oFooter: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14,
-    borderTopWidth: 1, borderTopColor: c.divider,
+  tcInfo: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.background, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14,
+    marginTop: 14,
   },
-  oChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.card, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    borderWidth: 1, borderColor: c.border,
-    flexShrink: 1,
-  },
-  oChipText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textPrimary,
-    flexShrink: 1,
-  },
-  oDistPrice: {
-    fontSize: 15,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-    flexShrink: 0,
-  },
+  tcInfoCell: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
+  tcInfoSep: { width: 1, alignSelf: 'stretch', backgroundColor: c.border, marginHorizontal: 12 },
+  tcInfoText: { flex: 1, minWidth: 0 },
+  tcInfoLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.6 },
+  tcInfoValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
-  /* Action buttons */
-  oActions: {
-    flexDirection: 'row', gap: 10, padding: 14,
-    borderTopWidth: 1, borderTopColor: c.divider,
+  tcActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  tcViewBtn: {
+    flex: 1, height: 48, borderRadius: 24, backgroundColor: c.accentSoft,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
   },
-  trackBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14,
+  tcViewText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  tcRequestBtn: {
+    flex: 2, height: 48, borderRadius: 24, backgroundColor: c.accent,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 8,
   },
-  trackBtnText: {
-    color: c.accent,
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
-  oRouteBtn: {
-    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14,
-  },
-  oRouteText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
+  tcRequestText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
 
   /* Empty state */
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },

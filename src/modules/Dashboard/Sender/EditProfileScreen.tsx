@@ -18,8 +18,7 @@ import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-
-const ORANGE = '#FA7A25';
+import { SolarIcon } from '../../../components/ui/SolarIcon';
 
 const getDeviceCoords = async (): Promise<{ lat: number; lng: number } | null> => {
   try {
@@ -295,7 +294,7 @@ export default function EditProfileScreen() {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
-        <ActivityIndicator size="large" color={ORANGE} />
+        <ActivityIndicator size="large" color={colors.accent} />
         <Text style={styles.loadingText}>Loading profile...</Text>
       </View>
     );
@@ -303,11 +302,11 @@ export default function EditProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor={ORANGE} />
+      <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
 
-      <Animated.View style={[styles.header, { paddingTop: insets.top + 16 }, fadeUp(headerAnim, -14)]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
-          <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
+      <Animated.View style={[styles.header, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.7}>
+          <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
         <View style={{ width: 42 }} />
@@ -590,28 +589,26 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
 
     header: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      backgroundColor: ORANGE, paddingHorizontal: 20, paddingBottom: 26,
-      borderBottomLeftRadius: 24, borderBottomRightRadius: 24,
-      shadowColor: ORANGE, shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.25, shadowRadius: 14, elevation: 6, zIndex: 10,
+      backgroundColor: c.background, paddingHorizontal: 16, paddingBottom: 12, zIndex: 10,
     },
     backButton: {
-      width: 42, height: 42, borderRadius: 21, backgroundColor: 'rgba(255,255,255,0.2)',
+      width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
       justifyContent: 'center', alignItems: 'center',
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)',
+      borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+      shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
     },
-    headerTitle: { fontSize: 19, fontFamily: 'Poppins_700Bold', color: '#FFFFFF', letterSpacing: -0.2 },
+    headerTitle: { fontSize: 20, lineHeight: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
-    scrollContent: { paddingBottom: 60, paddingTop: 10, paddingHorizontal: 20, gap: 16 },
+    scrollContent: { paddingBottom: 60, paddingTop: 8, paddingHorizontal: 16, gap: 16 },
     bottomSpacer: { height: 40 },
 
-    avatarSection: { alignItems: 'center', marginTop: -42, marginBottom: 8, zIndex: 5 },
+    avatarSection: { alignItems: 'center', marginTop: 4, marginBottom: 8 },
     imagePicker: {
-      width: 110, height: 110, borderRadius: 55, backgroundColor: ORANGE,
+      width: 110, height: 110, borderRadius: 55, backgroundColor: c.accent,
       justifyContent: 'center', alignItems: 'center',
       borderWidth: 4, borderColor: c.card,
-      shadowColor: '#000', shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.18, shadowRadius: 12, elevation: 6, overflow: 'visible',
+      overflow: 'visible',
     },
     profilePreview: { width: 102, height: 102, borderRadius: 51 },
     imagePlaceholder: { justifyContent: 'center', alignItems: 'center' },
@@ -630,8 +627,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     sectionNumberBadge: {
       width: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
       justifyContent: 'center', alignItems: 'center',
-      shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.3, shadowRadius: 4, elevation: 2,
     },
     sectionNumberText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
     sectionTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
@@ -652,9 +647,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
 
     saveButton: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.accent,
-      paddingVertical: 16, borderRadius: 14, gap: 8,
-      shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
+      paddingVertical: 16, borderRadius: 16, gap: 8,
     },
     saveButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
     saveButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 15, letterSpacing: 0.2 },
