@@ -52,7 +52,7 @@ const POLL_INTERVAL_MS = 20000;                       // safety net in case a re
 const POLL_EVALUATE_EVERY = 3;                        // every 3rd poll also re-evaluates the corridor
 const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
+const FREQUENCIES = ['One-time', 'Daily', 'Weekly'] as const;
 type Frequency = typeof FREQUENCIES[number];
 
 const RECENTS_KEY = '@pns:recent_locations:v1';
@@ -147,6 +147,7 @@ interface JobRequest {
   totalItems: number;
   sizeSummary: string;
   weightKg: number | null;
+  volumeL: number;
   fragile: boolean;
   dims: string | null;
   senderName: string;
@@ -414,6 +415,12 @@ const normalizeMatchRow = (
       ? summarizeSizes(items.map(i => i.size))
       : sizeCounts.filter(([, q]) => Number(q) > 0).map(([l, q]) => `${q} ${l}`).join(' · '),
     weightKg: Number(cargo?.total_weight_kg) || null,
+    // cargo volume in liters: per-item sizes when we have them, else the box quantities on the cargo profile
+    volumeL: Math.round(
+      Array.isArray(itemsJson) && itemsJson.length > 0
+        ? computeCargoVolumeLiters(items)
+        : computeCargoVolumeLiters(cargo),
+    ),
     fragile: items.some(i => i.fragile) || !!cargo?.is_fragile,
     dims,
     senderName: senders[r.sender_id] || 'Sender',
@@ -2582,7 +2589,12 @@ export default function JobsScreen() {
     const photos = o.items.filter(i => i.photo && !failedPhotos[i.photo!]).map(i => i.photo!);
     const localOnly = o.items.some(i => i.localOnly && !i.photo);
     const cap = activeRoute?.vehicle?.max_weight_kg;
-    const fits = o.weightKg != null && cap ? o.weightKg <= cap : null;
+    const capVol = activeRoute?.vehicle?.max_volume_liters;
+    const fitsWeight = o.weightKg != null && cap ? o.weightKg <= cap : null;
+    const fitsVol = capVol ? o.volumeL <= capVol : null;
+    const fits = fitsWeight === null && fitsVol === null ? null : fitsWeight !== false && fitsVol !== false;
+    const capText = [cap ? `${cap} kg` : null, capVol ? `${Math.round(capVol)} L` : null].filter(Boolean).join(' · ');
+    const exceedsText = [fitsWeight === false ? 'weight' : null, fitsVol === false ? 'volume' : null].filter(Boolean).join(' & ');
     const hasNotes = !!o.pickupNote || !!o.dropoffNote;
     const { toPickupKm, tripKm, etaMin } = distancesFor(o);
 
@@ -2736,6 +2748,10 @@ export default function JobsScreen() {
                 <Text style={styles.tileValue}>{o.weightKg != null ? `${o.weightKg} kg` : '—'}</Text>
               </View>
               <View style={styles.tile}>
+                <Text style={styles.tileLabel}>VOLUME</Text>
+                <Text style={styles.tileValue}>{o.volumeL > 0 ? `${o.volumeL} L` : '—'}</Text>
+              </View>
+              <View style={styles.tile}>
                 <Text style={styles.tileLabel}>HANDLING</Text>
                 <Text style={[styles.tileValue, o.fragile && { color: colors.accent }]}>
                   {o.fragile ? 'Fragile' : 'Standard'}
@@ -2745,7 +2761,7 @@ export default function JobsScreen() {
                 <View style={styles.tile}>
                   <Text style={styles.tileLabel}>VEHICLE CAPACITY</Text>
                   <Text style={[styles.tileValue, { color: fits ? colors.success : colors.error }]} numberOfLines={2}>
-                    {fits ? `Fits (${cap} kg max)` : `Exceeds max (${cap} kg)`}
+                    {fits ? `Fits (${capText} max)` : `Exceeds ${exceedsText} (max ${capText})`}
                   </Text>
                 </View>
               )}
@@ -2904,10 +2920,27 @@ export default function JobsScreen() {
               <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
             </View>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={styles.routeRowTitle} numberOfLines={1}>{start.main} → {end.main}</Text>
-              <Text style={styles.routeRowSub} numberOfLines={1}>
-                {activeRoute.route_frequency} · {timeStr} · {Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg left
-              </Text>
+              {/* From / To on their own lines so long street names never push the capacity off screen */}
+              <View style={styles.routeStopRow}>
+                <View style={[styles.routeStopDot, { backgroundColor: BRAND_ORANGE }]} />
+                <Text style={styles.routeStopText} numberOfLines={1}>{start.main}</Text>
+              </View>
+              <View style={styles.routeStopRow}>
+                <View style={[styles.routeStopDot, { backgroundColor: colors.textPrimary }]} />
+                <Text style={styles.routeStopText} numberOfLines={1}>{end.main}</Text>
+              </View>
+              {/* Chips wrap to a second line when the screen is narrow, so kg and L are always fully visible */}
+              <View style={styles.routeMetaWrap}>
+                <View style={styles.routeChip}>
+                  <Text style={styles.routeChipText}>{activeRoute.route_frequency}{timeStr ? ` · ${timeStr}` : ''}</Text>
+                </View>
+                <View style={styles.routeChip}>
+                  <Text style={styles.routeChipText}>{Number(activeRoute.remaining_weight_kg ?? 100).toFixed(0)} kg left</Text>
+                </View>
+                <View style={styles.routeChip}>
+                  <Text style={styles.routeChipText}>{Number(activeRoute.remaining_volume_liters ?? 300).toFixed(0)} L left</Text>
+                </View>
+              </View>
             </View>
             <View style={styles.changePill}>
               <Text style={styles.changePillText}>Change</Text>
@@ -3815,6 +3848,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
   },
     routeRowIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
     routeRowTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    routeStopRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+    routeStopText: { flex: 1, fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    routeStopDot: { width: 8, height: 8, borderRadius: 4 },
+    routeMetaWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+    routeChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: c.card, borderWidth: 1, borderColor: c.divider },
+    routeChipText: { fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
     routeRowSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
     changePill: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
     changePillText: { fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: c.accent },

@@ -213,7 +213,7 @@ const nextWeekday = (weekday: number, from = new Date()): Date => {
 };
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const FREQUENCIES = ['One-time', 'Daily', 'Weekly', 'Custom'] as const;
+const FREQUENCIES = ['One-time', 'Daily', 'Weekly'] as const;
 const DURATION_OPTIONS = [1, 2, 3, 4] as const;
 type Frequency = typeof FREQUENCIES[number];
 type RouteTab = 'active' | 'expired';
@@ -1589,6 +1589,7 @@ export default function ManageRoutesScreen() {
           </Text>
         </View>
         <TouchableOpacity
+          style={styles.headerAddBtn}
           onPress={handleAdd}
           activeOpacity={0.9}
         >
@@ -1653,7 +1654,7 @@ export default function ManageRoutesScreen() {
           </Text>
           {activeTab === 'active' && (
             <TouchableOpacity style={styles.emptyAddBtn} onPress={handleAdd} activeOpacity={0.9}>
-              <SolarIcon name="AddCircle" variant="duotone" size={18} />
+              <SolarIcon name="AddCircle" variant="duotone" size={18} color="#FFFFFF" />
               <Text style={styles.emptyAddBtnText}>
                 Post Route ({Math.max(0, MAX_DAILY_ROUTES - usedTodayCount)} left today)
               </Text>

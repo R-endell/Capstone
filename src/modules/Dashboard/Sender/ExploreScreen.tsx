@@ -99,6 +99,12 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
+// departure_time is a naive (no timezone) timestamp in the app's local frame, so compare with a naive local string.
+const naiveNowString = (): string => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+};
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
@@ -169,8 +175,10 @@ export default function ExploreScreen() {
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        // Only the route each provider has SELECTED in their Jobs screen is visible to senders.
-        .eq('is_selected', true)
+        // Visible to senders: (a) the route each provider has SELECTED in their Jobs screen, and
+        // (b) EVERY upcoming scheduled route (departure still in the future), no matter how far
+        // ahead - a Nov 19 route must show even if the provider has another route selected today.
+        .or(`is_selected.eq.true,departure_time.gt.${naiveNowString()}`)
         .order('departure_time', { ascending: true });
 
       if (myUserId != null) {
