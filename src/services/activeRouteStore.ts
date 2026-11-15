@@ -2,16 +2,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../utils/supabase';
 
+// Flip this one line to turn Demo Mode on (true) or off (false) for the whole app.
+export const DEMO_MODE = true;
+
 const KEY = 'packnship.activeRouteId';
-const DEMO_KEY = 'packnship.demoMode';
 
 let _cachedId: number | null | undefined = undefined; // undefined = not loaded yet
-let _cachedDemo: boolean | undefined = undefined;
-
 let _lastSyncedId: number | null = null;
 
 const listeners = new Set<(id: number | null) => void>();
-const demoListeners = new Set<(demo: boolean) => void>();
 
 /* ------------------------------------------------------------------ */
 /* Active Route ID Read / Write / Subscribe                           */
@@ -86,33 +85,15 @@ export function subscribeActiveRoute(cb: (id: number | null) => void): () => voi
 }
 
 /* ------------------------------------------------------------------ */
-/* Defense DEMO_MODE Read / Write / Subscribe                         */
+/* Defense DEMO_MODE: now just reads the DEMO_MODE constant above     */
 /* ------------------------------------------------------------------ */
 export async function getDemoMode(): Promise<boolean> {
-  if (_cachedDemo !== undefined) return _cachedDemo;
-  try {
-    const raw = await AsyncStorage.getItem(DEMO_KEY);
-    _cachedDemo = raw === 'true';
-  } catch (err) {
-    console.warn('[activeRouteStore] demoMode read failed:', err);
-    _cachedDemo = false;
-  }
-  return _cachedDemo;
+  return DEMO_MODE;
 }
 
-export async function setDemoMode(enabled: boolean): Promise<void> {
-  _cachedDemo = enabled;
-  try {
-    await AsyncStorage.setItem(DEMO_KEY, enabled ? 'true' : 'false');
-  } catch (err) {
-    console.warn('[activeRouteStore] demoMode write failed:', err);
-  }
-  demoListeners.forEach(cb => {
-    try { cb(enabled); } catch {}
-  });
-}
+// Kept as no-ops so existing imports keep compiling.
+export async function setDemoMode(_enabled: boolean): Promise<void> {}
 
-export function subscribeDemoMode(cb: (demo: boolean) => void): () => void {
-  demoListeners.add(cb);
-  return () => { demoListeners.delete(cb); };
+export function subscribeDemoMode(_cb: (demo: boolean) => void): () => void {
+  return () => {};
 }
