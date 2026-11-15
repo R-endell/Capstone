@@ -16,7 +16,10 @@ type Props = {
   pickupLng: number | null;
   dropoffLat: number | null;
   dropoffLng: number | null;
-  /** space reserved for overlays so the route is framed in the visible area */
+  pickupTitle?: string;      // ← add
+  pickupStreet?: string;     // ← add
+  dropoffTitle?: string;     // ← add
+  dropoffStreet?: string;
   padTop?: number;
   padBottom?: number;
   padSide?: number;
@@ -24,6 +27,8 @@ type Props = {
   fillDuration?: number;
   style?: StyleProp<ViewStyle>;
 };
+
+
 
 /* ---------------------------- geometry helpers ---------------------------- */
 
