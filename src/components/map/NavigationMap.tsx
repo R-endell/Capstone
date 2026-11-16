@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, us
 import { View, Text, StyleSheet, TouchableOpacity, StyleProp, ViewStyle } from 'react-native';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
 import { MAP_PROPS, BRAND_ORANGE, DROPOFF_BLACK } from '../../utils/mapConfig';
 import { fmtDistance, haversineM } from './directions';
 import type { NavRoute } from './directions';
@@ -13,7 +12,7 @@ import {
 } from '../../services/navigationEngine';
 import type { RouteIndex } from '../../services/navigationEngine';
 import { useNavLocation } from '../../services/navLocationStore';
-import { useVoiceGuidance, usePersistedMute } from '../../services/useVoiceGuidance';
+import { useVoiceGuidance } from '../../services/useVoiceGuidance';
 
 export type LatLng = { latitude: number; longitude: number };
 export type NavInfo = { distanceM: number | null; durationS: number | null };
@@ -70,11 +69,25 @@ const ahead = (p: LatLng, bearing: number, meters: number): LatLng => {
 };
 const FOLLOW_PITCH = 55;
 
+// Spoken turn-by-turn is OFF now that the volume button is gone. Flip to true to bring the voice back
+// (it will then always be on, there is no mute control any more).
+const VOICE_GUIDANCE_ENABLED = false;
+
+// ---- arrow / camera heading ------------------------------------------------------------------------
+// ONE heading drives both the arrow and the camera, so the arrow always points "up" in heading-up mode:
+//   1. moving (>= ~3.6 km/h): the GPS course
+//   2. slow / stopped: the direction of the route right in front of you (so it matches "Head southeast...")
+//   3. no route yet: the last GPS course, else the straight line to the pin
+// The phone compass is NOT used: it is wrong when the phone is mounted upright in a vehicle and it made the
+// arrow disagree with the map.
+const MIN_COURSE_SPEED_MS = 1.0;
+const HEADING_HYSTERESIS_DEG = 3;   // ignore tiny changes so the camera doesn't jitter
+const ROUTE_LOOKAHEAD_M = 12;       // aim at a route point at least this far ahead of the car
+
 
 /* -------------------------------------------------------------------------- */
-/*  "You are here" pointer: glides between GPS fixes and follows the compass   */
+/*  "You are here" pointer: glides between GPS fixes and follows the travel heading */
 /* -------------------------------------------------------------------------- */
-const COURSE_SPEED_MS = 4;          // above ~15 km/h the GPS course beats the (noisy) compass
 const MIN_GLIDE_MS = 600;
 const MAX_GLIDE_MS = 2000;
 const FRAME_MS = 33;                // ~30 fps is plenty for a marker
@@ -84,9 +97,9 @@ const norm360 = (a: number) => ((a % 360) + 360) % 360;
 
 type MeFix = { latitude: number; longitude: number; heading?: number | null; speed?: number | null };
 
-const MeMarker = React.memo(function MeMarker({ fix }: { fix: MeFix }) {
+const MeMarker = React.memo(function MeMarker({ fix, heading }: { fix: MeFix; heading: number | null }) {
   const [pos, setPos] = useState<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
-  const [rot, setRot] = useState(0);
+  const [rot, setRot] = useState(heading ?? 0);
   const [track, setTrack] = useState(true);
 
   const cur = useRef<LatLng>({ latitude: fix.latitude, longitude: fix.longitude });
@@ -95,21 +108,16 @@ const MeMarker = React.memo(function MeMarker({ fix }: { fix: MeFix }) {
   const startAt = useRef(0);
   const dur = useRef(MIN_GLIDE_MS);
   const lastFixAt = useRef(0);
-  const compass = useRef<number | null>(null);
-  const course = useRef<{ deg: number; speed: number } | null>(null);
-  const rotCur = useRef(0);
-  const rotShown = useRef(0);
+  const wanted = useRef<number | null>(heading);
+  const rotCur = useRef(heading ?? 0);
+  const rotShown = useRef(heading ?? 0);
   const raf = useRef<number | null>(null);
   const lastDraw = useRef(0);
   const alive = useRef(true);
 
   useEffect(() => { const t = setTimeout(() => setTrack(false), 1500); return () => clearTimeout(t); }, []);
 
-  const wantedHeading = (): number | null => {
-    const c = course.current;
-    if (c && c.speed > COURSE_SPEED_MS) return c.deg;
-    return compass.current ?? (c ? c.deg : null);
-  };
+  const wantedHeading = (): number | null => wanted.current;
 
   const frame = () => {
     raf.current = null;
@@ -165,31 +173,16 @@ const MeMarker = React.memo(function MeMarker({ fix }: { fix: MeFix }) {
     dur.current = Math.min(MAX_GLIDE_MS, Math.max(MIN_GLIDE_MS, gap));
     startAt.current = now;
     lastFixAt.current = now;
-    course.current = fix.heading != null && fix.heading >= 0
-      ? { deg: fix.heading, speed: fix.speed ?? 0 }
-      : null;
     kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fix.latitude, fix.longitude, fix.heading, fix.speed]);
 
-  // compass: which way the device is actually facing (N / E / S / W ...)
+  // heading changed (new GPS course / route direction): ease the arrow round to it
   useEffect(() => {
-    let sub: Location.LocationSubscription | null = null;
-    let gone = false;
-    (async () => {
-      try {
-        sub = await Location.watchHeadingAsync(h => {
-          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
-          if (deg == null || deg < 0) return;
-          compass.current = deg;
-          kick();
-        });
-        if (gone) sub.remove();
-      } catch { /* no compass: the GPS course is used instead */ }
-    })();
-    return () => { gone = true; sub?.remove(); };
+    wanted.current = heading;
+    kick();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [heading]);
 
   return (
     <Marker coordinate={pos} anchor={{ x: 0.5, y: 0.5 }} flat rotation={rot} tracksViewChanges={track} zIndex={10}>
@@ -220,7 +213,6 @@ const NavigationMapInner = (
   const [arrived, setArrived] = useState(false);
   const [route, setRoute] = useState<RouteState | null>(null);
   const [rerouting, setRerouting] = useState(false);
-  const [muted, setMuted] = usePersistedMute();
 
   const targetRef = useRef(target);
   targetRef.current = target;
@@ -233,6 +225,7 @@ const NavigationMapInner = (
   const alongRef = useRef<number | undefined>(undefined);
   const fittedFor = useRef('');
   const headingRef = useRef(0);
+  const travelHeadingRef = useRef<number | null>(null);
   const lastFixTs = useRef(0);
   const fixGap = useRef(900);
 
@@ -354,10 +347,12 @@ const NavigationMapInner = (
     if (!me) return;
     const d = progress?.distToManeuverM;
     const zoom = d == null || d < 300 ? 18 : d < 1200 ? 17 : 16;
-    const gpsHeading = loc.fix?.heading;
-    const moving = (loc.fix?.speed ?? 0) > 1.5 && gpsHeading != null && gpsHeading >= 0;
-    if (moving) headingRef.current = gpsHeading as number;
-    else if (!headingRef.current) headingRef.current = bearingTo(me, target);
+    const th = travelHeadingRef.current;
+    if (th != null && (!headingRef.current || Math.abs(angDiff(th, headingRef.current)) > HEADING_HYSTERESIS_DEG)) {
+      headingRef.current = th;
+    } else if (!headingRef.current) {
+      headingRef.current = bearingTo(me, target);
+    }
     const offsetM = zoom >= 18 ? 70 : zoom >= 17 ? 140 : 280;
     mapRef.current?.animateCamera(
       { center: ahead(me, headingRef.current, offsetM), zoom, heading: headingRef.current, pitch: FOLLOW_PITCH },
@@ -394,6 +389,30 @@ const NavigationMapInner = (
   }, [route, tKey, progress, me]);
   const straightOnly = route?.r.source === 'straight' && route.tKey === tKey;
 
+  // ---- shared heading for the arrow + camera ----
+  const gpsHeading = loc.fix?.heading ?? null;
+  const gpsSpeed = loc.fix?.speed ?? 0;
+  const movingNow = gpsHeading != null && gpsHeading >= 0 && gpsSpeed >= MIN_COURSE_SPEED_MS;
+  const lastCourse = useRef<number | null>(null);
+  useEffect(() => { if (movingNow) lastCourse.current = gpsHeading as number; }, [movingNow, gpsHeading]);
+
+  // direction of the route just ahead of the car (linePts starts at the car and runs to the destination)
+  const routeBearing = useMemo<number | null>(() => {
+    if (!me || !linePts || linePts.length < 2 || straightOnly) return null;
+    for (let i = 0; i < linePts.length; i++) {
+      if (haversineM(me, linePts[i]) >= ROUTE_LOOKAHEAD_M) return bearingTo(me, linePts[i]);
+    }
+    return null;
+  }, [me, linePts, straightOnly]);
+
+  const travelHeading = useMemo<number | null>(() => {
+    if (movingNow) return gpsHeading as number;
+    if (routeBearing != null) return routeBearing;
+    if (lastCourse.current != null) return lastCourse.current;
+    return me ? bearingTo(me, target) : null;
+  }, [movingNow, gpsHeading, routeBearing, me, target]);
+  travelHeadingRef.current = travelHeading;
+
   const banner: { icon: string; distance: string; street: string } = (() => {
     if (status === 'arrived') return { icon: 'flag', distance: 'Arrived', street: 'Destination' };
     if (status === 'locating') return { icon: 'locate', distance: 'Locating...', street: 'Getting GPS' };
@@ -414,7 +433,7 @@ const NavigationMapInner = (
 
   // Spoken guidance: only on the interactive navigation screen, not on preview maps.
   useVoiceGuidance({
-    enabled: guidance && !muted && !blocked,
+    enabled: VOICE_GUIDANCE_ENABLED && guidance && !blocked,
     progress,
     status,
     targetKey: tKey,
@@ -440,7 +459,7 @@ const NavigationMapInner = (
         showsMyLocationButton={false}
         showsUserLocation={false} 
       >
-        {me && loc.fix && <MeMarker fix={loc.fix as any} />}
+        {me && loc.fix && <MeMarker fix={loc.fix as any} heading={travelHeading} />}
 
         {linePts && (
           <Polyline
@@ -546,16 +565,6 @@ const NavigationMapInner = (
             </View>
           </View>
         </View>
-      )}
-
-      {interactive && (
-        <TouchableOpacity
-          style={[styles.floatBtn, { top: bannerTop + 120, right: 20 }]}
-          activeOpacity={0.8}
-          onPress={() => setMuted(m => !m)}
-        >
-           <Ionicons name={muted ? 'volume-mute' : 'volume-high'} size={24} color={muted ? '#9CA3AF' : BRAND_ORANGE} />
-        </TouchableOpacity>
       )}
 
       {interactive && arrived && !blocked && arrivalAction && (

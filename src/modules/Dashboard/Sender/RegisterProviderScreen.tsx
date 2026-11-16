@@ -61,6 +61,9 @@ export default function RegisterProviderScreen() {
 
   const [frontVerified, setFrontVerified] = useState(false);
   const [backVerified, setBackVerified] = useState(false);
+  // true only when the back photo was machine-read OK; a back accepted via "Use Anyway" stays false
+  // so it is never sent along with the front to the scanner (it could only make the front scan fail).
+  const [backAutoRead, setBackAutoRead] = useState(false);
 
   const [uploadingSide, setUploadingSide] = useState<Side | null>(null);
 
@@ -399,6 +402,7 @@ export default function RegisterProviderScreen() {
       setLicenseBackBase64(null);
       setLicenseBackUrl(null);
       setBackVerified(false);
+      setBackAutoRead(false);
     }
   };
 
@@ -471,6 +475,26 @@ export default function RegisterProviderScreen() {
     }
   };
 
+  // Rejects only truly unusable photos (tiny thumbnails / screenshots of a crop). Sharpness itself can't be
+  // judged reliably on-device, so a normal phone photo always passes this check.
+  const isUsableImage = (uri: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      Image.getSize(uri, (w, h) => resolve(Math.min(w, h) >= 500), () => resolve(true));
+    });
+
+  const confirmUseBackAnyway = (): Promise<boolean> =>
+    new Promise((resolve) => {
+      Alert.alert(
+        "Couldn't read the back automatically",
+        "We couldn't automatically confirm this photo. Make sure the WHOLE back of the license is in frame, in good light and sharp. You can retake it, or use this photo anyway - the back is optional and our team reviews it together with your verified front.",
+        [
+          { text: 'Retake', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Use Anyway', onPress: () => resolve(true) },
+        ],
+        { cancelable: false },
+      );
+    });
+
   const handlePickedImage = async (side: Side, uri: string) => {
     setUploadingSide(side);
     setScanAttempted(false);
@@ -496,7 +520,7 @@ export default function RegisterProviderScreen() {
       if (side === 'front') {
         const scan = await runIdAnalyzerScan(
           base64,
-          backVerified && licenseBackBase64 ? licenseBackBase64 : null
+          backAutoRead && licenseBackBase64 ? licenseBackBase64 : null
         );
 
         if (!scan || scan.decision === 'error' || scan.decision === 'reject' || !scan.isValidDriverLicense) {
@@ -530,35 +554,10 @@ export default function RegisterProviderScreen() {
           );
         }
       } else {
-        const singleBackScan = await runIdAnalyzerScan(base64, null);
-        const isBackAtLeastId = checkIsAtLeastIdDocument(singleBackScan?.raw, singleBackScan?.confidence ?? null);
-
-        if (!singleBackScan || singleBackScan.decision === 'error' || singleBackScan.decision === 'reject' || !isBackAtLeastId) {
-          resetSideState('back');
-          Alert.alert(
-            'Invalid Back License Photo',
-            "This photo does not appear to be the back of a valid Driver's License. Random photos (such as vehicles, pets, or objects) and blurry images are strictly not accepted."
-          );
-          return;
-        }
-
-        if (singleBackScan.documentType && singleBackScan.documentName) {
-          const dt = singleBackScan.documentType.toUpperCase();
-          const dn = singleBackScan.documentName.toLowerCase();
-          const isOtherIdType =
-            dt !== 'D' && dt !== 'DL' && dt !== 'DRIVER_LICENSE' && dt !== 'DRIVERS_LICENSE' &&
-            !dn.includes('driver') && !dn.includes('driving');
-
-          if (isOtherIdType) {
-            resetSideState('back');
-            Alert.alert(
-              "Not a Driver's License",
-              `We detected "${singleBackScan.documentName || singleBackScan.documentType}". Please upload the BACK of your Philippine Driver's License.`
-            );
-            return;
-          }
-        }
-
+        // ---- BACK SIDE (optional) ---------------------------------------------------------------
+        // The FRONT is the real verification. A Philippine license back has no name/birthdate (only DL
+        // codes, conditions, serial no. and a barcode), so it must NOT be judged like a front: that is
+        // what made genuine backs fail with "blurry / not a driver's license".
         if (licenseFrontBase64 && base64 === licenseFrontBase64) {
           resetSideState('back');
           Alert.alert(
@@ -568,32 +567,71 @@ export default function RegisterProviderScreen() {
           return;
         }
 
-        let finalScan = singleBackScan;
-        if (frontVerified && licenseFrontBase64) {
-          const dualScan = await runIdAnalyzerScan(licenseFrontBase64, base64);
-          if (!dualScan || dualScan.decision === 'error' || dualScan.decision === 'reject' || !dualScan.isValidDriverLicense) {
+        if (!(await isUsableImage(uri))) {
+          resetSideState('back');
+          Alert.alert(
+            'Photo Too Small',
+            "This photo's resolution is too low to be read. Please take a new photo of the back of your Driver's License with your camera."
+          );
+          return;
+        }
+
+        // With a verified front, scan front + back together: the scanner reads the back barcode and
+        // cross-checks it against the front. Otherwise scan the back on its own.
+        const backScan =
+          frontVerified && licenseFrontBase64
+            ? await runIdAnalyzerScan(licenseFrontBase64, base64)
+            : await runIdAnalyzerScan(base64, null);
+
+        // Clearly a DIFFERENT kind of ID (National ID, passport, ...): reject.
+        if (!frontVerified && backScan?.documentType && backScan?.documentName) {
+          const dt = backScan.documentType.toUpperCase();
+          const dn = backScan.documentName.toLowerCase();
+          const isOtherIdType =
+            dt !== 'D' && dt !== 'DL' && dt !== 'DRIVER_LICENSE' && dt !== 'DRIVERS_LICENSE' &&
+            !dn.includes('driver') && !dn.includes('driving');
+          if (isOtherIdType) {
             resetSideState('back');
             Alert.alert(
-              'Back Photo Verification Failed',
-              "The back photo could not be verified with the front of your Driver's License. Please upload a clear photo of the back of the same license."
+              "Not a Driver's License",
+              `We detected "${backScan.documentName || backScan.documentType}". Please upload the BACK of your Philippine Driver's License.`
             );
             return;
           }
-          finalScan = dualScan;
+        }
+
+        const scanOk = !!backScan && backScan.decision !== 'error' && backScan.decision !== 'reject';
+        const autoRead = frontVerified
+          ? scanOk && backScan!.isValidDriverLicense
+          : scanOk && checkIsAtLeastIdDocument(backScan?.raw, backScan?.confidence ?? null);
+
+        if (!autoRead) {
+          // Not machine-readable: never hard-fail an OPTIONAL photo. Let the user retake or keep it for review.
+          const keep = await confirmUseBackAnyway();
+          if (!keep) {
+            resetSideState('back');
+            return;
+          }
         }
 
         const url = await uploadFileFromBase64(uri, base64, user.id, 'license_back');
         setLicenseBackBase64(base64);
         setLicenseBackUrl(url);
         setBackVerified(true);
+        setBackAutoRead(autoRead);
 
-        if (frontVerified && finalScan.isValidDriverLicense) {
-          setLastScanResult(finalScan);
+        if (autoRead && frontVerified && backScan) {
+          setLastScanResult(backScan);
           setScanAttempted(true);
-          populateFieldsFromScan(finalScan);
+          populateFieldsFromScan(backScan);
           Alert.alert(
             'License Verified ✓',
             "Both front and back of your Driver's License have been verified. Please confirm the expiry date below."
+          );
+        } else if (frontVerified) {
+          Alert.alert(
+            'Back Photo Saved',
+            "Your front is verified. The back photo was saved and will be reviewed together with it."
           );
         }
       }

@@ -137,7 +137,7 @@ export default function ProviderApplicationStatusScreen() {
     },
     {
       key: 'docs', state: 'done', title: 'Documents received',
-      sub: 'Your driver\u2019s license and vehicle documents are with our team.',
+      sub: 'Your driver\u2019s license is with our team.',
     },
     {
       key: 'review',
