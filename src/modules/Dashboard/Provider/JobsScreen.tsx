@@ -448,28 +448,60 @@ const thin = <T,>(pts: T[], max = 220): T[] => {
   return out;
 };
 
+const OSRM_TIMEOUT_MS = 8000;
+// Road geometry per start/end pair, kept for the whole app session so a remount never has to re-fetch it.
+const ROAD_CACHE = new Map<string, Coord[]>();
+const roadCacheKey = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) =>
+  `${a.lat.toFixed(5)},${a.lng.toFixed(5)}|${b.lat.toFixed(5)},${b.lng.toFixed(5)}`;
+
+/**
+ * Road geometry between two points, or null when the router could not be reached.
+ * The public OSRM server is slow / rate-limited from time to time, so every attempt has a timeout
+ * and one quick retry. Callers decide what to show while there is no geometry.
+ */
+const fetchRoadCoordsStrict = async (
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): Promise<Coord[] | null> => {
+  const key = roadCacheKey(a, b);
+  const cached = ROAD_CACHE.get(key);
+  if (cached) return cached;
+
+  const url =
+    `https://router.project-osrm.org/route/v1/driving/` +
+    `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), OSRM_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (res.ok) {
+        const data = await res.json();
+        const pts = data?.routes?.[0]?.geometry?.coordinates;
+        if (data?.code === 'Ok' && Array.isArray(pts) && pts.length > 1) {
+          const coords = thin(pts.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })));
+          ROAD_CACHE.set(key, coords);
+          return coords;
+        }
+      }
+    } catch { /* timeout / offline: retry once, then give up */ }
+    finally { clearTimeout(timer); }
+    if (attempt === 0) await new Promise<void>(r => setTimeout(r, 600));
+  }
+  return null;
+};
+
+/** Same as above, but falls back to a straight line (used by the add-route preview). */
 const fetchRoadCoords = async (
   a: { lat: number; lng: number },
   b: { lat: number; lng: number },
-): Promise<{ latitude: number; longitude: number }[]> => {
-  const fallback = [
+): Promise<Coord[]> => {
+  const coords = await fetchRoadCoordsStrict(a, b);
+  return coords ?? [
     { latitude: a.lat, longitude: a.lng },
     { latitude: b.lat, longitude: b.lng },
   ];
-  try {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-      return thin(data.routes[0].geometry.coordinates.map((c: number[]) => ({
-        latitude: c[1],
-        longitude: c[0],
-      })));
-    }
-  } catch { /* fall through */ }
-  return fallback;
 };
 
 /* ------------------------------- map markers ------------------------------- */
@@ -561,51 +593,101 @@ const ProviderPin = React.memo(function ProviderPin({
 });
 
 // Shows the provider's selected route (start pin, destination pin, road line) and the provider's live position.
+const toNum = (v: any): number | null => {
+  const n = Number(v);
+  return v != null && v !== '' && Number.isFinite(n) ? n : null;
+};
+
 const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, online = true }: any) => {
   const { colors } = useTheme();
   const mapStyles = useMemo(() => makeMapStyles(), []);
+  const focused = useIsFocused();
 
   const mapRef = useRef<MapView>(null);
-  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [road, setRoad] = useState<{ key: string; coords: Coord[] } | null>(null);
+  // Bumped when the native map may have dropped its overlays; remounts the line + pins.
+  const [overlayEpoch, setOverlayEpoch] = useState(0);
 
-  const lastRouteKey = useRef('');
+  const roadLoadedKey = useRef('');
   const lastFitKey = useRef('');
   const firstFix = useRef(true);
+  const wasFocused = useRef(focused);
 
+  // Primitive, validated coordinates: the effects below only re-run when the route really changes,
+  // not every time the parent re-renders and hands us a fresh `route` object.
+  const sLat = toNum(route?.start?.lat);
+  const sLng = toNum(route?.start?.lng);
+  const eLat = toNum(route?.end?.lat);
+  const eLng = toNum(route?.end?.lng);
+  const hasRoute = sLat != null && sLng != null && eLat != null && eLng != null;
+  const routeKey = hasRoute ? roadCacheKey({ lat: sLat!, lng: sLng! }, { lat: eLat!, lng: eLng! }) : '';
+
+  // Load the road line. A failed / slow request never blocks the line: a straight placeholder is
+  // drawn straight away and the real road replaces it as soon as it arrives (retrying in the background).
   useEffect(() => {
-    if (!route) { setRouteCoords([]); lastRouteKey.current = ''; return; }
-    const key = `${route.start.lat},${route.start.lng},${route.end.lat},${route.end.lng}`;
-    if (key === lastRouteKey.current) return;
-    lastRouteKey.current = key;
+    if (!routeKey) { roadLoadedKey.current = ''; setRoad(null); return; }
+    if (roadLoadedKey.current === routeKey) return;
 
     let cancelled = false;
-    fetchRoadCoords(route.start, route.end).then((coords) => {
-      if (!cancelled) setRouteCoords(coords);
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const load = async (attempt: number) => {
+      const coords = await fetchRoadCoordsStrict({ lat: sLat!, lng: sLng! }, { lat: eLat!, lng: eLng! });
+      if (cancelled) return;
+      if (coords) {
+        roadLoadedKey.current = routeKey;
+        setRoad({ key: routeKey, coords });
+      } else if (attempt < 3) {
+        retryTimer = setTimeout(() => { void load(attempt + 1); }, 4000 * (attempt + 1));
+      }
+    };
+    void load(0);
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [routeKey]);
+
+  const lineCoords = useMemo<Coord[]>(() => {
+    if (!hasRoute) return [];
+    if (road && road.key === routeKey) return road.coords;
+    return [
+      { latitude: sLat!, longitude: sLng! },
+      { latitude: eLat!, longitude: eLng! },
+    ];
+  }, [hasRoute, road, routeKey, sLat, sLng, eLat, eLng]);
+
+  // Android can drop the native line / pins when the map surface is recreated (app resumed from the
+  // background or lock screen, screen refocused). Remount the overlays so they are drawn again.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') setOverlayEpoch(e => e + 1);
     });
-    return () => { cancelled = true; };
-  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng]);
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (focused && !wasFocused.current) setOverlayEpoch(e => e + 1);
+    wasFocused.current = focused;
+  }, [focused]);
 
   // frame the whole selected route above the bottom sheet
   useEffect(() => {
-    if (!route) { lastFitKey.current = ''; return; }
-    const key = `${route.start.lat.toFixed(4)},${route.start.lng.toFixed(4)}|${route.end.lat.toFixed(4)},${route.end.lng.toFixed(4)}|${padBottom}`;
+    if (!hasRoute) { lastFitKey.current = ''; return; }
+    const key = `${routeKey}|${padBottom}`;
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
 
     const t = setTimeout(() => {
       mapRef.current?.fitToCoordinates(
         [
-          { latitude: route.start.lat, longitude: route.start.lng },
-          { latitude: route.end.lat, longitude: route.end.lng },
+          { latitude: sLat!, longitude: sLng! },
+          { latitude: eLat!, longitude: eLng! },
         ],
         { edgePadding: { top: 190, right: 64, bottom: padBottom || 260, left: 64 }, animated: true },
       );
     }, 180);
     return () => clearTimeout(t);
-  }, [route?.start?.lat, route?.start?.lng, route?.end?.lat, route?.end?.lng, padBottom]);
+  }, [routeKey, padBottom]);
 
   useEffect(() => {
-    if (!provider || route || !firstFix.current) return;
+    if (!provider || hasRoute || !firstFix.current) return;
     firstFix.current = false;
 
     const t = setTimeout(() => {
@@ -615,7 +697,7 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       );
     }, 150);
     return () => clearTimeout(t);
-  }, [provider?.lat, provider?.lng, route]);
+  }, [provider?.lat, provider?.lng, hasRoute]);
 
   useEffect(() => {
     if (!recenterTick || !provider) return;
@@ -644,38 +726,48 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       rotateEnabled={false}
       pitchEnabled={false}
     >
-      {route && (
-        <>
-          {routeCoords.length > 1 && (
-            <Polyline
-              coordinates={routeCoords}
-              strokeColor={BRAND_ORANGE}
-              strokeWidth={6}
-              lineCap="round"
-              lineJoin="round"
-            />
-          )}
-          <RoutePlaceMarker
-            lat={route.start.lat}
-            lng={route.start.lng}
-            title={route.start.title || 'Starting Point'}
-            street={route.start.sub}
-            kind="start"
-            mk={mapStyles}
-          />
-          <RoutePlaceMarker
-            lat={route.end.lat}
-            lng={route.end.lng}
-            title={route.end.title || 'Destination'}
-            street={route.end.sub}
-            kind="end"
-            mk={mapStyles}
-          />
-        </>
+      {hasRoute && (
+        <Polyline
+          key={`line-${overlayEpoch}`}
+          coordinates={lineCoords}
+          strokeColor={BRAND_ORANGE}
+          strokeWidth={6}
+          lineCap="round"
+          lineJoin="round"
+        />
+      )}
+      {hasRoute && (
+        <RoutePlaceMarker
+          key={`start-${overlayEpoch}`}
+          lat={sLat!}
+          lng={sLng!}
+          title={route.start.title || 'Starting Point'}
+          street={route.start.sub}
+          kind="start"
+          mk={mapStyles}
+        />
+      )}
+      {hasRoute && (
+        <RoutePlaceMarker
+          key={`end-${overlayEpoch}`}
+          lat={eLat!}
+          lng={eLng!}
+          title={route.end.title || 'Destination'}
+          street={route.end.sub}
+          kind="end"
+          mk={mapStyles}
+        />
       )}
 
       {provider && (
-        <ProviderPin lat={provider.lat} lng={provider.lng} online={online} accent={colors.accent} mk={mapStyles} />
+        <ProviderPin
+          key={`me-${overlayEpoch}`}
+          lat={provider.lat}
+          lng={provider.lng}
+          online={online}
+          accent={colors.accent}
+          mk={mapStyles}
+        />
       )}
     </MapView>
   );

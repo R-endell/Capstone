@@ -47,22 +47,6 @@ const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const NETWORK_TIMEOUT_MS = 12000;
 
-const SENDER_RATING_TAGS = [
-  'Accurate package info',
-  'Easy pickup',
-  'Responsive',
-  'Ready on time',
-  'Polite & friendly',
-];
-
-const RATING_LABELS: Record<number, string> = {
-  1: 'Poor',
-  2: 'Fair',
-  3: 'Good',
-  4: 'Great',
-  5: 'Excellent',
-};
-
 let Clipboard: any = null;
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
@@ -492,13 +476,6 @@ export default function TaskScreen() {
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
 
-  /* Sender Rating state (Provider rating the customer/sender) */
-  const [senderRatingByDelivery, setSenderRatingByDelivery] = useState<Record<number, { rating: number; comment: string; tags?: string[] }>>({});
-  const [senderStars, setSenderStars] = useState<number>(5);
-  const [senderSelectedTags, setSenderSelectedTags] = useState<string[]>([]);
-  const [senderComment, setSenderComment] = useState<string>('');
-  const [submittingSenderRating, setSubmittingSenderRating] = useState<boolean>(false);
-
   const [deliveryOTPModalVisible, setDeliveryOTPModalVisible] = useState(false);
   const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
   const [deliveryOTPInput, setDeliveryOTPInput] = useState('');
@@ -564,9 +541,6 @@ export default function TaskScreen() {
   useEffect(() => {
     if (selectedId == null) return;
     detailAnim.setValue(0);
-    setSenderStars(5);
-    setSenderSelectedTags([]);
-    setSenderComment('');
     Animated.timing(detailAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [selectedId, detailAnim]);
 
@@ -679,28 +653,6 @@ export default function TaskScreen() {
 
       const hydrated = await enrichDeliveries(await hydrateQr(uniqueDeliveries));
 
-      // Fetch existing ratings submitted by this provider for senders
-      const allIds = hydrated.map((d: any) => d.delivery_id).filter(Boolean);
-      if (allIds.length > 0) {
-        try {
-          const { data: existingRatings } = await supabase
-            .from('ratings')
-            .select('delivery_id, rating, comment')
-            .eq('rater_id', pid)
-            .in('delivery_id', allIds);
-
-          if (existingRatings && isMountedRef.current) {
-            const map: Record<number, { rating: number; comment: string }> = {};
-            existingRatings.forEach((r: any) => {
-              if (r.delivery_id) {
-                map[r.delivery_id] = { rating: Number(r.rating) || 5, comment: r.comment || '' };
-              }
-            });
-            setSenderRatingByDelivery(prev => ({ ...prev, ...map }));
-          }
-        } catch { /* ignore if ratings table differs */ }
-      }
-
       const cancelled = hydrated.filter(isCancelledDelivery);
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
       const acceptedActive = hydrated.filter(d => !isCancelledDelivery(d) && !d.completed_at);
@@ -797,87 +749,6 @@ export default function TaskScreen() {
       Alert.alert('Error', error?.message || 'Could not send the notification. Please try again.');
     } finally {
       if (isMountedRef.current) setPingingId(null);
-    }
-  };
-
-  const toggleSenderTag = (tag: string) => {
-    setSenderSelectedTags(prev =>
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
-  };
-
-  const handleSubmitSenderRating = async (d: any) => {
-    if (!providerId || submittingSenderRating) return;
-    const info = buildTaskInfo(d);
-    const senderId = info.senderId;
-    if (!senderId) {
-      Alert.alert('Unable to Rate', 'Sender information could not be found for this delivery.');
-      return;
-    }
-
-    const composedComment = [
-      senderSelectedTags.length > 0 ? senderSelectedTags.join(' · ') : '',
-      senderComment.trim(),
-    ]
-      .filter(Boolean)
-      .join(' — ');
-
-    setSubmittingSenderRating(true);
-    try {
-      const payload = {
-        delivery_id: d.delivery_id,
-        rater_id: providerId,
-        ratee_id: senderId,
-        rating: senderStars,
-        comment: composedComment || null,
-        created_at: new Date().toISOString(),
-      };
-
-      const { error } = await withTimeout(
-        supabase.from('ratings').insert(payload),
-        NETWORK_TIMEOUT_MS,
-        'Submitting rating timed out'
-      );
-
-      if (error) {
-        const { error: fbErr } = await withTimeout(
-          supabase.from('feedback').insert({
-            delivery_id: d.delivery_id,
-            sender_id: providerId,
-            receiver_id: senderId,
-            rating: senderStars,
-            comments: composedComment || null,
-          }),
-          NETWORK_TIMEOUT_MS
-        );
-        if (fbErr) throw error;
-      }
-
-      if (isMountedRef.current) {
-        setSenderRatingByDelivery(prev => ({
-          ...prev,
-          [d.delivery_id]: {
-            rating: senderStars,
-            comment: composedComment,
-            tags: senderSelectedTags,
-          },
-        }));
-      }
-
-      try {
-        await notifyUser(
-          senderId,
-          'You received a courier rating ⭐',
-          `Your courier rated your package & handoff ${senderStars}/5 stars.`,
-          { deliveryId: d.delivery_id }
-        );
-      } catch {}
-
-      Alert.alert('Thank you!', 'Your rating for the sender has been submitted.');
-    } catch (e: any) {
-      Alert.alert('Rating Failed', e?.message || 'Could not submit your rating. Please try again.');
-    } finally {
-      if (isMountedRef.current) setSubmittingSenderRating(false);
     }
   };
 
@@ -2527,7 +2398,6 @@ export default function TaskScreen() {
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
     const active = stage === 'pickup' || stage === 'transit';
-    const submittedSenderRating = senderRatingByDelivery[d.delivery_id];
 
     const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : 0;
@@ -2643,18 +2513,6 @@ export default function TaskScreen() {
 
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
-            {/* Sender Card Container with Call/Chat (hidden when completed/cancelled) + Rating when completed */}
-            <View style={styles.dSecHead}>
-              <SolarIcon name="User" variant="duotone" size={18} color={colors.accent} />
-              <Text style={styles.dSecTitle}>Sender</Text>
-              {submittedSenderRating && (
-                <View style={styles.sdRatedBadge}>
-                  <Ionicons name="star" size={12} color={colors.accent} />
-                  <Text style={styles.sdRatedBadgeText}>{submittedSenderRating.rating}.0 Rated</Text>
-                </View>
-              )}
-            </View>
-
             <View style={styles.senderSectionCard}>
               <View style={styles.senderTopRow}>
                 <View style={[styles.mcAvatarSmall, { backgroundColor: BLUE }]}>
@@ -2703,98 +2561,6 @@ export default function TaskScreen() {
                   </View>
                 )}
               </View>
-
-              {isCompleted && (
-                <View style={styles.senderRateBox}>
-                  {submittedSenderRating ? (
-                    <View>
-                      <View style={styles.ratedHeaderRow}>
-                        <Text style={styles.rateBoxHeading}>Your rating for this sender</Text>
-                        <View style={{ flexDirection: 'row', gap: 4 }}>
-                          {[1, 2, 3, 4, 5].map(n => (
-                            <Ionicons
-                              key={n}
-                              name={n <= submittedSenderRating.rating ? 'star' : 'star-outline'}
-                              size={18}
-                              color={n <= submittedSenderRating.rating ? colors.accent : colors.textMuted}
-                            />
-                          ))}
-                        </View>
-                      </View>
-                      {!!submittedSenderRating.comment && (
-                        <Text style={styles.ratedCommentText}>"{submittedSenderRating.comment}"</Text>
-                      )}
-                    </View>
-                  ) : (
-                    <View>
-                      <Text style={styles.rateBoxHeading}>
-                        Rate {info.senderName || 'the Sender'}
-                      </Text>
-                      <Text style={styles.rateBoxSub}>
-                        How accurate were the package details and handoff?
-                      </Text>
-
-                      <View style={styles.starRow}>
-                        {[1, 2, 3, 4, 5].map(n => (
-                          <TouchableOpacity
-                            key={n}
-                            onPress={() => setSenderStars(n)}
-                            activeOpacity={0.75}
-                            hitSlop={6}
-                          >
-                            <Ionicons
-                              name={n <= senderStars ? 'star' : 'star-outline'}
-                              size={30}
-                              color={n <= senderStars ? colors.accent : colors.textMuted}
-                            />
-                          </TouchableOpacity>
-                        ))}
-                        <Text style={styles.starLabelText}>{RATING_LABELS[senderStars]}</Text>
-                      </View>
-
-                      <View style={styles.tagWrap}>
-                        {SENDER_RATING_TAGS.map(tag => {
-                          const on = senderSelectedTags.includes(tag);
-                          return (
-                            <TouchableOpacity
-                              key={tag}
-                              style={[styles.rateTag, on && styles.rateTagActive]}
-                              onPress={() => toggleSenderTag(tag)}
-                              activeOpacity={0.8}
-                            >
-                              <Text style={[styles.rateTagText, on && styles.rateTagTextActive]}>
-                                {tag}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-
-                      <TextInput
-                        style={styles.rateCommentInput}
-                        value={senderComment}
-                        onChangeText={setSenderComment}
-                        placeholder="Add an optional note about package accuracy or pickup..."
-                        placeholderTextColor={colors.textMuted}
-                        multiline
-                      />
-
-                      <TouchableOpacity
-                        style={[styles.rateSubmitBtn, submittingSenderRating && { opacity: 0.65 }]}
-                        onPress={() => handleSubmitSenderRating(d)}
-                        disabled={submittingSenderRating}
-                        activeOpacity={0.9}
-                      >
-                        {submittingSenderRating ? (
-                          <ActivityIndicator size="small" color="#FFFFFF" />
-                        ) : (
-                          <Text style={styles.rateSubmitBtnText}>Submit Rating</Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </View>
-              )}
             </View>
 
             {/* Receiver Card Container (Call only, hidden when completed/cancelled) */}
@@ -4256,104 +4022,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontFamily: 'Poppins_700Bold',
     color: PURPLE,
   },
-  senderRateBox: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  ratedHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  ratedCommentText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_500Medium',
-    fontStyle: 'italic',
-    color: c.textSecondary,
-    marginTop: 8,
-    lineHeight: 18,
-  },
-  rateBoxHeading: {
-    fontSize: 15,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-  },
-  rateBoxSub: {
-    fontSize: 12.5,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 2,
-    marginBottom: 12,
-  },
-  starRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-  },
-  starLabelText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_700Bold',
-    color: c.accent,
-    marginLeft: 6,
-  },
-  tagWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  rateTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: c.background,
-    borderWidth: 1,
-    borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
-  },
-  rateTagActive: {
-    backgroundColor: c.accentSoft,
-    borderColor: c.accent,
-  },
-  rateTagText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textSecondary,
-  },
-  rateTagTextActive: {
-    color: c.accent,
-    fontFamily: 'Poppins_700Bold',
-  },
-  rateCommentInput: {
-    backgroundColor: c.background,
-    borderWidth: 1,
-    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textPrimary,
-    minHeight: 72,
-    textAlignVertical: 'top',
-    marginBottom: 12,
-  },
-  rateSubmitBtn: {
-    backgroundColor: c.accent,
-    borderRadius: 24,
-    height: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rateSubmitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
-
   podPhotoCard: {
     width: '100%',
     height: 200,
