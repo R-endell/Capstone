@@ -35,7 +35,6 @@ try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const RATING_TAGS = ['On time', 'Careful handling', 'Friendly', 'Fast delivery', 'Good communication'];
 const FINDING_PROVIDER_ROUTE_NAMES = ['Booking', 'BookingScreen', 'FindingProvider'];
-const REFUND_SEEN_KEY = '@pns/refund_popup_seen_ids';
 const EDIT_FLOW_ROUTE_NAMES = ['DropoffType', 'ScheduleDelivery'];
 
 const initials = (n?: string | null) =>
@@ -491,50 +490,6 @@ export default function ActivityScreen() {
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
   const detailAnim = useRef(new Animated.Value(0)).current;
-
-  const shownRefundIdsRef = useRef<Set<number>>(new Set());
-
-  useEffect(() => {
-    if (!deliveries.length) return;
-
-    const candidates = deliveries.filter(d =>
-      d.status === 'Completed' &&
-      (d.rawData?.refund_status === 'succeeded' || d.rawData?.refund_status === 'refunded') &&
-      d.payout_deposit > 0
-    );
-    if (!candidates.length) return;
-
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(REFUND_SEEN_KEY);
-        const persisted: number[] = raw ? JSON.parse(raw) : [];
-        const seenThisSession = Array.from(shownRefundIdsRef.current);
-
-        const unseen = candidates.filter(c =>
-          !persisted.includes(c.request_id) &&
-          !seenThisSession.includes(c.request_id)
-        );
-        if (!unseen.length) return;
-
-        unseen.forEach(u => shownRefundIdsRef.current.add(u.request_id));
-
-        const most = unseen[0];
-        const refundTotal = unseen.reduce((sum, u) => sum + (u.payout_deposit || 0), 0);
-
-        Alert.alert(
-          '📦 Delivery Complete!',
-          `Package #${trackingCode(most.request_id)} was delivered successfully.\n\n` +
-          `₱${refundTotal.toFixed(2)} return deposit has been refunded to your account.`,
-          [{ text: 'OK' }],
-        );
-
-        const updated = Array.from(new Set([...persisted, ...unseen.map(u => u.request_id)]));
-        await AsyncStorage.setItem(REFUND_SEEN_KEY, JSON.stringify(updated));
-      } catch (e) {
-        console.warn('[Activity] refund popup failed:', e);
-      }
-    })();
-  }, [deliveries]);
 
   useEffect(() => {
     const params = route.params;
@@ -2102,11 +2057,11 @@ export default function ActivityScreen() {
                           : `  ·  ${money(d.payout_fee)} platform fee`}
                         {d.status !== 'Returned' && d.payout_deposit > 0 &&
                           `  ·  ${money(d.payout_deposit)} ${
-                            d.rawData?.refund_status === 'succeeded'
-                              ? 'refunded to you'
-                              : d.rawData?.refund_status === 'failed'
-                                ? 'refund pending — contact support'
-                                : 'being refunded to you'
+                            /^(failed|manual_required)$/i.test(String(d.rawData?.refund_status || ''))
+                              ? 'refund pending — contact support'
+                              : /^(pending|processing|initiated|requested)$/i.test(String(d.rawData?.refund_status || ''))
+                                ? 'being refunded to you'
+                                : 'refunded to you'
                           }`}
                       </>
                     ) : ''}

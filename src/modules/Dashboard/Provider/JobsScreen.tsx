@@ -1737,7 +1737,8 @@ export default function JobsScreen() {
       const [directRes, matchRes] = await Promise.all([
         supabase.from('delivery_requests').select(sel)
           .eq('preferred_provider_id', pid)
-          .eq('delivery_status', 'Pending'),
+          .eq('delivery_status', 'Pending')
+          .in('payment_status', ['held', 'paid', 'released']),
         supabase.from('route_request_matches')
           .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
@@ -1754,6 +1755,8 @@ export default function JobsScreen() {
         const req = m.request;
         const route = Array.isArray(m.route) ? m.route[0] : m.route;
         if (!req || req.delivery_status !== 'Pending') continue;
+        // sender has not paid yet (still choosing receiver / setting up payment): not a request for the provider
+        if (!['held', 'paid', 'released'].includes(String(req.payment_status || '').toLowerCase())) continue;
         if (route && (route.is_deleted || route.is_active === false)) continue;
         if (req.preferred_provider_id != null && Number(req.preferred_provider_id) !== Number(pid)) continue;
         const isDirect = req.preferred_provider_id != null && Number(req.preferred_provider_id) === Number(pid);
