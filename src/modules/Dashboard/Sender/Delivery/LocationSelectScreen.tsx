@@ -22,6 +22,10 @@ const RECENTS_KEY = '@pns:recent_locations:v1';
 const MAX_RECENTS = 6;
 
 const ENDPOINT_OVERSHOOT_TOLERANCE_M = 25;
+// Pins that must sit ON the provider's route line; this is only float tolerance.
+const LINE_ONLY_TOLERANCE_M = 15;
+// Door-to-Door drop-off on a direct Request Delivery from Explore: free to pin off the road, capped at 500 m from the route line.
+const DOOR_TO_DOOR_DROPOFF_MAX_M = 500;
 
 const GOOGLE_MAPS_API_KEY: string =
   (process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string | undefined) ||
@@ -89,6 +93,18 @@ function pointToSegmentInfo(p: Coord, v: Coord, w: Coord) {
   };
 
   return { distanceMeters, clampedT, rawT, segLengthMeters, projectedCoord };
+}
+
+// Closest point that lies exactly on the route polyline (clamped between Point A and Point B).
+function snapPointToPath(point: Coord, path: Coord[]): Coord {
+  if (path.length < 2) return path[0] ?? point;
+  let best: Coord = path[0];
+  let min = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const info = pointToSegmentInfo(point, path[i], path[i + 1]);
+    if (info.distanceMeters < min) { min = info.distanceMeters; best = info.projectedCoord; }
+  }
+  return best;
 }
 
 function evaluateRouteAlignment(
@@ -164,7 +180,7 @@ function evaluateRouteAlignment(
       distanceMeters: minDistance,
       progress,
       nearestCoordOnRoute,
-      reason: `Selected pin is ${fmtDist(minDistance)} off the route. The limit is ${fmtDist(maxCorridorMeters)} for this delivery type. Place the pin on or near the orange route line.`,
+      reason: `Selected pin is ${fmtDist(minDistance)} off the route. The limit is ${fmtDist(maxCorridorMeters)} for this delivery type. Place the pin within ${fmtDist(maxCorridorMeters)} of the orange route line.`,
     };
   }
 
@@ -201,7 +217,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17,24,39,0.06)');
 
   const isDoorToDoor = /door/i.test(String(state.dropoffType || ''));
-  const maxCorridorM = isDoorToDoor ? 1500 : 500;
+  const baseCorridorM = isDoorToDoor ? 1500 : 500;
 
   const preferredRoute = state.preferredRoute ?? null;
   const hasPreferredRoute = !!(
@@ -211,6 +227,18 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     preferredRoute.dropoffCoords?.lat &&
     preferredRoute.dropoffCoords?.lng
   );
+
+  // Direct Request Delivery from Explore only (does NOT touch Send Package Today or Scheduled):
+  // - Curbside: BOTH pickup and drop-off stick strictly to the orange route line.
+  // - Door-to-Door: PICKUP sticks strictly to the orange route line; DROP-OFF does not stick
+  //   to the line, but is limited to within DOOR_TO_DOOR_DROPOFF_MAX_M (500 m) of the route line.
+  const isExploreDirectRequest = hasPreferredRoute && mode === 'sendNow';
+  const strictLineOnly = isExploreDirectRequest && (!isDoorToDoor || isPickup);
+  const maxCorridorM = strictLineOnly
+    ? LINE_ONLY_TOLERANCE_M
+    : isExploreDirectRequest && isDoorToDoor
+      ? DOOR_TO_DOOR_DROPOFF_MAX_M
+      : baseCorridorM;
 
   const routePointA: Coord | null = useMemo(
     () => hasPreferredRoute && preferredRoute
@@ -329,11 +357,17 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     return () => { cancelled = true; };
   }, [routePointA, routePointB]);
 
+  const snapToLine = useCallback((c: Coord): Coord => {
+    if (!routePointA || !routePointB) return c;
+    const path = providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB];
+    return snapPointToPath(c, path);
+  }, [routePointA, routePointB, providerRouteCoords]);
+
   const fitProviderRoute = useCallback(() => {
     if (!mapRef.current || !routePointA || !routePointB) return;
     const pts = providerRouteCoords.length >= 2 ? providerRouteCoords : [routePointA, routePointB];
     mapRef.current.fitToCoordinates(pts, {
-      edgePadding: { top: insets.top + 120, right: 55, bottom: 80, left: 55 },
+      edgePadding: { top: insets.top + 80, right: 55, bottom: 80, left: 55 },
       animated: true,
     });
   }, [routePointA, routePointB, providerRouteCoords, insets.top]);
@@ -484,18 +518,34 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     setValidatingPin(false);
   }, []);
 
-  const moveTo = useCallback((coords: Coord, label?: Label) => {
+  const moveTo = useCallback((rawCoords: Coord, rawLabel?: Label) => {
+    let coords = rawCoords;
+    let label = rawLabel;
+    if (strictLineOnly) {
+      coords = snapToLine(rawCoords);
+      // A place name only fits if the snapped point is still basically at that place.
+      if (label && metersBetween(rawCoords, coords) > 30) label = undefined;
+    }
     if (settleTimer.current) clearTimeout(settleTimer.current);
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
     resolveAt(coords, label);
-  }, [resolveAt]);
+  }, [resolveAt, strictLineOnly, snapToLine]);
 
   const snapPinToRoute = useCallback(() => {
     if (!hasPreferredRoute) return;
     const target = routeAlignment.nearestCoordOnRoute;
     if (target) moveTo(target);
   }, [hasPreferredRoute, routeAlignment.nearestCoordOnRoute, moveTo]);
+
+  // Once the real road polyline loads, re-seat the pin on it when in strict line mode.
+  useEffect(() => {
+    if (!strictLineOnly || providerRouteCoords.length < 2) return;
+    const cur = markerRef.current;
+    const snapped = snapToLine(cur);
+    if (metersBetween(cur, snapped) > 3) moveTo(snapped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerRouteCoords, strictLineOnly]);
 
   useEffect(() => {
     const existingLoc = isPickup ? state.pickupLocation : state.dropoffLocation;
@@ -631,6 +681,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
   const onRegionChangeComplete = (region: Region) => {
     setIsDraggingMap(false);
     const center = { latitude: region.latitude, longitude: region.longitude };
+    if (strictLineOnly) {
+      // Pin follows the line: if the map was dragged off it, glide back to the closest point on the line.
+      const snapped = snapToLine(center);
+      if (metersBetween(center, snapped) > 3) { moveTo(snapped); return; }
+    }
     if (lastResolved.current && metersBetween(lastResolved.current, center) < SAME_SPOT_METERS) return;
     setMarkerCoord(center);
     if (settleTimer.current) clearTimeout(settleTimer.current);
@@ -752,43 +807,6 @@ export default function LocationSelectScreen({ route, navigation }: any) {
           </View>
         )}
 
-        {hasPreferredRoute && preferredRoute && (
-          <View style={[styles.routeBannerWrapper, { top: insets.top + 72 }]} pointerEvents="box-none">
-            <View style={[styles.routeBanner, misaligned && styles.routeBannerError]}>
-              <View style={styles.routeBannerTop}>
-                <View style={[styles.routeStatusBadge, { backgroundColor: routeAlignment.aligned ? 'rgba(16,185,129,0.14)' : 'rgba(239,68,68,0.14)' }]}>
-                  <SolarIcon name={routeAlignment.aligned ? 'CheckCircle' : 'DangerCircle'} variant="duotone" size={15} color={routeAlignment.aligned ? colors.success : colors.error} />
-                  <Text style={[styles.routeStatusText, { color: routeAlignment.aligned ? colors.success : colors.error }]}>
-                    {routeAlignment.aligned
-                      ? `On Route (${fmtDist(routeAlignment.distanceMeters)} from line)`
-                      : `Disaligned · ${fmtDist(routeAlignment.distanceMeters)} off route (max ${fmtDist(maxCorridorM)})`}
-                  </Text>
-                </View>
-
-                {!routeAlignment.aligned ? (
-                  <TouchableOpacity style={styles.snapRouteBtn} onPress={snapPinToRoute} activeOpacity={0.85}>
-                    <SolarIcon name="Magnet" variant="bold" size={14} color="#FFFFFF" />
-                    <Text style={styles.snapRouteBtnText}>Snap to Route</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={[styles.fitRouteBtn, { backgroundColor: isDark ? 'rgba(242,112,36,0.22)' : 'rgba(242,112,36,0.12)' }]} onPress={fitProviderRoute} activeOpacity={0.85}>
-                    <SolarIcon name="Routing" variant="bold" size={14} color={colors.accent} />
-                    <Text style={[styles.fitRouteBtnText, { color: colors.accent }]}>Show Route</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              <Text style={[styles.routeCorridorText, { color: colors.textSecondary }]} numberOfLines={1}>
-                A: {preferredRoute.pickup.split(',')[0]} → B: {preferredRoute.dropoff.split(',')[0]}
-              </Text>
-
-              {misaligned && !!routeAlignment.reason && (
-                <Text style={styles.routeErrorSub} numberOfLines={2}>{routeAlignment.reason}</Text>
-              )}
-            </View>
-          </View>
-        )}
-
         <View style={styles.centerStack} pointerEvents="box-none">
           <Animated.View style={{ transform: [{ translateY: pinTranslateY }] }} pointerEvents="box-none">
             <TouchableOpacity style={[styles.bubble, { backgroundColor: colors.card, borderColor: colors.border }]} activeOpacity={0.9} onPress={() => setIsSearching(true)}>
@@ -891,9 +909,11 @@ export default function LocationSelectScreen({ route, navigation }: any) {
             <Text style={[styles.emptyNearby, { color: colors.textMuted }]}>
               {busy
                 ? 'Looking for nearby places...'
-                : hasPreferredRoute
-                  ? `Drag the pin along the orange route line (max ${fmtDist(maxCorridorM)} away).`
-                  : 'No named places nearby. Drag the map or search.'}
+                : strictLineOnly
+                  ? `${isPickup ? 'Pickup' : 'Curbside drop-off'} is only on the orange route line. Drag the map or tap the line; the pin snaps to it.`
+                  : hasPreferredRoute
+                    ? `Drag the pin near the orange route line (max ${fmtDist(maxCorridorM)} away).`
+                    : 'No named places nearby. Drag the map or search.'}
             </Text>
           )}
       </DraggableSheet>
@@ -1079,18 +1099,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   routeEndpointMarkerB: { width: 28, height: 28, borderRadius: 14, borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
   routeEndpointText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
   confirmedPickupMarker: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
-  routeBannerWrapper: { position: 'absolute', left: 16, right: 16, zIndex: 6 },
-  routeBanner: { backgroundColor: c.card, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, borderWidth: 1, borderColor: isDark ? 'rgba(16,185,129,0.35)' : 'rgba(16,185,129,0.28)', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.1, shadowRadius: 10, elevation: 5 },
-  routeBannerError: { borderColor: c.error, backgroundColor: isDark ? 'rgba(239,68,68,0.12)' : '#FEF2F2' },
-  routeBannerTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  routeStatusBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, flexShrink: 1 },
-  routeStatusText: { fontSize: 12, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
-  fitRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
-  fitRouteBtnText: { fontSize: 11, fontFamily: 'Poppins_700Bold' },
-  snapRouteBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: c.error },
-  snapRouteBtnText: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
-  routeCorridorText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: 6 },
-  routeErrorSub: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.error, marginTop: 4, lineHeight: 15 },
   fitRouteFab: { position: 'absolute', right: 16, width: 52, height: 52, borderRadius: 14, justifyContent: 'center', alignItems: 'center', zIndex: 5, borderWidth: 1, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: isDark ? 0.4 : 0.12, shadowRadius: 10, elevation: 5 },
   quickEndpointsRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10 },
   quickEndpointChip: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 8 },

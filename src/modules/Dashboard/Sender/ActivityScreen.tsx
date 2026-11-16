@@ -2497,19 +2497,6 @@ export default function ActivityScreen() {
                 )}
               </TouchableOpacity>
             )}
-
-            {showDisputeButton && d.deliveryData?.delivery_id && (
-              <TouchableOpacity
-                style={[styles.sdCancelBtn, { marginTop: 18, flex: 0 }]}
-                onPress={() => handleDisputePackageMissing(d)}
-                activeOpacity={0.9}
-              >
-                <Ionicons name="shield-outline" size={16} color={colors.error} />
-                <Text style={styles.sdCancelBtnText}>
-                  {awaitingApproval ? 'Not received — Dispute (Freeze Escrow)' : 'Dispute: Package Missing (Freeze Escrow)'}
-                </Text>
-              </TouchableOpacity>
-            )}
           </Animated.View>
         </ScrollView>
 

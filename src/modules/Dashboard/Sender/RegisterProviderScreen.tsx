@@ -19,7 +19,7 @@ import { needsAcceptance, recordTermsAcceptance } from '../../../services/termsS
 
 const BUCKET_NAME = 'vehicle-documents';
 
-const ID_ANALYZER_KEY = 'idk_lpCmsQcDtGPddpKFSEAFoWySTEwD3C3usJcIBzkz';
+const ID_ANALYZER_KEY = 'idk_BKhrKvnfKTqf67AFWkdHUDhy8xXR8QBohOtGURcY';
 const MIN_CONFIDENCE_PERCENT = 55; // Minimum confidence required to accept an ID photo
 
 type Side = 'front' | 'back';
@@ -1047,7 +1047,7 @@ export default function RegisterProviderScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.uploadTitle}>Driver's License Photos</Text>
-                <Text style={styles.uploadSubtitle}>Upload Front (Back is optional)</Text>
+                <Text style={styles.uploadSubtitle}>Upload Front and Back</Text>
               </View>
             </View>
             {licenseComplete && (
@@ -1110,7 +1110,7 @@ export default function RegisterProviderScreen() {
               ) : (
                 <View style={styles.tileEmpty}>
                   <SolarIcon name="DocumentText" variant="linear" size={26} color={colors.accent} />
-                  <Text style={styles.tileEmptyText}>Back (Optional)</Text>
+                  <Text style={styles.tileEmptyText}>Back (Required)</Text>
                 </View>
               )}
             </TouchableOpacity>
