@@ -31,6 +31,7 @@ import {
   syncAllActiveRoutesTodayForRequest,
   enrichRouteMatchRows,
   explainMatchesForRequest,
+  isRequestWithinRouteCorridor,
   RouteMatchRow,
 } from '../../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../../utils/chatHelpers';
@@ -1698,14 +1699,26 @@ export default function BookingScreen({ route, navigation }: any) {
           const { data: rows } = await withTimeout(
             supabase
               .from('route_request_matches')
-              .select('*, route:provider_routes(*)')
+              .select('*, route:provider_routes(*), request:delivery_requests(pickup_location:locations!delivery_requests_pickup_location_id_fkey(latitude,longitude), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(latitude,longitude))')
               .eq('request_id', requestId)
               .eq('status', 'matched')
               .order('match_score', { ascending: false }),
           );
 
-          if (rows && rows.length > 0 && isMountedRef.current) {
-            const enriched = await enrichRouteMatchRows(rows);
+          // Only providers that really drive within ~200 m of the pickup AND drop-off are shown.
+          const strictRows = (rows || []).filter((m: any) => {
+            const r = Array.isArray(m.route) ? m.route[0] : m.route;
+            const rq = Array.isArray(m.request) ? m.request[0] : m.request;
+            const ok = isRequestWithinRouteCorridor(r, rq);
+            if (!ok) {
+              supabase.from('route_request_matches').update({ status: 'revoked' }).eq('match_id', m.match_id)
+                .then(() => {}, () => {});
+            }
+            return ok;
+          });
+
+          if (strictRows.length > 0 && isMountedRef.current) {
+            const enriched = await enrichRouteMatchRows(strictRows);
             if (enriched.length > 0 && isMountedRef.current) {
               if (searchTimeoutRef.current && stopTimerOnMatch) {
                 clearTimeout(searchTimeoutRef.current);

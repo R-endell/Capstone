@@ -260,6 +260,40 @@ export function isSendNowRequest(req: any): boolean {
 }
 
 /**
+ * Re-checks an ALREADY STORED match against the strict corridor rules. Match rows can also be written by
+ * other things (older app versions, the database's evaluate_route_matches function), so screens use this
+ * before showing a row. `route` needs corridor_path (and ideally fallback_unlocked); `req` needs
+ * pickup_location / dropoff_location with latitude+longitude. If it can't judge (missing coordinates or
+ * route line) it returns true so nothing legitimate is hidden.
+ */
+export function isRequestWithinRouteCorridor(route: any, req: any): boolean {
+  if (!route || !req) return true;
+  const one = (x: any) => (Array.isArray(x) ? x[0] : x);
+  const puLoc = one(req.pickup_location);
+  const doLoc = one(req.dropoff_location);
+  if (puLoc?.latitude == null || doLoc?.latitude == null) return true;
+
+  const sLoc = one(route.start_location);
+  const eLoc = one(route.end_location);
+  const corridor: { latitude: number; longitude: number }[] =
+    Array.isArray(route.corridor_path) && route.corridor_path.length >= 2
+      ? route.corridor_path
+      : sLoc && eLoc
+        ? [
+            { latitude: Number(sLoc.latitude), longitude: Number(sLoc.longitude) },
+            { latitude: Number(eLoc.latitude), longitude: Number(eLoc.longitude) },
+          ]
+        : [];
+  if (corridor.length < 2) return true;
+
+  const pu = projectPointToPolyline({ lat: Number(puLoc.latitude), lng: Number(puLoc.longitude) }, corridor);
+  const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
+  const limit = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : corridorLimitM(corridor);
+  const isForward = dr.fraction >= pu.fraction - 0.02;
+  return isForward && pu.minDistanceM <= limit && dr.minDistanceM <= limit;
+}
+
+/**
  * The calendar day a request should be served on, as a naive local Date (same convention as
  * parseNaiveRouteTime, so it can be passed straight to isRouteRunningToday).
  * Send-Now requests are served today; Scheduled requests on the day the sender picked.
@@ -340,6 +374,19 @@ export function isRouteTimeValidForRequest(route: any, request: any, now = new D
 
   return true;
 }
+
+/**
+ * STRICT corridor: the sender's pickup AND drop-off must each be within this many meters of the
+ * provider's actual road route (corridor_path). A provider only matches when they really drive past both.
+ */
+export const CORRIDOR_MATCH_M = 200;
+// Only when a route has no real road polyline (routing service was down, so we saved a 2-point straight
+// line): a straight line is just an approximation of the road, so allow a wider tolerance for those.
+const STRAIGHT_LINE_CORRIDOR_M = 1500;
+// Wider corridor, used ONLY for routes the provider explicitly unlocked fallback matching on.
+export const FALLBACK_CORRIDOR_M = 3000;
+const corridorLimitM = (corridor: { latitude: number; longitude: number }[]): number =>
+  corridor.length > 2 ? CORRIDOR_MATCH_M : STRAIGHT_LINE_CORRIDOR_M;
 
 function projectPointToPolyline(
   pt: { lat: number; lng: number },
@@ -504,9 +551,9 @@ async function evaluatePairAndUpsertMatch(
   );
 
   const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-  const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-  // Fallback corridor is strictly capped at 3000m (and only when fallback_unlocked on the route or within 3km)
-  const fallbackMaxM = route.fallback_unlocked ? 3000 : maxCorridorM;
+  const maxCorridorM = corridorLimitM(corridor);
+  // Wider corridor only for routes where the provider unlocked fallback matching.
+  const fallbackMaxM = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : maxCorridorM;
 
   const fitsCapacity =
     Number(route.remaining_weight_kg ?? 100) >= reqWeight &&
@@ -542,7 +589,11 @@ async function evaluatePairAndUpsertMatch(
   const avgDistM = (puProj.minDistanceM + doProj.minDistanceM) / 2;
   const computedScore = isPreferredRoute
     ? 100
-    : Math.max(60, Math.min(99, Math.round(100 - (avgDistM / Math.max(fallbackMaxM, 1500)) * 35)));
+    : withinPrimary
+      // inside the strict corridor: 90% (right at the 200 m edge) up to 99% (directly on the route)
+      ? Math.max(90, Math.min(99, Math.round(100 - (avgDistM / Math.max(maxCorridorM, 1)) * 10)))
+      // fallback-only matches (provider unlocked the wider corridor) always score below 90%
+      : Math.max(60, Math.min(89, Math.round(89 - (avgDistM / Math.max(fallbackMaxM, 1)) * 29)));
 
   if (existingMatch) {
     if (existingMatch.status === 'declined') return false;
@@ -901,9 +952,6 @@ export async function explainMatchesForRequest(requestId: number) {
   const cargo = Array.isArray(reqRow.cargo) ? reqRow.cargo[0] : reqRow.cargo;
   const reqWeight = Number(cargo?.total_weight_kg) || 5;
   const reqVol = computeCargoVolumeLiters(cargo);
-  const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-  const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-
   const report = (routes || []).map((route: any) => {
     const reasons: string[] = [];
     if (Number(route.provider_id) === Number(reqRow.sender_id)) reasons.push('own route (sender = provider)');
@@ -939,7 +987,7 @@ export async function explainMatchesForRequest(requestId: number) {
       const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
       pickupM = Math.round(pu.minDistanceM);
       dropoffM = Math.round(dr.minDistanceM);
-      const limit = route.fallback_unlocked ? Math.max(3000, maxCorridorM) : maxCorridorM;
+      const limit = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : corridorLimitM(corridor);
       if (pu.minDistanceM > limit) reasons.push(`pickup ${pickupM} m from route (limit ${limit} m)`);
       if (dr.minDistanceM > limit) reasons.push(`dropoff ${dropoffM} m from route (limit ${limit} m)`);
       if (!(dr.fraction >= pu.fraction - 0.02)) reasons.push('dropoff comes BEFORE pickup along this route (wrong direction)');
@@ -1055,8 +1103,8 @@ export async function evaluateAndFetchRouteMatches(
         corridor,
       );
       const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-      const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-      const fallbackMaxM = routeRow.fallback_unlocked ? 3000 : maxCorridorM;
+      const maxCorridorM = corridorLimitM(corridor);
+      const fallbackMaxM = routeRow.fallback_unlocked ? FALLBACK_CORRIDOR_M : maxCorridorM;
       const isForward = doProj.fraction >= puProj.fraction - 0.02;
       const withinCorridor = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
 

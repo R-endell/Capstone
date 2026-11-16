@@ -82,7 +82,7 @@ type FilterState = {
   radiusKm: number | null;
 };
 
-const DEFAULT_RADIUS_KM = 10;
+const DEFAULT_RADIUS_KM: number | null = null; // show ALL providers by default (closest first)
 const RADIUS_OPTIONS: (number | null)[] = [2, 5, 10, 20, null];
 
 type LocStatus = 'loading' | 'granted' | 'denied' | 'unavailable';
@@ -104,6 +104,28 @@ const naiveNowString = (): string => {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+};
+// Daily/Weekly routes store the FIRST run's date, so after that day they would look "finished" forever.
+// Project them to their current/next run (today's window while it's still going, else the next one).
+const occurrenceFor = (
+  t: { departureTime: Date; endTime?: Date | null; routeFrequency: string },
+  nowMs: number,
+): { dep: Date; end: Date } => {
+  const dep = t.departureTime;
+  const depMs = safeTime(dep);
+  const endMs = t.endTime ? safeTime(t.endTime) : Infinity;
+  const durMs = endMs !== Infinity && endMs > depMs ? endMs - depMs : 4 * 60 * 60 * 1000;
+  const freq = (t.routeFrequency || '').trim().toLowerCase();
+  if ((freq !== 'daily' && freq !== 'weekly') || depMs > nowMs) {
+    return { dep, end: new Date(depMs + durMs) };
+  }
+  const today = new Date(nowMs);
+  for (let i = 0; i < 8; i++) {
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, dep.getHours(), dep.getMinutes());
+    if (freq === 'weekly' && start.getDay() !== dep.getDay()) continue;
+    if (start.getTime() + durMs >= nowMs) return { dep: start, end: new Date(start.getTime() + durMs) };
+  }
+  return { dep, end: new Date(depMs + durMs) };
 };
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
@@ -175,10 +197,7 @@ export default function ExploreScreen() {
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        // Visible to senders: (a) the route each provider has SELECTED in their Jobs screen, and
-        // (b) EVERY upcoming scheduled route (departure still in the future), no matter how far
-        // ahead - a Nov 19 route must show even if the provider has another route selected today.
-        .or(`is_selected.eq.true,departure_time.gt.${naiveNowString()}`)
+        // EVERY active provider route is listed (selected or not, today or any future date).
         .order('departure_time', { ascending: true });
 
       if (myUserId != null) {
@@ -190,14 +209,6 @@ export default function ExploreScreen() {
 
       const mapped: Trip[] = (data || [])
         .filter((r: any) => myUserId == null || Number(r.provider_id) !== myUserId)
-        .filter((r: any) => {
-          const freq = (r.route_frequency || '').trim().toLowerCase();
-          if (freq === 'one-time' || freq === 'custom') {
-            const dep = r.departure_time ? new Date(r.departure_time) : new Date();
-            if (safeTime(dep) < Date.now()) return false;
-          }
-          return true;
-        })
         .map((r: any) => {
           const provider = r.provider || {};
           const vehicle = r.vehicle || {};
@@ -333,16 +344,14 @@ export default function ExploreScreen() {
     trips.forEach((t) => {
       if (myUserId != null && t.providerId === myUserId) return;
 
-      const freq = (t.routeFrequency || '').trim().toLowerCase();
-      if (freq === 'one-time' || freq === 'custom') {
-        if (safeTime(t.departureTime) < now) return;
-      }
+      // current/next run of this route (matters for Daily/Weekly routes)
+      const occ = occurrenceFor(t, now);
 
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
-      const mins = minutesUntil(t.departureTime, now);
+      const mins = minutesUntil(occ.dep, now);
 
-      const endTimeMs = safeTime(t.endTime);
+      const endTimeMs = safeTime(occ.end);
       const isFinished = endTimeMs !== Infinity && now > endTimeMs;
 
       let state: TripState;
@@ -354,8 +363,7 @@ export default function ExploreScreen() {
       else state = 'offline';
 
       if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) return;
-      if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
-      if (state === 'offline') return;
+      // 'offline' (provider not online yet) routes are still listed so every provider route is visible
 
       const ref = live && fix
         ? { lat: fix.latitude, lng: fix.longitude }
@@ -365,7 +373,9 @@ export default function ExploreScreen() {
 
       out.push({
         ...t,
-        timeLabel: formatTimeLabel(t.departureTime),
+        departureTime: occ.dep,
+        endTime: occ.end,
+        timeLabel: formatTimeLabel(occ.dep),
         fix: live ? fix : null,
         state,
         distanceKm,
@@ -467,6 +477,8 @@ export default function ExploreScreen() {
         return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' };
       case 'soon':
         return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' };
+      case 'offline':
+        return { label: 'Not online yet', color: isDark ? '#94A3B8' : '#64748B', bg: isDark ? 'rgba(148,163,184,0.18)' : '#F1F5F9', icon: 'Clock' };
       case 'finished':
         return {
           label: 'Route Finished',
@@ -682,7 +694,7 @@ export default function ExploreScreen() {
         <View style={styles.locBanner}>
           <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
           <Text style={styles.locBannerText}>
-            {filters.radiusKm === null ? 'Showing providers closest to you' : `Providers within ${filters.radiusKm} km of you`}
+            {filters.radiusKm === null ? 'Showing all providers, closest first' : `Providers within ${filters.radiusKm} km of you`}
           </Text>
           <TouchableOpacity onPress={locateMe} hitSlop={10}>
             <SolarIcon name="Refresh" variant="linear" size={16} color={colors.textSecondary} />

@@ -28,6 +28,7 @@ import {
   fetchDirectRequestMatches,
   computeCargoVolumeLiters,
   parseRequestCreatedTime,
+  isRequestWithinRouteCorridor,
   declineDirectRequest as declineDirectRequestService,
   declineMatchedRequest as declineMatchedRequestService,
   RouteMatchRow,
@@ -1646,7 +1647,7 @@ export default function JobsScreen() {
           .eq('preferred_provider_id', pid)
           .eq('delivery_status', 'Pending'),
         supabase.from('route_request_matches')
-          .select(`*, route:provider_routes(route_id, is_active, is_deleted), request:delivery_requests (${sel})`)
+          .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
           .eq('route_id', selectedRoute.route_id)
           .in('status', ['matched', 'expired'])
@@ -1664,6 +1665,13 @@ export default function JobsScreen() {
         if (route && (route.is_deleted || route.is_active === false)) continue;
         if (req.preferred_provider_id != null && Number(req.preferred_provider_id) !== Number(pid)) continue;
         const isDirect = req.preferred_provider_id != null && Number(req.preferred_provider_id) === Number(pid);
+        // Strict corridor: the provider must really drive within ~200 m of BOTH pickup and drop-off.
+        // Stored rows from older versions / DB functions that don't satisfy it are hidden and revoked.
+        if (!isDirect && !isRequestWithinRouteCorridor(route ?? selectedRoute, req)) {
+          supabase.from('route_request_matches').update({ status: 'revoked' }).eq('match_id', m.match_id)
+            .then(() => {}, () => {});
+          continue;
+        }
         const live = m.status === 'matched';
         if (!live && !isDirect) {
           const ageMs = Date.now() - parseRequestCreatedTime(req).getTime();
