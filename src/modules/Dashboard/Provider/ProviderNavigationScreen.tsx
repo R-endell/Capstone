@@ -337,77 +337,8 @@ export default function ProviderNavigationScreen() {
               </View>
             </View>
           )}
-
-          {/* quick actions */}
-          <View style={styles.quickRow}>
-            {quick.map(q => (
-              <TouchableOpacity key={q.label} style={styles.quickItem} onPress={q.onPress} activeOpacity={0.8}>
-                <View style={styles.quickCircle}>
-                  <SolarIcon name={q.icon as any} variant="linear" size={22} color={colors.accent} />
-                </View>
-                <Text style={styles.quickLabel}>{q.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {/* checklist */}
-          <View style={styles.sectionHead}>
-            <Text style={styles.sectionTitle}>{isPickup ? 'Pickup checklist' : 'Delivery checklist'}</Text>
-            <Text style={styles.sectionCount}>{doneCount}/{checklist.length}</Text>
-          </View>
-          {checklist.map((t, i) => {
-            const k = `${order.stage}:${i}`;
-            const on = !!checks[k];
-            return (
-              <TouchableOpacity key={k} style={styles.checkRow} activeOpacity={0.7} onPress={() => setChecks(p => ({ ...p, [k]: !p[k] }))}>
-                <SolarIcon 
-                  name="CheckCircle" 
-                  variant={on ? 'duotone' : 'linear'}
-                  size={24} 
-                  color={on ? colors.accent : colors.textMuted} 
-                />
-                <Text style={[styles.checkText, on && styles.checkTextDone]}>{t}</Text>
-              </TouchableOpacity>
-            );
-          })}
-
           <View style={styles.divider} />
-
-          {/* settings */}
-          <TouchableOpacity style={styles.listRow} onPress={() => mapHandle.current?.overview()}>
-            <SolarIcon name="Map" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
-            <Text style={styles.listText}>Route overview</Text>
-            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
-          <View style={styles.listRow}>
-            <SolarIcon name="VolumeHigh" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
-            <Text style={styles.listText}>Voice guidance</Text>
-            <Switch value={voiceOn} onValueChange={setVoiceOn} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
-          </View>
-          <View style={styles.listRow}>
-            <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
-            <Text style={styles.listText}>Avoid tolls</Text>
-            <Switch value={avoidTolls} onValueChange={setAvoidTolls} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
-          </View>
-          <View style={styles.listRow}>
-            <SolarIcon name="Hourglass" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
-            <Text style={styles.listText}>Stop orders after this delivery</Text>
-            <Switch value={stopAfter} onValueChange={setStopAfter} trackColor={{ true: colors.accent, false: colors.border }} thumbColor="#fff" />
-          </View>
-
-          <View style={styles.divider} />
-
-          <TouchableOpacity style={styles.listRow} onPress={handleReport}>
-            <SolarIcon name="Flag" variant="linear" size={22} color={colors.accent} style={styles.listIcon} />
-            <Text style={styles.listText}>Report a problem</Text>
-            <SolarIcon name="AltArrowRight" variant="linear" size={18} color={colors.textMuted} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.sosBtn} onPress={handleSOS} activeOpacity={0.85}>
-            <SolarIcon name="ShieldWarning" variant="linear" size={20} color="#FFFFFF" />
-            <Text style={styles.sosText}>Emergency SOS</Text>
-          </TouchableOpacity>
         </ScrollView>
-
       </Animated.View>
     </View>
   );

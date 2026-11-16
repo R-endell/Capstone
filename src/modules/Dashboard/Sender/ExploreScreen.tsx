@@ -1,9 +1,9 @@
 // src/modules/Dashboard/Sender/ExploreScreen.tsx
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal,
   Dimensions, FlatList, RefreshControl, ActivityIndicator,
-  Alert, Image, Linking,
+  Alert, Image, Linking, AppState,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -23,6 +23,7 @@ try { Location = require('expo-location'); } catch { Location = null; }
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 const BLUE = '#3B82F6';
+const BRAND_ORANGE = '#FF751F';   // same orange as the pickup pin in LiveTrackingScreen
 
 const HIDE_DEPARTED_AFTER_MIN = 180;
 const SEND_NOW_WINDOW_MIN = 60;
@@ -81,7 +82,7 @@ type FilterState = {
   radiusKm: number | null;
 };
 
-const DEFAULT_RADIUS_KM = 10;
+const DEFAULT_RADIUS_KM: number | null = null; // show ALL providers by default (closest first)
 const RADIUS_OPTIONS: (number | null)[] = [2, 5, 10, 20, null];
 
 type LocStatus = 'loading' | 'granted' | 'denied' | 'unavailable';
@@ -98,6 +99,34 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
+// departure_time is a naive (no timezone) timestamp in the app's local frame, so compare with a naive local string.
+const naiveNowString = (): string => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+};
+// Daily/Weekly routes store the FIRST run's date, so after that day they would look "finished" forever.
+// Project them to their current/next run (today's window while it's still going, else the next one).
+const occurrenceFor = (
+  t: { departureTime: Date; endTime?: Date | null; routeFrequency: string },
+  nowMs: number,
+): { dep: Date; end: Date } => {
+  const dep = t.departureTime;
+  const depMs = safeTime(dep);
+  const endMs = t.endTime ? safeTime(t.endTime) : Infinity;
+  const durMs = endMs !== Infinity && endMs > depMs ? endMs - depMs : 4 * 60 * 60 * 1000;
+  const freq = (t.routeFrequency || '').trim().toLowerCase();
+  if ((freq !== 'daily' && freq !== 'weekly') || depMs > nowMs) {
+    return { dep, end: new Date(depMs + durMs) };
+  }
+  const today = new Date(nowMs);
+  for (let i = 0; i < 8; i++) {
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, dep.getHours(), dep.getMinutes());
+    if (freq === 'weekly' && start.getDay() !== dep.getDay()) continue;
+    if (start.getTime() + durMs >= nowMs) return { dep: start, end: new Date(start.getTime() + durMs) };
+  }
+  return { dep, end: new Date(depMs + durMs) };
+};
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
@@ -135,7 +164,11 @@ export default function ExploreScreen() {
   const [myCoords, setMyCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locStatus, setLocStatus] = useState<LocStatus>('loading');
 
+  // Out-of-order guard: a slow older fetch must never overwrite a newer one.
+  const fetchSeqRef = useRef(0);
+
   const fetchTrips = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
     try {
       let myUserId: number | null = user?.user_id != null ? Number(user.user_id) : null;
       if (myUserId == null) {
@@ -164,8 +197,7 @@ export default function ExploreScreen() {
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        // Only the route each provider has SELECTED in their Jobs screen is visible to senders.
-        .eq('is_selected', true)
+        // EVERY active provider route is listed (selected or not, today or any future date).
         .order('departure_time', { ascending: true });
 
       if (myUserId != null) {
@@ -177,14 +209,6 @@ export default function ExploreScreen() {
 
       const mapped: Trip[] = (data || [])
         .filter((r: any) => myUserId == null || Number(r.provider_id) !== myUserId)
-        .filter((r: any) => {
-          const freq = (r.route_frequency || '').trim().toLowerCase();
-          if (freq === 'one-time' || freq === 'custom') {
-            const dep = r.departure_time ? new Date(r.departure_time) : new Date();
-            if (safeTime(dep) < Date.now()) return false;
-          }
-          return true;
-        })
         .map((r: any) => {
           const provider = r.provider || {};
           const vehicle = r.vehicle || {};
@@ -228,8 +252,11 @@ export default function ExploreScreen() {
           };
         });
 
+      if (seq !== fetchSeqRef.current) return;
       setTrips(mapped);
-      setFixes(await fetchLiveFixes(mapped.map((t) => t.providerId)));
+      const liveFixes = await fetchLiveFixes(mapped.map((t) => t.providerId));
+      if (seq !== fetchSeqRef.current) return;
+      setFixes(liveFixes);
     } catch (err) {
       console.error('Error fetching trips:', err);
       setTrips([]);
@@ -276,7 +303,34 @@ export default function ExploreScreen() {
         });
       });
       const tick = setInterval(() => setNow(Date.now()), 15_000);
-      return () => { unsub(); clearInterval(tick); };
+
+      // REALTIME: a provider switching their selected route (or posting / ending one) flips
+      // provider_routes.is_selected / is_active / is_deleted. Refetch silently, debounced so the
+      // two-step is_selected swap lands as one update instead of flickering.
+      let debounce: ReturnType<typeof setTimeout> | null = null;
+      const refetch = () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => { void fetchTrips(); }, 350);
+      };
+      let firstSubscribe = true;
+      const channel = supabase
+        .channel(`explore-routes-${Date.now()}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes' }, refetch)
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            if (firstSubscribe) { firstSubscribe = false; return; }
+            refetch();   // reconnected: catch up on anything missed
+          }
+        });
+      const appSub = AppState.addEventListener('change', (s) => { if (s === 'active') refetch(); });
+
+      return () => {
+        unsub();
+        clearInterval(tick);
+        if (debounce) clearTimeout(debounce);
+        supabase.removeChannel(channel);
+        appSub.remove();
+      };
     }, [fetchTrips, locateMe]),
   );
 
@@ -290,16 +344,14 @@ export default function ExploreScreen() {
     trips.forEach((t) => {
       if (myUserId != null && t.providerId === myUserId) return;
 
-      const freq = (t.routeFrequency || '').trim().toLowerCase();
-      if (freq === 'one-time' || freq === 'custom') {
-        if (safeTime(t.departureTime) < now) return;
-      }
+      // current/next run of this route (matters for Daily/Weekly routes)
+      const occ = occurrenceFor(t, now);
 
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
-      const mins = minutesUntil(t.departureTime, now);
+      const mins = minutesUntil(occ.dep, now);
 
-      const endTimeMs = safeTime(t.endTime);
+      const endTimeMs = safeTime(occ.end);
       const isFinished = endTimeMs !== Infinity && now > endTimeMs;
 
       let state: TripState;
@@ -311,8 +363,7 @@ export default function ExploreScreen() {
       else state = 'offline';
 
       if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) return;
-      if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
-      if (state === 'offline') return;
+      // 'offline' (provider not online yet) routes are still listed so every provider route is visible
 
       const ref = live && fix
         ? { lat: fix.latitude, lng: fix.longitude }
@@ -322,7 +373,9 @@ export default function ExploreScreen() {
 
       out.push({
         ...t,
-        timeLabel: formatTimeLabel(t.departureTime),
+        departureTime: occ.dep,
+        endTime: occ.end,
+        timeLabel: formatTimeLabel(occ.dep),
         fix: live ? fix : null,
         state,
         distanceKm,
@@ -424,6 +477,8 @@ export default function ExploreScreen() {
         return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' };
       case 'soon':
         return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' };
+      case 'offline':
+        return { label: 'Not online yet', color: isDark ? '#94A3B8' : '#64748B', bg: isDark ? 'rgba(148,163,184,0.18)' : '#F1F5F9', icon: 'Clock' };
       case 'finished':
         return {
           label: 'Route Finished',
@@ -441,115 +496,111 @@ export default function ExploreScreen() {
     const pickupMain = splitAddress(item.pickup).main;
     const dropoffMain = splitAddress(item.dropoff).main;
     const isFinished = item.state === 'finished';
-    const mutedColor = isFinished ? colors.textSecondary : ORANGE;
+    const timeIcon: SolarIconName = isFinished ? 'Flag' : item.state === 'scheduled' ? 'Calendar' : 'Clock';
 
     return (
       <TouchableOpacity
-        style={[styles.oCard, isFinished && { opacity: 0.65 }]}
+        style={[styles.tcCard, isFinished && { opacity: 0.65 }]}
         activeOpacity={0.92}
         onPress={() => setTrackRouteId(item.routeId)}
       >
-        <View style={styles.oPad}>
-          <View style={styles.oTopRow}>
-            <View style={styles.svcPill}>
-              <SolarIcon name="Routing" variant="duotone" size={14} color={BLUE} />
-              <Text style={styles.svcPillText} numberOfLines={1}>{item.vehicleType}</Text>
-            </View>
-            <View style={[styles.statusPill, { backgroundColor: badge.bg }]}>
-              <SolarIcon name={badge.icon} variant="bold" size={12} color={badge.color} />
-              <Text style={[styles.statusPillText, { color: badge.color }]}>{badge.label}</Text>
-            </View>
+        {/* Status + distance */}
+        <View style={styles.tcTopRow}>
+          <View style={[styles.tcStatusPill, { backgroundColor: badge.bg }]}>
+            <SolarIcon name={badge.icon} variant="bold" size={12} color={badge.color} />
+            <Text style={[styles.tcStatusText, { color: badge.color }]} numberOfLines={1}>{badge.label}</Text>
           </View>
+          {item.distanceKm !== null && (
+            <View style={styles.tcDistance}>
+              <SolarIcon name="MapPoint" variant="bold" size={14} color={isFinished ? colors.textMuted : colors.accent} />
+              <Text style={styles.tcDistanceText}>{formatKm(item.distanceKm)} away</Text>
+            </View>
+          )}
+        </View>
 
-          <View>
-            {[
-              { key: 'p', label: 'START', main: pickupMain, sub: item.pickupSub, color: ORANGE },
-              { key: 'd', label: 'DESTINATION', main: dropoffMain, sub: item.dropoffSub, color: colors.textPrimary },
-            ].map((r, i) => (
-              <View key={r.key} style={styles.routeRow}>
-                <View style={styles.routeRail}>
-                  <View style={[styles.routeRing, { borderColor: r.color }]}>
-                    <View style={[styles.routeRingDot, { backgroundColor: r.color }]} />
-                  </View>
-                  {i === 0 && (
-                    <View style={styles.routeDots}>
-                      {[0, 1, 2].map(k => <View key={k} style={styles.routeDot} />)}
-                    </View>
-                  )}
-                </View>
-                <View style={[styles.routeTextWrap, i === 0 && { paddingBottom: 16 }]}>
-                  <Text style={styles.routeLabel}>{r.label}</Text>
-                  <Text style={styles.routeMain} numberOfLines={1}>{r.main}</Text>
-                  {!!r.sub && (
-                    <Text style={styles.routeSub} numberOfLines={1}>{r.sub}</Text>
-                  )}
-                </View>
-              </View>
-            ))}
+        {/* Provider */}
+        <View style={styles.tcProfile}>
+          <View style={[styles.tcAvatar, isFinished && { backgroundColor: '#94A3B8' }]}>
+            <Text style={styles.tcAvatarText}>{initials(item.name)}</Text>
           </View>
-
-          <View style={styles.oContacts}>
-            <View style={styles.mcCard}>
-              <View style={[styles.mcAvatar, { backgroundColor: BLUE }]}>
-                <Text style={styles.mcAvatarText}>{initials(item.name)}</Text>
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.mcRole}>COURIER PARTNER</Text>
-                <Text style={styles.mcName} numberOfLines={1}>{item.name}</Text>
-              </View>
-              <View style={styles.mcRatingBadge}>
-                <SolarIcon name="Star" variant="duotone" size={13} color={colors.warning} />
-                <Text style={styles.mcRatingText}>{item.rating}</Text>
-              </View>
+          <View style={styles.tcProfileText}>
+            <Text style={styles.tcName} numberOfLines={1}>{item.name}</Text>
+            <View style={styles.tcMetaRow}>
+              <SolarIcon name="Star" variant="bold" size={13} color={colors.warning} />
+              <Text style={styles.tcMetaStrong}>{item.rating}</Text>
+              <Text style={styles.tcMetaDot}>•</Text>
+              <Text style={styles.tcMeta} numberOfLines={1}>{item.vehicleType}</Text>
             </View>
           </View>
         </View>
 
-        <View style={styles.oFooter}>
-          <View style={styles.oChip}>
-            <SolarIcon
-              name={isFinished ? 'Flag' : item.state === 'scheduled' ? 'Calendar' : 'Clock'}
-              variant="bold"
-              size={14}
-              color={mutedColor}
-            />
-            <Text style={[styles.oChipText, isFinished && { color: colors.textSecondary }]} numberOfLines={1}>
-              {isFinished ? 'Arrived at destination' : item.timeLabel}
-            </Text>
+        <View style={styles.tcDivider} />
+
+        {/* Route timeline */}
+        <View style={styles.tcTlRow}>
+          <View style={styles.tcTlRail}>
+            <View style={styles.tcPickIcon}>
+              <SolarIcon name="MapPoint" variant="bold" size={18} color="#FFFFFF" />
+            </View>
+            <View style={styles.tcTlLine} />
+          </View>
+          <View style={styles.tcTlBody}>
+            <Text style={styles.tcTlLabel}>START</Text>
+            <Text style={styles.tcTlTitle} numberOfLines={1}>{pickupMain}</Text>
+            {!!item.pickupSub && <Text style={styles.tcTlSub} numberOfLines={1}>{item.pickupSub}</Text>}
+          </View>
+        </View>
+
+        <View style={styles.tcTlRow}>
+          <View style={styles.tcTlRail}>
+            <View style={styles.tcDropIcon}>
+              <SolarIcon name="Flag" variant="bold" size={16} color="#000000" />
+            </View>
+          </View>
+          <View style={[styles.tcTlBody, { paddingBottom: 0 }]}>
+            <Text style={styles.tcTlLabel}>DESTINATION</Text>
+            <Text style={styles.tcTlTitle} numberOfLines={1}>{dropoffMain}</Text>
+            {!!item.dropoffSub && <Text style={styles.tcTlSub} numberOfLines={1}>{item.dropoffSub}</Text>}
+          </View>
+        </View>
+
+        {/* Departure + capacity */}
+        <View style={styles.tcInfo}>
+          <View style={styles.tcInfoCell}>
+            <SolarIcon name={timeIcon} variant="bold" size={16} color={isFinished ? colors.textMuted : colors.accent} />
+            <View style={styles.tcInfoText}>
+              <Text style={styles.tcInfoLabel}>{isFinished ? 'STATUS' : 'DEPARTURE'}</Text>
+              <Text style={styles.tcInfoValue} numberOfLines={1}>{isFinished ? 'Arrived' : item.timeLabel}</Text>
+            </View>
           </View>
           {item.maxWeightKg != null && (
-            <View style={styles.oChip}>
-              <SolarIcon name="Package" variant="bold" size={14} color={mutedColor} />
-              <Text style={[styles.oChipText, isFinished && { color: colors.textSecondary }]} numberOfLines={1}>
-                {item.maxWeightKg} kg
-              </Text>
-            </View>
-          )}
-          <View style={{ flex: 1 }} />
-          {item.distanceKm !== null && (
-            <Text style={[styles.oDistPrice, isFinished && { color: colors.textSecondary }]}>
-              {formatKm(item.distanceKm)}
-            </Text>
+            <>
+              <View style={styles.tcInfoSep} />
+              <View style={styles.tcInfoCell}>
+                <SolarIcon name="Package" variant="bold" size={16} color={isFinished ? colors.textMuted : colors.accent} />
+                <View style={styles.tcInfoText}>
+                  <Text style={styles.tcInfoLabel}>CAPACITY</Text>
+                  <Text style={styles.tcInfoValue} numberOfLines={1}>{item.maxWeightKg} kg</Text>
+                </View>
+              </View>
+            </>
           )}
         </View>
 
-        <View style={styles.oActions}>
-          <TouchableOpacity
-            style={styles.trackBtn}
-            onPress={() => setTrackRouteId(item.routeId)}
-            activeOpacity={0.85}
-          >
-            <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
-            <Text style={styles.trackBtnText}>View</Text>
+        {/* Actions */}
+        <View style={styles.tcActions}>
+          <TouchableOpacity style={styles.tcViewBtn} onPress={() => setTrackRouteId(item.routeId)} activeOpacity={0.85}>
+            <SolarIcon name="Routing" variant="duotone" size={16} color={colors.accent} />
+            <Text style={styles.tcViewText}>View</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.oRouteBtn, isFinished && { backgroundColor: '#94A3B8' }]}
+            style={[styles.tcRequestBtn, isFinished && { backgroundColor: '#94A3B8' }]}
             onPress={() => requestAlongRoute(item)}
             activeOpacity={0.9}
           >
             <SolarIcon name={isFinished ? 'CloseCircle' : 'PaperPlane'} variant="duotone" size={16} color="#FFFFFF" />
-            <Text style={styles.oRouteText}>
+            <Text style={styles.tcRequestText} numberOfLines={1}>
               {isFinished ? 'Route Finished' : 'Request Delivery'}
             </Text>
           </TouchableOpacity>
@@ -643,7 +694,7 @@ export default function ExploreScreen() {
         <View style={styles.locBanner}>
           <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
           <Text style={styles.locBannerText}>
-            {filters.radiusKm === null ? 'Showing providers closest to you' : `Providers within ${filters.radiusKm} km of you`}
+            {filters.radiusKm === null ? 'Showing all providers, closest first' : `Providers within ${filters.radiusKm} km of you`}
           </Text>
           <TouchableOpacity onPress={locateMe} hitSlop={10}>
             <SolarIcon name="Refresh" variant="linear" size={16} color={colors.textSecondary} />
@@ -946,165 +997,82 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  /* ---------- TRIP CARD ---------- */
-  oCard: {
+  /* ---------- TRIP CARD (matches LiveTrackingScreen card language) ---------- */
+  tcCard: {
     backgroundColor: c.card,
-    borderRadius: 22,
-    marginBottom: 14,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: c.border,
-    overflow: 'hidden',
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: isDark ? 0.2 : 0.04,
+    shadowRadius: 8,
+    elevation: isDark ? 0 : 1,
   },
-  oPad: { padding: 16 },
-  oTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-    gap: 8,
-  },
-
-  svcPill: {
+  tcTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 14 },
+  tcStatusPill: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)',
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    flexShrink: 1,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, flexShrink: 1,
   },
-  svcPillText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_700Bold',
-    color: BLUE,
-    flexShrink: 1,
-  },
-  statusPill: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    flexShrink: 0,
-  },
-  statusPillText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_700Bold',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
+  tcStatusText: { fontSize: 11, fontFamily: 'Poppins_700Bold', textTransform: 'uppercase', letterSpacing: 0.3, flexShrink: 1 },
+  tcDistance: { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
+  tcDistanceText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
-  routeRow: { flexDirection: 'row', gap: 14 },
-  routeRail: { alignItems: 'center', width: 24 },
-  routeRing: {
-    width: 24, height: 24, borderRadius: 12, borderWidth: 3,
-    alignItems: 'center', justifyContent: 'center', backgroundColor: c.card,
+  tcProfile: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tcAvatar: {
+    width: 48, height: 48, borderRadius: 24, backgroundColor: c.success,
+    alignItems: 'center', justifyContent: 'center', flexShrink: 0,
   },
-  routeRingDot: { width: 8, height: 8, borderRadius: 4 },
-  routeDots: { position: 'absolute', top: 26, bottom: -4, alignItems: 'center', justifyContent: 'space-evenly' },
-  routeDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: c.border },
-  routeTextWrap: { flex: 1, minWidth: 0 },
-  routeLabel: {
-    fontSize: 10,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textMuted,
-    letterSpacing: 0.6,
-  },
-  routeMain: {
-    fontSize: 16,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-    marginTop: 1,
-  },
-  routeSub: {
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 2,
-  },
+  tcAvatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 16 },
+  tcProfileText: { flex: 1, minWidth: 0 },
+  tcName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
+  tcMetaStrong: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcMetaDot: { fontSize: 12, color: c.textMuted },
+  tcMeta: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, flexShrink: 1 },
 
-  /* Courier mini-card */
-  oContacts: { marginTop: 12 },
-  mcCard: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: c.background, borderRadius: 14, padding: 12,
-    borderWidth: 1, borderColor: c.divider,
-  },
-  mcAvatar: {
-    width: 40, height: 40, borderRadius: 20,
+  tcDivider: { height: 1, backgroundColor: c.border, marginVertical: 14 },
+
+  tcTlRow: { flexDirection: 'row', gap: 12 },
+  tcTlRail: { width: 34, alignItems: 'center' },
+  tcPickIcon: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE,
     alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0,
   },
-  mcAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
+  tcDropIcon: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF',
+    borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center',
   },
-  mcRole: {
-    fontSize: 9,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textMuted,
-    letterSpacing: 0.5,
-  },
-  mcName: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textPrimary,
-  },
-  mcRatingBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: c.card, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
-    borderWidth: 1, borderColor: c.border,
-    flexShrink: 0,
-  },
-  mcRatingText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-  },
+  tcTlLine: { flex: 1, width: 2, backgroundColor: c.border, marginTop: 4, marginBottom: -4 },
+  tcTlBody: { flex: 1, minWidth: 0, paddingBottom: 14 },
+  tcTlLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  tcTlTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  tcTlSub: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
 
-  /* Footer chips */
-  oFooter: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: c.background, paddingHorizontal: 16, paddingVertical: 14,
-    borderTopWidth: 1, borderTopColor: c.divider,
+  tcInfo: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.background, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14,
+    marginTop: 14,
   },
-  oChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: c.card, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8,
-    borderWidth: 1, borderColor: c.border,
-    flexShrink: 1,
-  },
-  oChipText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textPrimary,
-    flexShrink: 1,
-  },
-  oDistPrice: {
-    fontSize: 15,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-    flexShrink: 0,
-  },
+  tcInfoCell: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
+  tcInfoSep: { width: 1, alignSelf: 'stretch', backgroundColor: c.border, marginHorizontal: 12 },
+  tcInfoText: { flex: 1, minWidth: 0 },
+  tcInfoLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.6 },
+  tcInfoValue: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
 
-  /* Action buttons */
-  oActions: {
-    flexDirection: 'row', gap: 10, padding: 14,
-    borderTopWidth: 1, borderTopColor: c.divider,
+  tcActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  tcViewBtn: {
+    flex: 1, height: 48, borderRadius: 24, backgroundColor: c.accentSoft,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
   },
-  trackBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    backgroundColor: c.accentSoft, borderRadius: 14, paddingVertical: 14,
+  tcViewText: { color: c.accent, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+  tcRequestBtn: {
+    flex: 2, height: 48, borderRadius: 24, backgroundColor: c.accent,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 8,
   },
-  trackBtnText: {
-    color: c.accent,
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
-  oRouteBtn: {
-    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: c.accent, borderRadius: 14, paddingVertical: 14,
-  },
-  oRouteText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
+  tcRequestText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
 
   /* Empty state */
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },

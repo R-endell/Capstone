@@ -111,14 +111,6 @@ const polylineDistanceKm = (coords: LatLng[]): number => {
   return total / 1000;
 };
 
-// "Ouano Ave, Tipolo, Mandaue City" -> { title: "Ouano Ave", sub: "Tipolo, Mandaue City" }
-const splitAddress = (a: string | null | undefined) => {
-  const s = (a ?? '').trim();
-  const i = s.indexOf(',');
-  if (i < 0) return { title: s || '—', sub: '' };
-  return { title: s.slice(0, i).trim(), sub: s.slice(i + 1).trim() };
-};
-
 const areaOf = (l: any): string =>
   [l?.barangay, l?.city, l?.province].filter(v => v && v !== 'Unknown').join(', ');
 
@@ -128,7 +120,6 @@ const isCodeLike = (t: string) => {
   const x = (t ?? '').trim();
   if (!x) return true;
   if (PLUS_CODE.test(x)) return true;
-  // one "word" mixing letters and digits (ids, hashes); real street names have spaces or are plain words
   return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
 };
 const cleanAddress = (a?: string | null): string =>
@@ -141,13 +132,11 @@ const streetOf = (l: any, fallback: string): string => {
   const brgy = l?.barangay && l.barangay !== 'Unknown' ? String(l.barangay) : '';
   return road || cleanAddress(l?.street_address) || brgy || fallback;
 };
+
 /** The place name the sender picked, unless it is just a code. */
 const nameOf = (l: any): string | null =>
   typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : null;
 
-// Landmark on top, street (then area) underneath.
-//   landmark = the place the sender picked on the location screen (place_name)
-//   street   = the road name (road), else the cleaned street_address, else the barangay
 const placeParts = (p: PlaceInfo) => {
   const landmark = (p.landmark || '').trim();
   const street = (p.street || '').trim();
@@ -171,9 +160,6 @@ const fmtDateTime = (iso?: string | null) => {
   return `${p(d.getHours())}:${p(d.getMinutes())} • ${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`;
 };
 
-// Payment info — the request row stores the fare on `estimated_cost`, the
-// courier payout on `base_fare`, and the refundable deposit on `return_deposit`.
-// Older / alternative schemas may use the generic keys, so those are still tried.
 const FARE_KEYS = [
   'estimated_cost', 'total_price', 'total_amount', 'total_fare',
   'delivery_fee', 'price', 'fare', 'amount', 'estimated_price',
@@ -182,10 +168,10 @@ const FARE_KEYS = [
 const METHOD_KEYS = ['payment_provider', 'payment_method', 'payment_type'];
 
 type PayInfo = {
-  amount: number | null;   // total charged to the sender
-  base: number | null;     // amount that goes to the courier (excl. fee)
-  fee: number | null;      // platform fee (15%)
-  deposit: number | null;  // refundable return deposit
+  amount: number | null;
+  base: number | null;
+  fee: number | null;
+  deposit: number | null;
   method: string | null;
 };
 
@@ -310,7 +296,6 @@ const CourierMarker = React.memo(function CourierMarker({ fix, live }: { fix: Pr
 
 type MarkerStyles = ReturnType<typeof makeMarkerStyles>;
 
-// Same pickup / drop-off pins as the navigation map, with the street name underneath.
 const PIN = 44, LABEL_H = 26, LABEL_H2 = 42, LABEL_GAP = 6;
 const PlaceMarker = React.memo(function PlaceMarker({
   lat, lng, title, street, kind, mk,
@@ -393,7 +378,6 @@ export default function LiveTrackingScreen() {
   const routeFromMe = useRef(false);
   const lastFitKey = useRef('');
 
-  // Open (or create) the chat room for this delivery and jump straight to it in Messages.
   const handleMessageProvider = useCallback(async () => {
     if (openingChat) return;
     if (isProviderMode || !data?.deliveryId) {
@@ -411,7 +395,6 @@ export default function LiveTrackingScreen() {
         return;
       }
 
-      // Prefer an existing Messages/Inbox route anywhere in the navigation tree.
       let current: any = navigation;
       while (current) {
         try {
@@ -421,10 +404,9 @@ export default function LiveTrackingScreen() {
             current.navigate(match, { openRoomId: roomId });
             return;
           }
-        } catch { /* ignore and keep walking up */ }
+        } catch { /* ignore */ }
         current = current.getParent?.();
       }
-      // Fallback: route through the main tabs.
       navigation.navigate('MainTabs', {
         screen: 'Messages',
         params: { openRoomId: roomId },
@@ -581,7 +563,7 @@ export default function LiveTrackingScreen() {
         .from('delivery_requests').select('*').eq('request_id', d.request_id).maybeSingle();
       setPay(extractPay(full));
       setPkgPhoto(findPhoto(full));
-    } catch { /* payment info is optional */ }
+    } catch { /* optional */ }
 
     if (d.provider_id) {
       const { data: p } = await supabase
@@ -672,7 +654,7 @@ export default function LiveTrackingScreen() {
       alongRef.current = undefined;
       offCount.current = 0;
       setNavRoute({ r, idx: buildRouteIndex(r), tKey: key });
-    }).catch(() => { /* keep the last route */ }).finally(() => {
+    }).catch(() => {}).finally(() => {
       if (seq === reqSeq.current) inflightKey.current = null;
     });
   }, []);
@@ -747,8 +729,7 @@ export default function LiveTrackingScreen() {
     lastFitKey.current = key;
     const t = setTimeout(() => fitAll(false), 150);
     return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetIsDropoff, sheetHeight, data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude]);
+  }, [targetIsDropoff, sheetHeight, data?.pickup.latitude, data?.pickup.longitude, data?.dropoff.latitude, data?.dropoff.longitude, fitAll]);
 
   const stage = timelineStage(data);
   useEffect(() => {
@@ -800,6 +781,10 @@ export default function LiveTrackingScreen() {
   const hasEta = etaLabel !== '—' && !data.completedAt;
 
   const plate = vehicle?.plate_number || null;
+  const vehicleTypeLabel = vehicle?.vehicle_type ? String(vehicle.vehicle_type).toUpperCase() : 'VEHICLE';
+  const combinedVehicleBadge = [plate, vehicleTypeLabel].filter(Boolean).join(' • ');
+  const trackingCodeId = data.requestId || data.deliveryId;
+
   const pu = placeParts(data.pickup);
   const dr = placeParts(data.dropoff);
   const routeKm = fullRoute.length > 1 ? `${polylineDistanceKm(fullRoute).toFixed(2)} km` : null;
@@ -923,7 +908,7 @@ export default function LiveTrackingScreen() {
             </Text>
           ) : (
             <Text style={styles.headline}>
-              Provider{plate ? <Text style={styles.headlineAccent}> {plate}</Text> : null} will pick up your package{hasEta ? <Text> in <Text style={styles.headlineAccent}>{etaLabel}</Text></Text> : null}
+              Provider <Text style={styles.headlineAccent}>{providerName}</Text> will pick up your package{hasEta ? <Text> in <Text style={styles.headlineAccent}>{etaLabel}</Text></Text> : null}
             </Text>
           )}
 
@@ -945,18 +930,13 @@ export default function LiveTrackingScreen() {
               </View>
 
               <View style={styles.rightBlock}>
-                {!!plate && (
-                  <View style={styles.plateBox}>
-                    <Text style={styles.plateText}>{plate}</Text>
-                  </View>
-                )}
-                <Text style={styles.vehicleSub} numberOfLines={1}>
-                  {vehicle?.vehicle_type ? String(vehicle.vehicle_type).toUpperCase() : 'VEHICLE'}
-                </Text>
+                <View style={styles.plateBox}>
+                  <Text style={styles.plateText} numberOfLines={1}>
+                    {combinedVehicleBadge}
+                  </Text>
+                </View>
               </View>
             </View>
-
-            <Text style={styles.driverName} numberOfLines={1}>{providerName}</Text>
 
             <View style={styles.actionRow}>
               <TouchableOpacity
@@ -1007,10 +987,10 @@ export default function LiveTrackingScreen() {
             )}
           </View>
 
-          {/* Details — revealed by scrolling the sheet up */}
+          {/* Details */}
             <>
               <View style={styles.card}>
-                {!isProviderMode && data.deliveryId > 0 && kv('Pack-N-Ship ID', `#${data.deliveryId}`)}
+                {!isProviderMode && trackingCodeId > 0 && kv('Pack-N-Ship ID', `#PNS-${String(trackingCodeId).padStart(4, '0')}`)}
                 {!!data.acceptedAt && kv('Accepted', fmtDateTime(data.acceptedAt))}
 
                 {!!pay && pay.amount != null && (
@@ -1172,7 +1152,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     },
     cardDivider: { height: 1, backgroundColor: c.border, marginVertical: 12 },
 
-    cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+    cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
     profileRow: { flexDirection: 'row', alignItems: 'center' },
     avatar: {
       width: 56, height: 56, borderRadius: 28, backgroundColor: c.success,
@@ -1181,15 +1161,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     vehicleImg: { width: 92, height: 54, marginLeft: -8 },
     avatarImg: { width: '100%', height: '100%' },
     avatarText: { color: '#FFFFFF', fontFamily: 'Poppins_800ExtraBold', fontSize: 18 },
-    rightBlock: { alignItems: 'flex-end', flex: 1 },
+    rightBlock: { alignItems: 'flex-end', flex: 1, marginLeft: 8 },
     plateBox: {
-      backgroundColor: '#1F2937', paddingHorizontal: 12, paddingVertical: 6,
-      borderRadius: 8, marginBottom: 8,
+      backgroundColor: '#1F2937', paddingHorizontal: 12, paddingVertical: 8,
+      borderRadius: 8, maxWidth: '100%',
     },
-    plateText: { color: '#FFFFFF', fontSize: 16, fontFamily: 'Poppins_700Bold', letterSpacing: 0.6 },
-    vehicleSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
-
-    driverName: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 14, marginBottom: 14 },
+    plateText: { color: '#FFFFFF', fontSize: 12.5, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
 
     actionRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     messageBtn: {
@@ -1234,9 +1211,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     payTitle: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
     paySub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
     payAmount: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-
-    noteBox: { marginTop: 10, backgroundColor: c.infoSoft, borderRadius: 14, padding: 14 },
-    noteText: { fontSize: 13, lineHeight: 19, fontFamily: 'Poppins_500Medium', color: c.info },
 
     pkgHeader: { fontSize: 11, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8, marginBottom: 12 },
     viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },

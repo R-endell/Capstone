@@ -85,6 +85,12 @@ export default function EarningsScreen() {
   };
 
   useEffect(() => {
+    return () => {
+      if (copyHashTimerRef.current) clearTimeout(copyHashTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     const ids = withdrawals.map((w) => Number(w.withdrawal_id)).filter(Boolean);
     if (ids.length === 0) { setWdHashes({}); return; }
     let cancelled = false;
@@ -122,7 +128,12 @@ export default function EarningsScreen() {
     const typedWallet = data as ProviderWallet;
     setWalletData(typedWallet);
     setWalletMissing(false);
-    try { const wdList = await fetchWithdrawalHistory(typedWallet.wallet_id); setWithdrawals(wdList); } catch (e) { console.warn('[Earnings] fetchWithdrawalHistory warning:', e); }
+    try {
+      const wdList = await fetchWithdrawalHistory(typedWallet.wallet_id);
+      setWithdrawals(wdList);
+    } catch (e) {
+      console.warn('[Earnings] fetchWithdrawalHistory warning:', e);
+    }
   };
 
   const fetchEarnings = async (pid: number) => {
@@ -140,7 +151,13 @@ export default function EarningsScreen() {
       .eq('provider_id', pid).order('created_at', { ascending: false });
 
     if (escrowErr) { setEarnings([]); return; }
-    if (!escrows || escrows.length === 0) { setEarnings([]); setTotalEarned(0); setTotalPending(0); setCompletedJobs(0); return; }
+    if (!escrows || escrows.length === 0) {
+      setEarnings([]);
+      setTotalEarned(0);
+      setTotalPending(0);
+      setCompletedJobs(0);
+      return;
+    }
 
     const escrowIds = escrows.map((e: any) => e.escrow_id);
     const { data: txns } = await supabase.from('transactions').select('*').in('escrow_id', escrowIds);
@@ -160,9 +177,6 @@ export default function EarningsScreen() {
       else if (escrowStatusRaw === 'refunded') displayStatus = 'refunded';
       else if (isReleased || txnStatusRaw === 'completed') displayStatus = 'earned';
 
-      // Source of truth for courier earnings: delivery_requests.base_fare (what the RPC credits
-      // to provider_wallet). Ignore `transactions.base_amount` / `service_fee` — those are stale
-      // values from an old trigger and don't match the wallet credit.
       const request = Array.isArray(delivery?.delivery_requests)
         ? delivery.delivery_requests[0]
         : delivery?.delivery_requests;
@@ -171,10 +185,6 @@ export default function EarningsScreen() {
       const deposit = request?.return_deposit != null ? Number(request.return_deposit) : 0;
       const escrowAmt = Number(e.amount || 0);
 
-      // What the courier actually received (or will receive):
-      //   Released + Returned  → base_fare + return_deposit (courier kept both)
-      //   Released + Completed → base_fare (deposit was refunded to sender)
-      //   Not released         → escrow amount (full potential)
       const netBase = Math.round(baseFare * 0.85 * 100) / 100;
       let courierAmount: number;
       if (isReleased) {
@@ -186,16 +196,25 @@ export default function EarningsScreen() {
       }
 
       return {
-        escrow_id: e.escrow_id, delivery_id: e.delivery_id, sender_id: e.sender_id,
-        escrow_status: e.escrow_status, emergency_frozen: !!e.emergency_frozen, amount: escrowAmt,
-        created_at: e.created_at, bc_escrow_tx_hash: e.bc_escrow_tx_hash ?? null, bc_tx_hash: t?.bc_tx_hash ?? null, delivery_completed_at: completedAt,
-        delivery_accepted_at: delivery.accepted_at ?? null, transaction_id: t?.transaction_id ?? null,
+        escrow_id: e.escrow_id,
+        delivery_id: e.delivery_id,
+        sender_id: e.sender_id,
+        escrow_status: e.escrow_status,
+        emergency_frozen: !!e.emergency_frozen,
+        amount: escrowAmt,
+        created_at: e.created_at,
+        bc_escrow_tx_hash: e.bc_escrow_tx_hash ?? null,
+        bc_tx_hash: t?.bc_tx_hash ?? null,
+        delivery_completed_at: completedAt,
+        delivery_accepted_at: delivery.accepted_at ?? null,
+        transaction_id: t?.transaction_id ?? null,
         base_amount: courierAmount,
-        service_fee: null,          // RPC credits a flat payout; no separate fee exists
+        service_fee: null,
         total_amount: courierAmount,
         penalty_fee: t?.penalty_fee != null ? Number(t.penalty_fee) : null,
         payment_method: t?.payment_method ?? request?.payment_provider ?? null,
-        transaction_status: t?.status ?? null, processed_at: t?.processed_at ?? null,
+        transaction_status: t?.status ?? null,
+        processed_at: t?.processed_at ?? null,
         display_status: displayStatus,
         display_amount: courierAmount,
       };
@@ -216,12 +235,16 @@ export default function EarningsScreen() {
       if (!pid) return;
       if (!providerId) setProviderId(pid);
       await Promise.all([fetchWalletAndWithdrawals(pid), fetchEarnings(pid)]);
-    } catch (e) { console.warn('[Earnings] loadData error', e); } finally { setLoading(false); setRefreshing(false); }
+    } catch (e) {
+      console.warn('[Earnings] loadData error', e);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
   };
 
   useFocusEffect(useCallback(() => { loadData(); }, [providerId]));
 
-  // Handle deep-linking from withdrawal notifications
   useEffect(() => {
     const params = route.params || {};
     if (params.initialTab === 'withdrawals' || params.highlightWithdrawalId) {
@@ -258,8 +281,14 @@ export default function EarningsScreen() {
     try {
       const updated = await reconcileWithdrawalStatus(withdrawalId);
       await loadData(true);
-      if (updated && selectedWithdrawal?.withdrawal_id === withdrawalId) setSelectedWithdrawal({ ...updated, amount: Number(updated.amount || selectedWithdrawal.amount) });
-    } catch (err: any) { Alert.alert('Status Check', err?.message || 'Could not refresh payout status.'); } finally { setReconcilingId(null); }
+      if (updated && selectedWithdrawal?.withdrawal_id === withdrawalId) {
+        setSelectedWithdrawal({ ...updated, amount: Number(updated.amount || selectedWithdrawal.amount) });
+      }
+    } catch (err: any) {
+      Alert.alert('Status Check', err?.message || 'Could not refresh payout status.');
+    } finally {
+      setReconcilingId(null);
+    }
   };
 
   const formatDate = (timestamp: string | null) => {
@@ -269,9 +298,14 @@ export default function EarningsScreen() {
     const date = new Date(raw);
     if (isNaN(date.getTime())) return 'Pending';
     const today = new Date();
-    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
-    if (date.toDateString() === today.toDateString()) return `Today, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-    if (date.toDateString() === yesterday.toDateString()) return `Yesterday, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === today.toDateString()) {
+      return `Today, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    }
+    if (date.toDateString() === yesterday.toDateString()) {
+      return `Yesterday, ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    }
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
@@ -298,7 +332,9 @@ export default function EarningsScreen() {
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
   });
 
-  const activeWithdrawalsTotal = withdrawals.filter((w) => ['Pending', 'Processing', 'Pending_Compliance'].includes(w.status)).reduce((sum, w) => sum + Number(w.amount || 0), 0);
+  const activeWithdrawalsTotal = withdrawals
+    .filter((w) => ['Pending', 'Processing', 'Pending_Compliance'].includes(w.status))
+    .reduce((sum, w) => sum + Number(w.amount || 0), 0);
 
   const renderWalletCard = () => {
     const balance = Number(walletData?.balance || 0);
@@ -307,88 +343,131 @@ export default function EarningsScreen() {
 
     return (
       <View style={styles.walletCard}>
-        <View style={styles.walletHeader}>
-          <View style={styles.walletIconBox}>
-            <SolarIcon name="Wallet" variant="duotone" size={22} color={colors.accent} />
+        {/* Top Row: Balance + Cash Out Action */}
+        <View style={styles.walletTopRow}>
+          <View style={{ flex: 1 }}>
+            <View style={styles.balanceHeaderRow}>
+              <View style={styles.walletIconBox}>
+                <SolarIcon name="Wallet" variant="duotone" size={18} color={colors.accent} />
+              </View>
+              <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
+            </View>
+            <Text style={styles.balanceAmount} numberOfLines={1} adjustsFontSizeToFit>
+              <Text style={styles.currencySymbol}>₱</Text>
+              {balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </Text>
           </View>
-          <TouchableOpacity style={[styles.withdrawBtn, styles.withdrawBtnActive]} activeOpacity={0.85} onPress={() => {
-            if (walletMissing) { Alert.alert('Wallet Not Ready', 'Complete a delivery first to initialize your wallet.'); return; }
-            navigation.navigate('Cashout', { providerId });
-          }}>
+
+          <TouchableOpacity
+            style={styles.withdrawBtn}
+            activeOpacity={0.85}
+            onPress={() => {
+              if (walletMissing) {
+                Alert.alert('Wallet Not Ready', 'Complete a delivery first to initialize your wallet.');
+                return;
+              }
+              navigation.navigate('Cashout', { providerId });
+            }}
+          >
             <SolarIcon name="AltArrowUp" variant="bold" size={16} color="#FFFFFF" />
-            <Text style={styles.withdrawBtnTextActive}>Cash Out</Text>
+            <Text style={styles.withdrawBtnText}>Cash Out</Text>
           </TouchableOpacity>
         </View>
 
-        <View style={styles.balanceSection}>
-          <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
-          <Text style={styles.balanceAmount}><Text style={styles.currencySymbol}>₱</Text>{balance.toFixed(2)}</Text>
-          {totalPending > 0 && (
-            <View style={styles.pendingRow}>
-              <SolarIcon name="Clock" variant="bold" size={12} color={colors.warning} />
-              <Text style={styles.pendingText}>₱{totalPending.toFixed(2)} pending escrow release</Text>
-            </View>
-          )}
-          {activeWithdrawalsTotal > 0 && (
-            <View style={[styles.pendingRow, { marginTop: 4 }]}>
-              <SolarIcon name="Refresh" variant="bold" size={12} color={colors.accent} />
-              <Text style={[styles.pendingText, { color: colors.accent }]}>₱{activeWithdrawalsTotal.toFixed(2)} payout in progress</Text>
-            </View>
-          )}
-        </View>
-
-        {walletMissing && (
-          <View style={styles.walletMissingBox}>
-            {/* DangerCircle is an INVERTED_ICON — pass secondaryColor so it renders warning-tinted */}
-            <SolarIcon name="DangerCircle" variant="linear" size={16} color={colors.warning} secondaryColor={colors.warning} />
-            <Text style={styles.walletMissingText}>Wallet not initialized yet. Complete a delivery or contact support to activate.</Text>
+        {/* Status Pills (Pending Escrow / Payout in Progress) */}
+        {(totalPending > 0 || activeWithdrawalsTotal > 0) && (
+          <View style={styles.walletStatusList}>
+            {totalPending > 0 && (
+              <View style={styles.pendingPill}>
+                <SolarIcon name="Clock" variant="bold" size={13} color={colors.warning} />
+                <Text style={styles.pendingText}>
+                  ₱{totalPending.toFixed(2)} held in escrow
+                </Text>
+              </View>
+            )}
+            {activeWithdrawalsTotal > 0 && (
+              <View style={[styles.pendingPill, { backgroundColor: colors.accentSoft }]}>
+                <SolarIcon name="Refresh" variant="bold" size={13} color={colors.accent} />
+                <Text style={[styles.pendingText, { color: colors.accent }]}>
+                  ₱{activeWithdrawalsTotal.toFixed(2)} cashout processing
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
+        {walletMissing && (
+          <View style={styles.walletMissingBox}>
+            <SolarIcon name="DangerCircle" variant="linear" size={16} color={colors.warning} secondaryColor={colors.warning} />
+            <Text style={styles.walletMissingText}>
+              Wallet not initialized yet. Complete a delivery to activate payouts.
+            </Text>
+          </View>
+        )}
+
+        {/* Compact 2-Column Payout Destinations */}
         {!walletMissing && (
           <>
             <View style={styles.statsDivider} />
-            <View style={styles.payoutSection}>
-              <Text style={styles.payoutHeading}>PAYOUT DESTINATIONS</Text>
-              <View style={styles.payoutRow}>
-                <View style={[styles.payoutIconWrap, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}>
-                  <Image source={GCASH_LOGO} style={{ width: 22, height: 22 }} resizeMode="contain" />
+            <Text style={styles.payoutHeading}>PAYOUT ACCOUNTS</Text>
+            <View style={styles.payoutGrid}>
+              <TouchableOpacity
+                style={styles.payoutTile}
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('Cashout', { providerId })}
+              >
+                <View style={styles.payoutLogoBox}>
+                  <Image source={GCASH_LOGO} style={{ width: 20, height: 20 }} resizeMode="contain" />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.payoutLabel}>GCash</Text>
-                  <Text style={styles.payoutValue}>{hasGcash ? maskAccount(walletData!.gcash_number) : 'Set on first cashout'}</Text>
+                  <Text style={styles.payoutValue} numberOfLines={1}>
+                    {hasGcash ? maskAccount(walletData!.gcash_number) : 'Not linked'}
+                  </Text>
                 </View>
-                <View style={[styles.payoutBadge, hasGcash ? styles.payoutBadgeOn : styles.payoutBadgeOff]}>
-                  <Text style={[styles.payoutBadgeText, hasGcash ? { color: colors.success } : { color: colors.textMuted }]}>{hasGcash ? 'Saved' : 'Not set'}</Text>
-                </View>
-              </View>
+                <View style={[styles.payoutDot, { backgroundColor: hasGcash ? colors.success : colors.textMuted }]} />
+              </TouchableOpacity>
 
-              <View style={styles.payoutRow}>
-                <View style={[styles.payoutIconWrap, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}>
-                  <Image source={MAYA_LOGO} style={{ width: 22, height: 22 }} resizeMode="contain" />
+              <TouchableOpacity
+                style={styles.payoutTile}
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('Cashout', { providerId })}
+              >
+                <View style={styles.payoutLogoBox}>
+                  <Image source={MAYA_LOGO} style={{ width: 20, height: 20 }} resizeMode="contain" />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.payoutLabel}>Maya</Text>
-                  <Text style={styles.payoutValue}>{hasMaya ? maskAccount(walletData!.maya_number) : 'Set on first cashout'}</Text>
+                  <Text style={styles.payoutValue} numberOfLines={1}>
+                    {hasMaya ? maskAccount(walletData!.maya_number) : 'Not linked'}
+                  </Text>
                 </View>
-                <View style={[styles.payoutBadge, hasMaya ? styles.payoutBadgeOn : styles.payoutBadgeOff]}>
-                  <Text style={[styles.payoutBadgeText, hasMaya ? { color: colors.success } : { color: colors.textMuted }]}>{hasMaya ? 'Saved' : 'Not set'}</Text>
-                </View>
-              </View>
+                <View style={[styles.payoutDot, { backgroundColor: hasMaya ? colors.success : colors.textMuted }]} />
+              </TouchableOpacity>
             </View>
           </>
         )}
 
+        {/* Bottom Stats Bar */}
         <View style={styles.statsDivider} />
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
             <Text style={styles.statValue}>{completedJobs}</Text>
-            <Text style={styles.statLabel}>Completed Jobs</Text>
+            <Text style={styles.statLabel}>Completed</Text>
           </View>
           <View style={styles.verticalDivider} />
           <View style={styles.statBox}>
-            <Text style={styles.statValue} numberOfLines={1}>₱{totalEarned.toLocaleString('en-US', { maximumFractionDigits: 0 })}</Text>
+            <Text style={styles.statValue} numberOfLines={1}>
+              ₱{totalEarned.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+            </Text>
             <Text style={styles.statLabel}>Total Earned</Text>
+          </View>
+          <View style={styles.verticalDivider} />
+          <View style={styles.statBox}>
+            <Text style={[styles.statValue, totalPending > 0 && { color: colors.warning }]} numberOfLines={1}>
+              ₱{totalPending.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+            </Text>
+            <Text style={styles.statLabel}>In Escrow</Text>
           </View>
         </View>
       </View>
@@ -404,12 +483,12 @@ export default function EarningsScreen() {
     let statusColor = colors.warning;
     let statusBg = colors.warningBg;
     let statusIcon: any = 'Clock';
-    let statusLabel = 'Pending payout';
+    let statusLabel = 'Pending';
 
     if (isEarned) { statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'CheckCircle'; statusLabel = 'Earned'; }
     else if (isFrozen) { statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'Snowflake'; statusLabel = 'Frozen'; }
     else if (isRefunded) { statusColor = colors.textSecondary; statusBg = colors.divider; statusIcon = 'ArrowLeft'; statusLabel = 'Refunded'; }
-    else if (isPending) { statusLabel = item.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
+    else if (isPending) { statusLabel = item.delivery_completed_at ? 'Releasing' : 'In Escrow'; }
 
     const stamp = item.processed_at || item.delivery_completed_at || item.created_at;
 
@@ -420,25 +499,32 @@ export default function EarningsScreen() {
             <SolarIcon name={statusIcon} variant="linear" size={20} color={statusColor} />
           </View>
           <View style={styles.transactionDetails}>
-            <Text style={styles.transactionTitle}>Delivery #{item.delivery_id}</Text>
-            <Text style={styles.transactionSubtitle}>
-              <Text style={{ color: statusColor, fontFamily: 'Poppins_700Bold' }}>{statusLabel}</Text> • {formatDate(stamp)}
-            </Text>
-            <View style={styles.paymentMethodRow}>
-              <SolarIcon name="Card" variant="linear" size={11} color={colors.textMuted} />
-              <Text style={styles.transactionPayment}>
-                {item.payment_method ? titleCase(item.payment_method) : 'Payment method pending'}
-                {item.service_fee != null ? ` • Fee ₱${item.service_fee.toFixed(2)}` : ''}
-              </Text>
+            <View style={styles.txTitleRow}>
+              <Text style={styles.transactionTitle}>Delivery #{item.delivery_id}</Text>
+              <View style={[styles.miniStatusPill, { backgroundColor: statusBg }]}>
+                <Text style={[styles.miniStatusText, { color: statusColor }]}>{statusLabel}</Text>
+              </View>
             </View>
+            <Text style={styles.transactionSubtitle} numberOfLines={1}>
+              {formatDate(stamp)}
+              {item.payment_method ? ` • ${titleCase(item.payment_method)}` : ''}
+            </Text>
           </View>
         </View>
         <View style={styles.transactionRight}>
-          <Text style={[styles.transactionAmount, { color: isEarned ? colors.success : isRefunded ? colors.textSecondary : colors.textPrimary }, isRefunded && { textDecorationLine: 'line-through' }]}>
+          <Text
+            style={[
+              styles.transactionAmount,
+              { color: isEarned ? colors.success : isRefunded ? colors.textSecondary : colors.textPrimary },
+              isRefunded && { textDecorationLine: 'line-through' },
+            ]}
+          >
             {isEarned ? '+' : ''}₱{item.display_amount.toFixed(2)}
           </Text>
-          {!!item.penalty_fee && item.penalty_fee > 0 && <Text style={styles.penaltyText}>-₱{item.penalty_fee.toFixed(2)} Penalty</Text>}
-          <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} style={{ marginTop: 6 }} />
+          {!!item.penalty_fee && item.penalty_fee > 0 && (
+            <Text style={styles.penaltyText}>-₱{item.penalty_fee.toFixed(2)} Penalty</Text>
+          )}
+          <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} style={{ marginTop: 4 }} />
         </View>
       </TouchableOpacity>
     );
@@ -453,7 +539,7 @@ export default function EarningsScreen() {
     const statusColor = isCompleted ? colors.success : isRefunded ? colors.error : colors.accent;
     const statusBg = isCompleted ? colors.successBg : isRefunded ? colors.errorBg : colors.accentSoft;
     const statusIcon = isCompleted ? 'CheckCircle' : isRefunded ? 'ArrowLeft' : 'Clock';
-    const statusLabel = st === 'Pending_Compliance' ? 'Under Review' : isRefunded ? `${st} · Refunded` : st;
+    const statusLabel = st === 'Pending_Compliance' ? 'Under Review' : isRefunded ? 'Refunded' : st;
 
     const stamp = item.processed_at || item.requested_at;
 
@@ -464,24 +550,32 @@ export default function EarningsScreen() {
             <SolarIcon name={statusIcon as any} variant="linear" size={20} color={statusColor} />
           </View>
           <View style={styles.transactionDetails}>
-            <Text style={styles.transactionTitle}>{isMaya ? 'Maya' : 'GCash'} Cashout</Text>
-            <Text style={styles.transactionSubtitle}>
-              <Text style={{ color: statusColor, fontFamily: 'Poppins_700Bold' }}>{statusLabel}</Text> • {formatDate(stamp)}
-            </Text>
+            <View style={styles.txTitleRow}>
+              <Text style={styles.transactionTitle}>{isMaya ? 'Maya' : 'GCash'} Cashout</Text>
+              <View style={[styles.miniStatusPill, { backgroundColor: statusBg }]}>
+                <Text style={[styles.miniStatusText, { color: statusColor }]}>{statusLabel}</Text>
+              </View>
+            </View>
             <View style={styles.paymentMethodRow}>
-              <Image source={isMaya ? MAYA_LOGO : GCASH_LOGO} style={{ width: 14, height: 14, borderRadius: 3 }} resizeMode="contain" />
-              <Text style={styles.transactionPayment}>
-                {maskAccount(item.account_number) || 'Account'}{item.account_holder_name ? ` • ${item.account_holder_name}` : ''}
+              <Image source={isMaya ? MAYA_LOGO : GCASH_LOGO} style={{ width: 13, height: 13, borderRadius: 3 }} resizeMode="contain" />
+              <Text style={styles.transactionSubtitle} numberOfLines={1}>
+                {maskAccount(item.account_number) || 'Account'} • {formatDate(stamp)}
               </Text>
             </View>
           </View>
         </View>
         <View style={styles.transactionRight}>
-          <Text style={[styles.transactionAmount, { color: isRefunded ? colors.textSecondary : isCompleted ? colors.textPrimary : colors.accent }, isRefunded && { textDecorationLine: 'line-through' }]}>
+          <Text
+            style={[
+              styles.transactionAmount,
+              { color: isRefunded ? colors.textSecondary : isCompleted ? colors.textPrimary : colors.accent },
+              isRefunded && { textDecorationLine: 'line-through' },
+            ]}
+          >
             -₱{Number(item.amount || 0).toFixed(2)}
           </Text>
-          {isRefunded && <Text style={[styles.penaltyText, { color: colors.success }]}>Restored to wallet</Text>}
-          <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} style={{ marginTop: 6 }} />
+          {isRefunded && <Text style={[styles.penaltyText, { color: colors.success }]}>Restored</Text>}
+          <SolarIcon name="AltArrowRight" variant="linear" size={14} color={colors.textMuted} style={{ marginTop: 4 }} />
         </View>
       </TouchableOpacity>
     );
@@ -502,38 +596,51 @@ export default function EarningsScreen() {
     return (
       <Modal visible={!!selectedWithdrawal} transparent animationType="slide" onRequestClose={() => setSelectedWithdrawal(null)}>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+          <View style={styles.modalCard}>
             <View style={styles.dHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Cashout Details</Text>
-              <TouchableOpacity onPress={() => setSelectedWithdrawal(null)} hitSlop={10} style={{ padding: 4 }}>
+              <TouchableOpacity onPress={() => setSelectedWithdrawal(null)} hitSlop={10} style={styles.modalCloseBtn}>
                 <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 12 }}>
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  {/* DangerCircle is INVERTED — needs secondaryColor to honor headColor */}
-                  <SolarIcon name={headIcon as any} variant="linear" size={26} color={headColor} secondaryColor={headColor} />
+                  <SolarIcon name={headIcon as any} variant="linear" size={24} color={headColor} secondaryColor={headColor} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.heroStatus, { color: headColor }]}>{st === 'Pending_Compliance' ? 'Under Compliance Review' : isRefunded ? `${st} — Balance Restored` : st}</Text>
+                  <Text style={[styles.heroStatus, { color: headColor }]}>
+                    {st === 'Pending_Compliance' ? 'Under Compliance Review' : isRefunded ? `${st} — Restored` : st}
+                  </Text>
                   <Text style={styles.heroSub}>Withdrawal #{w.withdrawal_id}</Text>
                 </View>
                 <Text style={[styles.heroAmount, { color: headColor }]}>₱{Number(w.amount || 0).toFixed(2)}</Text>
               </View>
 
               <Text style={styles.sectionLabel}>PAYOUT SUMMARY</Text>
-              <InfoRow styles={styles} colors={colors} label="Method" value={String(w.method).toLowerCase() === 'maya' ? 'Maya' : 'GCash'} />
-              <InfoRow styles={styles} colors={colors} label="Recipient Number" value={w.account_number || '—'} />
-              <InfoRow styles={styles} colors={colors} label="Account Holder" value={w.account_holder_name || '—'} />
-              <InfoRow styles={styles} colors={colors} label="Reference ID" value={w.xendit_reference_id || `pns_wd_${w.withdrawal_id}`} />
-              {!!w.xendit_payout_id && <InfoRow styles={styles} colors={colors} label="Xendit Payout ID" value={w.xendit_payout_id} />}
-              <InfoRow styles={styles} colors={colors} label="Requested At" value={formatFullDate(w.requested_at)} />
-              <InfoRow styles={styles} colors={colors} label="Processed At" value={formatFullDate(w.processed_at)} last={!w.failure_code} />
-              {!!w.failure_code && <InfoRow styles={styles} colors={colors} label="Gateway Failure Code" value={`${w.failure_code}${w.failure_message ? ` (${w.failure_message})` : ''}`} valueColor={colors.error} last />}
+              <View style={styles.detailGroupCard}>
+                <InfoRow styles={styles} colors={colors} label="Method" value={String(w.method).toLowerCase() === 'maya' ? 'Maya' : 'GCash'} />
+                <InfoRow styles={styles} colors={colors} label="Recipient Number" value={w.account_number || '—'} />
+                <InfoRow styles={styles} colors={colors} label="Account Holder" value={w.account_holder_name || '—'} />
+                <InfoRow styles={styles} colors={colors} label="Reference ID" value={w.xendit_reference_id || `pns_wd_${w.withdrawal_id}`} />
+                {!!w.xendit_payout_id && <InfoRow styles={styles} colors={colors} label="Xendit Payout ID" value={w.xendit_payout_id} />}
+                <InfoRow styles={styles} colors={colors} label="Requested At" value={formatFullDate(w.requested_at)} />
+                <InfoRow styles={styles} colors={colors} label="Processed At" value={formatFullDate(w.processed_at)} last={!w.failure_code} />
+                {!!w.failure_code && (
+                  <InfoRow
+                    styles={styles}
+                    colors={colors}
+                    label="Gateway Failure"
+                    value={`${w.failure_code}${w.failure_message ? ` (${w.failure_message})` : ''}`}
+                    valueColor={colors.error}
+                    last
+                  />
+                )}
+              </View>
 
-              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN</Text>
+              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN RECORD</Text>
               <View style={styles.hashList}>
                 <View style={styles.hashRow}>
                   <View style={{ flex: 1 }}>
@@ -558,13 +665,22 @@ export default function EarningsScreen() {
               {isRefunded && (
                 <View style={[styles.noteBox, { backgroundColor: colors.successBg, borderColor: colors.success }]}>
                   <SolarIcon name="CheckCircle" variant="linear" size={15} color={colors.success} />
-                  <Text style={[styles.noteText, { color: colors.success }]}>₱{Number(w.amount || 0).toFixed(2)} was automatically restored to your Pack-N-Ship wallet.</Text>
+                  <Text style={[styles.noteText, { color: colors.success }]}>
+                    ₱{Number(w.amount || 0).toFixed(2)} was automatically restored to your Pack-N-Ship wallet.
+                  </Text>
                 </View>
               )}
 
               {isProcessing && (
-                <TouchableOpacity style={styles.reconcileBtn} onPress={() => handleReconcile(w.withdrawal_id)} disabled={reconcilingId === w.withdrawal_id} activeOpacity={0.85}>
-                  {reconcilingId === w.withdrawal_id ? <ActivityIndicator size="small" color={colors.accent} /> : (
+                <TouchableOpacity
+                  style={styles.reconcileBtn}
+                  onPress={() => handleReconcile(w.withdrawal_id)}
+                  disabled={reconcilingId === w.withdrawal_id}
+                  activeOpacity={0.85}
+                >
+                  {reconcilingId === w.withdrawal_id ? (
+                    <ActivityIndicator size="small" color={colors.accent} />
+                  ) : (
                     <>
                       <SolarIcon name="Refresh" variant="linear" size={16} color={colors.accent} />
                       <Text style={styles.reconcileBtnText}>Refresh Gateway Status</Text>
@@ -573,9 +689,12 @@ export default function EarningsScreen() {
                 </TouchableOpacity>
               )}
             </ScrollView>
-            <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setSelectedWithdrawal(null)} activeOpacity={0.9}>
-              <Text style={styles.modalDoneBtnText}>Done</Text>
-            </TouchableOpacity>
+
+            <View style={[styles.modalFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+              <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setSelectedWithdrawal(null)} activeOpacity={0.9}>
+                <Text style={styles.modalDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -604,58 +723,67 @@ export default function EarningsScreen() {
     return (
       <Modal visible={!!detailRow} transparent animationType="slide" onRequestClose={() => setDetailRow(null)}>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { paddingBottom: Math.max(insets.bottom, 20) }]}>
+          <View style={styles.modalCard}>
             <View style={styles.dHandle} />
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Transaction Details</Text>
-              <TouchableOpacity onPress={() => setDetailRow(null)} hitSlop={10} style={{ padding: 4 }}>
+              <TouchableOpacity onPress={() => setDetailRow(null)} hitSlop={10} style={styles.modalCloseBtn}>
                 <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
               </TouchableOpacity>
             </View>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ flexGrow: 1, paddingBottom: 8 }}>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 12 }}>
               <View style={[styles.heroBox, { backgroundColor: headBg }]}>
                 <View style={[styles.heroIcon, { backgroundColor: colors.card }]}>
-                  <SolarIcon name={headIcon} variant="linear" size={26} color={headColor} secondaryColor={headColor} />
+                  <SolarIcon name={headIcon} variant="linear" size={24} color={headColor} secondaryColor={headColor} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.heroStatus, { color: headColor }]}>{headLabel}</Text>
                   <Text style={styles.heroSub}>Delivery #{r.delivery_id}</Text>
                 </View>
-                <Text style={[styles.heroAmount, { color: headColor }]}>{isEarned ? '+' : ''}₱{r.display_amount.toFixed(2)}</Text>
+                <Text style={[styles.heroAmount, { color: headColor }]}>
+                  {isEarned ? '+' : ''}₱{r.display_amount.toFixed(2)}
+                </Text>
               </View>
 
-              <Text style={styles.sectionLabel}>TRANSACTION</Text>
-              <InfoRow styles={styles} colors={colors} label="Transaction ID" value={r.transaction_id != null ? `#${r.transaction_id}` : 'Not created yet'} />
-              <InfoRow styles={styles} colors={colors} label="Status" value={titleCase(r.transaction_status) || '—'} />
-              <InfoRow styles={styles} colors={colors} label="Payment method" value={r.payment_method ? titleCase(r.payment_method) : '—'} />
-              <InfoRow styles={styles} colors={colors} label="Processed at" value={formatFullDate(r.processed_at)} last />
-
-              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BREAKDOWN</Text>
-              <BreakdownRow styles={styles} colors={colors} label="Total delivery fare" value={fare} muted={!isEarned} />
-              <BreakdownRow styles={styles} colors={colors} label="Platform service fee" value={serviceFee != null ? -serviceFee : null} negative />
-              <BreakdownRow styles={styles} colors={colors} label="Penalty fee" value={penaltyFee > 0 ? -penaltyFee : 0} negative={penaltyFee > 0} />
-              <View style={styles.breakdownDivider} />
-              <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>{isEarned ? 'You earned (base amount)' : 'Expected payout'}</Text>
-                <Text style={[styles.totalValue, { color: isEarned ? colors.success : colors.textPrimary }]}>{isEarned ? '+' : ''}₱{(baseAmount != null ? baseAmount : r.display_amount).toFixed(2)}</Text>
+              <Text style={styles.sectionLabel}>BREAKDOWN</Text>
+              <View style={styles.detailGroupCard}>
+                <BreakdownRow styles={styles} colors={colors} label="Courier delivery payout" value={fare} muted={!isEarned} />
+                {serviceFee != null && (
+                  <BreakdownRow styles={styles} colors={colors} label="Platform service fee" value={-serviceFee} negative />
+                )}
+                {penaltyFee > 0 && (
+                  <BreakdownRow styles={styles} colors={colors} label="Penalty fee" value={-penaltyFee} negative />
+                )}
+                <View style={styles.breakdownDivider} />
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>{isEarned ? 'Net credited to wallet' : 'Expected payout'}</Text>
+                  <Text style={[styles.totalValue, { color: isEarned ? colors.success : colors.textPrimary }]}>
+                    {isEarned ? '+' : ''}₱{(baseAmount != null ? baseAmount : r.display_amount).toFixed(2)}
+                  </Text>
+                </View>
               </View>
 
-              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ESCROW</Text>
-              <InfoRow styles={styles} colors={colors} label="Escrow ID" value={`#${r.escrow_id}`} />
-              <InfoRow styles={styles} colors={colors} label="Escrow status" value={titleCase(r.escrow_status)} />
-              <InfoRow styles={styles} colors={colors} label="Escrow amount" value={`₱${Number(r.amount || 0).toFixed(2)}`} />
-              <InfoRow styles={styles} colors={colors} label="Emergency frozen" value={r.emergency_frozen ? 'Yes' : 'No'} valueColor={r.emergency_frozen ? colors.error : undefined} />
-              <InfoRow styles={styles} colors={colors} label="Funded at" value={formatFullDate(r.created_at)} last />
+              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>TRANSACTION</Text>
+              <View style={styles.detailGroupCard}>
+                <InfoRow styles={styles} colors={colors} label="Transaction ID" value={r.transaction_id != null ? `#${r.transaction_id}` : 'Pending release'} />
+                <InfoRow styles={styles} colors={colors} label="Status" value={titleCase(r.transaction_status) || (isEarned ? 'Completed' : 'Pending')} />
+                <InfoRow styles={styles} colors={colors} label="Sender paid via" value={r.payment_method ? titleCase(r.payment_method) : '—'} />
+                <InfoRow styles={styles} colors={colors} label="Processed at" value={formatFullDate(r.processed_at)} last />
+              </View>
 
-              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>DELIVERY</Text>
-              <InfoRow styles={styles} colors={colors} label="Delivery ID" value={`#${r.delivery_id}`} />
-              <InfoRow styles={styles} colors={colors} label="Sender ID" value={`#${r.sender_id}`} />
-              <InfoRow styles={styles} colors={colors} label="Accepted at" value={formatFullDate(r.delivery_accepted_at)} />
-              <InfoRow styles={styles} colors={colors} label="Completed at" value={formatFullDate(r.delivery_completed_at)} last />
+              <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ESCROW &amp; DELIVERY</Text>
+              <View style={styles.detailGroupCard}>
+                <InfoRow styles={styles} colors={colors} label="Escrow ID" value={`#${r.escrow_id}`} />
+                <InfoRow styles={styles} colors={colors} label="Escrow status" value={titleCase(r.escrow_status)} />
+                <InfoRow styles={styles} colors={colors} label="Escrow amount" value={`₱${Number(r.amount || 0).toFixed(2)}`} />
+                <InfoRow styles={styles} colors={colors} label="Accepted at" value={formatFullDate(r.delivery_accepted_at)} />
+                <InfoRow styles={styles} colors={colors} label="Completed at" value={formatFullDate(r.delivery_completed_at)} last />
+              </View>
 
               {(!!r.bc_escrow_tx_hash || !!r.bc_tx_hash) && (
                 <>
-                  <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN</Text>
+                  <Text style={[styles.sectionLabel, { marginTop: 18 }]}>BLOCKCHAIN RECORD</Text>
                   <View style={styles.hashList}>
                     {!!r.bc_escrow_tx_hash && (
                       <View style={styles.hashRow}>
@@ -693,13 +821,37 @@ export default function EarningsScreen() {
                 </>
               )}
 
-              {isPending && <View style={styles.noteBox}><SolarIcon name="InfoCircle" variant="linear" size={14} color={colors.warning} /><Text style={styles.noteText}>Still held in escrow. This will release automatically once the delivery is confirmed.</Text></View>}
-              {isFrozen && <View style={[styles.noteBox, { backgroundColor: colors.errorBg, borderColor: colors.error }]}><SolarIcon name="Snowflake" variant="linear" size={14} color={colors.error} /><Text style={[styles.noteText, { color: colors.error }]}>This transaction is frozen due to an open issue.</Text></View>}
-              {isRefunded && <View style={[styles.noteBox, { backgroundColor: colors.divider, borderColor: colors.border }]}><SolarIcon name="ArrowLeft" variant="linear" size={14} color={colors.textSecondary} /><Text style={[styles.noteText, { color: colors.textSecondary }]}>This delivery was refunded to the sender. No earnings were credited.</Text></View>}
+              {isPending && (
+                <View style={styles.noteBox}>
+                  <SolarIcon name="InfoCircle" variant="linear" size={14} color={colors.warning} />
+                  <Text style={styles.noteText}>
+                    Still held in escrow. Funds release automatically once delivery is verified.
+                  </Text>
+                </View>
+              )}
+              {isFrozen && (
+                <View style={[styles.noteBox, { backgroundColor: colors.errorBg, borderColor: colors.error }]}>
+                  <SolarIcon name="Snowflake" variant="linear" size={14} color={colors.error} />
+                  <Text style={[styles.noteText, { color: colors.error }]}>
+                    This transaction is frozen due to an open issue.
+                  </Text>
+                </View>
+              )}
+              {isRefunded && (
+                <View style={[styles.noteBox, { backgroundColor: colors.divider, borderColor: colors.border }]}>
+                  <SolarIcon name="ArrowLeft" variant="linear" size={14} color={colors.textSecondary} />
+                  <Text style={[styles.noteText, { color: colors.textSecondary }]}>
+                    This delivery was refunded to the sender. No earnings were credited.
+                  </Text>
+                </View>
+              )}
             </ScrollView>
-            <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setDetailRow(null)} activeOpacity={0.9}>
-              <Text style={styles.modalDoneBtnText}>Done</Text>
-            </TouchableOpacity>
+
+            <View style={[styles.modalFooter, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+              <TouchableOpacity style={styles.modalDoneBtn} onPress={() => setDetailRow(null)} activeOpacity={0.9}>
+                <Text style={styles.modalDoneBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -729,26 +881,42 @@ export default function EarningsScreen() {
           keyExtractor={(item: any) => historyTab === 'earnings' ? `earn-${item.escrow_id}` : `wd-${item.withdrawal_id}`}
           renderItem={historyTab === 'earnings' ? (renderEarning as any) : (renderWithdrawalItem as any)}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={[styles.listContent, { flexGrow: 1 }]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+          contentContainerStyle={styles.listContent}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} colors={[colors.accent]} />}
           ListHeaderComponent={
             <>
               {renderWalletCard()}
               <View style={styles.historyTabsRow}>
-                <TouchableOpacity style={[styles.historyTabBtn, historyTab === 'earnings' && styles.historyTabBtnActive]} onPress={() => setHistoryTab('earnings')} activeOpacity={0.85}>
-                  <Text style={[styles.historyTabText, historyTab === 'earnings' && styles.historyTabTextActive]}>Earnings ({earnings.length})</Text>
+                <TouchableOpacity
+                  style={[styles.historyTabBtn, historyTab === 'earnings' && styles.historyTabBtnActive]}
+                  onPress={() => setHistoryTab('earnings')}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.historyTabText, historyTab === 'earnings' && styles.historyTabTextActive]}>
+                    Earnings ({earnings.length})
+                  </Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.historyTabBtn, historyTab === 'withdrawals' && styles.historyTabBtnActive]} onPress={() => setHistoryTab('withdrawals')} activeOpacity={0.85}>
-                  <Text style={[styles.historyTabText, historyTab === 'withdrawals' && styles.historyTabTextActive]}>Withdrawals ({withdrawals.length})</Text>
+                <TouchableOpacity
+                  style={[styles.historyTabBtn, historyTab === 'withdrawals' && styles.historyTabBtnActive]}
+                  onPress={() => setHistoryTab('withdrawals')}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.historyTabText, historyTab === 'withdrawals' && styles.historyTabTextActive]}>
+                    Withdrawals ({withdrawals.length})
+                  </Text>
                 </TouchableOpacity>
               </View>
             </>
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Image source={EMPTY_BOX_ICON} style={{ width: 140, height: 140, marginBottom: 20 }} resizeMode="contain" />
+              <Image source={EMPTY_BOX_ICON} style={{ width: 120, height: 120, marginBottom: 16 }} resizeMode="contain" />
               <Text style={styles.emptyText}>{historyTab === 'earnings' ? 'No earnings yet' : 'No withdrawals yet'}</Text>
-              <Text style={styles.emptySubText}>{historyTab === 'earnings' ? 'Once you complete a delivery and the escrow is released, your earnings will show up here.' : 'When you cash out your wallet balance to GCash or Maya, your payout history will appear here.'}</Text>
+              <Text style={styles.emptySubText}>
+                {historyTab === 'earnings'
+                  ? 'Once you complete a delivery and the escrow is released, your earnings will show up here.'
+                  : 'When you cash out your wallet balance to GCash or Maya, your payout history will appear here.'}
+              </Text>
             </View>
           }
         />
@@ -759,14 +927,14 @@ export default function EarningsScreen() {
   );
 }
 
-const InfoRow: React.FC<{ label: string; value: string; valueColor?: string; last?: boolean; styles: any; colors: ThemeColors; }> = ({ label, value, valueColor, last, styles }) => (
+const InfoRow: React.FC<{ label: string; value: string; valueColor?: string; last?: boolean; styles: any; colors: ThemeColors }> = ({ label, value, valueColor, last, styles }) => (
   <View style={[styles.infoRow, last && { borderBottomWidth: 0 }]}>
     <Text style={styles.infoLabel}>{label}</Text>
     <Text style={[styles.infoValue, valueColor ? { color: valueColor } : null]} numberOfLines={2}>{value}</Text>
   </View>
 );
 
-const BreakdownRow: React.FC<{ label: string; value: number | null; negative?: boolean; muted?: boolean; styles: any; colors: ThemeColors; }> = ({ label, value, negative, muted, styles, colors }) => {
+const BreakdownRow: React.FC<{ label: string; value: number | null; negative?: boolean; muted?: boolean; styles: any; colors: ThemeColors }> = ({ label, value, negative, muted, styles, colors }) => {
   const display = value == null ? '—' : `${negative && value > 0 ? '−' : ''}₱${Math.abs(value).toFixed(2)}`;
   return (
     <View style={styles.breakdownRow}>
@@ -780,99 +948,326 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   container: { flex: 1, backgroundColor: c.background },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: c.background },
   loadingText: { marginTop: 12, color: c.textSecondary, fontSize: 14, fontFamily: 'Poppins_500Medium' },
-  header: { paddingHorizontal: 20, paddingBottom: 16, backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    backgroundColor: c.background,
+    borderBottomWidth: 1,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
   headerTitle: { fontSize: 26, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
   mainContent: { flex: 1 },
-  listContent: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 40 },
+  listContent: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 100 },
+
+  /* Wallet Card */
   walletCard: {
-    backgroundColor: c.card, borderRadius: 12, padding: 20, marginBottom: 20,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    backgroundColor: c.card,
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: isDark ? 0.2 : 0.04,
+    shadowRadius: 8,
+    elevation: isDark ? 0 : 1,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  walletHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  walletIconBox: { width: 44, height: 44, borderRadius: 12, backgroundColor: c.accentSoft, justifyContent: 'center', alignItems: 'center' },
-  withdrawBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: c.divider, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', gap: 6 },
-  withdrawBtnActive: { backgroundColor: c.accent, borderColor: c.accent, shadowColor: c.accent, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
-  withdrawBtnTextActive: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
-  balanceSection: { marginBottom: 4 },
-  balanceLabel: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary, letterSpacing: 0.8, marginBottom: 4 },
-  balanceAmount: { fontSize: 40, fontFamily: 'Poppins_800ExtraBold', color: c.textPrimary, letterSpacing: -1 },
-  currencySymbol: { fontSize: 28, color: c.textSecondary, marginRight: 2 },
-  pendingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 6 },
-  pendingText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.warning },
-  walletMissingBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning, borderRadius: 12, padding: 12, marginTop: 12 },
+  walletTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  balanceHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  walletIconBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    backgroundColor: c.accentSoft,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  balanceLabel: {
+    fontSize: 10.5,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textSecondary,
+    letterSpacing: 0.8,
+  },
+  balanceAmount: {
+    fontSize: 34,
+    fontFamily: 'Poppins_800ExtraBold',
+    color: c.textPrimary,
+    letterSpacing: -0.8,
+    fontVariant: ['tabular-nums'],
+  },
+  currencySymbol: { fontSize: 24, color: c.textSecondary },
+  withdrawBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: c.accent,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    gap: 6,
+  },
+  withdrawBtnText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
+
+  walletStatusList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  pendingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: c.warningBg,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  pendingText: { fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.warning },
+
+  walletMissingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: c.warningBg,
+    borderWidth: 1,
+    borderColor: c.warning,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+  },
   walletMissingText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 16 },
-  statsDivider: { height: 1, backgroundColor: c.divider, marginTop: 16, marginBottom: 14 },
-  payoutSection: { marginTop: 2 },
-  payoutHeading: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1, marginBottom: 10 },
-  payoutRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
-  payoutIconWrap: { width: 30, height: 30, borderRadius: 15, backgroundColor: c.divider, justifyContent: 'center', alignItems: 'center' },
-  payoutLabel: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
-  payoutValue: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
-  payoutBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, borderWidth: 1 },
-  payoutBadgeOn: { backgroundColor: c.successBg, borderColor: c.success },
-  payoutBadgeOff: { backgroundColor: c.divider, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
-  payoutBadgeText: { fontSize: 10, fontFamily: 'Poppins_700Bold' },
-  statsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
+
+  statsDivider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', marginVertical: 14 },
+
+  /* 2-Column Payout Accounts */
+  payoutHeading: {
+    fontSize: 10,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textMuted,
+    letterSpacing: 0.9,
+    marginBottom: 8,
+  },
+  payoutGrid: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  payoutTile: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: c.background,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+  },
+  payoutLogoBox: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  payoutLabel: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  payoutValue: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+  payoutDot: { width: 7, height: 7, borderRadius: 3.5 },
+
+  /* 3-Column Stats Bar */
+  statsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   statBox: { alignItems: 'center', flex: 1, paddingHorizontal: 4 },
-  statValue: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 2 },
+  statValue: {
+    fontSize: 15.5,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    marginBottom: 2,
+    fontVariant: ['tabular-nums'],
+  },
   statLabel: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary, textAlign: 'center' },
-  verticalDivider: { width: 1, height: 24, backgroundColor: c.border },
-  walletUpdated: { fontSize: 10, fontFamily: 'Poppins_400Regular', color: c.textMuted, textAlign: 'center', marginTop: 14, fontStyle: 'italic' },
-  historyTabsRow: { flexDirection: 'row', backgroundColor: c.divider, borderRadius: 12, padding: 4, marginBottom: 16 },
-  historyTabBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  historyTabBtnActive: { backgroundColor: c.card, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1 },
+  verticalDivider: { width: 1, height: 24, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' },
+
+  /* History Tabs */
+  historyTabsRow: {
+    flexDirection: 'row',
+    backgroundColor: c.card,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  historyTabBtn: { flex: 1, paddingVertical: 10, borderRadius: 9, alignItems: 'center' },
+  historyTabBtnActive: {
+    backgroundColor: c.accentSoft,
+  },
   historyTabText: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
   historyTabTextActive: { color: c.accent, fontFamily: 'Poppins_700Bold' },
+
+  /* Transaction / Withdrawal Row Card */
   transactionCard: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: c.card, borderRadius: 12, padding: 16, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1,
-    borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: c.card,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  transactionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 12 },
+  transactionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 },
   iconContainer: { width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   transactionDetails: { flex: 1, justifyContent: 'center' },
-  transactionTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginBottom: 2, letterSpacing: -0.2 },
+  txTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  transactionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  miniStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
+  miniStatusText: { fontSize: 10, fontFamily: 'Poppins_700Bold' },
   transactionSubtitle: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
-  paymentMethodRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 4 },
-  transactionPayment: { fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  paymentMethodRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2, gap: 5 },
   transactionRight: { alignItems: 'flex-end' },
-  transactionAmount: { fontSize: 16, fontFamily: 'Poppins_700Bold', letterSpacing: -0.5 },
-  penaltyText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.error, marginTop: 4 },
-  emptyContainer: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 50, paddingHorizontal: 24 },
+  transactionAmount: { fontSize: 15.5, fontFamily: 'Poppins_700Bold', letterSpacing: -0.3, fontVariant: ['tabular-nums'] },
+  penaltyText: { fontSize: 10.5, fontFamily: 'Poppins_600SemiBold', color: c.error, marginTop: 2 },
+
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 24,
+  },
   emptyText: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 6 },
   emptySubText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, textAlign: 'center', lineHeight: 19 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalCard: { backgroundColor: c.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, maxHeight: '92%', flexGrow: 1 },
-  dHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.border, marginBottom: 16 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+
+  /* Bottom Sheet Modals */
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  modalCard: {
+    backgroundColor: c.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    maxHeight: '88%',
+  },
+  dHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: c.border, marginBottom: 14 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
   modalTitle: { fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  heroBox: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 12, padding: 14, marginBottom: 20 },
-  heroIcon: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center' },
-  heroStatus: { fontSize: 15, fontFamily: 'Poppins_700Bold' },
-  heroSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 2 },
-  heroAmount: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4 },
-  sectionLabel: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold', color: c.textMuted, letterSpacing: 1, marginBottom: 8 },
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: c.divider, gap: 12 },
-  infoLabel: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
-  infoValue: { flexShrink: 1, fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary, textAlign: 'right' },
-  breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  modalCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: c.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroBox: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, padding: 14, marginBottom: 18 },
+  heroIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  heroStatus: { fontSize: 14.5, fontFamily: 'Poppins_700Bold' },
+  heroSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+  heroAmount: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4, fontVariant: ['tabular-nums'] },
+
+  sectionLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.9, marginBottom: 8 },
+  detailGroupCard: {
+    backgroundColor: c.background,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+    gap: 12,
+  },
+  infoLabel: { fontSize: 12.5, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  infoValue: { flexShrink: 1, fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary, textAlign: 'right' },
+
+  breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9 },
   breakdownLabel: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
-  breakdownValue: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  breakdownDivider: { height: 1, backgroundColor: c.border, marginTop: 10, marginBottom: 12 },
-  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  totalLabel: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
-  totalValue: { fontSize: 20, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.4 },
+  breakdownValue: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary, fontVariant: ['tabular-nums'] },
+  breakdownDivider: { height: 1, backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)', marginVertical: 6 },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  totalLabel: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+  totalValue: { fontSize: 18, fontFamily: 'Poppins_800ExtraBold', letterSpacing: -0.3, fontVariant: ['tabular-nums'] },
+
   hashList: { gap: 10 },
-  hashRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, paddingVertical: 12, paddingLeft: 14, paddingRight: 10 },
+  hashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: c.background,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingLeft: 14,
+    paddingRight: 10,
+  },
   hashLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
-  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 4 },
-  hashCopyBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
-  noteBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: c.warningBg, borderWidth: 1, borderColor: c.warning, borderRadius: 12, padding: 12, marginTop: 16 },
-  noteText: { flex: 1, fontSize: 11, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 16 },
-  reconcileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: c.accent, backgroundColor: c.accentSoft },
+  hashValue: { fontSize: 12, lineHeight: 18, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 3 },
+  hashCopyBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+  },
+
+  noteBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: c.warningBg,
+    borderWidth: 1,
+    borderColor: c.warning,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+  },
+  noteText: { flex: 1, fontSize: 11.5, fontFamily: 'Poppins_500Medium', color: c.warning, lineHeight: 16 },
+  reconcileBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingVertical: 13,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: c.accent,
+    backgroundColor: c.accentSoft,
+  },
   reconcileBtnText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
-  modalDoneBtn: { marginTop: 16, backgroundColor: c.accent, borderRadius: 14, paddingVertical: 15, alignItems: 'center', shadowColor: c.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1 },
+
+  modalFooter: {
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+  },
+  modalDoneBtn: {
+    backgroundColor: c.accent,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
   modalDoneBtnText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold' },
 });

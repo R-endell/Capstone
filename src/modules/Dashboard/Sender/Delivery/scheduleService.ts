@@ -1,7 +1,7 @@
 // src/modules/Dashboard/Sender/Delivery/scheduleService.ts
 import { supabase } from '../../../../utils/supabase';
 import { ScheduleState } from './ScheduleContext';
-import { getRoadDistanceKm } from '../../../../services/routeService';
+import { getRoadDistanceKm, computePricing } from '../../../../services/routeService';
 import { SHIPMENT_SIZE_SPECS, syncAllActiveRoutesTodayForRequest } from '../../../../services/matchingService';
 
 // `place_name` = the name the sender picked on the location screen. If the column has not been
@@ -275,6 +275,14 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
       : 0;
   const totalEscrowHold = Number((baseFare + returnDeposit).toFixed(2));
 
+  const feeBreakdown = computePricing({
+    distanceKm,
+    items: state.items,
+    scheduled: mode === 'schedule' || !!state.scheduledDate,
+    dropoffType: state.dropoffType,
+    refined: true,
+  });
+
   const { data: request, error: reqInsertErr } = await supabase
     .from('delivery_requests')
     .insert({
@@ -284,6 +292,12 @@ export async function saveScheduleToDB(state: ScheduleState, mode: 'sendNow' | '
       receiver_id: receiverId,
       receiver_phone: receiverPhone,
       total_distance: Number(distanceKm.toFixed(2)),
+      base_fee: feeBreakdown.base,
+      distance_fee: feeBreakdown.distance,
+      size_fee: feeBreakdown.size,
+      fragile_fee: feeBreakdown.fragile,
+      schedule_fee: feeBreakdown.schedule,
+      emergency_fee: feeBreakdown.emergency,
       base_fare: baseFare,
       return_deposit: returnDeposit,
       estimated_cost: totalEscrowHold,
@@ -399,7 +413,15 @@ export async function updateScheduleInDB(
       ? Number((baseFare * 0.5).toFixed(2))
       : 0;
   const totalEscrowHold = Number((baseFare + returnDeposit).toFixed(2));
-  
+
+  const feeBreakdown = computePricing({
+    distanceKm,
+    items: state.items,
+    scheduled: !!state.scheduledDate,
+    dropoffType: state.dropoffType,
+    refined: true,
+  });
+
   await supabase
     .from('delivery_requests')
     .update({
@@ -407,6 +429,12 @@ export async function updateScheduleInDB(
       rate_id: resolvedRateId,
       total_distance: Number(distanceKm.toFixed(2)),
       scheduled_time: formatScheduledTimeForDB(state.scheduledDate),
+      base_fee: feeBreakdown.base,
+      distance_fee: feeBreakdown.distance,
+      size_fee: feeBreakdown.size,
+      fragile_fee: feeBreakdown.fragile,
+      schedule_fee: feeBreakdown.schedule,
+      emergency_fee: feeBreakdown.emergency,
       base_fare: baseFare,
       return_deposit: returnDeposit,
       estimated_cost: totalEscrowHold,
@@ -423,8 +451,6 @@ export async function updateScheduleInDB(
       preferred_route_id: state.preferredRouteId ?? null,
     })
     .eq('request_id', existingIds.requestId);
-
-  void syncAllActiveRoutesTodayForRequest(existingIds.requestId);
 }
 
 export async function deleteDelivery(

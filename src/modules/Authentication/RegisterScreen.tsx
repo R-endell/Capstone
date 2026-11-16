@@ -614,39 +614,6 @@ export default function RegisterScreen() {
                     <Text style={styles.subHeader}>Start shipping your packages securely today.</Text>
                   </View>
 
-                  <View style={styles.imageUploadSection}>
-                    <TouchableOpacity
-                      style={styles.imagePicker}
-                      onPress={async () => {
-                        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-                        if (status !== 'granted') return;
-                        const res = await ImagePicker.launchImageLibraryAsync({
-                          mediaTypes: ['images'],
-                          allowsEditing: true,
-                          aspect: [1, 1],
-                          quality: 0.4,
-                          exif: false,
-                          base64: true,
-                        });
-                        if (!res.canceled && res.assets.length > 0) {
-                          setImageUri(res.assets[0].uri);
-                          setImageBase64(res.assets[0].base64 || null);
-                        }
-                      }}
-                    >
-                      {imageUri ? (
-                        <Image source={{ uri: imageUri }} style={styles.profilePreview} />
-                      ) : (
-                        <View style={styles.imagePlaceholder}>
-                          <Ionicons name="camera-outline" size={26} color={colors.textMuted} />
-                        </View>
-                      )}
-                      <View style={styles.uploadBadge}>
-                        <Ionicons name="add" size={14} color="#FFF" />
-                      </View>
-                    </TouchableOpacity>
-                  </View>
-
                   <View style={styles.formContainer}>
                     <View style={[styles.inputWrapper, focusedInput === 'firstName' && styles.inputFocused, Boolean(firstNameError) && styles.inputError]}>
                       <Ionicons name="person-outline" size={20} color={focusedInput === 'firstName' ? ORANGE : colors.textMuted} style={styles.inputIcon} />
