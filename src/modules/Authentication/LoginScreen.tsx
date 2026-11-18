@@ -30,7 +30,7 @@ export default function LoginScreen() {
   const { colors, isDark, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const [phase, setPhase] = useState<'login' | '2fa'>('login');
+  const [phase, setPhase] = useState<'login' | '2fa' | 'verify'>('login');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -130,12 +130,44 @@ export default function LoginScreen() {
     return true;
   };
 
+  const promptUnverified = async (emailAddr: string): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      Alert.alert(
+        'Email not verified',
+        `${emailAddr} hasn't been verified yet. Send a new 6-digit code?`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve() },
+          {
+            text: 'Send Code',
+            onPress: async () => {
+              try {
+                const { error } = await supabase.auth.resend({
+                  type: 'signup',
+                  email: emailAddr,
+                });
+                if (error) throw error;
+                setSentTo(emailAddr.toLowerCase());
+                setOtpCode('');
+                setPhase('verify');
+                setCooldown(COOLDOWN_SECONDS);
+              } catch (e: any) {
+                Alert.alert('Could not resend', getFriendlyErrorMessage(e));
+              } finally {
+                resolve();
+              }
+            },
+          },
+        ],
+      );
+    });
+  };
+
   const handleLogin = async () => {
     const emailValidation = validateEmail(email);
     const passwordValidation = validatePassword(password);
     if (emailValidation) { setEmailError(emailValidation); return; }
     if (passwordValidation) { setPasswordError(passwordValidation); return; }
-
+    
     setLoading(true);
     try {
       const { data: signInData, error } = await supabase.auth.signInWithPassword({
@@ -143,7 +175,15 @@ export default function LoginScreen() {
         password
       });
 
-      if (error) throw error;
+      if (error) {
+        const msg = (error.message || '').toLowerCase();
+        const code = (error as any).code;
+        if (msg.includes('email not confirmed') || code === 'email_not_confirmed') {
+          await promptUnverified(email.trim());
+          return;
+        }
+        throw error;
+      }
 
       const isActive = await assertAccountActive(signInData.user.id, email.trim());
       if (!isActive) return;
@@ -180,10 +220,11 @@ export default function LoginScreen() {
 
     setVerifyingOtp(true);
     try {
+      const verifyType = phase === 'verify' ? 'signup' : 'email';
       const { data, error } = await supabase.auth.verifyOtp({
         email: sentTo,
         token: otpCode.trim(),
-        type: 'email',
+        type: verifyType,
       });
 
       if (error) throw error;
@@ -209,11 +250,11 @@ export default function LoginScreen() {
     if (cooldown > 0) return;
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: sentTo,
-        options: { shouldCreateUser: false },
-      });
-      if (error) throw error;
+      const res =
+        phase === 'verify'
+          ? await supabase.auth.resend({ type: 'signup', email: sentTo })
+          : await supabase.auth.signInWithOtp({ email: sentTo, options: { shouldCreateUser: false } });
+      if (res.error) throw res.error;
       setCooldown(COOLDOWN_SECONDS);
       Alert.alert('Code Sent', 'A new 6-digit code has been sent to your email.');
     } catch (err: any) {
@@ -394,14 +435,16 @@ export default function LoginScreen() {
           <ScrollView contentContainerStyle={styles.innerContainer} showsVerticalScrollIndicator={false}>
             <Animated.View style={[styles.contentWrapper, fadeUpStyle]}>
 
-              {phase === '2fa' ? (
+              {(phase === '2fa' || phase === 'verify') ? (
                 /* --- 2FA OTP STATE --- */
                 <>
                   <View style={styles.headerContainer}>
                     <View style={styles.brandRow}>
                       <PhIcon name="ShieldCheck" size={36} color={ORANGE} />
                     </View>
-                    <Text style={styles.header}>Two-Factor Auth</Text>
+                    <Text style={styles.header}>
+                      {phase === 'verify' ? 'Verify your email' : 'Two-Factor Auth'}
+                    </Text>
                     <Text style={styles.subHeader}>
                       We sent a 6-digit code to{'\n'}
                       <Text style={{ fontFamily: 'Poppins_600SemiBold', color: colors.textPrimary }}>{sentTo}</Text>
