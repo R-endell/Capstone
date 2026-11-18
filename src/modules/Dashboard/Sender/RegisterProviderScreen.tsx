@@ -19,8 +19,8 @@ import { needsAcceptance, recordTermsAcceptance } from '../../../services/termsS
 
 const BUCKET_NAME = 'vehicle-documents';
 
-const ID_ANALYZER_KEY = 'idk_BKhrKvnfKTqf67AFWkdHUDhy8xXR8QBohOtGURcY';
-const MIN_CONFIDENCE_PERCENT = 55; // Minimum confidence required to accept an ID photo
+const ID_ANALYZER_KEY = 'idk_xSDV54JlDFs4tYU6UWbVD1uecyCEfsMaAfgYa27M';
+const MIN_CONFIDENCE_PERCENT = 90; // Minimum confidence required to accept an ID photo
 
 type Side = 'front' | 'back';
 
