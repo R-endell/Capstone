@@ -773,6 +773,142 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
   );
 });
 
+/**
+ * Small, non-interactive map for the request details page: pickup pin, drop-off pin and the road line between them.
+ * Tapping "Open in Maps" hands the same trip to Google Maps for turn-by-turn directions.
+ */
+const RequestRouteMap = React.memo(function RequestRouteMap({
+  pickup, dropoff,
+}: { pickup: JobPlace; dropoff: JobPlace }) {
+  const { colors } = useTheme();
+  const mapRef = useRef<MapView>(null);
+  const [road, setRoad] = useState<{ key: string; coords: Coord[] } | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  const pLat = toNum(pickup.lat);
+  const pLng = toNum(pickup.lng);
+  const dLat = toNum(dropoff.lat);
+  const dLng = toNum(dropoff.lng);
+  const has = pLat != null && pLng != null && dLat != null && dLng != null;
+  const key = has ? roadCacheKey({ lat: pLat!, lng: pLng! }, { lat: dLat!, lng: dLng! }) : '';
+
+  useEffect(() => {
+    if (!key) { setRoad(null); return; }
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const run = async (attempt: number) => {
+      const coords = await fetchRoadCoordsStrict({ lat: pLat!, lng: pLng! }, { lat: dLat!, lng: dLng! });
+      if (cancelled) return;
+      if (coords) setRoad({ key, coords });
+      else if (attempt < 3) retry = setTimeout(() => { void run(attempt + 1); }, 3000 * (attempt + 1));
+    };
+    void run(0);
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
+  }, [key]);
+
+  // Android can drop native overlays when the app is resumed: remount them.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => { if (st === 'active') setEpoch(e => e + 1); });
+    return () => sub.remove();
+  }, []);
+
+  const fit = useCallback(() => {
+    if (!has) return;
+    mapRef.current?.fitToCoordinates(
+      [{ latitude: pLat!, longitude: pLng! }, { latitude: dLat!, longitude: dLng! }],
+      { edgePadding: { top: 60, right: 56, bottom: 60, left: 56 }, animated: false },
+    );
+  }, [has, pLat, pLng, dLat, dLng]);
+
+  useEffect(() => {
+    const t = setTimeout(fit, 350);
+    return () => clearTimeout(t);
+  }, [key, fit]);
+
+  if (!has) {
+    return (
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', padding: 12, borderRadius: 12, backgroundColor: colors.background }}>
+        <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.warning} />
+        <Text style={{ flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
+          The map is unavailable because this request has no saved coordinates.
+        </Text>
+      </View>
+    );
+  }
+
+  const line: Coord[] = road && road.key === key
+    ? road.coords
+    : [{ latitude: pLat!, longitude: pLng! }, { latitude: dLat!, longitude: dLng! }];
+
+  const openInMaps = () => {
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${pLat},${pLng}&destination=${dLat},${dLng}&travelmode=driving`;
+    Linking.openURL(url).catch(() => Alert.alert('Could not open Maps', 'No maps app is available on this device.'));
+  };
+
+  const dot = (bg: string, border: string) => ({
+    width: 34, height: 34, borderRadius: 17, backgroundColor: bg,
+    borderWidth: 3, borderColor: border, alignItems: 'center' as const, justifyContent: 'center' as const,
+  });
+
+  return (
+    <View style={{ height: 240, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.background }}>
+      <MapView
+        ref={mapRef}
+        {...MAP_PROPS}
+        userInterfaceStyle="light"
+        style={StyleSheet.absoluteFill}
+        initialRegion={{
+          latitude: (pLat! + dLat!) / 2,
+          longitude: (pLng! + dLng!) / 2,
+          latitudeDelta: Math.max(0.01, Math.abs(pLat! - dLat!) * 1.8),
+          longitudeDelta: Math.max(0.01, Math.abs(pLng! - dLng!) * 1.8),
+        }}
+        onMapReady={fit}
+        scrollEnabled={false}
+        zoomEnabled={false}
+        rotateEnabled={false}
+        pitchEnabled={false}
+        toolbarEnabled={false}
+        showsCompass={false}
+        showsMyLocationButton={false}
+        showsUserLocation={false}
+      >
+        <Polyline
+          key={`rline-${epoch}-${line.length}`}
+          coordinates={line}
+          strokeColor={BRAND_ORANGE}
+          strokeWidth={5}
+          lineCap="round"
+          lineJoin="round"
+        />
+        <Marker key={`rp-${epoch}`} coordinate={{ latitude: pLat!, longitude: pLng! }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false} zIndex={5}>
+          <View style={dot(BRAND_ORANGE, '#FFFFFF')}>
+            <SolarIcon name="Package" variant="bold" size={16} color="#FFFFFF" />
+          </View>
+        </Marker>
+        <Marker key={`rd-${epoch}`} coordinate={{ latitude: dLat!, longitude: dLng! }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false} zIndex={5}>
+          <View style={dot('#FFFFFF', '#D1D5DB')}>
+            <SolarIcon name="Flag" variant="bold" size={16} color="#000000" />
+          </View>
+        </Marker>
+      </MapView>
+
+      <TouchableOpacity
+        onPress={openInMaps}
+        activeOpacity={0.85}
+        style={{
+          position: 'absolute', right: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
+          backgroundColor: colors.card, borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8,
+          borderWidth: 1, borderColor: colors.divider,
+        }}
+      >
+        <SolarIcon name="Routing" variant="bold" size={14} color={colors.accent} />
+        <Text style={{ fontSize: 12, fontFamily: 'Poppins_700Bold', color: colors.accent }}>Open in Maps</Text>
+      </TouchableOpacity>
+    </View>
+  );
+});
+
 const reverseGeocodeGoogle = async (coords: Coord) => {
   if (!HAS_API_KEY) return null;
   try {
@@ -1464,6 +1600,8 @@ export default function JobsScreen() {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [isOnline, setIsOnline] = useState(false);
+  // Mirror of isOnline for async code (realtime, polling, notifications): when false the provider receives NO requests.
+  const isOnlineRef = useRef(false);
   const [loading, setLoading] = useState(true);
 
   const [providerId, setProviderId] = useState<number | null>(null);
@@ -1581,6 +1719,7 @@ export default function JobsScreen() {
   }, [reloadWhenIdle]);
 
   const fireLocalMatchNotification = async (body: string) => {
+    if (!isOnlineRef.current) return;   // offline providers are never alerted about new requests
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
@@ -1644,7 +1783,8 @@ export default function JobsScreen() {
       if (error) throw error;
       setProviderId(userData.user_id);
       providerIdRef.current = userData.user_id;
-      setIsOnline(!!(userData as any).is_online);
+      isOnlineRef.current = !!(userData as any).is_online;
+      setIsOnline(isOnlineRef.current);
       return userData.user_id;
     } catch { return null; }
   };
@@ -1731,7 +1871,7 @@ export default function JobsScreen() {
   const loadAwaiting = useCallback(async (pid: number | null, selectedRoute?: Route | null) => {
     const seq = ++awaitingSeqRef.current;
     const isLatest = () => seq === awaitingSeqRef.current;
-    if (!pid || !selectedRoute) { setAwaiting([]); setLapsedIds([]); return; }
+    if (!pid || !selectedRoute || !isOnlineRef.current) { setAwaiting([]); setLapsedIds([]); return; }
     try {
       const sel = `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`;
       const [directRes, matchRes] = await Promise.all([
@@ -1839,6 +1979,17 @@ export default function JobsScreen() {
   ) => {
     const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
+
+    // Offline: do not evaluate, fetch or show ANY request (route matches and direct requests alike).
+    if (!isOnlineRef.current) {
+      refreshSeqRef.current += 1;
+      awaitingSeqRef.current += 1;
+      setRequests([]);
+      setAwaiting([]);
+      setLapsedIds([]);
+      setCheckingMatches(false);
+      return;
+    }
 
     const selected = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
     const seq = ++refreshSeqRef.current;
@@ -2295,17 +2446,36 @@ export default function JobsScreen() {
         }
       }
 
-      await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
+      const { error: onErr } = await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
+      if (onErr) { Alert.alert('Could not go online', onErr.message); return; }
+      isOnlineRef.current = true;
       setIsOnline(true);
       await refreshMatches(pid, currentRoute, true);
     } else {
-      Alert.alert('Go Offline', 'Going offline will pause new corridor matching.', [
+      Alert.alert('Go Offline', "You won't receive any new requests while you are offline. Requests currently on your list will be hidden.", [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
-            await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
+            // stop everything on this device first, so nothing can slip in while the DB write is in flight
+            isOnlineRef.current = false;
+            refreshSeqRef.current += 1;
+            awaitingSeqRef.current += 1;
+            if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
             setIsOnline(false);
-            setRequests(prev => prev.filter(r => r.isDirectRequest));
+            setRequests([]);
+            setAwaiting([]);
+            setLapsedIds([]);
+            setCheckingMatches(false);
+            setDetailRequestId(null);
+
+            const { error: offErr } = await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
+            if (offErr) {
+              // could not persist: go back to the real state instead of pretending to be offline
+              isOnlineRef.current = true;
+              setIsOnline(true);
+              Alert.alert('Could not go offline', offErr.message);
+              void refreshMatches(pid, activeRouteRef.current, true);
+            }
           },
         },
       ]);
@@ -2749,6 +2919,19 @@ export default function JobsScreen() {
             {renderRingRoute(o, true)}
           </View>
 
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardHeaderIcon}>
+                <SolarIcon name="Map" variant="duotone" size={15} color={colors.accent} />
+              </View>
+              <Text style={styles.cardTitle}>Pickup &amp; Drop-off Map</Text>
+            </View>
+            <RequestRouteMap pickup={o.pickup} dropoff={o.dropoff} />
+            {tripKm != null && (
+              <Text style={styles.privacyNote}>About {tripKm.toFixed(1)} km from pickup to drop-off.</Text>
+            )}
+          </View>
+
           <View style={styles.earnCard}>
             <Text style={styles.earnLabel}>YOU EARN</Text>
             <Text style={styles.earnValue}>{money(o.estimated_cost)}</Text>
@@ -3158,9 +3341,11 @@ export default function JobsScreen() {
           {awaiting.length === 0 ? (
             <View style={styles.emptyWrap}>
               <Image source={EMPTY_COMPASS_ICON} style={{ width: 64, height: 64 }} resizeMode="contain" />
-              <Text style={styles.emptyTitle}>Nothing awaiting acceptance</Text>
+              <Text style={styles.emptyTitle}>{isOnline ? 'Nothing awaiting acceptance' : 'You are offline'}</Text>
               <Text style={styles.emptySub}>
-                Sender requests that match your selected route appear here until you or another provider accepts them.
+                {isOnline
+                  ? 'Sender requests that match your selected route appear here until you or another provider accepts them.'
+                  : 'You will not receive any requests while you are offline. Tap “Go online” to start receiving requests again.'}
               </Text>
             </View>
           ) : (

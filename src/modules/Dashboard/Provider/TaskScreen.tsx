@@ -29,6 +29,7 @@ import { useProviderLocationBroadcast } from '../../../services/useProviderLocat
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
+import { requestDepositRefund } from '../../../services/depositRefundService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
@@ -289,6 +290,20 @@ const buildTaskInfo = (d: any) => {
     senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
+    returnDeposit: Number(request?.return_deposit) || 0,
+    totalPaid: Number(request?.estimated_cost) || 0,
+    isReturned: String(request?.delivery_status || '') === 'Returned',
+    baseFare: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      return Number(request?.base_fare) || Math.max(0, est - dep);
+    })(),
+    platformFee: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      const base = Number(request?.base_fare) || Math.max(0, est - dep);
+      return Math.round(base * 0.15 * 100) / 100;
+    })(),
     earnings: (() => {
       const status = String(request?.delivery_status || '');
       const base = Number(request?.base_fare) || 0;
@@ -1268,67 +1283,15 @@ export default function TaskScreen() {
       );
       if (settleErr) throw settleErr;
 
+      // Option A (Return to Sender): give the sender's return deposit back now that the delivery succeeded.
+      // Runs in the background so the provider is never kept waiting; ActivityScreen retries if it fails.
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
       if (returnDep > 0 && requestId) {
-        try {
-          const { data: refundResult, error: refundErr } = await withTimeout(
-            supabase.functions.invoke(
-              'xendit-refund',
-              { body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' } },
-            ),
-            NETWORK_TIMEOUT_MS,
-            'Deposit refund timed out'
-          );
-
-          const refundOk = !refundErr && refundResult?.success;
-
-          if (!refundOk) {
-            console.warn('[completeDelivery] refund failed:', refundErr?.message || refundResult);
-            await supabase
-              .from('delivery_requests')
-              .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
-              .eq('request_id', requestId);
-          } else {
-            const rawProvider = String(
-              deliveryOTPTarget?.escrow?.payment_method ||
-              deliveryOTPTarget?.delivery_requests?.payment_provider ||
-              ''
-            ).toLowerCase();
-            const txProvider = ['gcash', 'maya'].includes(rawProvider) ? rawProvider : 'gcash';
-
-            try {
-              await supabase.from('escrow_transactions').insert({
-                request_id: requestId,
-                event: 'deposit_refunded_to_sender',
-                amount: returnDep,
-                provider: txProvider,
-                notes: `Deposit refunded to sender on completed delivery | Amount=₱${returnDep}${
-                  rawProvider && rawProvider !== txProvider ? ` | WARN: unknown provider "${rawProvider}", assumed ${txProvider}` : ''
-                }`,
-              });
-
-              await supabase
-                .from('delivery_requests')
-                .update({
-                  refund_status: 'refunded',
-                  escrow_refunded_at: new Date().toISOString(),
-                })
-                .eq('request_id', requestId);
-            } catch (insertErr: any) {
-              console.error('[completeDelivery] refund row insert failed:', insertErr);
-              Alert.alert(
-                'Refund Sent — Record Missing',
-                `The ₱${returnDep.toFixed(2)} deposit was refunded to the sender, but the audit row could not be saved. Please note this for support.`
-              );
-            }
+        void requestDepositRefund(requestId, returnDep).then((r) => {
+          if (!r.ok && r.status !== 'skipped') {
+            console.warn('[completeDelivery] deposit refund not completed:', r.status, r.message);
           }
-        } catch (refundCallErr: any) {
-          console.warn('[completeDelivery] refund call threw:', refundCallErr);
-          await supabase
-            .from('delivery_requests')
-            .update({ refund_status: 'failed' })
-            .eq('request_id', requestId);
-        }
+        });
       }
 
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
@@ -2791,6 +2754,44 @@ export default function TaskScreen() {
                 </View>
               )}
             </View>
+
+            {!isCancelled && info.baseFare > 0 && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Wallet" variant="duotone" size={18} />
+                  <Text style={styles.dSecTitle}>Payment Breakdown</Text>
+                </View>
+                <View style={styles.payRowsCard}>
+                  {([
+                    ['Delivery fare', money(info.baseFare), undefined, false],
+                    ['Platform fee (15%)', `-${money(info.platformFee)}`, colors.error, false],
+                    ...(info.returnDeposit > 0
+                      ? [[
+                          info.isReturned ? 'Return deposit (kept for return trip)' : 'Return deposit (refunded to sender)',
+                          info.isReturned ? `+${money(info.returnDeposit)}` : money(info.returnDeposit),
+                          info.isReturned ? colors.success : colors.textMuted,
+                          false,
+                        ]]
+                      : []),
+                    [info.isReturned || !released ? 'Your earnings' : 'Net earnings', money(info.earnings), colors.success, true],
+                    ['Sender paid in total', money(info.totalPaid), colors.textSecondary, false],
+                  ] as [string, string, string | undefined, boolean][]).map(([label, value, color, bold], i) => (
+                    <View key={label} style={[styles.payRow, i > 0 && styles.payRowBorder]}>
+                      <Text style={styles.payRowLabel}>{label}</Text>
+                      <Text
+                        style={[
+                          styles.payRowValue,
+                          !!color && { color },
+                          bold && { fontFamily: 'Poppins_700Bold' },
+                        ]}
+                      >
+                        {value}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
 
             {(!!(d.escrow?.bc_escrow_tx_hash) || !!(d.qr_verifications?.bc_pickup_tx_hash) || !!(d.qr_verifications?.bc_dropoff_tx_hash)) && (
               <>

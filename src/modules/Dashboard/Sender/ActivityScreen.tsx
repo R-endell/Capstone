@@ -13,6 +13,7 @@ import { supabase } from '../../../utils/supabase';
 import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { notifyUser } from '../../../services/pushService';
+import { requestDepositRefund, needsDepositRefund, wasDepositRefundAttempted } from '../../../services/depositRefundService';
 import { formatDateTime } from '../../../utils/dateUtils';
 import { useSchedule, ShipmentItem } from './Delivery/ScheduleContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
@@ -848,6 +849,14 @@ export default function ActivityScreen() {
           setDeliveries(mappedDeliveries);
         }
       }
+
+      // Completed deliveries whose "Return to Sender" deposit was never refunded (e.g. the provider's app
+      // closed or the refund failed): retry once per session, then refresh so the status line updates.
+      mappedDeliveries.forEach((m) => {
+        if (m.status !== 'Completed') return;
+        if (!needsDepositRefund(m.rawData) || wasDepositRefundAttempted(m.request_id)) return;
+        void requestDepositRefund(m.request_id, m.payout_deposit).then(() => scheduleRefresh());
+      });
     } catch {
       if (!hasLoadedRef.current) { deliveriesSigRef.current = ''; setDeliveries([]); }
     } finally {
@@ -2058,8 +2067,8 @@ export default function ActivityScreen() {
                         {d.status !== 'Returned' && d.payout_deposit > 0 &&
                           `  ·  ${money(d.payout_deposit)} ${
                             /^(failed|manual_required)$/i.test(String(d.rawData?.refund_status || ''))
-                              ? 'refund pending — contact support'
-                              : /^(pending|processing|initiated|requested)$/i.test(String(d.rawData?.refund_status || ''))
+                              ? 'refund could not be completed — retrying, or contact support'
+                              : /^(|null|pending|processing|initiated|requested|deposit_refund_pending)$/i.test(String(d.rawData?.refund_status || ''))
                                 ? 'being refunded to you'
                                 : 'refunded to you'
                           }`}
@@ -2235,6 +2244,53 @@ export default function ActivityScreen() {
                 </View>
               )}
             </View>
+
+            {!isCancelled && d.payout_base > 0 && (() => {
+              const rs = String(d.rawData?.refund_status || '').toLowerCase();
+              const returned = d.status === 'Returned';
+              const done = d.status === 'Completed';
+              const fee = d.payout_fee;
+              const courierNet = Math.round((d.payout_base - fee) * 100) / 100;
+              const depositNote = returned
+                ? 'Paid to provider for the return trip'
+                : !done
+                  ? 'Held in escrow, refunded if delivery succeeds'
+                  : /^(succeeded|refunded)$/.test(rs)
+                    ? 'Refunded to you'
+                    : /^(failed|manual_required)$/.test(rs)
+                      ? 'Refund could not be completed yet'
+                      : 'Being refunded to you';
+              const rows: [string, string, string | undefined, boolean][] = [
+                ['Delivery fare', money(d.payout_base), undefined, false],
+                ['Courier payout (85%)', money(courierNet), undefined, false],
+                ['Platform fee (15%)', money(fee), colors.textSecondary, false],
+              ];
+              if (d.payout_deposit > 0) {
+                rows.push([
+                  `Return deposit · ${depositNote}`,
+                  money(d.payout_deposit),
+                  returned ? colors.textSecondary : (done && /^(succeeded|refunded)$/.test(rs) ? colors.success : undefined),
+                  false,
+                ]);
+              }
+              rows.push(['Total paid', money(d.price), undefined, true]);
+              return (
+                <>
+                  <View style={styles.dSecHead}>
+                    <SolarIcon name="Wallet" variant="duotone" size={18} />
+                    <Text style={styles.dSecTitle}>Payment Breakdown</Text>
+                  </View>
+                  <View style={styles.payRowsCard}>
+                    {rows.map(([label, value, color, bold], i) => (
+                      <View key={label} style={[styles.payRow, i > 0 && styles.payRowBorder]}>
+                        <Text style={[styles.payRowLabel, { flex: 1, paddingRight: 10 }]}>{label}</Text>
+                        <Text style={[styles.payRowValue, !!color && { color }, bold && { fontFamily: 'Poppins_700Bold' }]}>{value}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              );
+            })()}
 
             {(!!(escrowRow?.bc_escrow_tx_hash) || !!(d.qr?.bc_pickup_tx_hash) || !!(d.qr?.bc_dropoff_tx_hash)) && (
               <>
