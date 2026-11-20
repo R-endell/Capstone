@@ -11,7 +11,7 @@ import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries,
@@ -417,6 +417,7 @@ type TabType = 'active' | 'scheduled' | 'completed' | 'cancelled' | 'all';
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const taskRoute = useRoute<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
@@ -559,17 +560,28 @@ export default function TaskScreen() {
     Animated.timing(detailAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [selectedId, detailAnim]);
 
+  // Set when the provider arrived here from the navigation screen: going back returns there instead of leaving the app.
+  const returnToNavRef = useRef<any>(null);
+  const backToNavigation = useCallback(() => {
+    const p = returnToNavRef.current;
+    returnToNavRef.current = null;
+    setSelectedId(null);
+    navigation.navigate('ProviderNavigation', p || undefined);
+  }, [navigation]);
+  useFocusEffect(useCallback(() => () => { returnToNavRef.current = null; }, []));
+
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (podCameraOpen) { setPodCameraOpen(false); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
       if (routePickerVisible) { setRoutePickerVisible(false); return true; }
+      if (returnToNavRef.current) { backToNavigation(); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId]);
+  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId, backToNavigation]);
 
   useEffect(() => {
     if (!verifyModalVisible || pickupPending) return;
@@ -1602,6 +1614,27 @@ export default function TaskScreen() {
     }
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
 
+  // Deep link from the navigation screen: open this delivery's detail view (where the pickup / hand-over action lives)
+  // `openAction`: 'verify' = pickup / return QR-PIN scanner modal, 'complete' = drop-off proof-photo + OTP modal.
+  const openDeliveryParam = taskRoute.params?.openDeliveryId;
+  const openActionParam = taskRoute.params?.openAction as 'verify' | 'complete' | undefined;
+  useEffect(() => {
+    if (openDeliveryParam == null) return;
+    const id = Number(openDeliveryParam);
+    const d = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries].find(x => x.delivery_id === id);
+    if (d) {
+      if (taskRoute.params?.returnToNav) returnToNavRef.current = taskRoute.params.returnToNav;
+      navigation.setParams({ openDeliveryId: undefined, openAction: undefined, returnToNav: undefined });
+      setSelectedId(id);
+      if (openActionParam === 'verify') void openVerifyModal(d);
+      else if (openActionParam === 'complete') void openDeliveryOTPModal(d);
+      return;
+    }
+    // the list may still be loading: wait for it, but do not keep the request pending forever
+    const t = setTimeout(() => navigation.setParams({ openDeliveryId: undefined, openAction: undefined }), 10000);
+    return () => clearTimeout(t);
+  }, [openDeliveryParam, openActionParam, activeDeliveries, completedDeliveries, cancelledDeliveries]);
+
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
@@ -1717,18 +1750,6 @@ export default function TaskScreen() {
     () => activeDeliveries.filter(d => isScheduledDelivery(d) && matchesSelectedRoute(d)),
     [activeDeliveries, matchesSelectedRoute]
   );
-
-  const openRoute = (d: any) => {
-    const st = stageOf(d);
-    if (st !== 'pickup' && st !== 'transit') return;
-    const info = buildTaskInfo(d);
-    const t = st === 'pickup' ? info.pickup : info.dropoff;
-    if (t.lat == null || t.lng == null) {
-      Alert.alert('Route unavailable', `This order has no map coordinates for the ${st === 'pickup' ? 'pickup' : 'drop-off'} location.`);
-      return;
-    }
-    navigation.navigate('ProviderNavigation', { deliveryId: d.delivery_id });
-  };
 
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
 
@@ -1992,21 +2013,6 @@ export default function TaskScreen() {
           </Text>
         </View>
 
-        {active && (
-          <View style={styles.oActions}>
-            <TouchableOpacity
-              style={[styles.oRouteBtn, { flex: 1 }]}
-              onPress={(e) => {
-                e.stopPropagation();
-                openRoute(d);
-              }}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="navigate" size={18} color="#FFFFFF" />
-              <Text style={styles.oRouteText}>Start Route</Text>
-            </TouchableOpacity>
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -2379,7 +2385,7 @@ export default function TaskScreen() {
         <View style={[styles.dHeaderBar, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity
             style={styles.dRoundBtnInline}
-            onPress={() => setSelectedId(null)}
+            onPress={() => { if (returnToNavRef.current) backToNavigation(); else setSelectedId(null); }}
             activeOpacity={0.85}
           >
             <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
@@ -2856,12 +2862,8 @@ export default function TaskScreen() {
 
         {active && (
           <View style={styles.dBar}>
-            <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="navigate" size={18} color={colors.accent} />
-              <Text style={styles.mSoftText}>Navigate</Text>
-            </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && { opacity: 0.55 }]}
+              style={[styles.mPrimaryBtn, { flex: 1 }, awaitingApproval && { opacity: 0.55 }]}
               disabled={awaitingApproval}
               onPress={() =>
                 stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
@@ -3123,20 +3125,6 @@ export default function TaskScreen() {
                 <Text style={styles.rtMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
             </View>
-            {(() => {
-              const st = stageOf(selectedTask);
-              if (st !== 'pickup' && st !== 'transit') return null;
-              return (
-                <TouchableOpacity
-                  style={[styles.mPrimaryBtn, { marginTop: 14 }]}
-                  onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="navigate" size={18} color="#FFFFFF" />
-                  <Text style={styles.mPrimaryText}>Open Route</Text>
-                </TouchableOpacity>
-              );
-            })()}
           </View>
         </View>
       </Modal>
