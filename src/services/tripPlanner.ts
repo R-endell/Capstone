@@ -92,7 +92,20 @@ export const ordersFromDeliveries = (list: any[], routeId?: number | null): Trip
 
     const deliveryId = Number(d.delivery_id);
     if (!isFinite(deliveryId)) continue;
-    const pickup = toTripPoint(req.pickup_location);
+    const rawPickup = toTripPoint(req.pickup_location);
+    const hasMeetup =
+      d.meetup_lat != null &&
+      d.meetup_lng != null &&
+      Number.isFinite(Number(d.meetup_lat)) &&
+      Number.isFinite(Number(d.meetup_lng));
+    const pickup: TripPoint | null = hasMeetup
+      ? {
+          lat: Number(d.meetup_lat),
+          lng: Number(d.meetup_lng),
+          main: d.meetup_landmark_name || rawPickup?.main || 'Main route meet-up',
+          sub: `Curb-side meet-up${rawPickup?.main ? ` · near ${rawPickup.main}` : ''}`,
+        }
+      : rawPickup;
     const dropoff = toTripPoint(req.dropoff_location);
     const stage: TripOrder['stage'] = low === 'returning' ? 'return' : isPickupVerified(d) ? 'transit' : 'pickup';
 

@@ -194,9 +194,13 @@ export default function DeliveryPaymentScreen({ route, navigation }: any) {
     payingRef.current = false;
     setPaying(false);
 
-    // popTo (not navigate): React Navigation 7 pushes a NEW Booking on top of this screen with navigate(),
-    // leaving this payment screen alive underneath. popTo returns to the existing Booking and removes this screen.
-    navigation.popTo('Booking', { paymentJustCompleted: true, requestId: rid });
+    const routes: any[] = navigation.getState?.()?.routes || [];
+    const hasBookingInStack = routes.some((r: any) => r.name === 'Booking');
+    if (hasBookingInStack) {
+      navigation.popTo('Booking', { paymentJustCompleted: true, requestId: rid });
+    } else {
+      navigation.replace('Booking', { paymentJustCompleted: true, requestId: rid });
+    }
   };
 
   const handlePay = async () => {

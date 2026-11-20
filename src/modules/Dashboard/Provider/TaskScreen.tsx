@@ -34,6 +34,8 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+import { decode as decodeBase64 } from 'base64-arraybuffer';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -49,6 +51,20 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const NETWORK_TIMEOUT_MS = 12000;
 
 let Clipboard: any = null;
+let FileSystem: any = null;
+try { FileSystem = require('expo-file-system/legacy'); } catch {}
+if (!FileSystem?.readAsStringAsync) {
+  try { FileSystem = require('expo-file-system'); } catch {}
+}
+
+const readLocalFileAsArrayBuffer = async (uri: string): Promise<ArrayBuffer> => {
+  if (!FileSystem?.readAsStringAsync) {
+    throw new Error('File system module unavailable.');
+  }
+  const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+  if (!base64) throw new Error('Captured photo file is empty.');
+  return decodeBase64(base64);
+};
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -780,22 +796,30 @@ export default function TaskScreen() {
   };
 
   const openVerifyModal = async (delivery: any) => {
-    const info = buildTaskInfo(delivery);
-    const geo = await verifyProviderWithinGeofence(info.pickup.lat, info.pickup.lng, 'pickup');
-    if (!geo.allowed) return;
+    try {
+      const info = buildTaskInfo(delivery);
+      const targetLat = delivery?.meetup_lat != null ? Number(delivery.meetup_lat) : info.pickup.lat;
+      const targetLng = delivery?.meetup_lng != null ? Number(delivery.meetup_lng) : info.pickup.lng;
+      const geo = await verifyProviderWithinGeofence(targetLat, targetLng, 'pickup');
+      if (!geo.allowed) return;
 
-    if (!cameraPermission?.granted) {
-      const res = await requestCameraPermission();
-      if (!res?.granted) {
-        Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
-        return;
+      if (!cameraPermission?.granted) {
+        const res = await requestCameraPermission();
+        if (!res?.granted) {
+          Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
+          return;
+        }
       }
+      setVerifyTarget(delivery);
+      setScanned(false);
+      setPinInput('');
+      setPickupPending(null);
+      setPickupPhotoUri(null);
+      setPickupCameraReady(false);
+      setVerifyModalVisible(true);
+    } catch (e: any) {
+      Alert.alert('Cannot Open Verification', e?.message || 'Please check location & camera permissions.');
     }
-    setVerifyTarget(delivery);
-    setScanned(false);
-    setPinInput('');
-    setPickupCameraReady(false);
-    setVerifyModalVisible(true);
   };
 
   const closeVerifyModal = () => {
@@ -911,20 +935,13 @@ export default function TaskScreen() {
       if (reqErr) throw reqErr;
 
       const info = buildTaskInfo(verifyTarget);
-      const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
-      const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
-      const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
-
-      const smsMsg = info.receiverPhone
-        ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
-        : '';
 
       if (info.senderId) {
         try {
           await notifyUser(
             info.senderId,
             'Your courier is on the way! 🚚',
-            `Package picked up. Have you notified ${info.receiverName || 'the receiver'}? Tap to call/message them.`,
+            `Package picked up. An automated SMS update has been sent to ${info.receiverName || 'the receiver'}.`,
             { deliveryId: verifyTarget?.delivery_id }
           );
         } catch (err) {
@@ -932,30 +949,14 @@ export default function TaskScreen() {
         }
       }
 
-      const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
-      if (info.receiverPhone) {
-        alertButtons.push({
-          text: 'Send SMS to Receiver',
-          onPress: () => {
-            const url = Platform.select({
-              ios: `sms:${info.receiverPhone}&body=${encodeURIComponent(smsMsg)}`,
-              android: `sms:${info.receiverPhone}?body=${encodeURIComponent(smsMsg)}`,
-            });
-            if (url) {
-              Linking.openURL(url).catch(() => {
-                Alert.alert('Cannot Open SMS', 'Your device cannot open the SMS app. Please notify the receiver manually.');
-              });
-            }
-          },
-        });
-      }
+      // Phase 4: Fully automated own-SIM SMS to receiver (replaces manual texting)
+      const smsSent = await triggerDeliverySmsMilestone(deliveryId, 'in_transit');
 
       Alert.alert(
         '✅ Item Collected',
-        info.receiverPhone
-          ? `Pickup verified. Tap below to notify ${info.receiverName || 'the receiver'} via SMS from your phone.`
-          : 'Pickup verified. (No receiver phone number on file.)',
-        alertButtons
+        smsSent
+          ? `Pickup verified. An automated SMS alert was sent to ${info.receiverName || 'the receiver'}.`
+          : 'Pickup verified. Live tracking is now active for the sender.',
       );
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
@@ -971,9 +972,14 @@ export default function TaskScreen() {
       const qrData = data.trim();
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('pickup_qr', qrData)
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) {
@@ -1009,9 +1015,13 @@ export default function TaskScreen() {
     try {
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
@@ -1085,10 +1095,13 @@ export default function TaskScreen() {
   };
 
   const uploadPickupPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pickup/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1182,10 +1195,13 @@ export default function TaskScreen() {
   };
 
   const uploadPodPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pod/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1383,6 +1399,11 @@ export default function TaskScreen() {
         );
       }
 
+      const autoSmsOk = await triggerDeliverySmsMilestone(delivery.delivery_id, 'grace_timer');
+      if (autoSmsOk) {
+        updated.sms_receiver_at = nowIso;
+      }
+
       if (providerId) fetchDeliveries(providerId).catch(() => {});
     }
 
@@ -1408,10 +1429,15 @@ export default function TaskScreen() {
       Linking.openURL(`tel:${info.receiverPhone}`);
     } else if (kind === 'sms') {
       if (!info.receiverPhone) return;
+      const sent = await triggerDeliverySmsMilestone(graceDelivery.delivery_id, 'grace_timer');
       await supabase.from('deliveries').update({ sms_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, sms: true }));
-      const msg = encodeURIComponent(`Hi ${info.receiverName || ''}, I am your Pack-N-Ship courier waiting at the drop-off location. Please meet me within 10 minutes.`);
-      Linking.openURL(`sms:${info.receiverPhone}?body=${msg}`);
+      Alert.alert(
+        sent ? 'Automated SMS Sent' : 'SMS Already Sent',
+        sent
+          ? `An automated arrival SMS was sent to ${info.receiverName || 'the receiver'}.`
+          : `An automated arrival SMS was already sent to ${info.receiverName || 'the receiver'}.`,
+      );
     } else if (kind === 'chat') {
       await supabase.from('deliveries').update({ chat_sender_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, chat: true }));
@@ -3355,8 +3381,11 @@ export default function TaskScreen() {
   const broadcastingDelivery = useMemo(() => {
     const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit' && !isAwaitingApproval(d));
     if (inTransit) return inTransit;
-    if (navSessionId == null) return null;
-    return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;
+    const headingToPickup =
+      (navSessionId != null
+        ? activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup')
+        : null) ?? activeDeliveries.find((d: any) => stageOf(d) === 'pickup');
+    return headingToPickup ?? null;
   }, [activeDeliveries, navSessionId]);
 
   const broadcastIdRef = useRef<number | null>(null);

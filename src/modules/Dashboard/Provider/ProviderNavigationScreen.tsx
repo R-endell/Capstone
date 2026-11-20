@@ -16,7 +16,7 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NavigationMap, { NavInfo, NavStatus, NavigationMapHandle, MapStop, EndPoint } from '../../../components/map/NavigationMap';
-import { fmtDistance, fmtDuration } from '../../../components/map/directions';
+import { fmtDistance, fmtDuration, getNavRoute } from '../../../components/map/directions';
 import { supabase } from '../../../utils/supabase';
 import { getProviderDeliveries, SHIPMENT_SIZE_SPECS } from '../../../services/matchingService';
 import { setNavigationSession, clearNavigationSession } from '../../../services/navigationSessionStore';
@@ -26,6 +26,8 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
 import { useReconnectEpoch } from '../../../services/connectivityStore';
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+
 
 // distances are always shown in METERS (1,240 m)
 const fmtMeters = (m: number | null | undefined) =>
@@ -255,30 +257,22 @@ export default function ProviderNavigationScreen() {
     const a = startPoint.coordinate, b = endPoint.coordinate;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | null = null;
-    let ctrl: AbortController | null = null;
 
     const load = async (attempt: number) => {
-      ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl?.abort(), 9000);
       try {
-        const res = await fetch(
-          `https://router.project-osrm.org/route/v1/driving/${a.longitude},${a.latitude};${b.longitude},${b.latitude}?overview=full&geometries=geojson`,
-          { signal: ctrl.signal },
-        );
-        const data = await res.json();
-        const pts = data?.routes?.[0]?.geometry?.coordinates;
-        if (data?.code === 'Ok' && Array.isArray(pts) && pts.length > 1) {
-          if (!cancelled) setRouteLine(pts.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })));
+        const nav = await getNavRoute(a, b);
+        if (nav.source !== 'straight' && nav.coords.length > 1) {
+          if (!cancelled) setRouteLine(nav.coords);
           return;
         }
       } catch { /* offline / timeout: retry below */ }
-      finally { clearTimeout(timer); }
-      if (!cancelled && attempt < 4) retry = setTimeout(() => { void load(attempt + 1); }, 3000 * (attempt + 1));
+      if (!cancelled && attempt < 4) {
+        retry = setTimeout(() => { void load(attempt + 1); }, 3000 * (attempt + 1));
+      }
     };
     void load(0);
-    return () => { cancelled = true; if (retry) clearTimeout(retry); ctrl?.abort(); };
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
   }, [lineKey, netEpoch]);
-
   useEffect(() => {
     if (effectiveRouteId == null) return;
     let cancelled = false;
@@ -387,6 +381,27 @@ export default function ProviderNavigationScreen() {
     setNavigationSession(curDelivery);
     return () => clearNavigationSession(curDelivery);
   }, [curDelivery, curIsPickup]);
+
+  // Phase 4: Automated own-SIM SMS on approaching (<= 250 m / final turn) and arrival (<= 40 m)
+  useEffect(() => {
+    if (!current || current.isReturn) return;
+    const dist = info.distanceM;
+    const isPickupStop = current.kind === 'pickup';
+    const etaMins = info.durationS != null ? Math.max(1, Math.round(info.durationS / 60)) : null;
+
+    if (status === 'arrived' || (dist != null && dist <= 40)) {
+      void triggerDeliverySmsMilestone(
+        current.deliveryId,
+        isPickupStop ? 'pickup_arrived' : 'dropoff_arrived',
+      );
+    } else if (dist != null && dist <= 250) {
+      void triggerDeliverySmsMilestone(
+        current.deliveryId,
+        isPickupStop ? 'pickup_approaching' : 'dropoff_approaching',
+        { etaMins },
+      );
+    }
+  }, [current?.deliveryId, current?.kind, current?.isReturn, status, info.distanceM, info.durationS]);
 
   // straight-line distance from the provider to the end of the posted route (shown in the "Route end" chip)
   const endDistM = useMemo(() => {
