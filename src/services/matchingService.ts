@@ -5,6 +5,17 @@ import { fetchRouteCorridorAndDistance, parseNaiveRouteTime } from './routeServi
 import { notifyUser } from './pushService';
 import { Alert } from 'react-native';
 
+/**
+ * A request only becomes visible to providers (matches, direct requests, notifications)
+ * once the sender has actually paid: payment_status is 'held' (escrow) or later.
+ * Anything still 'unpaid' / 'failed' / pending means the sender is still choosing a receiver
+ * or setting up payment, so providers must not see it yet.
+ */
+export const PAID_PAYMENT_STATUSES = ['held', 'paid', 'released'];
+export function isRequestPaid(req: any): boolean {
+  return !!req && PAID_PAYMENT_STATUSES.includes(String(req.payment_status || '').toLowerCase());
+}
+
 export interface Location {
   latitude: number;
   longitude: number;
@@ -496,6 +507,8 @@ async function evaluatePairAndUpsertMatch(
   isDemo: boolean = false,
 ): Promise<boolean> {
   if (!route || !reqRow || reqRow.delivery_status !== 'Pending') return false;
+  // Not paid yet (sender still on receiver / payment step): no match, no notification.
+  if (!isRequestPaid(reqRow)) return false;
   if (Number(route.provider_id) === Number(reqRow.sender_id)) return false;
 
   const isDirectRequest = reqRow.preferred_provider_id != null;
@@ -769,6 +782,8 @@ export async function syncAllActiveRoutesTodayForRequest(
       .maybeSingle();
 
     if (!reqRow || reqRow.delivery_status !== 'Pending') return [];
+    // Matching starts only after the sender pressed Pay and the payment is held in escrow.
+    if (!isRequestPaid(reqRow)) return [];
 
     const { data: allRoutes } = await supabase
       .from('provider_routes')
@@ -901,6 +916,7 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
         `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`,
       )
       .eq('delivery_status', 'Pending')
+      .in('payment_status', PAID_PAYMENT_STATUSES)
       .order('created_at', { ascending: false })
       .limit(40);
 
@@ -1060,7 +1076,9 @@ export async function evaluateAndFetchRouteMatches(
   }
 
   const now = new Date();
-  const afterPending = (rows || []).filter((m: any) => m.request && m.request.delivery_status === 'Pending');
+  const afterPending = (rows || []).filter(
+    (m: any) => m.request && m.request.delivery_status === 'Pending' && isRequestPaid(m.request),
+  );
   const afterPreferred = afterPending.filter(
     (m: any) =>
       m.request.preferred_provider_id == null ||
@@ -1150,7 +1168,8 @@ export async function fetchDirectRequestMatches(
       `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`,
     )
     .eq('preferred_provider_id', providerId)
-    .eq('delivery_status', 'Pending');
+    .eq('delivery_status', 'Pending')
+    .in('payment_status', PAID_PAYMENT_STATUSES);
 
   if (!directReqs || directReqs.length === 0) return [];
 

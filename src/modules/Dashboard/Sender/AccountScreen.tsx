@@ -110,6 +110,11 @@ export default function AccountScreen() {
     if (userId != null) lastResolvedRef.current = { userId, state: next };
   }, [userId]);
 
+  // Keep the latest commit function in a ref so the realtime effect does not
+  // have to re-subscribe every time it changes.
+  const commitProviderStateRef = useRef(commitProviderState);
+  commitProviderStateRef.current = commitProviderState;
+
   const fetchUserData = useCallback(async () => {
     try {
       setImgKey(Date.now());
@@ -219,8 +224,11 @@ export default function AccountScreen() {
   // Realtime updates keep the cached state honest as support approves/rejects.
   useEffect(() => {
     if (!userId) return;
+    // Unique topic per subscription: supabase.channel() returns the existing
+    // channel for a topic, and removeChannel() from the previous effect run is
+    // async, so reusing the name made .on() run on an already-subscribed channel.
     const channel = supabase
-      .channel(`account-provider-verif-${userId}`)
+      .channel(`account-provider-verif-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'provider_verifications', filter: `provider_id=eq.${userId}` },
@@ -231,22 +239,22 @@ export default function AccountScreen() {
           if (status === 'rejected') {
             const reason = updated.rejection_reason?.trim() || null;
             setRejectionReason(reason);
-            commitProviderState('rejected');
+            commitProviderStateRef.current('rejected');
             setRejectionModalVisible(true);
           } else if (status === 'approved' || status === 'verified') {
             setRejectionReason(null);
-            commitProviderState('approved');
+            commitProviderStateRef.current('approved');
             setRejectionModalVisible(false);
           } else if (status === 'pending') {
             setRejectionReason(null);
-            commitProviderState('pending');
+            commitProviderStateRef.current('pending');
             setRejectionModalVisible(false);
           }
         }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [userId, commitProviderState]);
+  }, [userId]);
 
   const handleLogoutConfirm = () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [

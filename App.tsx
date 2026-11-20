@@ -111,6 +111,8 @@ import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/Deliv
 
 import { UserProvider } from './src/utils/userContext';
 import TermsGate from './src/components/terms/TermsGate';
+import OfflineBanner from './src/components/OfflineBanner';
+import { startConnectivityMonitor } from './src/services/connectivityStore';
 import { ThemeProvider, useTheme } from './src/utils/themeContext';
 
 import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
@@ -618,6 +620,7 @@ function AppInner() {
   const matcherStartedRef = useRef(false);
 
   useRoleGuard(navigationRef as any);
+  useEffect(() => { startConnectivityMonitor(); }, []);
   useDeactivationGuard(navigationRef as any);
   useDeepLink(navigationRef);
 
@@ -774,6 +777,9 @@ function AppInner() {
 
       {/* Asks signed-in users to accept the current Terms and Policies version if they have not */}
       <TermsGate />
+
+      {/* No-internet alert over EVERY screen (an overlay strip, not a modal) */}
+      <OfflineBanner />
     </NavigationContainer>
   );
 }

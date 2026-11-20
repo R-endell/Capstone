@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../utils/supabase';
 
 // Flip this one line to turn Demo Mode on (true) or off (false) for the whole app.
-export const DEMO_MODE = false;
+export const DEMO_MODE = true;
 
 const KEY = 'packnship.activeRouteId';
 

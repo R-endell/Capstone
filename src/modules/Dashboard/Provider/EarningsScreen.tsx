@@ -42,6 +42,11 @@ interface EarningRow {
   processed_at: string | null;
   display_status: 'earned' | 'pending' | 'frozen' | 'refunded';
   display_amount: number;
+  base_fare: number | null;      // gross delivery fare before the platform fee
+  return_deposit: number;        // sender's Return-to-Sender deposit
+  is_returned: boolean;          // package went back to the sender (provider keeps the deposit)
+  fallback_action: string | null;   // 'return_to_sender' (Option A) | 'leave_with_guard' (Option B)
+  refund_status: string | null;     // state of the deposit refund to the sender
 }
 
 export default function EarningsScreen() {
@@ -144,7 +149,8 @@ export default function EarningsScreen() {
         delivery:deliveries!escrow_payments_delivery_id_fkey (
           delivery_id, completed_at, accepted_at,
           delivery_requests!deliveries_request_id_fkey (
-            request_id, base_fare, return_deposit, delivery_status
+            request_id, base_fare, return_deposit, delivery_status,
+            fallback_action, refund_status, payment_provider
           )
         )
       `)
@@ -185,14 +191,18 @@ export default function EarningsScreen() {
       const deposit = request?.return_deposit != null ? Number(request.return_deposit) : 0;
       const escrowAmt = Number(e.amount || 0);
 
-      const netBase = Math.round(baseFare * 0.85 * 100) / 100;
+      // Platform fee = 15% of the delivery fare (the return deposit is never charged a fee)
+      const isReturned = requestStatus === 'returned';
+      const platformFee = baseFare > 0 ? Math.round(baseFare * 0.15 * 100) / 100 : null;
+      const netBase = baseFare > 0 ? Math.round((baseFare - (platformFee || 0)) * 100) / 100 : 0;
       let courierAmount: number;
       if (isReleased) {
-        courierAmount = requestStatus === 'returned'
+        courierAmount = isReturned
           ? (netBase + deposit || escrowAmt)
           : (netBase || escrowAmt);
       } else {
-        courierAmount = escrowAmt;
+        // not released yet: show what the courier will actually receive, not the sender's full escrow
+        courierAmount = netBase > 0 ? (isReturned ? netBase + deposit : netBase) : escrowAmt;
       }
 
       return {
@@ -209,7 +219,7 @@ export default function EarningsScreen() {
         delivery_accepted_at: delivery.accepted_at ?? null,
         transaction_id: t?.transaction_id ?? null,
         base_amount: courierAmount,
-        service_fee: null,
+        service_fee: platformFee,
         total_amount: courierAmount,
         penalty_fee: t?.penalty_fee != null ? Number(t.penalty_fee) : null,
         payment_method: t?.payment_method ?? request?.payment_provider ?? null,
@@ -217,6 +227,11 @@ export default function EarningsScreen() {
         processed_at: t?.processed_at ?? null,
         display_status: displayStatus,
         display_amount: courierAmount,
+        base_fare: baseFare > 0 ? baseFare : null,
+        return_deposit: deposit,
+        is_returned: isReturned,
+        fallback_action: request?.fallback_action ?? null,
+        refund_status: request?.refund_status ?? null,
       };
     });
 
@@ -504,6 +519,11 @@ export default function EarningsScreen() {
               <View style={[styles.miniStatusPill, { backgroundColor: statusBg }]}>
                 <Text style={[styles.miniStatusText, { color: statusColor }]}>{statusLabel}</Text>
               </View>
+              {isReturnOption(item) && (
+                <View style={styles.returnPill}>
+                  <Text style={styles.returnPillText}>{item.is_returned ? 'Returned' : 'Return to Sender'}</Text>
+                </View>
+              )}
             </View>
             <Text style={styles.transactionSubtitle} numberOfLines={1}>
               {formatDate(stamp)}
@@ -521,6 +541,9 @@ export default function EarningsScreen() {
           >
             {isEarned ? '+' : ''}₱{item.display_amount.toFixed(2)}
           </Text>
+          {item.service_fee != null && item.service_fee > 0 && !isRefunded && (
+            <Text style={[styles.penaltyText, { color: colors.textMuted }]}>₱{item.service_fee.toFixed(2)} platform fee</Text>
+          )}
           {!!item.penalty_fee && item.penalty_fee > 0 && (
             <Text style={styles.penaltyText}>-₱{item.penalty_fee.toFixed(2)} Penalty</Text>
           )}
@@ -715,7 +738,7 @@ export default function EarningsScreen() {
     else if (isRefunded) { headColor = colors.textSecondary; headBg = colors.divider; headIcon = 'ArrowLeft'; headLabel = 'Refunded to sender'; }
     else if (isPending) { headLabel = r.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
 
-    const fare = Number(r.total_amount ?? r.amount ?? 0);
+    const fare = Number(r.base_fare ?? r.total_amount ?? r.amount ?? 0);
     const baseAmount = r.base_amount != null ? Number(r.base_amount) : null;
     const serviceFee = r.service_fee != null ? Number(r.service_fee) : null;
     const penaltyFee = r.penalty_fee != null ? Number(r.penalty_fee) : 0;
@@ -748,12 +771,15 @@ export default function EarningsScreen() {
 
               <Text style={styles.sectionLabel}>BREAKDOWN</Text>
               <View style={styles.detailGroupCard}>
-                <BreakdownRow styles={styles} colors={colors} label="Courier delivery payout" value={fare} muted={!isEarned} />
-                {serviceFee != null && (
-                  <BreakdownRow styles={styles} colors={colors} label="Platform service fee" value={-serviceFee} negative />
+                <BreakdownRow styles={styles} colors={colors} label="Delivery fare" value={fare} muted={!isEarned} />
+                {r.is_returned && r.return_deposit > 0 && (
+                  <BreakdownRow styles={styles} colors={colors} label="Return deposit (kept for return trip)" value={r.return_deposit} muted={!isEarned} />
+                )}
+                {serviceFee != null && serviceFee > 0 && (
+                  <BreakdownRow styles={styles} colors={colors} label="Platform service fee (15%)" value={serviceFee} negative />
                 )}
                 {penaltyFee > 0 && (
-                  <BreakdownRow styles={styles} colors={colors} label="Penalty fee" value={-penaltyFee} negative />
+                  <BreakdownRow styles={styles} colors={colors} label="Penalty fee" value={penaltyFee} negative />
                 )}
                 <View style={styles.breakdownDivider} />
                 <View style={styles.totalRow}>
@@ -771,6 +797,22 @@ export default function EarningsScreen() {
                 <InfoRow styles={styles} colors={colors} label="Sender paid via" value={r.payment_method ? titleCase(r.payment_method) : '—'} />
                 <InfoRow styles={styles} colors={colors} label="Processed at" value={formatFullDate(r.processed_at)} last />
               </View>
+
+              {isReturnOption(r) && (
+                <>
+                  <Text style={[styles.sectionLabel, { marginTop: 18 }]}>RETURN TO SENDER</Text>
+                  <View style={styles.detailGroupCard}>
+                    <InfoRow styles={styles} colors={colors} label="Sender's option" value="Option A · Return to sender" />
+                    <InfoRow styles={styles} colors={colors} label="Return deposit" value={`₱${Number(r.return_deposit).toFixed(2)}`} />
+                    <InfoRow styles={styles} colors={colors} label="Deposit status" value={returnDepositStatus(r)} last />
+                  </View>
+                  <Text style={[styles.privacyNoteE, { marginTop: 8 }]}>
+                    {r.is_returned
+                      ? 'The package could not be delivered and was returned, so the return deposit is added to your earnings.'
+                      : 'If the delivery succeeds the deposit goes back to the sender and is not part of your earnings.'}
+                  </Text>
+                </>
+              )}
 
               <Text style={[styles.sectionLabel, { marginTop: 18 }]}>ESCROW &amp; DELIVERY</Text>
               <View style={styles.detailGroupCard}>
@@ -933,6 +975,20 @@ const InfoRow: React.FC<{ label: string; value: string; valueColor?: string; las
     <Text style={[styles.infoValue, valueColor ? { color: valueColor } : null]} numberOfLines={2}>{value}</Text>
   </View>
 );
+
+/** Sender picked Option A (Return to Sender) and paid a return deposit. */
+const isReturnOption = (r: { fallback_action: string | null; return_deposit: number }) =>
+  r.fallback_action === 'return_to_sender' && Number(r.return_deposit) > 0;
+
+const returnDepositStatus = (r: EarningRow): string => {
+  if (r.is_returned) return 'Kept by you for the return trip';
+  if (r.display_status === 'refunded') return 'Refunded to sender';
+  if (!r.delivery_completed_at) return 'Held in escrow';
+  const rs = String(r.refund_status || '').toLowerCase();
+  if (rs === 'succeeded' || rs === 'refunded') return 'Refunded to sender';
+  if (rs === 'failed' || rs === 'manual_required') return 'Refund to sender pending';
+  return 'Being refunded to sender';
+};
 
 const BreakdownRow: React.FC<{ label: string; value: number | null; negative?: boolean; muted?: boolean; styles: any; colors: ThemeColors }> = ({ label, value, negative, muted, styles, colors }) => {
   const display = value == null ? '—' : `${negative && value > 0 ? '−' : ''}₱${Math.abs(value).toFixed(2)}`;
@@ -1137,6 +1193,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   transactionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   miniStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   miniStatusText: { fontSize: 10, fontFamily: 'Poppins_700Bold' },
+  returnPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, backgroundColor: c.infoSoft },
+  returnPillText: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.info },
+  privacyNoteE: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted, lineHeight: 16 },
   transactionSubtitle: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
   paymentMethodRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2, gap: 5 },
   transactionRight: { alignItems: 'flex-end' },

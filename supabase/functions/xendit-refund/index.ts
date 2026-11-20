@@ -113,7 +113,7 @@ serve(async (req: Request) => {
     const { data: reqRow, error: reqErr } = await supabase
       .from('delivery_requests')
       .select(`
-        request_id, estimated_cost, base_fare, return_deposit,
+        request_id, estimated_cost, base_fare, return_deposit, delivery_status,
         payment_reference, payment_request_id,
         payment_status, escrow_status, refund_status, refund_id, payment_provider
       `)
@@ -125,19 +125,34 @@ serve(async (req: Request) => {
 
     console.log('[REFUND] Found row:', reqRow);
 
-    if (reqRow.refund_status === 'succeeded') return json({ success: true, already_refunded: true });
+    if (reqRow.refund_status === 'succeeded' || reqRow.refund_status === 'refunded') {
+      return json({ success: true, already_refunded: true });
+    }
     if (reqRow.refund_status === 'pending' || reqRow.refund_status === 'processing') {
       return json({ success: true, already_pending: true, refund_id: reqRow.refund_id });
     }
 
     // Allow refunds when:
     //   (a) payment is held (cancellation) OR
-    //   (b) delivery completed but deposit refund pending (partial deposit refund)
+    //   (b) delivery completed but deposit refund pending (partial deposit refund) OR
+    //   (c) delivery completed, escrow already RELEASED to the provider, and the sender's
+    //       "Return to Sender" deposit was never refunded (refund_status empty / failed / manual_required).
+    //       settle_delivery_escrow() flips payment_status/escrow_status to 'released' BEFORE the deposit
+    //       refund is requested, which is why this used to fail with "Cannot refund — status was released".
     const isHeld =
       reqRow.payment_status === 'held' || reqRow.escrow_status === 'held';
     const isDepositRefundPending = reqRow.refund_status === 'deposit_refund_pending';
+    const depositOnRow = Number(reqRow.return_deposit) || 0;
+    const refundStatusNow = String(reqRow.refund_status ?? '').toLowerCase();
+    const isReleased =
+      ['released', 'completed'].includes(String(reqRow.payment_status || '').toLowerCase()) ||
+      ['released', 'completed'].includes(String(reqRow.escrow_status || '').toLowerCase());
+    const isDepositRetry =
+      isReleased &&
+      depositOnRow > 0 &&
+      ['', 'deposit_refund_pending', 'failed', 'manual_required'].includes(refundStatusNow);
 
-    if (!isHeld && !isDepositRefundPending) {
+    if (!isHeld && !isDepositRefundPending && !isDepositRetry) {
       return json({
         success: false,
         error: `Cannot refund — status was ${reqRow.payment_status}/${reqRow.escrow_status}, refund_status=${reqRow.refund_status}`,
@@ -156,8 +171,12 @@ serve(async (req: Request) => {
     let refundAmount = fullAmount;
     if (typeof requestedAmount === 'number' && requestedAmount > 0) {
       refundAmount = requestedAmount;
-    } else if (isDepositRefundPending && depositAmount > 0) {
+    } else if ((isDepositRefundPending || isDepositRetry) && depositAmount > 0) {
       refundAmount = depositAmount;
+    }
+    // Once the escrow was released to the provider, only the deposit may ever go back to the sender.
+    if (!isHeld && (isDepositRefundPending || isDepositRetry) && depositAmount > 0) {
+      refundAmount = Math.min(refundAmount, depositAmount);
     }
     const isPartialRefund = refundAmount < fullAmount;
 
@@ -284,15 +303,16 @@ serve(async (req: Request) => {
       let actionable = refundData?.message || 'Xendit refund failed';
 
       if (code.includes('ALREADY_REFUNDED') || code.includes('MAXIMUM_REFUND')) {
-        await supabase
-          .from('delivery_requests')
-          .update({
-            refund_status: 'succeeded',
-            payment_status: 'refunded',
-            escrow_status: 'refunded',
-            escrow_refunded_at: new Date().toISOString(),
-          })
-          .eq('request_id', request_id);
+        // A partial (deposit-only) refund must never flip the whole payment to 'refunded'.
+        const alreadyUpdate: Record<string, unknown> = isPartialRefund
+          ? { refund_status: 'succeeded', escrow_refunded_at: new Date().toISOString() }
+          : {
+              refund_status: 'succeeded',
+              payment_status: 'refunded',
+              escrow_status: 'refunded',
+              escrow_refunded_at: new Date().toISOString(),
+            };
+        await supabase.from('delivery_requests').update(alreadyUpdate).eq('request_id', request_id);
         return json({ success: true, already_refunded: true, detail: refundData });
       }
       if (code.includes('INSUFFICIENT_BALANCE')) {

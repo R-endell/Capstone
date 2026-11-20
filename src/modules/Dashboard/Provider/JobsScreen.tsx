@@ -31,8 +31,10 @@ import {
   isRequestWithinRouteCorridor,
   declineDirectRequest as declineDirectRequestService,
   declineMatchedRequest as declineMatchedRequestService,
+  getProviderDeliveries,
   RouteMatchRow,
 } from '../../../services/matchingService';
+import { ordersFromDeliveries, planTrip, TripOrder } from '../../../services/tripPlanner';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
@@ -40,6 +42,7 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
 import { MAP_PROPS, BRAND_ORANGE } from '../../../utils/mapConfig';
 import { setTabBarHidden } from '../../../services/tabBarVisibilityStore';
+import { useReconnectEpoch } from '../../../services/connectivityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
 import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 import DraggableSheet, { DraggableSheetHandle } from '../../../components/ui/DraggableSheet';
@@ -448,6 +451,13 @@ const thin = <T,>(pts: T[], max = 220): T[] => {
   return out;
 };
 
+// Every realtime channel gets a topic nobody used before. supabase.channel(topic) hands back the EXISTING channel when a
+// channel with that topic is still registered, and removeChannel() finishes asynchronously, so a quick remount
+// (e.g. coming back from the navigation / task screen) re-used a channel that was already subscribed and
+// `.on('postgres_changes')` threw "cannot add postgres_changes callbacks ... after subscribe()".
+let RT_SEQ = 0;
+const uniqueTopic = (base: string) => `${base}-${Date.now()}-${++RT_SEQ}`;
+
 const OSRM_TIMEOUT_MS = 8000;
 // Road geometry per start/end pair, kept for the whole app session so a remount never has to re-fetch it.
 const ROAD_CACHE = new Map<string, Coord[]>();
@@ -529,11 +539,22 @@ const makeMapStyles = () => StyleSheet.create({
     backgroundColor: '#FFFFFF', borderRadius: 14, paddingHorizontal: 12,
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.18, shadowRadius: 4, elevation: 5,
   },
+  tripWrap: { alignItems: 'center', paddingHorizontal: TRIP_PAD, paddingTop: TRIP_PAD },
+  orderBadge: {
+    position: 'absolute', top: -7, right: -7, minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 4,
+    backgroundColor: '#111827', borderWidth: 1.5, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+  },
+  orderBadgeText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_800ExtraBold' },
   labelText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: '#111827' },
   labelSub: { fontSize: 10.5, fontFamily: 'Poppins_500Medium', color: '#6B7280', marginTop: -1 },
 });
 
 type MapMarkerStyles = ReturnType<typeof makeMapStyles>;
+
+/** One visible stop of the trip: a pickup, or a drop-off of a parcel that is already on board. */
+type TripPin = { key: string; lat: number; lng: number; kind: 'pickup' | 'dropoff'; order: number; title: string };
+
+const TRIP_PAD = 9; // room for the number badge so the marker bitmap does not clip it
 
 const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
   lat, lng, title, street, kind, mk,
@@ -572,6 +593,35 @@ const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
   );
 });
 
+// Numbered stop pin: orange package = pickup, white flag = drop-off. The number is the driving order.
+const TripPinMarker = React.memo(function TripPinMarker({
+  pin, mk,
+}: { pin: TripPin; mk: MapMarkerStyles }) {
+  const [track, setTrack] = useState(true);
+  useEffect(() => {
+    setTrack(true);
+    const t = setTimeout(() => setTrack(false), 800);
+    return () => clearTimeout(t);
+  }, [pin.title, pin.order, pin.kind]);
+  const isPickup = pin.kind === 'pickup';
+
+  return (
+    <Marker
+      coordinate={{ latitude: pin.lat, longitude: pin.lng }}
+      anchor={{ x: 0.5, y: (TRIP_PAD + PIN / 2) / (TRIP_PAD + PIN) }}
+      tracksViewChanges={track}
+      zIndex={6}
+    >
+      <View style={mk.tripWrap}>
+        <View style={isPickup ? mk.pickPin : mk.dropPin}>
+          <SolarIcon name={isPickup ? 'Package' : 'Flag'} variant={isPickup ? 'duotone' : 'bold'} size={22} color={isPickup ? '#FFFFFF' : '#000000'} />
+          <View style={mk.orderBadge}><Text style={mk.orderBadgeText}>{pin.order}</Text></View>
+        </View>
+      </View>
+    </Marker>
+  );
+});
+
 // The provider's own position: white circle with a vehicle icon (same container as the courier pin elsewhere).
 const ProviderPin = React.memo(function ProviderPin({
   lat, lng, online, accent, mk,
@@ -598,15 +648,18 @@ const toNum = (v: any): number | null => {
   return v != null && v !== '' && Number.isFinite(n) ? n : null;
 };
 
-const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, online = true }: any) => {
+const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, online = true, trip = [] }: any) => {
   const { colors } = useTheme();
   const mapStyles = useMemo(() => makeMapStyles(), []);
   const focused = useIsFocused();
+  const netEpoch = useReconnectEpoch();   // +1 every time the internet comes back
 
   const mapRef = useRef<MapView>(null);
   const [road, setRoad] = useState<{ key: string; coords: Coord[] } | null>(null);
   // Bumped when the native map may have dropped its overlays; remounts the line + pins.
   const [overlayEpoch, setOverlayEpoch] = useState(0);
+
+  useEffect(() => { if (netEpoch > 0) setOverlayEpoch(e => e + 1); }, [netEpoch]);
 
   const roadLoadedKey = useRef('');
   const lastFitKey = useRef('');
@@ -621,6 +674,33 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
   const eLng = toNum(route?.end?.lng);
   const hasRoute = sLat != null && sLng != null && eLat != null && eLng != null;
   const routeKey = hasRoute ? roadCacheKey({ lat: sLat!, lng: sLng! }, { lat: eLat!, lng: eLng! }) : '';
+
+  // ---- trip: numbered pins only. The only line on the map is the provider's POSTED route (start -> end). ----
+  const tripPins: TripPin[] = trip;
+  const hasTrip = tripPins.length > 0;
+  const tripKey = tripPins.map(t => `${t.lat.toFixed(5)},${t.lng.toFixed(5)}`).join('>');
+
+  const lastTripFit = useRef('');
+  useEffect(() => {
+    if (!hasTrip) { lastTripFit.current = ''; return; }
+    const key = `${tripKey}|${routeKey}|${padBottom}`;
+    if (key === lastTripFit.current) return;
+    lastTripFit.current = key;
+    const t = setTimeout(() => {
+      const pts: Coord[] = tripPins.map(p => ({ latitude: p.lat, longitude: p.lng }));
+      if (provider) pts.push({ latitude: provider.lat, longitude: provider.lng });
+      if (hasRoute) {
+        pts.push({ latitude: sLat!, longitude: sLng! });
+        pts.push({ latitude: eLat!, longitude: eLng! });
+      }
+      if (pts.length === 1) {
+        mapRef.current?.animateToRegion({ ...pts[0], latitudeDelta: 0.012, longitudeDelta: 0.012 }, 400);
+        return;
+      }
+      mapRef.current?.fitToCoordinates(pts, { edgePadding: { top: 190, right: 64, bottom: padBottom || 260, left: 64 }, animated: true });
+    }, 220);
+    return () => clearTimeout(t);
+  }, [tripKey, routeKey, padBottom]);
 
   // Load the road line. A failed / slow request never blocks the line: a straight placeholder is
   // drawn straight away and the real road replaces it as soon as it arrives (retrying in the background).
@@ -642,16 +722,17 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
     };
     void load(0);
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
-  }, [routeKey]);
+    // netEpoch: the 3 automatic retries can all fail while offline; when the internet is back, try again.
+    // A road that is already loaded is kept (early return above), so a drop never erases or distorts the line.
+  }, [routeKey, netEpoch]);
 
   const lineCoords = useMemo<Coord[]>(() => {
     if (!hasRoute) return [];
+    // only the real road geometry of THIS route is drawn. No straight start->end placeholder: while the router is slow
+    // (or for an older route) that placeholder was the stray line cutting across the map.
     if (road && road.key === routeKey) return road.coords;
-    return [
-      { latitude: sLat!, longitude: sLng! },
-      { latitude: eLat!, longitude: eLng! },
-    ];
-  }, [hasRoute, road, routeKey, sLat, sLng, eLat, eLng]);
+    return [];
+  }, [hasRoute, road, routeKey]);
 
   // Android can drop the native line / pins when the map surface is recreated (app resumed from the
   // background or lock screen, screen refocused). Remount the overlays so they are drawn again.
@@ -669,7 +750,7 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
 
   // frame the whole selected route above the bottom sheet
   useEffect(() => {
-    if (!hasRoute) { lastFitKey.current = ''; return; }
+    if (!hasRoute || hasTrip) { lastFitKey.current = ''; return; }
     const key = `${routeKey}|${padBottom}`;
     if (key === lastFitKey.current) return;
     lastFitKey.current = key;
@@ -684,10 +765,10 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       );
     }, 180);
     return () => clearTimeout(t);
-  }, [routeKey, padBottom]);
+  }, [routeKey, padBottom, hasTrip]);
 
   useEffect(() => {
-    if (!provider || hasRoute || !firstFix.current) return;
+    if (!provider || hasRoute || hasTrip || !firstFix.current) return;
     firstFix.current = false;
 
     const t = setTimeout(() => {
@@ -726,9 +807,10 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       rotateEnabled={false}
       pitchEnabled={false}
     >
-      {hasRoute && (
+      {/* the posted route: always drawn, with or without accepted orders */}
+      {hasRoute && lineCoords.length > 1 && (
         <Polyline
-          key={`line-${overlayEpoch}`}
+          key={`line-${overlayEpoch}-${routeKey}-${lineCoords.length}`}
           coordinates={lineCoords}
           strokeColor={BRAND_ORANGE}
           strokeWidth={6}
@@ -759,6 +841,10 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
         />
       )}
 
+      {hasTrip && tripPins.map(pin => (
+        <TripPinMarker key={`${pin.key}-${overlayEpoch}`} pin={pin} mk={mapStyles} />
+      ))}
+
       {provider && (
         <ProviderPin
           key={`me-${overlayEpoch}`}
@@ -770,6 +856,143 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
         />
       )}
     </MapView>
+  );
+});
+
+/**
+ * Small, non-interactive map for the request details page: pickup pin, drop-off pin and the road line between them.
+ * Tapping "Open in Maps" hands the same trip to Google Maps for turn-by-turn directions.
+ */
+const RequestRouteMap = React.memo(function RequestRouteMap({
+  pickup, dropoff,
+}: { pickup: JobPlace; dropoff: JobPlace }) {
+  const { colors } = useTheme();
+  const mapRef = useRef<MapView>(null);
+  const netEpoch = useReconnectEpoch();
+  const [road, setRoad] = useState<{ key: string; coords: Coord[] } | null>(null);
+  const [epoch, setEpoch] = useState(0);
+
+  const pLat = toNum(pickup.lat);
+  const pLng = toNum(pickup.lng);
+  const dLat = toNum(dropoff.lat);
+  const dLng = toNum(dropoff.lng);
+  const has = pLat != null && pLng != null && dLat != null && dLng != null;
+  const key = has ? roadCacheKey({ lat: pLat!, lng: pLng! }, { lat: dLat!, lng: dLng! }) : '';
+
+  useEffect(() => {
+    if (!key) { setRoad(null); return; }
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    const run = async (attempt: number) => {
+      const coords = await fetchRoadCoordsStrict({ lat: pLat!, lng: pLng! }, { lat: dLat!, lng: dLng! });
+      if (cancelled) return;
+      if (coords) setRoad({ key, coords });
+      else if (attempt < 3) retry = setTimeout(() => { void run(attempt + 1); }, 3000 * (attempt + 1));
+    };
+    void run(0);
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
+  }, [key, netEpoch]);
+
+  // Android can drop native overlays when the app is resumed: remount them.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => { if (st === 'active') setEpoch(e => e + 1); });
+    return () => sub.remove();
+  }, []);
+
+  const fit = useCallback(() => {
+    if (!has) return;
+    mapRef.current?.fitToCoordinates(
+      [{ latitude: pLat!, longitude: pLng! }, { latitude: dLat!, longitude: dLng! }],
+      { edgePadding: { top: 60, right: 56, bottom: 60, left: 56 }, animated: false },
+    );
+  }, [has, pLat, pLng, dLat, dLng]);
+
+  useEffect(() => {
+    const t = setTimeout(fit, 350);
+    return () => clearTimeout(t);
+  }, [key, fit]);
+
+  if (!has) {
+    return (
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', padding: 12, borderRadius: 12, backgroundColor: colors.background }}>
+        <SolarIcon name="InfoCircle" variant="linear" size={18} color={colors.warning} />
+        <Text style={{ flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', color: colors.textSecondary }}>
+          The map is unavailable because this request has no saved coordinates.
+        </Text>
+      </View>
+    );
+  }
+
+  const line: Coord[] = road && road.key === key
+    ? road.coords
+    : [{ latitude: pLat!, longitude: pLng! }, { latitude: dLat!, longitude: dLng! }];
+
+  const openInMaps = () => {
+    const url = `https://www.google.com/maps/dir/?api=1&origin=${pLat},${pLng}&destination=${dLat},${dLng}&travelmode=driving`;
+    Linking.openURL(url).catch(() => Alert.alert('Could not open Maps', 'No maps app is available on this device.'));
+  };
+
+  const dot = (bg: string, border: string) => ({
+    width: 34, height: 34, borderRadius: 17, backgroundColor: bg,
+    borderWidth: 3, borderColor: border, alignItems: 'center' as const, justifyContent: 'center' as const,
+  });
+
+  return (
+    <View style={{ height: 240, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.background }}>
+      <MapView
+        ref={mapRef}
+        {...MAP_PROPS}
+        userInterfaceStyle="light"
+        style={StyleSheet.absoluteFill}
+        initialRegion={{
+          latitude: (pLat! + dLat!) / 2,
+          longitude: (pLng! + dLng!) / 2,
+          latitudeDelta: Math.max(0.01, Math.abs(pLat! - dLat!) * 1.8),
+          longitudeDelta: Math.max(0.01, Math.abs(pLng! - dLng!) * 1.8),
+        }}
+        onMapReady={fit}
+        scrollEnabled={false}
+        zoomEnabled={false}
+        rotateEnabled={false}
+        pitchEnabled={false}
+        toolbarEnabled={false}
+        showsCompass={false}
+        showsMyLocationButton={false}
+        showsUserLocation={false}
+      >
+        <Polyline
+          key={`rline-${epoch}-${line.length}`}
+          coordinates={line}
+          strokeColor={BRAND_ORANGE}
+          strokeWidth={5}
+          lineCap="round"
+          lineJoin="round"
+        />
+        <Marker key={`rp-${epoch}`} coordinate={{ latitude: pLat!, longitude: pLng! }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false} zIndex={5}>
+          <View style={dot(BRAND_ORANGE, '#FFFFFF')}>
+            <SolarIcon name="Package" variant="bold" size={16} color="#FFFFFF" />
+          </View>
+        </Marker>
+        <Marker key={`rd-${epoch}`} coordinate={{ latitude: dLat!, longitude: dLng! }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false} zIndex={5}>
+          <View style={dot('#FFFFFF', '#D1D5DB')}>
+            <SolarIcon name="Flag" variant="bold" size={16} color="#000000" />
+          </View>
+        </Marker>
+      </MapView>
+
+      <TouchableOpacity
+        onPress={openInMaps}
+        activeOpacity={0.85}
+        style={{
+          position: 'absolute', right: 10, bottom: 10, flexDirection: 'row', alignItems: 'center', gap: 6,
+          backgroundColor: colors.card, borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8,
+          borderWidth: 1, borderColor: colors.divider,
+        }}
+      >
+        <SolarIcon name="Routing" variant="bold" size={14} color={colors.accent} />
+        <Text style={{ fontSize: 12, fontFamily: 'Poppins_700Bold', color: colors.accent }}>Open in Maps</Text>
+      </TouchableOpacity>
+    </View>
   );
 });
 
@@ -1464,6 +1687,8 @@ export default function JobsScreen() {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
   const [isOnline, setIsOnline] = useState(false);
+  // Mirror of isOnline for async code (realtime, polling, notifications): when false the provider receives NO requests.
+  const isOnlineRef = useRef(false);
   const [loading, setLoading] = useState(true);
 
   const [providerId, setProviderId] = useState<number | null>(null);
@@ -1506,6 +1731,74 @@ export default function JobsScreen() {
   const [awaiting, setAwaiting] = useState<JobRequest[]>([]);
   const [lapsedIds, setLapsedIds] = useState<number[]>([]);
   const awaitingSeqRef = useRef(0);
+
+  // ---- Trip organizer: every accepted, unfinished order in ONE auto-sorted drive ----------------------
+  // Pickups and drop-offs are sequenced by the shortest path (a drop-off always comes after its own pickup),
+  // so the provider never backtracks. Drop-off pins only appear on the map once the parcel is picked up.
+  const [tripOrders, setTripOrders] = useState<TripOrder[]>([]);
+  const [tripOrigin, setTripOrigin] = useState<{ lat: number; lng: number } | null>(null);
+  const myLocRef = useRef<{ lat: number; lng: number } | null>(null);
+  useEffect(() => {
+    myLocRef.current = myLoc ? { lat: myLoc.lat, lng: myLoc.lng } : null;
+    if (myLoc && tripOrigin == null) setTripOrigin({ lat: myLoc.lat, lng: myLoc.lng });
+  }, [myLoc, tripOrigin]);
+
+  const tripRouteId = activeRoute?.route_id ?? null;
+  const loadTrip = useCallback(async () => {
+    const pid = providerIdRef.current;
+    if (pid == null) return;
+    try {
+      const list: any[] = (await getProviderDeliveries(pid)) || [];
+      const next = ordersFromDeliveries(list, activeRouteRef.current?.route_id ?? null);
+      const sig = (a: TripOrder[]) => a.map(o => `${o.deliveryId}:${o.stage}`).join('|');
+      setTripOrders(prev => (sig(prev) === sig(next) ? prev : next));
+    } catch { /* keep the last known trip */ }
+  }, []);
+
+  useEffect(() => {
+    if (providerId == null || !screenFocused) return;
+    void loadTrip();
+    const poll = setInterval(() => { void loadTrip(); }, 12000);
+    const ch = supabase
+      .channel(uniqueTopic(`jobs-trip-${providerId}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries', filter: `provider_id=eq.${providerId}` }, () => { void loadTrip(); })
+      .subscribe();
+    return () => { clearInterval(poll); supabase.removeChannel(ch); };
+  }, [providerId, tripRouteId, screenFocused, loadTrip]);
+
+  // re-sort from where the provider is now whenever an order is added, picked up or finished
+  const tripSigNow = tripOrders.map(o => `${o.deliveryId}:${o.stage}`).join('|');
+  const lastTripSig = useRef('');
+  useEffect(() => {
+    if (lastTripSig.current !== tripSigNow && myLocRef.current) setTripOrigin(myLocRef.current);
+    lastTripSig.current = tripSigNow;
+  }, [tripSigNow]);
+
+  const tripPlan = useMemo(() => planTrip(tripOrders, tripOrigin), [tripOrders, tripOrigin]);
+  const tripPins = useMemo<TripPin[]>(
+    () => tripPlan
+      .map((s, i) => ({ s, order: i + 1 }))
+      .filter(({ s }) => !s.locked)
+      .map(({ s, order }) => ({
+        key: s.key, lat: s.point.lat, lng: s.point.lng, kind: s.kind, order, title: s.point.main,
+      })),
+    [tripPlan],
+  );
+  const driveNow = () => {
+    const el: any = (activeRoute ?? endedRoute)?.end_location;
+    const lat = Number(el?.latitude);
+    const lng = Number(el?.longitude);
+    const ep = describePlace(el);
+    const sl: any = (activeRoute ?? endedRoute)?.start_location;
+    const sLat2 = Number(sl?.latitude);
+    const sLng2 = Number(sl?.longitude);
+    const sp = describePlace(sl);
+    navigation.navigate('ProviderNavigation', {
+      routeId: activeRoute?.route_id ?? null,
+      routeEnd: el && Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng, title: ep.main, sub: ep.sub } : null,
+      routeStart: sl && Number.isFinite(sLat2) && Number.isFinite(sLng2) ? { lat: sLat2, lng: sLng2, title: sp.main, sub: sp.sub } : null,
+    });
+  };
 
   const [notifModalOpen, setNotifModalOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notif[]>([]);
@@ -1570,6 +1863,16 @@ export default function JobsScreen() {
     tryNow();
   }, []);
 
+  // Internet came back: rebuild the realtime channel and reload routes + matches
+  const netEpoch = useReconnectEpoch();
+  const seenNetEpoch = useRef(0);
+  useEffect(() => {
+    if (netEpoch === seenNetEpoch.current) return;
+    seenNetEpoch.current = netEpoch;
+    setRtEpoch(e => e + 1);
+    reloadWhenIdle();
+  }, [netEpoch, reloadWhenIdle]);
+
   // Route selected from somewhere else in the app (e.g. Manage Routes): follow it immediately.
   useEffect(() => {
     return subscribeActiveRoute((newRouteId) => {
@@ -1581,6 +1884,7 @@ export default function JobsScreen() {
   }, [reloadWhenIdle]);
 
   const fireLocalMatchNotification = async (body: string) => {
+    if (!isOnlineRef.current) return;   // offline providers are never alerted about new requests
     try {
       await Notifications.scheduleNotificationAsync({
         content: {
@@ -1644,10 +1948,13 @@ export default function JobsScreen() {
       if (error) throw error;
       setProviderId(userData.user_id);
       providerIdRef.current = userData.user_id;
-      setIsOnline(!!(userData as any).is_online);
+      isOnlineRef.current = !!(userData as any).is_online;
+      setIsOnline(isOnlineRef.current);
       return userData.user_id;
     } catch { return null; }
   };
+
+  const [endedRoute, setEndedRoute] = useState<Route | null>(null);
 
   const hasOffers = awaiting.length > 0;
 
@@ -1703,6 +2010,14 @@ export default function JobsScreen() {
       const savedId = await getActiveRouteId();
       const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
+      // When the route is finished / expired there is no active route any more, but the map should still draw the
+      // last route (display only; matching and going online keep using the real active route).
+      const keepable = ((data || []) as Route[]).filter(r => r.is_deleted !== true);
+      setEndedRoute(
+        validRoutes.length > 0 ? null
+          : (savedId ? keepable.find(r => r.route_id === savedId) : null) ?? keepable[0] ?? null,
+      );
+
       if (restored) {
         setActiveRoute(restored);
         activeRouteRef.current = restored;
@@ -1731,13 +2046,14 @@ export default function JobsScreen() {
   const loadAwaiting = useCallback(async (pid: number | null, selectedRoute?: Route | null) => {
     const seq = ++awaitingSeqRef.current;
     const isLatest = () => seq === awaitingSeqRef.current;
-    if (!pid || !selectedRoute) { setAwaiting([]); setLapsedIds([]); return; }
+    if (!pid || !selectedRoute || !isOnlineRef.current) { setAwaiting([]); setLapsedIds([]); return; }
     try {
       const sel = `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`;
       const [directRes, matchRes] = await Promise.all([
         supabase.from('delivery_requests').select(sel)
           .eq('preferred_provider_id', pid)
-          .eq('delivery_status', 'Pending'),
+          .eq('delivery_status', 'Pending')
+          .in('payment_status', ['held', 'paid', 'released']),
         supabase.from('route_request_matches')
           .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
@@ -1754,6 +2070,8 @@ export default function JobsScreen() {
         const req = m.request;
         const route = Array.isArray(m.route) ? m.route[0] : m.route;
         if (!req || req.delivery_status !== 'Pending') continue;
+        // sender has not paid yet (still choosing receiver / setting up payment): not a request for the provider
+        if (!['held', 'paid', 'released'].includes(String(req.payment_status || '').toLowerCase())) continue;
         if (route && (route.is_deleted || route.is_active === false)) continue;
         if (req.preferred_provider_id != null && Number(req.preferred_provider_id) !== Number(pid)) continue;
         const isDirect = req.preferred_provider_id != null && Number(req.preferred_provider_id) === Number(pid);
@@ -1836,6 +2154,17 @@ export default function JobsScreen() {
   ) => {
     const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
+
+    // Offline: do not evaluate, fetch or show ANY request (route matches and direct requests alike).
+    if (!isOnlineRef.current) {
+      refreshSeqRef.current += 1;
+      awaitingSeqRef.current += 1;
+      setRequests([]);
+      setAwaiting([]);
+      setLapsedIds([]);
+      setCheckingMatches(false);
+      return;
+    }
 
     const selected = overrideActiveRoute !== undefined ? overrideActiveRoute : activeRouteRef.current;
     const seq = ++refreshSeqRef.current;
@@ -2023,7 +2352,7 @@ export default function JobsScreen() {
     };
 
     const channel = supabase
-      .channel(`jobs-unified-${providerId}-${rtEpoch}`)
+      .channel(uniqueTopic(`jobs-unified-${providerId}-${rtEpoch}`))
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'route_request_matches', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
       .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'route_request_matches' }, scheduleRefresh)
@@ -2292,17 +2621,36 @@ export default function JobsScreen() {
         }
       }
 
-      await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
+      const { error: onErr } = await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
+      if (onErr) { Alert.alert('Could not go online', onErr.message); return; }
+      isOnlineRef.current = true;
       setIsOnline(true);
       await refreshMatches(pid, currentRoute, true);
     } else {
-      Alert.alert('Go Offline', 'Going offline will pause new corridor matching.', [
+      Alert.alert('Go Offline', "You won't receive any new requests while you are offline. Requests currently on your list will be hidden.", [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
-            await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
+            // stop everything on this device first, so nothing can slip in while the DB write is in flight
+            isOnlineRef.current = false;
+            refreshSeqRef.current += 1;
+            awaitingSeqRef.current += 1;
+            if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
             setIsOnline(false);
-            setRequests(prev => prev.filter(r => r.isDirectRequest));
+            setRequests([]);
+            setAwaiting([]);
+            setLapsedIds([]);
+            setCheckingMatches(false);
+            setDetailRequestId(null);
+
+            const { error: offErr } = await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
+            if (offErr) {
+              // could not persist: go back to the real state instead of pretending to be offline
+              isOnlineRef.current = true;
+              setIsOnline(true);
+              Alert.alert('Could not go offline', offErr.message);
+              void refreshMatches(pid, activeRouteRef.current, true);
+            }
           },
         },
       ]);
@@ -2485,7 +2833,7 @@ export default function JobsScreen() {
           if (Number(existing[0].provider_id) === Number(providerId)) {
             setDetailRequestId(null);
             void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
-            goToTasks();
+            void loadTrip();
             return;
           }
           Alert.alert('Request unavailable', 'This request was already accepted by another provider.');
@@ -2587,7 +2935,7 @@ export default function JobsScreen() {
 
       setDetailRequestId(null);
       void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
-      goToTasks();
+      void loadTrip();   // stay on the Jobs map; the new parcel's pins and the trip line update in place
     } catch (error: any) {
       Alert.alert('Error', error?.message || 'Failed to accept delivery.');
     } finally { setAccepting(false); }
@@ -2744,6 +3092,19 @@ export default function JobsScreen() {
               )}
             </View>
             {renderRingRoute(o, true)}
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={styles.cardHeaderIcon}>
+                <SolarIcon name="Map" variant="duotone" size={15} color={colors.accent} />
+              </View>
+              <Text style={styles.cardTitle}>Pickup &amp; Drop-off Map</Text>
+            </View>
+            <RequestRouteMap pickup={o.pickup} dropoff={o.dropoff} />
+            {tripKm != null && (
+              <Text style={styles.privacyNote}>About {tripKm.toFixed(1)} km from pickup to drop-off.</Text>
+            )}
           </View>
 
           <View style={styles.earnCard}>
@@ -2980,6 +3341,48 @@ export default function JobsScreen() {
     );
   };
 
+  const renderTripCard = () => {
+    if (tripPlan.length === 0) return null;
+    const next = tripPlan[0];
+    const shown = tripPlan.slice(0, 4);
+    return (
+      <View style={styles.tripCard}>
+        <View style={styles.tripHead}>
+          <View style={styles.tripHeadIcon}>
+            <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.tripTitle} numberOfLines={1}>Today’s trip · {tripPlan.length} stop{tripPlan.length === 1 ? '' : 's'}</Text>
+            <Text style={styles.tripSub} numberOfLines={1}>
+              Next: {next.kind === 'pickup' ? 'pick up at' : next.isReturn ? 'return to' : 'drop off at'} {next.point.main}
+            </Text>
+          </View>
+          <TouchableOpacity style={styles.driveBtn} onPress={driveNow} activeOpacity={0.9}>
+            <SolarIcon name="Routing" variant="bold" size={14} color="#FFFFFF" />
+            <Text style={styles.driveBtnText}>Drive now</Text>
+          </TouchableOpacity>
+        </View>
+
+        {shown.map((s, i) => (
+          <View key={s.key} style={styles.tripStopRow}>
+            <View style={[styles.tripStopDot, s.kind === 'pickup' ? styles.tripStopDotPickup : styles.tripStopDotDrop]}>
+              <Text style={styles.tripStopDotText}>{i + 1}</Text>
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.tripStopText} numberOfLines={1}>
+                {s.kind === 'pickup' ? 'Pickup' : s.isReturn ? 'Return' : 'Drop-off'} · {s.point.main}
+              </Text>
+            </View>
+            <Text style={styles.tripStopCode}>#{s.code}</Text>
+          </View>
+        ))}
+        {tripPlan.length > shown.length && (
+          <Text style={styles.tripMore}>+{tripPlan.length - shown.length} more stop{tripPlan.length - shown.length === 1 ? '' : 's'}</Text>
+        )}
+      </View>
+    );
+  };
+
   const renderSheetHeader = () => {
     const start = describePlace(activeRoute?.start_location);
     const end = describePlace(activeRoute?.end_location);
@@ -3007,14 +3410,9 @@ export default function JobsScreen() {
           </TouchableOpacity>
         </View>
 
-        <View style={styles.sheetTitleRow}>
-          <Text style={styles.sheetTitle}>Awaiting Acceptance</Text>
-          <View style={styles.countBadge}><Text style={styles.countBadgeText}>{awaiting.length}</Text></View>
-          <View style={{ flex: 1 }} />
-          {checkingMatches && <ActivityIndicator size="small" color={colors.accent} />}
-        </View>
+        {renderTripCard()}
 
-        {activeRoute ? (
+         {activeRoute ? (
           <TouchableOpacity style={styles.routeRow} onPress={() => setRoutePickerVisible(true)} activeOpacity={0.85}>
             <View style={styles.routeRowIcon}>
               <SolarIcon name="Routing" variant="bold" size={16} color="#FFFFFF" />
@@ -3057,19 +3455,27 @@ export default function JobsScreen() {
             </View>
           </TouchableOpacity>
         )}
+
+        <View style={styles.sheetTitleRow}>
+          <Text style={styles.sheetTitle}>Awaiting Acceptance</Text>
+          <View style={styles.countBadge}><Text style={styles.countBadgeText}>{awaiting.length}</Text></View>
+          <View style={{ flex: 1 }} />
+          {checkingMatches && <ActivityIndicator size="small" color={colors.accent} />}
+        </View>
       </View>
     );
   };
 
   const renderMain = () => {
+    const mapSrcRoute = activeRoute ?? endedRoute;
     const fallback = {
-      lat: activeRoute?.start_location?.latitude ?? DEFAULT_CENTER.latitude,
-      lng: activeRoute?.start_location?.longitude ?? DEFAULT_CENTER.longitude,
+      lat: mapSrcRoute?.start_location?.latitude ?? DEFAULT_CENTER.latitude,
+      lng: mapSrcRoute?.start_location?.longitude ?? DEFAULT_CENTER.longitude,
       heading: null as number | null,
     };
     const loc = myLoc ?? fallback;
-    const sLoc = activeRoute?.start_location;
-    const eLoc = activeRoute?.end_location;
+    const sLoc = mapSrcRoute?.start_location;
+    const eLoc = mapSrcRoute?.end_location;
     const sAddr = describePlace(sLoc);
     const eAddr = describePlace(eLoc);
 
@@ -3091,6 +3497,7 @@ export default function JobsScreen() {
           online={isOnline}
           recenterTick={recenterTick}
           padBottom={sheetHeight + 24}
+          trip={tripPins}
         />
 
         <Animated.View
@@ -3155,9 +3562,11 @@ export default function JobsScreen() {
           {awaiting.length === 0 ? (
             <View style={styles.emptyWrap}>
               <Image source={EMPTY_COMPASS_ICON} style={{ width: 64, height: 64 }} resizeMode="contain" />
-              <Text style={styles.emptyTitle}>Nothing awaiting acceptance</Text>
+              <Text style={styles.emptyTitle}>{isOnline ? 'Nothing awaiting acceptance' : 'You are offline'}</Text>
               <Text style={styles.emptySub}>
-                Sender requests that match your selected route appear here until you or another provider accepts them.
+                {isOnline
+                  ? 'Sender requests that match your selected route appear here until you or another provider accepts them.'
+                  : 'You will not receive any requests while you are offline. Tap “Go online” to start receiving requests again.'}
               </Text>
             </View>
           ) : (
@@ -3938,6 +4347,27 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     grabberWrap: { alignItems: 'center', justifyContent: 'center', paddingVertical: 12 },
     grabber: { width: 40, height: 4, borderRadius: 2, backgroundColor: c.border },
     sheetHeader: { paddingBottom: 10 },
+    tripCard: {
+      backgroundColor: c.card, borderRadius: 18, padding: 12, marginBottom: 12,
+      borderWidth: 1, borderColor: hair,
+    },
+    tripHead: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8 },
+    tripHeadIcon: { width: 32, height: 32, borderRadius: 16, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },
+    tripTitle: { color: c.textPrimary, fontSize: 14, fontFamily: 'Poppins_700Bold' },
+    tripSub: { color: c.textSecondary, fontSize: 12, fontFamily: 'Poppins_500Medium', marginTop: 1 },
+    driveBtn: {
+      flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accent,
+      borderRadius: 20, paddingHorizontal: 14, height: 38,
+    },
+    driveBtnText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_700Bold' },
+    tripStopRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
+    tripStopDot: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+    tripStopDotPickup: { backgroundColor: c.accent },
+    tripStopDotDrop: { backgroundColor: '#111827' },
+    tripStopDotText: { color: '#FFFFFF', fontSize: 11, fontFamily: 'Poppins_800ExtraBold' },
+    tripStopText: { color: c.textPrimary, fontSize: 13, fontFamily: 'Poppins_600SemiBold' },
+    tripStopCode: { color: c.textMuted, fontSize: 11, fontFamily: 'Poppins_700Bold' },
+    tripMore: { color: c.textSecondary, fontSize: 12, fontFamily: 'Poppins_600SemiBold', marginTop: 4, marginLeft: 32 },
     sheetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12, paddingHorizontal: 4 },
     sheetTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
     countBadge: { minWidth: 24, height: 24, borderRadius: 12, paddingHorizontal: 7, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' },

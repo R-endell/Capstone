@@ -11,7 +11,7 @@ import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries,
@@ -29,6 +29,7 @@ import { useProviderLocationBroadcast } from '../../../services/useProviderLocat
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
+import { requestDepositRefund } from '../../../services/depositRefundService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
@@ -289,6 +290,20 @@ const buildTaskInfo = (d: any) => {
     senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
+    returnDeposit: Number(request?.return_deposit) || 0,
+    totalPaid: Number(request?.estimated_cost) || 0,
+    isReturned: String(request?.delivery_status || '') === 'Returned',
+    baseFare: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      return Number(request?.base_fare) || Math.max(0, est - dep);
+    })(),
+    platformFee: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      const base = Number(request?.base_fare) || Math.max(0, est - dep);
+      return Math.round(base * 0.15 * 100) / 100;
+    })(),
     earnings: (() => {
       const status = String(request?.delivery_status || '');
       const base = Number(request?.base_fare) || 0;
@@ -402,6 +417,7 @@ type TabType = 'active' | 'scheduled' | 'completed' | 'cancelled' | 'all';
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const taskRoute = useRoute<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
@@ -544,17 +560,28 @@ export default function TaskScreen() {
     Animated.timing(detailAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [selectedId, detailAnim]);
 
+  // Set when the provider arrived here from the navigation screen: going back returns there instead of leaving the app.
+  const returnToNavRef = useRef<any>(null);
+  const backToNavigation = useCallback(() => {
+    const p = returnToNavRef.current;
+    returnToNavRef.current = null;
+    setSelectedId(null);
+    navigation.navigate('ProviderNavigation', p || undefined);
+  }, [navigation]);
+  useFocusEffect(useCallback(() => () => { returnToNavRef.current = null; }, []));
+
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (podCameraOpen) { setPodCameraOpen(false); return true; }
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
       if (routePickerVisible) { setRoutePickerVisible(false); return true; }
+      if (returnToNavRef.current) { backToNavigation(); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId]);
+  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId, backToNavigation]);
 
   useEffect(() => {
     if (!verifyModalVisible || pickupPending) return;
@@ -1268,67 +1295,15 @@ export default function TaskScreen() {
       );
       if (settleErr) throw settleErr;
 
+      // Option A (Return to Sender): give the sender's return deposit back now that the delivery succeeded.
+      // Runs in the background so the provider is never kept waiting; ActivityScreen retries if it fails.
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
       if (returnDep > 0 && requestId) {
-        try {
-          const { data: refundResult, error: refundErr } = await withTimeout(
-            supabase.functions.invoke(
-              'xendit-refund',
-              { body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' } },
-            ),
-            NETWORK_TIMEOUT_MS,
-            'Deposit refund timed out'
-          );
-
-          const refundOk = !refundErr && refundResult?.success;
-
-          if (!refundOk) {
-            console.warn('[completeDelivery] refund failed:', refundErr?.message || refundResult);
-            await supabase
-              .from('delivery_requests')
-              .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
-              .eq('request_id', requestId);
-          } else {
-            const rawProvider = String(
-              deliveryOTPTarget?.escrow?.payment_method ||
-              deliveryOTPTarget?.delivery_requests?.payment_provider ||
-              ''
-            ).toLowerCase();
-            const txProvider = ['gcash', 'maya'].includes(rawProvider) ? rawProvider : 'gcash';
-
-            try {
-              await supabase.from('escrow_transactions').insert({
-                request_id: requestId,
-                event: 'deposit_refunded_to_sender',
-                amount: returnDep,
-                provider: txProvider,
-                notes: `Deposit refunded to sender on completed delivery | Amount=₱${returnDep}${
-                  rawProvider && rawProvider !== txProvider ? ` | WARN: unknown provider "${rawProvider}", assumed ${txProvider}` : ''
-                }`,
-              });
-
-              await supabase
-                .from('delivery_requests')
-                .update({
-                  refund_status: 'refunded',
-                  escrow_refunded_at: new Date().toISOString(),
-                })
-                .eq('request_id', requestId);
-            } catch (insertErr: any) {
-              console.error('[completeDelivery] refund row insert failed:', insertErr);
-              Alert.alert(
-                'Refund Sent — Record Missing',
-                `The ₱${returnDep.toFixed(2)} deposit was refunded to the sender, but the audit row could not be saved. Please note this for support.`
-              );
-            }
+        void requestDepositRefund(requestId, returnDep).then((r) => {
+          if (!r.ok && r.status !== 'skipped') {
+            console.warn('[completeDelivery] deposit refund not completed:', r.status, r.message);
           }
-        } catch (refundCallErr: any) {
-          console.warn('[completeDelivery] refund call threw:', refundCallErr);
-          await supabase
-            .from('delivery_requests')
-            .update({ refund_status: 'failed' })
-            .eq('request_id', requestId);
-        }
+        });
       }
 
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
@@ -1639,6 +1614,27 @@ export default function TaskScreen() {
     }
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
 
+  // Deep link from the navigation screen: open this delivery's detail view (where the pickup / hand-over action lives)
+  // `openAction`: 'verify' = pickup / return QR-PIN scanner modal, 'complete' = drop-off proof-photo + OTP modal.
+  const openDeliveryParam = taskRoute.params?.openDeliveryId;
+  const openActionParam = taskRoute.params?.openAction as 'verify' | 'complete' | undefined;
+  useEffect(() => {
+    if (openDeliveryParam == null) return;
+    const id = Number(openDeliveryParam);
+    const d = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries].find(x => x.delivery_id === id);
+    if (d) {
+      if (taskRoute.params?.returnToNav) returnToNavRef.current = taskRoute.params.returnToNav;
+      navigation.setParams({ openDeliveryId: undefined, openAction: undefined, returnToNav: undefined });
+      setSelectedId(id);
+      if (openActionParam === 'verify') void openVerifyModal(d);
+      else if (openActionParam === 'complete') void openDeliveryOTPModal(d);
+      return;
+    }
+    // the list may still be loading: wait for it, but do not keep the request pending forever
+    const t = setTimeout(() => navigation.setParams({ openDeliveryId: undefined, openAction: undefined }), 10000);
+    return () => clearTimeout(t);
+  }, [openDeliveryParam, openActionParam, activeDeliveries, completedDeliveries, cancelledDeliveries]);
+
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
@@ -1754,18 +1750,6 @@ export default function TaskScreen() {
     () => activeDeliveries.filter(d => isScheduledDelivery(d) && matchesSelectedRoute(d)),
     [activeDeliveries, matchesSelectedRoute]
   );
-
-  const openRoute = (d: any) => {
-    const st = stageOf(d);
-    if (st !== 'pickup' && st !== 'transit') return;
-    const info = buildTaskInfo(d);
-    const t = st === 'pickup' ? info.pickup : info.dropoff;
-    if (t.lat == null || t.lng == null) {
-      Alert.alert('Route unavailable', `This order has no map coordinates for the ${st === 'pickup' ? 'pickup' : 'drop-off'} location.`);
-      return;
-    }
-    navigation.navigate('ProviderNavigation', { deliveryId: d.delivery_id });
-  };
 
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
 
@@ -2029,21 +2013,6 @@ export default function TaskScreen() {
           </Text>
         </View>
 
-        {active && (
-          <View style={styles.oActions}>
-            <TouchableOpacity
-              style={[styles.oRouteBtn, { flex: 1 }]}
-              onPress={(e) => {
-                e.stopPropagation();
-                openRoute(d);
-              }}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="navigate" size={18} color="#FFFFFF" />
-              <Text style={styles.oRouteText}>Start Route</Text>
-            </TouchableOpacity>
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -2416,7 +2385,7 @@ export default function TaskScreen() {
         <View style={[styles.dHeaderBar, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity
             style={styles.dRoundBtnInline}
-            onPress={() => setSelectedId(null)}
+            onPress={() => { if (returnToNavRef.current) backToNavigation(); else setSelectedId(null); }}
             activeOpacity={0.85}
           >
             <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
@@ -2792,6 +2761,44 @@ export default function TaskScreen() {
               )}
             </View>
 
+            {!isCancelled && info.baseFare > 0 && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Wallet" variant="duotone" size={18} />
+                  <Text style={styles.dSecTitle}>Payment Breakdown</Text>
+                </View>
+                <View style={styles.payRowsCard}>
+                  {([
+                    ['Delivery fare', money(info.baseFare), undefined, false],
+                    ['Platform fee (15%)', `-${money(info.platformFee)}`, colors.error, false],
+                    ...(info.returnDeposit > 0
+                      ? [[
+                          info.isReturned ? 'Return deposit (kept for return trip)' : 'Return deposit (refunded to sender)',
+                          info.isReturned ? `+${money(info.returnDeposit)}` : money(info.returnDeposit),
+                          info.isReturned ? colors.success : colors.textMuted,
+                          false,
+                        ]]
+                      : []),
+                    [info.isReturned || !released ? 'Your earnings' : 'Net earnings', money(info.earnings), colors.success, true],
+                    ['Sender paid in total', money(info.totalPaid), colors.textSecondary, false],
+                  ] as [string, string, string | undefined, boolean][]).map(([label, value, color, bold], i) => (
+                    <View key={label} style={[styles.payRow, i > 0 && styles.payRowBorder]}>
+                      <Text style={styles.payRowLabel}>{label}</Text>
+                      <Text
+                        style={[
+                          styles.payRowValue,
+                          !!color && { color },
+                          bold && { fontFamily: 'Poppins_700Bold' },
+                        ]}
+                      >
+                        {value}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+
             {(!!(d.escrow?.bc_escrow_tx_hash) || !!(d.qr_verifications?.bc_pickup_tx_hash) || !!(d.qr_verifications?.bc_dropoff_tx_hash)) && (
               <>
                 <View style={styles.dSecHead}>
@@ -2855,12 +2862,8 @@ export default function TaskScreen() {
 
         {active && (
           <View style={styles.dBar}>
-            <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="navigate" size={18} color={colors.accent} />
-              <Text style={styles.mSoftText}>Navigate</Text>
-            </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && { opacity: 0.55 }]}
+              style={[styles.mPrimaryBtn, { flex: 1 }, awaitingApproval && { opacity: 0.55 }]}
               disabled={awaitingApproval}
               onPress={() =>
                 stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
@@ -3122,20 +3125,6 @@ export default function TaskScreen() {
                 <Text style={styles.rtMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
             </View>
-            {(() => {
-              const st = stageOf(selectedTask);
-              if (st !== 'pickup' && st !== 'transit') return null;
-              return (
-                <TouchableOpacity
-                  style={[styles.mPrimaryBtn, { marginTop: 14 }]}
-                  onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="navigate" size={18} color="#FFFFFF" />
-                  <Text style={styles.mPrimaryText}>Open Route</Text>
-                </TouchableOpacity>
-              );
-            })()}
           </View>
         </View>
       </Modal>
