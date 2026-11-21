@@ -188,6 +188,9 @@ export default function ReportFlowScreen() {
               ? [
                   `The ${role === 'sender' ? 'provider' : 'sender'} is notified and asked for their side.`,
                   'Our team reviews both sides and the photos.',
+                  ...(role === 'sender' && category?.type === 'dispute'
+                    ? ['Your payment stays held in escrow while we review. If the courier is at fault, you are refunded in full.']
+                    : []),
                   'You get a notification here with the decision.',
                 ]
               : [
@@ -431,7 +434,8 @@ export default function ReportFlowScreen() {
                 <Ionicons name="information-circle-outline" size={18} color="#3B82F6" />
                 <Text style={styles.bannerText}>
                   {category.type === 'dispute'
-                    ? `The ${role === 'sender' ? 'provider' : 'sender'} will be asked to respond, then our team reviews both sides.`
+                    ? `The ${role === 'sender' ? 'provider' : 'sender'} will be asked to respond, then our team reviews both sides.` +
+                      (role === 'sender' ? ' Your payment stays held in escrow meanwhile, and is refunded in full if the courier is at fault.' : '')
                     : 'Our support team will reply to you in the ticket.'}
                 </Text>
               </View>

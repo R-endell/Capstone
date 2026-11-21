@@ -2057,11 +2057,13 @@ export default function JobsScreen() {
 
   const hasOffers = awaiting.length > 0;
 
+  // The bottom tab bar stays visible even when the provider goes offline
+  // (the Account tab shows the online / offline status).
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline && !hasOffers);
+      setTabBarHidden(false);
       return () => setTabBarHidden(false);
-    }, [isOnline, loading, hasOffers]),
+    }, []),
   );
 
   const goToTasks = () => {
