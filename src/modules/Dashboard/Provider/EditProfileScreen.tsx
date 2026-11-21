@@ -1,8 +1,8 @@
 // src/modules/Dashboard/Provider/EditProfileScreen.tsx
 //
 // Provider edit profile — flat transparent header, avatar in its own card.
-// Home address is entered via text inputs while live GPS coordinates are
-// captured silently in the background when saving.
+// Home address loads from public.locations (via location_id) with user_metadata fallback,
+// and captures live GPS coordinates silently in the background when saving.
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
@@ -18,6 +18,22 @@ import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
+
+const cleanField = (val: any, placeholders: string[] = ['Unknown']): string => {
+  const s = typeof val === 'string' ? val.trim() : '';
+  if (!s) return '';
+  if (placeholders.some((p) => p.toLowerCase() === s.toLowerCase())) return '';
+  return s;
+};
+
+const splitStreetAndUnit = (rawStreet: string): { street: string; unit: string } => {
+  const trimmed = rawStreet.trim();
+  const match = trimmed.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+  if (match && match[1].trim()) {
+    return { street: match[1].trim(), unit: match[2].trim() };
+  }
+  return { street: trimmed, unit: '' };
+};
 
 const getDeviceCoords = async (): Promise<{ lat: number; lng: number } | null> => {
   try {
@@ -79,6 +95,7 @@ export default function EditProfileScreen() {
 
   const [unitInfo, setUnitInfo] = useState('');
   const [locationId, setLocationId] = useState<number | null>(null);
+  const [savedCoords, setSavedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [structuredAddress, setStructuredAddress] = useState({
     street: '',
     barangay: '',
@@ -136,42 +153,91 @@ export default function EditProfileScreen() {
 
   useEffect(() => {
     const fetchUserData = async () => {
-      const { data: { user }, error } = await supabase.auth.getUser();
-      if (error) {
-        Alert.alert('Error', 'Could not load user data.');
-      } else if (user) {
-        setFirstName(user.user_metadata?.first_name || '');
-        setLastName(user.user_metadata?.last_name || '');
-        setPhone(user.user_metadata?.phone || '');
-        setEmail(user.email || '');
-        setImageUri(user.user_metadata?.avatar_url || null);
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) {
+          if (error) Alert.alert('Error', 'Could not load user data.');
+          setLoading(false);
+          return;
+        }
+
+        const meta = user.user_metadata || {};
 
         const { data: userData } = await supabase
           .from('users')
-          .select('location_id, locations (street_address, barangay, city, province, zip_code, latitude, longitude)')
+          .select(
+            'first_name, last_name, phone_number, profile_photo, location_id, ' +
+            'locations:locations!users_location_id_fkey (street_address, barangay, city, province, zip_code, latitude, longitude)',
+          )
           .eq('auth_id', user.id)
           .maybeSingle();
 
-        if (userData?.locations) {
-          const loc: any = userData.locations;
-          const rawBarangay = (loc.barangay || '').trim();
+        const row: any = userData || null;
+
+        setFirstName(row?.first_name || meta.first_name || '');
+        setLastName(row?.last_name || meta.last_name || '');
+        setPhone(row?.phone_number || meta.phone || meta.phone_number || '');
+        setEmail(user.email || '');
+        setImageUri(row?.profile_photo || meta.avatar_url || null);
+
+        let loc: any = Array.isArray(row?.locations) ? row.locations[0] : row?.locations;
+
+        // Direct fallback query if join didn't hydrate but location_id exists
+        if (!loc && row?.location_id) {
+          const { data: locRow } = await supabase
+            .from('locations')
+            .select('street_address, barangay, city, province, zip_code, latitude, longitude')
+            .eq('location_id', row.location_id)
+            .maybeSingle();
+          if (locRow) loc = locRow;
+        }
+
+        if (row?.location_id) {
+          setLocationId(Number(row.location_id));
+        }
+
+        if (loc) {
+          const rawStreet = cleanField(loc.street_address);
+          const { street, unit: parsedUnit } = splitStreetAndUnit(rawStreet);
+
+          const rawBarangay = cleanField(loc.barangay);
           const looksLikeUnit =
             !!rawBarangay &&
             (/^(unit|apt|floor|flr|bldg|building|rm|room)\b/i.test(rawBarangay) ||
               /^\d+[a-z]?$/i.test(rawBarangay));
 
           setStructuredAddress({
-            street: loc.street_address || '',
-            barangay: looksLikeUnit ? '' : rawBarangay && rawBarangay !== 'Unknown' ? rawBarangay : '',
-            city: loc.city && loc.city !== 'Unknown' ? loc.city : '',
-            province: loc.province && loc.province !== 'Unknown' ? loc.province : '',
-            zip_code: loc.zip_code && loc.zip_code !== '0000' ? loc.zip_code : '',
+            street,
+            barangay: looksLikeUnit ? '' : rawBarangay,
+            city: cleanField(loc.city),
+            province: cleanField(loc.province),
+            zip_code: cleanField(loc.zip_code, ['0000', 'Unknown']),
           });
-          setUnitInfo(looksLikeUnit ? rawBarangay : '');
-          setLocationId(userData.location_id || null);
+          setUnitInfo(parsedUnit || (looksLikeUnit ? rawBarangay : ''));
+
+          const lat = Number(loc.latitude);
+          const lng = Number(loc.longitude);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+            setSavedCoords({ lat, lng });
+          }
+        } else {
+          // Fallback to registration metadata if locations row wasn't linked yet
+          const metaStreet = cleanField(meta.street_address || meta.street || meta.home_address || meta.address);
+          const { street, unit: parsedUnit } = splitStreetAndUnit(metaStreet);
+          setStructuredAddress({
+            street,
+            barangay: cleanField(meta.barangay),
+            city: cleanField(meta.city),
+            province: cleanField(meta.province),
+            zip_code: cleanField(meta.zip_code || meta.zipCode, ['0000', 'Unknown']),
+          });
+          setUnitInfo(cleanField(meta.unit_info || meta.unit) || parsedUnit);
         }
+      } catch (e) {
+        console.warn('[EditProfile] fetchUserData error:', e);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     fetchUserData();
   }, []);
@@ -212,7 +278,7 @@ export default function EditProfileScreen() {
 
     setSaving(true);
 
-    const coords = await getDeviceCoords();
+    const coords = (await getDeviceCoords()) || savedCoords;
     if (!coords) {
       setSaving(false);
       Alert.alert('Location Required', 'Location is required to save your address.');
@@ -232,8 +298,22 @@ export default function EditProfileScreen() {
         finalAvatarUrl = publicUrl;
       }
 
+      const fullStreet = unitInfo.trim()
+        ? `${structuredAddress.street.trim()} (${unitInfo.trim()})`
+        : structuredAddress.street.trim();
+
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { first_name: firstName, last_name: lastName, phone, avatar_url: finalAvatarUrl },
+        data: {
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          phone: phone.trim(),
+          avatar_url: finalAvatarUrl,
+          street_address: fullStreet,
+          barangay: structuredAddress.barangay.trim(),
+          city: structuredAddress.city.trim(),
+          province: structuredAddress.province.trim(),
+          zip_code: structuredAddress.zip_code.trim(),
+        },
       });
       if (updateError) throw updateError;
 
@@ -241,14 +321,15 @@ export default function EditProfileScreen() {
       if (user) {
         const { error: tableError } = await supabase
           .from('users')
-          .update({ first_name: firstName, last_name: lastName, profile_photo: finalAvatarUrl })
+          .update({
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            phone_number: phone.trim() || null,
+            profile_photo: finalAvatarUrl,
+          })
           .eq('auth_id', user.id);
 
         if (tableError) console.warn('Could not update users table:', tableError);
-
-        const fullStreet = unitInfo.trim()
-          ? `${structuredAddress.street.trim()} (${unitInfo.trim()})`
-          : structuredAddress.street.trim();
 
         const locPayload = {
           street_address: fullStreet,
@@ -261,13 +342,15 @@ export default function EditProfileScreen() {
         };
 
         if (locationId) {
-          await supabase.from('locations').update(locPayload).eq('location_id', locationId);
+          const { error: locErr } = await supabase.from('locations').update(locPayload).eq('location_id', locationId);
+          if (locErr) throw locErr;
         } else {
-          const { data: newLoc } = await supabase
+          const { data: newLoc, error: insErr } = await supabase
             .from('locations')
             .insert(locPayload)
             .select('location_id')
             .single();
+          if (insErr) throw insErr;
           if (newLoc) {
             setLocationId(newLoc.location_id);
             await supabase.from('users').update({ location_id: newLoc.location_id }).eq('auth_id', user.id);

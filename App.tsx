@@ -120,6 +120,7 @@ import './src/services/backgroundLocationTask';
 import * as Notifications from 'expo-notifications';
 import { registerPushToken } from './src/services/pushService';
 import VerifyEmailScreen from './src/modules/Authentication/VerifyEmailScreen';
+import ProviderNoticeModal from './src/components/ProviderNoticeModal';
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -715,6 +716,20 @@ function AppInner() {
         return;
       }
 
+      // Admin strike issued / removed -> Account Health
+      if (payload?.type === 'account_strike' && navigationRef.isReady?.()) {
+        navigationRef.navigate('AccountHealth');
+        return;
+      }
+      // Admin ruled on a dispute -> open the case (provider sees it as a report against them)
+      if (payload?.type === 'dispute_resolved' && payload.ticketId && navigationRef.isReady?.()) {
+        navigationRef.navigate('TicketDetail', {
+          ticketId: Number(payload.ticketId),
+          source: payload.role === 'provider' ? 'reportAgainstMe' : undefined,
+        });
+        return;
+      }
+
       if (payload?.deliveryId && navigationRef.isReady?.()) {
         navigationRef.navigate('LiveTracking', { deliveryId: Number(payload.deliveryId) });
       }
@@ -780,6 +795,8 @@ function AppInner() {
         </Stack.Navigator>
 
         <TermsGate />
+        {/* Provider-only global notice: strikes + new reports show over ANY screen */}
+        <ProviderNoticeModal navigationRef={navigationRef} />
       </NavigationContainer>
 
       {/* Kept outside NavigationContainer so the green "Back online" toast animates smoothly during remount */}

@@ -31,6 +31,7 @@ export default function AccountScreen() {
   const [rejectionReason, setRejectionReason] = useState<string | null>(null);
   const [rejectionModalVisible, setRejectionModalVisible] = useState<boolean>(false);
   const [userId, setUserId] = useState<number | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(false); // provider presence (users.is_online)
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
   // --- NEW: guards that stop "Tap → Register-as-Provider" while state is unresolved.
@@ -139,7 +140,7 @@ export default function AccountScreen() {
 
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('user_id, first_name, last_name, profile_photo')
+        .select('user_id, first_name, last_name, profile_photo, is_online')
         .eq('auth_id', user.id)
         .maybeSingle();
 
@@ -148,6 +149,7 @@ export default function AccountScreen() {
         return;
       }
       setUserId(userData.user_id);
+      setIsOnline(!!(userData as any).is_online);
 
       // Fast path: we already resolved this user's provider state on a previous
       // focus and no realtime event has changed it. Show it immediately, keep
@@ -250,6 +252,15 @@ export default function AccountScreen() {
             commitProviderStateRef.current('pending');
             setRejectionModalVisible(false);
           }
+        }
+      )
+      // Online / offline changes made on the Jobs screen show up here right away.
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'users', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const row = payload.new as any;
+          if (row && typeof row.is_online === 'boolean') setIsOnline(row.is_online);
         }
       )
       .subscribe();
@@ -392,6 +403,13 @@ export default function AccountScreen() {
                     <Text style={[styles.roleBadgeTextInline, { color: colors.success }]}>PROVIDER</Text>
                   </View>
                 )}
+                {providerState === 'approved' && (
+                  <View style={isOnline ? styles.roleBadgeProvider : styles.roleBadgeOffline}>
+                    <Text style={[styles.roleBadgeTextInline, { color: isOnline ? colors.success : colors.textMuted }]}>
+                      {isOnline ? 'ONLINE' : 'OFFLINE'}
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
 
@@ -439,9 +457,11 @@ export default function AccountScreen() {
               </View>
 
               {providerState === 'approved' && (
-                <View style={styles.providerBadge}>
-                  <View style={styles.providerBadgeDot} />
-                  <Text style={styles.providerBadgeText}>Active</Text>
+                <View style={isOnline ? styles.providerBadge : styles.offlineBadge}>
+                  <View style={isOnline ? styles.providerBadgeDot : styles.offlineBadgeDot} />
+                  <Text style={isOnline ? styles.providerBadgeText : styles.offlineBadgeText}>
+                    {isOnline ? 'Online' : 'Offline'}
+                  </Text>
                 </View>
               )}
               {providerState === 'pending' && (
@@ -695,6 +715,14 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.success,
   },
   providerBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.success },
+  roleBadgeOffline: { backgroundColor: c.card, borderColor: c.divider, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
+  offlineBadge: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: c.card, paddingHorizontal: 10, paddingVertical: 5,
+    borderRadius: 10, gap: 6, borderWidth: 1, borderColor: c.divider,
+  },
+  offlineBadgeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.textMuted },
+  offlineBadgeText: { color: c.textMuted, fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
   providerBadgeText: { color: c.success, fontSize: 10, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.5 },
 
   pendingBadge: {
