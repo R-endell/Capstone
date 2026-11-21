@@ -65,3 +65,5 @@ replay_pid*.log
 
 *.sql
 capstone-backup-*.sql
+modules/auto-sms/android/build/
+**/build/
