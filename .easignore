@@ -1,28 +1,13 @@
-# AI tools & agent folders
-.agents/
-.claude/
-.cursor/
-.aider/
-.codeium/
-
-# Version control
-.git/
-
-# Build artifacts
-android/
-ios/
-node_modules/
-
-# Environment
-.env
-.env.local
-
-# Supabase local
-supabase/.temp/
-supabase/.branches/
-
-# OS files  
-.DS_Store
-Thumbs.db
-
-EXPO_PUBLIC_GOOGLE_MAPS_API_KEY=AIzaSyCxrMHnuiiXQPAWpqFECYHjoE8CNOOxVrg
+node_modules
+.git
+.expo
+.claude
+android
+ios
+dist
+web-build
+*.zip
+*.log
+patch_*.py
+supabase
+tatus

@@ -5,6 +5,17 @@ import { fetchRouteCorridorAndDistance, parseNaiveRouteTime } from './routeServi
 import { notifyUser } from './pushService';
 import { Alert } from 'react-native';
 
+/**
+ * A request only becomes visible to providers (matches, direct requests, notifications)
+ * once the sender has actually paid: payment_status is 'held' (escrow) or later.
+ * Anything still 'unpaid' / 'failed' / pending means the sender is still choosing a receiver
+ * or setting up payment, so providers must not see it yet.
+ */
+export const PAID_PAYMENT_STATUSES = ['held', 'paid', 'released'];
+export function isRequestPaid(req: any): boolean {
+  return !!req && PAID_PAYMENT_STATUSES.includes(String(req.payment_status || '').toLowerCase());
+}
+
 export interface Location {
   latitude: number;
   longitude: number;
@@ -260,6 +271,43 @@ export function isSendNowRequest(req: any): boolean {
 }
 
 /**
+ * Re-checks an ALREADY STORED match against the strict corridor rules. Match rows can also be written by
+ * other things (older app versions, the database's evaluate_route_matches function), so screens use this
+ * before showing a row. `route` needs corridor_path (and ideally fallback_unlocked); `req` needs
+ * pickup_location / dropoff_location with latitude+longitude. If it can't judge (missing coordinates or
+ * route line) it returns true so nothing legitimate is hidden.
+ */
+export function isRequestWithinRouteCorridor(route: any, req: any): boolean {
+  if (!route || !req) return true;
+  const one = (x: any) => (Array.isArray(x) ? x[0] : x);
+  const puLoc = one(req.pickup_location);
+  const doLoc = one(req.dropoff_location);
+  if (puLoc?.latitude == null || doLoc?.latitude == null) return true;
+
+  const sLoc = one(route.start_location);
+  const eLoc = one(route.end_location);
+  const corridor: { latitude: number; longitude: number }[] =
+    Array.isArray(route.corridor_path) && route.corridor_path.length >= 2
+      ? route.corridor_path
+      : sLoc && eLoc
+        ? [
+            { latitude: Number(sLoc.latitude), longitude: Number(sLoc.longitude) },
+            { latitude: Number(eLoc.latitude), longitude: Number(eLoc.longitude) },
+          ]
+        : [];
+  if (corridor.length < 2) return true;
+
+  const pu = projectPointToPolyline({ lat: Number(puLoc.latitude), lng: Number(puLoc.longitude) }, corridor);
+  const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
+  const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+  const limit = canUseFallback
+    ? getFallbackCorridorM(req.pickup_type)
+    : getPrimaryCorridorM(req.pickup_type);
+  const isForward = dr.fraction >= pu.fraction - 0.02;
+  return isForward && pu.minDistanceM <= limit && dr.minDistanceM <= limit;
+}
+
+/**
  * The calendar day a request should be served on, as a naive local Date (same convention as
  * parseNaiveRouteTime, so it can be passed straight to isRouteRunningToday).
  * Send-Now requests are served today; Scheduled requests on the day the sender picked.
@@ -341,14 +389,52 @@ export function isRouteTimeValidForRequest(route: any, request: any, now = new D
   return true;
 }
 
-function projectPointToPolyline(
+/**
+ * Synced matching radii (identical to Supabase `evaluate_route_matches`):
+ *  - Curb-side (No Detour): 200 m primary / 300 m fallback (sender/receiver walks to main road)
+ *  - Door-to-Door:          500 m primary / 1,000 m fallback
+ *  - Curb-side meet-up snap threshold: 15 m (pins > 15 m off-route get a main-road landmark prompt)
+ */
+export const CURBSIDE_CORRIDOR_M = 200;
+export const DOOR_TO_DOOR_CORRIDOR_M = 500;
+export const CURBSIDE_FALLBACK_M = 300;
+export const DOOR_TO_DOOR_FALLBACK_M = 1000;
+export const CURBSIDE_LANDMARK_SNAP_M = 15;
+
+// Backwards-compatible aliases
+export const CORRIDOR_MATCH_M = CURBSIDE_CORRIDOR_M;
+export const FALLBACK_CORRIDOR_M = DOOR_TO_DOOR_FALLBACK_M;
+
+export function isDoorToDoorType(pickupType?: string | null): boolean {
+  return /door/i.test(String(pickupType || ''));
+}
+
+export function getPrimaryCorridorM(pickupType?: string | null): number {
+  // If pickup_type wasn't selected in a lightweight query, don't falsely reject Door-to-Door rows
+  if (pickupType == null || pickupType === '') return DOOR_TO_DOOR_CORRIDOR_M;
+  return isDoorToDoorType(pickupType) ? DOOR_TO_DOOR_CORRIDOR_M : CURBSIDE_CORRIDOR_M;
+}
+
+export function getFallbackCorridorM(pickupType?: string | null): number {
+  if (pickupType == null || pickupType === '') return DOOR_TO_DOOR_FALLBACK_M;
+  return isDoorToDoorType(pickupType) ? DOOR_TO_DOOR_FALLBACK_M : CURBSIDE_FALLBACK_M;
+}
+
+export function projectPointToPolyline(
   pt: { lat: number; lng: number },
   polyline: { latitude: number; longitude: number }[],
-): { minDistanceM: number; fraction: number } {
-  if (!polyline || polyline.length === 0) return { minDistanceM: Infinity, fraction: 0 };
+): { minDistanceM: number; fraction: number; projLat: number; projLng: number } {
+  if (!polyline || polyline.length === 0) {
+    return { minDistanceM: Infinity, fraction: 0, projLat: pt.lat, projLng: pt.lng };
+  }
   if (polyline.length === 1) {
     const dKm = calculateDistance(pt.lat, pt.lng, polyline[0].latitude, polyline[0].longitude);
-    return { minDistanceM: dKm * 1000, fraction: 0 };
+    return {
+      minDistanceM: Math.round(dKm * 1000),
+      fraction: 0,
+      projLat: polyline[0].latitude,
+      projLng: polyline[0].longitude,
+    };
   }
   let totalLengthKm = 0;
   const segLengths: number[] = [];
@@ -364,10 +450,17 @@ function projectPointToPolyline(
   }
   if (totalLengthKm <= 0) {
     const dKm = calculateDistance(pt.lat, pt.lng, polyline[0].latitude, polyline[0].longitude);
-    return { minDistanceM: dKm * 1000, fraction: 0 };
+    return {
+      minDistanceM: Math.round(dKm * 1000),
+      fraction: 0,
+      projLat: polyline[0].latitude,
+      projLng: polyline[0].longitude,
+    };
   }
   let bestDistKm = Infinity;
   let bestFraction = 0;
+  let bestLat = polyline[0].latitude;
+  let bestLng = polyline[0].longitude;
   let traversedKm = 0;
   for (let i = 0; i < polyline.length - 1; i++) {
     const a = polyline[i];
@@ -387,10 +480,17 @@ function projectPointToPolyline(
     if (distKm < bestDistKm) {
       bestDistKm = distKm;
       bestFraction = (traversedKm + t * segLen) / totalLengthKm;
+      bestLat = projLat;
+      bestLng = projLng;
     }
     traversedKm += segLen;
   }
-  return { minDistanceM: Math.round(bestDistKm * 1000), fraction: Number(bestFraction.toFixed(4)) };
+  return {
+    minDistanceM: Math.round(bestDistKm * 1000),
+    fraction: Number(bestFraction.toFixed(4)),
+    projLat: bestLat,
+    projLng: bestLng,
+  };
 }
 
 export async function ensureRouteCorridorBackfilled(routeId: number): Promise<void> {
@@ -449,6 +549,8 @@ async function evaluatePairAndUpsertMatch(
   isDemo: boolean = false,
 ): Promise<boolean> {
   if (!route || !reqRow || reqRow.delivery_status !== 'Pending') return false;
+  // Not paid yet (sender still on receiver / payment step): no match, no notification.
+  if (!isRequestPaid(reqRow)) return false;
   if (Number(route.provider_id) === Number(reqRow.sender_id)) return false;
 
   const isDirectRequest = reqRow.preferred_provider_id != null;
@@ -503,10 +605,9 @@ async function evaluatePairAndUpsertMatch(
     corridor,
   );
 
-  const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-  const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-  // Fallback corridor is strictly capped at 3000m (and only when fallback_unlocked on the route or within 3km)
-  const fallbackMaxM = route.fallback_unlocked ? 3000 : maxCorridorM;
+  const maxCorridorM = getPrimaryCorridorM(reqRow.pickup_type);
+  const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+  const fallbackMaxM = canUseFallback ? getFallbackCorridorM(reqRow.pickup_type) : maxCorridorM;
 
   const fitsCapacity =
     Number(route.remaining_weight_kg ?? 100) >= reqWeight &&
@@ -517,7 +618,7 @@ async function evaluatePairAndUpsertMatch(
 
   const withinPrimary = puProj.minDistanceM <= maxCorridorM && doProj.minDistanceM <= maxCorridorM;
   const withinFallback =
-    Boolean(route.fallback_unlocked) &&
+    canUseFallback &&
     puProj.minDistanceM <= fallbackMaxM &&
     doProj.minDistanceM <= fallbackMaxM;
 
@@ -542,7 +643,11 @@ async function evaluatePairAndUpsertMatch(
   const avgDistM = (puProj.minDistanceM + doProj.minDistanceM) / 2;
   const computedScore = isPreferredRoute
     ? 100
-    : Math.max(60, Math.min(99, Math.round(100 - (avgDistM / Math.max(fallbackMaxM, 1500)) * 35)));
+    : withinPrimary
+      // inside the strict corridor: 90% (right at the 200 m edge) up to 99% (directly on the route)
+      ? Math.max(90, Math.min(99, Math.round(100 - (avgDistM / Math.max(maxCorridorM, 1)) * 10)))
+      // fallback-only matches (provider unlocked the wider corridor) always score below 90%
+      : Math.max(60, Math.min(89, Math.round(89 - (avgDistM / Math.max(fallbackMaxM, 1)) * 29)));
 
   if (existingMatch) {
     if (existingMatch.status === 'declined') return false;
@@ -561,7 +666,7 @@ async function evaluatePairAndUpsertMatch(
     provider_id: route.provider_id,
     match_score: computedScore,
     is_fallback: !isPreferredRoute && !withinPrimary,
-    fallback_type: !isPreferredRoute && !withinPrimary ? 'CONDITION_A' : null,
+    fallback_type: !isPreferredRoute && !withinPrimary ? (route.fallback_reason || 'CONDITION_A') : null,
     pickup_dist_m: Math.round(puProj.minDistanceM),
     dropoff_dist_m: Math.round(doProj.minDistanceM),
     pickup_fraction: puProj.fraction,
@@ -718,6 +823,8 @@ export async function syncAllActiveRoutesTodayForRequest(
       .maybeSingle();
 
     if (!reqRow || reqRow.delivery_status !== 'Pending') return [];
+    // Matching starts only after the sender pressed Pay and the payment is held in escrow.
+    if (!isRequestPaid(reqRow)) return [];
 
     const { data: allRoutes } = await supabase
       .from('provider_routes')
@@ -850,6 +957,7 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
         `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`,
       )
       .eq('delivery_status', 'Pending')
+      .in('payment_status', PAID_PAYMENT_STATUSES)
       .order('created_at', { ascending: false })
       .limit(40);
 
@@ -901,9 +1009,6 @@ export async function explainMatchesForRequest(requestId: number) {
   const cargo = Array.isArray(reqRow.cargo) ? reqRow.cargo[0] : reqRow.cargo;
   const reqWeight = Number(cargo?.total_weight_kg) || 5;
   const reqVol = computeCargoVolumeLiters(cargo);
-  const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-  const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-
   const report = (routes || []).map((route: any) => {
     const reasons: string[] = [];
     if (Number(route.provider_id) === Number(reqRow.sender_id)) reasons.push('own route (sender = provider)');
@@ -939,7 +1044,10 @@ export async function explainMatchesForRequest(requestId: number) {
       const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
       pickupM = Math.round(pu.minDistanceM);
       dropoffM = Math.round(dr.minDistanceM);
-      const limit = route.fallback_unlocked ? Math.max(3000, maxCorridorM) : maxCorridorM;
+      const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+      const limit = canUseFallback
+        ? getFallbackCorridorM(reqRow.pickup_type)
+        : getPrimaryCorridorM(reqRow.pickup_type);
       if (pu.minDistanceM > limit) reasons.push(`pickup ${pickupM} m from route (limit ${limit} m)`);
       if (dr.minDistanceM > limit) reasons.push(`dropoff ${dropoffM} m from route (limit ${limit} m)`);
       if (!(dr.fraction >= pu.fraction - 0.02)) reasons.push('dropoff comes BEFORE pickup along this route (wrong direction)');
@@ -1012,7 +1120,9 @@ export async function evaluateAndFetchRouteMatches(
   }
 
   const now = new Date();
-  const afterPending = (rows || []).filter((m: any) => m.request && m.request.delivery_status === 'Pending');
+  const afterPending = (rows || []).filter(
+    (m: any) => m.request && m.request.delivery_status === 'Pending' && isRequestPaid(m.request),
+  );
   const afterPreferred = afterPending.filter(
     (m: any) =>
       m.request.preferred_provider_id == null ||
@@ -1055,8 +1165,9 @@ export async function evaluateAndFetchRouteMatches(
         corridor,
       );
       const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-      const maxCorridorM = isDoorToDoor ? 3000 : 1500;
-      const fallbackMaxM = routeRow.fallback_unlocked ? 3000 : maxCorridorM;
+      const canUseFallback = Boolean(routeRow.fallback_unlocked) && !Boolean(routeRow.fallback_used);
+      const maxCorridorM = getPrimaryCorridorM(reqRow.pickup_type);
+      const fallbackMaxM = canUseFallback ? getFallbackCorridorM(reqRow.pickup_type) : maxCorridorM;
       const isForward = doProj.fraction >= puProj.fraction - 0.02;
       const withinCorridor = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
 
@@ -1102,7 +1213,8 @@ export async function fetchDirectRequestMatches(
       `*, pickup_location:locations!delivery_requests_pickup_location_id_fkey(*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(*), cargo:cargo_id(*), receiver:receiver_id(*)`,
     )
     .eq('preferred_provider_id', providerId)
-    .eq('delivery_status', 'Pending');
+    .eq('delivery_status', 'Pending')
+    .in('payment_status', PAID_PAYMENT_STATUSES);
 
   if (!directReqs || directReqs.length === 0) return [];
 
@@ -1328,8 +1440,8 @@ export async function runPeriodicFallbackAndMatchCheck() {
               userRow.user_id,
               'Fallback Request Unlocked! 📦',
               m.fallback_type === 'CONDITION_B'
-                ? '1 hour before departure with 0 matches: 1 wider 3 km fallback request is now available on your route.'
-                : 'Add-On Fallback unlocked! You have remaining trunk space for 1 extra delivery within 3 km.',
+                ? 'No matches 2 hours after posting: 1 wider fallback request (up to 300 m Curb-side / 1 km Door-to-Door) is now available on your route.'
+                : 'Add-On Fallback unlocked! You have remaining trunk space for 1 extra delivery (up to 300 m Curb-side / 1 km Door-to-Door).',
               { routeId: r.route_id, requestId: m.request_id },
             );
           } else {
@@ -1372,8 +1484,8 @@ export function startBackgroundMatcher() {
           Alert.alert(
             row.is_fallback ? '📦 Fallback Request Unlocked!' : `🎯 ${Math.round(Number(row.match_score))}% Route Match!`,
             row.is_fallback
-              ? 'A 3 km fallback delivery request along your route is now available in My Route Requests.'
-              : 'A new sender request along your route corridor matched (≥60%). Open My Route Requests to review.',
+              ? 'A fallback delivery request (up to 300 m Curb-side / 1 km Door-to-Door) along your route is now available in My Route Requests.'
+              : 'A new sender request along your route corridor matched. Open My Route Requests to review.',
             [{ text: 'Got it', style: 'default' }],
           );
         }

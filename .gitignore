@@ -30,20 +30,15 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
-
 # Environment files
 .env
 .env.local
+.env*.local
 supabase/functions/.env
 
 # Supabase
 supabase/.temp/
 supabase/.branches/
-
-# Expo
-.expo/
 
 # typescript
 *.tsbuildinfo
@@ -52,16 +47,23 @@ supabase/.branches/
 /ios
 /android
 
-.env
-.env.local
-
+# AI / editor tooling
 .agents/
 .claude/
 .cursor/
 .aider/
 
+# crash / replay logs
 hs_err_pid*.log
 replay_pid*.log
 
+# SQL backups
 *.sql
 capstone-backup-*.sql
+
+# Gradle build output & caches
+.gradle/
+**/.gradle/
+**/build/
+modules/**/android/build/
+modules/**/android/.gradle/

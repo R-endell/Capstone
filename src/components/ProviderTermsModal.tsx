@@ -40,7 +40,7 @@ const KEY_POINTS: { icon: string; title: string; text: string }[] = [
   },
   {
     icon: 'time-outline', title: 'Receiver not there?',
-    text: 'Wait 5 minutes, then return the package to the sender and report it in the app.',
+    text: 'Wait 10 minutes, then return the package to the sender and report it in the app.',
   },
   {
     icon: 'alert-circle-outline', title: 'Strikes',

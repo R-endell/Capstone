@@ -107,14 +107,6 @@ export const POLICIES: Policy[] = [
         ],
       },
       {
-        heading: 'Security Fund',
-        body: [
-          `A small Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee is collected from the Sender and from the Provider on each delivery.`,
-          'The fund helps cover genuine events outside anyone\'s control, such as a road accident, so that the platform stays sustainable.',
-          'The Security Fund is not insurance and does not guarantee compensation. See the Package Damage and Responsibility Policy.',
-        ],
-      },
-      {
         heading: 'Limits of liability',
         body: [
           'Pack-N-Ship provides a platform that connects Senders and Providers. We do not carry packages ourselves.',
@@ -128,7 +120,6 @@ export const POLICIES: Policy[] = [
           'You can stop using Pack-N-Ship at any time.',
           'We have the right to suspend or deactivate an account for fraud, such as false information, fake or altered photos, false claims, or forged identity or license documents. We may also act on unsafe behavior, harassment or repeated violations of these terms.',
           'Pending payouts may be held while a case is under review, and unlawful conduct may be reported to the proper authorities.',
-          'You can appeal a deactivation from Help within [10 days].',
           'Amounts owed for a confirmed claim remain payable after an account is closed.',
         ],
       },
@@ -136,15 +127,6 @@ export const POLICIES: Policy[] = [
         heading: 'Governing law',
         body: [
           'These terms are governed by the laws of the Philippines. Disputes that cannot be solved in the app are heard by the courts of the city where Pack-N-Ship operates.',
-        ],
-      },
-      {
-        heading: 'To be confirmed by the team',
-        body: [
-          '[City whose courts hear disputes]',
-          '[How and when these terms can change]',
-          '[Counsel to confirm the Security Fund is not treated as insurance]',
-          '[Counsel to confirm how the Internet Transactions Act and the Consumer Act apply to the platform]',
         ],
       },
     ],
@@ -216,18 +198,8 @@ export const POLICIES: Policy[] = [
           'Take a clear photo of the package at pickup and another at drop-off, every time, in the app so the date and time are recorded. A pickup or drop-off cannot be completed without them, and they protect you if a claim is made.',
           `Do not carry prohibited items, or items worth ${peso(MAX_ITEM_VALUE)} or more. You may refuse a package you reasonably believe is unsafe, prohibited or not as described.`,
           'Keep your location sharing on while a delivery is in progress.',
-          'If the receiver cannot be reached at drop-off, wait 5 minutes, then return the package to the Sender and report it in the app.',
+          'If the receiver cannot be reached at drop-off, wait 10 minutes, then return the package to the Sender and report it in the app.',
           'Do not skip a pickup you accepted. A no-show earns you a strike.',
-        ],
-      },
-      {
-        heading: 'Your responsibilities',
-        body: [
-          'Keep your license and vehicle documents valid, and update them when they expire.',
-          'Respond to reports raised against you. Open Help to see reports that need your answer.',
-          'If a package is damaged or lost while in your care, the Package Damage and Responsibility Policy applies. If you are found at fault, you may be asked to cover a share of the loss from your earnings. You are never asked to pay for damage you did not cause.',
-          `A Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee applies to each delivery you carry. It is shown before you accept a trip and is not refundable once the delivery starts.`,
-          'Pack-N-Ship may deactivate a Provider account for fraud, including fake or altered evidence or forged documents, or for breaking these terms.',
         ],
       },
       {
@@ -290,8 +262,6 @@ export const POLICIES: Policy[] = [
         body: [
           'Payment for a delivery is held in escrow. It is released to the Provider after pickup and drop-off have been confirmed in the app.',
           'Providers can withdraw their earnings to a linked GCash account.',
-          '[Earnings become available to withdraw 48 hours after drop-off, so any damage claim can be settled first.]',
-          `A Security Fund contribution of [${SECURITY_FUND_PERCENT}%] of the delivery fee is collected from the Sender and from the Provider. It is shown before you book or accept a trip.`,
         ],
       },
       {
@@ -318,7 +288,7 @@ export const POLICIES: Policy[] = [
       {
         heading: 'If the receiver cannot be reached',
         body: [
-          'The Provider waits 5 minutes at the drop-off, then returns the package to the Sender and reports it in the app.',
+          'The Provider waits 10 minutes at the drop-off, then returns the package to the Sender and reports it in the app.',
           '[Who pays for the return trip]',
         ],
       },

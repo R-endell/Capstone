@@ -16,7 +16,6 @@ import "expo-crypto";
 import { supabase } from './src/utils/supabase';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
-// ✅ Reverted to strictly Poppins
 import { useFonts, Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold, Poppins_700Bold, Poppins_800ExtraBold } from '@expo-google-fonts/poppins';
 
 /* ------------------------------------------------------------------ */
@@ -96,7 +95,6 @@ import ReceiverPickerScreen from './src/modules/Dashboard/Sender/Delivery/Receiv
 import NotificationsList from './src/modules/Dashboard/Disputes/NotificationsList';
 
 import ProofOfDeliveryModal from './src/components/ProofOfDeliveryModal';
-// Canonical background matcher
 import {
   startBackgroundMatcher,
   stopBackgroundMatcher,
@@ -111,6 +109,8 @@ import DeliveryPaymentScreen from './src/modules/Dashboard/Sender/Delivery/Deliv
 
 import { UserProvider } from './src/utils/userContext';
 import TermsGate from './src/components/terms/TermsGate';
+import OfflineBanner from './src/components/OfflineBanner';
+import { startConnectivityMonitor, useReconnectEpoch } from './src/services/connectivityStore';
 import { ThemeProvider, useTheme } from './src/utils/themeContext';
 
 import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrackingScreen';
@@ -205,26 +205,23 @@ const AnimatedTabIcon = ({ name, focused, size, colors }: { name: any, focused: 
 
   return (
     <Animated.View style={{ transform: [{ scale }] }}>
-      <SolarIcon 
-        name={name} 
-        variant={focused ? 'boldDuotone' : 'linear'} 
-        size={size} 
-        // ALWAYS textPrimary (Black in light mode, White in dark mode)
-        color={colors.textPrimary} 
-        // ONLY apply the orange fill when active
-        secondaryColor={focused ? colors.accent : undefined} 
+      <SolarIcon
+        name={name}
+        variant={focused ? 'boldDuotone' : 'linear'}
+        size={size}
+        color={colors.textPrimary}
+        secondaryColor={focused ? colors.accent : undefined}
       />
     </Animated.View>
   );
 };
 
 // ---------- CUSTOM TAB LABEL COMPONENT ----------
-const CustomTabLabel = ({ focused, color, children }: { focused: boolean, color: string, children: string }) => {
+const CustomTabLabel = ({ color, children }: { focused: boolean, color: string, children: string }) => {
   return (
     <Text
       style={{
         fontSize: 11,
-        // Active: Bold. Inactive: Medium.
         fontFamily: 'Poppins_500Medium',
         color: color,
         marginTop: 2,
@@ -338,8 +335,8 @@ function MainTabs() {
               {children}
             </CustomTabLabel>
           ),
-          tabBarActiveTintColor: colors.textPrimary, // Black text (or white in dark mode)
-          tabBarInactiveTintColor: colors.textMuted, // Grey text
+          tabBarActiveTintColor: colors.textPrimary,
+          tabBarInactiveTintColor: colors.textMuted,
           tabBarStyle,
           headerShown: false,
         })}
@@ -350,9 +347,9 @@ function MainTabs() {
         <Tab.Screen
           name="Messages"
           component={MessagesScreen}
-          options={{ 
-            tabBarBadge: unreadCount > 0 ? unreadCount : undefined, 
-            tabBarBadgeStyle: { backgroundColor: colors.error } 
+          options={{
+            tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: colors.error }
           }}
         />
         <Tab.Screen name="Account" component={AccountScreen} />
@@ -407,6 +404,7 @@ function ProviderTabsInner() {
   return (
     <View style={{ flex: 1 }}>
       <ProviderTab.Navigator
+        initialRouteName="Jobs"
         screenOptions={({ route }) => ({
           tabBarIcon: ({ focused, size }) => {
             let iconName: any;
@@ -487,9 +485,9 @@ function useRoleGuard(navigationRef: React.RefObject<any>) {
       const { data: userRole } = providerRole?.role_id ? await supabase.from('user_roles').select('user_id').eq('user_id', userRow.user_id).eq('role_id', providerRole.role_id).maybeSingle() : { data: null };
       const { data: verif } = await supabase.from('provider_verifications').select('verification_status').eq('provider_id', userRow.user_id).maybeSingle();
 
-      const isApprovedProvider = !!userRole && verif?.verification_status === 'Approved';
+      const isApproved = !!userRole && verif?.verification_status === 'Approved';
 
-      if (!isApprovedProvider) {
+      if (!isApproved) {
         console.warn('⚠️ Role guard: user is on ProviderTabs but is not an approved provider. Redirecting to MainTabs.');
         navigationRef.current?.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
       }
@@ -584,10 +582,9 @@ function useDeactivationGuard(navigationRef: React.RefObject<any>) {
       channelRef.current = supabase
         .channel(`user-active-guard-${userRow.user_id}-${Date.now()}`)
         .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `user_id=eq.${userRow.user_id}` }, async (payload) => {
-            const updated = payload.new as { is_active?: boolean };
-            if (updated && updated.is_active === false) { await forceDeactivatedLogout(); }
-          }
-        )
+          const updated = payload.new as { is_active?: boolean };
+          if (updated && updated.is_active === false) { await forceDeactivatedLogout(); }
+        })
         .subscribe();
     };
 
@@ -616,8 +613,11 @@ function AppInner() {
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
   const appStateRef = useRef(AppState.currentState);
   const matcherStartedRef = useRef(false);
+  const reconnectEpoch = useReconnectEpoch();
+  const lastNavStateRef = useRef<any>(undefined);
 
   useRoleGuard(navigationRef as any);
+  useEffect(() => { startConnectivityMonitor(); }, []);
   useDeactivationGuard(navigationRef as any);
   useDeepLink(navigationRef);
 
@@ -685,7 +685,7 @@ function AppInner() {
       appStateSub.remove();
       if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
     };
-  }, []);
+  }, [reconnectEpoch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -724,57 +724,67 @@ function AppInner() {
   }, []);
 
   return (
-    <NavigationContainer ref={navigationRef}>
-      <Stack.Navigator initialRouteName="Loading" screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Loading" component={LoadingScreen} />
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="Register" component={RegisterScreen} />
-        <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
-        <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
-        <Stack.Screen name="PermissionsPrompt" component={PermissionsPromptScreen} />
-        <Stack.Screen name="IdentityVerification" component={IdentityVerificationScreen} />
-        <Stack.Screen name="TwoFactorAuth" component={TwoFactorAuthScreen} />
-        <Stack.Screen name="MainTabs" component={MainTabs} />
-        <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
-        <Stack.Screen name="EditProfile" component={EditProfileScreen} />
-        <Stack.Screen name="Settings" component={SettingsScreen} />
-        {/* Old route names kept so every existing navigate() lands in the new Help flow */}
-        <Stack.Screen name="DisputeCenter" component={HelpCenterScreen} />
-        <Stack.Screen name="Support" component={HelpCenterScreen} />
-        <Stack.Screen name="ReportIssue" component={ReportFlowScreen} />
-        <Stack.Screen name="TicketDetail" component={TicketDetailScreen} />
-        <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
-        <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
-        <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
-        <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
-        <Stack.Screen name="ProviderApplicationStatus" component={ProviderApplicationStatusScreen} />
-        <Stack.Screen name="AccountHealth" component={AccountHealthScreen} />
-        <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
-        <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
-        <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
-        <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
-        <Stack.Screen name="AddItem" component={AddItemScreen} />
-        <Stack.Screen name="ScheduleCalendar" component={ScheduleCalendarScreen} />
-        <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
-        <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
-        <Stack.Screen name="Booking" component={BookingScreen} />
-        <Stack.Screen name="DeliveryPayment" component={DeliveryPaymentScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-        <Stack.Screen name="Cashout" component={CashoutScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-        <Stack.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ animation: 'slide_from_right' }} />
-        <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
-        <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
-        <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
-        <Stack.Screen name="ReceiverPicker" component={ReceiverPickerScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-        <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} options={{ headerShown: false }} />
-        <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
-        <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
-        <Stack.Screen name="NotificationsList" component={NotificationsList} />
-        <Stack.Screen name="ProviderNavigation" component={ProviderNavigationScreen} options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
-      </Stack.Navigator>
+    <View style={{ flex: 1 }}>
+      <NavigationContainer
+        key={`nav-epoch-${reconnectEpoch}`}
+        ref={navigationRef}
+        initialState={lastNavStateRef.current}
+        onStateChange={(state) => {
+          lastNavStateRef.current = state;
+        }}
+      >
+        <Stack.Navigator initialRouteName="Loading" screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Loading" component={LoadingScreen} />
+          <Stack.Screen name="Login" component={LoginScreen} />
+          <Stack.Screen name="Register" component={RegisterScreen} />
+          <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+          <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+          <Stack.Screen name="PermissionsPrompt" component={PermissionsPromptScreen} />
+          <Stack.Screen name="IdentityVerification" component={IdentityVerificationScreen} />
+          <Stack.Screen name="TwoFactorAuth" component={TwoFactorAuthScreen} />
+          <Stack.Screen name="MainTabs" component={MainTabs} />
+          <Stack.Screen name="ProviderTabs" component={ProviderTabs} />
+          <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="DisputeCenter" component={HelpCenterScreen} />
+          <Stack.Screen name="Support" component={HelpCenterScreen} />
+          <Stack.Screen name="ReportIssue" component={ReportFlowScreen} />
+          <Stack.Screen name="TicketDetail" component={TicketDetailScreen} />
+          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
+          <Stack.Screen name="LegalPolicies" component={LegalPoliciesScreen} />
+          <Stack.Screen name="PolicyDetail" component={PolicyDetailScreen} />
+          <Stack.Screen name="RegisterProvider" component={RegisterProviderScreen} />
+          <Stack.Screen name="ProviderApplicationStatus" component={ProviderApplicationStatusScreen} />
+          <Stack.Screen name="AccountHealth" component={AccountHealthScreen} />
+          <Stack.Screen name="SendNowIntro" component={SendNowIntroScreen} />
+          <Stack.Screen name="ScheduleIntro" component={ScheduleIntroScreen} />
+          <Stack.Screen name="DropoffType" component={DropoffTypeScreen} />
+          <Stack.Screen name="ShipmentSize" component={ShipmentSizeScreen} />
+          <Stack.Screen name="AddItem" component={AddItemScreen} />
+          <Stack.Screen name="ScheduleCalendar" component={ScheduleCalendarScreen} />
+          <Stack.Screen name="PickupLocation" component={LocationSelectScreen} />
+          <Stack.Screen name="DropoffLocation" component={LocationSelectScreen} />
+          <Stack.Screen name="Booking" component={BookingScreen} />
+          <Stack.Screen name="DeliveryPayment" component={DeliveryPaymentScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="Cashout" component={CashoutScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="LiveTracking" component={LiveTrackingScreen} options={{ animation: 'slide_from_right' }} />
+          <Stack.Screen name="DeliveryList" component={DeliveryListScreen} />
+          <Stack.Screen name="ManageVehicle" component={ManageVehicleScreen} />
+          <Stack.Screen name="ManageRoutes" component={ManageRoutesScreen} />
+          <Stack.Screen name="ReceiverPicker" component={ReceiverPickerScreen} options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+          <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="PaymentMethods" component={PaymentMethodsScreen} />
+          <Stack.Screen name="AddPaymentMethod" component={AddPaymentMethodScreen} />
+          <Stack.Screen name="NotificationsList" component={NotificationsList} />
+          <Stack.Screen name="ProviderNavigation" component={ProviderNavigationScreen} options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
+        </Stack.Navigator>
 
-      {/* Asks signed-in users to accept the current Terms and Policies version if they have not */}
-      <TermsGate />
-    </NavigationContainer>
+        <TermsGate />
+      </NavigationContainer>
+
+      {/* Kept outside NavigationContainer so the green "Back online" toast animates smoothly during remount */}
+      <OfflineBanner />
+    </View>
   );
 }
 

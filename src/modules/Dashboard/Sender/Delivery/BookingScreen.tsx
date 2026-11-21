@@ -31,6 +31,7 @@ import {
   syncAllActiveRoutesTodayForRequest,
   enrichRouteMatchRows,
   explainMatchesForRequest,
+  isRequestWithinRouteCorridor,
   RouteMatchRow,
 } from '../../../../services/matchingService';
 import { getOrCreateChatRoom } from '../../../../utils/chatHelpers';
@@ -96,6 +97,9 @@ type RouteData = {
   receiverNotified?: boolean;
   dropoffArrivedAt?: string | null;
   receiverPhone?: string | null;
+  meetupLandmarkName?: string | null;
+  meetupLat?: number | null;
+  meetupLng?: number | null;
 };
 
 type PayInfo = {
@@ -653,6 +657,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const resumedRef = useRef<number | null>(null);
   const resumeReceiverRef = useRef<any>(null);
   const searchStartRef = useRef<number | null>(null);
+  // Always points at the latest handleTopBackPress so effects (hardware back) can call it.
+  const topBackRef = useRef<() => void>(() => {});
 
   const [longSearch, setLongSearch] = useState(false);
   const [dotCount, setDotCount] = useState(0);
@@ -936,11 +942,23 @@ export default function BookingScreen({ route, navigation }: any) {
 
   useEffect(() => {
     const locked = bookingState === 'finding' && !longSearch;
-    navigation.setOptions({ gestureEnabled: !locked });
-    if (!locked) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    // After payment (finding / matched / no_match) the booking flow behind this screen
+    // (receiver modal, size, locations...) must never be reachable by swiping or by the
+    // Android back button. Back always exits to the Activity > Pending tab instead.
+    const postPayment =
+      !!savedRequestId &&
+      !isResumedSession.current &&
+      (bookingState === 'finding' || bookingState === 'matched' || bookingState === 'no_match');
+
+    navigation.setOptions({ gestureEnabled: !(locked || postPayment) });
+    if (!locked && !postPayment) return;
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!locked) topBackRef.current();
+      return true;
+    });
     return () => sub.remove();
-  }, [bookingState, longSearch, navigation]);
+  }, [bookingState, longSearch, navigation, savedRequestId]);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -1169,6 +1187,7 @@ export default function BookingScreen({ route, navigation }: any) {
           .select(`
             delivery_id, request_id, provider_id, accepted_at, completed_at, estimated_eta,
             provider_on_way_at, provider_eta_mins, receiver_notified, dropoff_arrived_at,
+            meetup_landmark_name, meetup_lat, meetup_lng,
             vehicle:vehicles(vehicle_id, vehicle_type, plate_number, max_weight_kg),
             request:delivery_requests(
               request_id, delivery_status, receiver_phone,
@@ -1231,6 +1250,9 @@ export default function BookingScreen({ route, navigation }: any) {
         receiverNotified: !!(d as any).receiver_notified,
         dropoffArrivedAt: (d as any).dropoff_arrived_at ?? null,
         receiverPhone: req?.receiver_phone ?? null,
+        meetupLandmarkName: (d as any).meetup_landmark_name ?? null,
+        meetupLat: (d as any).meetup_lat ?? null,
+        meetupLng: (d as any).meetup_lng ?? null,
       });
       setTrackingVehicle((d as any).vehicle ?? null);
 
@@ -1698,14 +1720,26 @@ export default function BookingScreen({ route, navigation }: any) {
           const { data: rows } = await withTimeout(
             supabase
               .from('route_request_matches')
-              .select('*, route:provider_routes(*)')
+              .select('*, route:provider_routes(*), request:delivery_requests(pickup_location:locations!delivery_requests_pickup_location_id_fkey(latitude,longitude), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(latitude,longitude))')
               .eq('request_id', requestId)
               .eq('status', 'matched')
               .order('match_score', { ascending: false }),
           );
 
-          if (rows && rows.length > 0 && isMountedRef.current) {
-            const enriched = await enrichRouteMatchRows(rows);
+          // Only providers that really drive within ~200 m of the pickup AND drop-off are shown.
+          const strictRows = (rows || []).filter((m: any) => {
+            const r = Array.isArray(m.route) ? m.route[0] : m.route;
+            const rq = Array.isArray(m.request) ? m.request[0] : m.request;
+            const ok = isRequestWithinRouteCorridor(r, rq);
+            if (!ok) {
+              supabase.from('route_request_matches').update({ status: 'revoked' }).eq('match_id', m.match_id)
+                .then(() => {}, () => {});
+            }
+            return ok;
+          });
+
+          if (strictRows.length > 0 && isMountedRef.current) {
+            const enriched = await enrichRouteMatchRows(strictRows);
             if (enriched.length > 0 && isMountedRef.current) {
               if (searchTimeoutRef.current && stopTimerOnMatch) {
                 clearTimeout(searchTimeoutRef.current);
@@ -2514,6 +2548,33 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   const handleTopBackPress = () => {
+    // Payment is already done: leave the whole booking flow and land on Activity > Pending.
+    // A plain goBack() here would drop the user back into the receiver modal / booking flow.
+    const postPayment =
+      !!savedRequestId &&
+      !isResumedSession.current &&
+      (bookingState === 'finding' || bookingState === 'matched' || bookingState === 'no_match');
+    if (postPayment) {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+      setIsSearching(false);
+      proceedingRef.current = false;
+      proceedReturnToRef.current = null;
+      setSavingBooking(false);
+      dispatch({ type: 'RESET' });
+      navigation.popTo('MainTabs', {
+        screen: 'Activity',
+        params: { tab: 'pending', pendingRequestId: savedRequestId ?? undefined },
+      });
+      return;
+    }
+
     if (bookingState === 'tracking' && !isResumedSession.current && !initialDeliveryId && !isProviderMode) {
       dispatch({ type: 'RESET' });
       proceedingRef.current = false;
@@ -2524,6 +2585,7 @@ export default function BookingScreen({ route, navigation }: any) {
     }
     navigation.goBack();
   };
+  topBackRef.current = handleTopBackPress;
 
   const handleSelectReceiver = () => {
     navigation.navigate('ReceiverPicker', {
@@ -2912,6 +2974,39 @@ export default function BookingScreen({ route, navigation }: any) {
           >
             <View style={styles.rvHeader}>
               <Text style={styles.rvTitle}>Review & pay</Text>
+            </View>
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 10,
+                backgroundColor: /door/i.test(String(state.dropoffType || '')) ? colors.infoSoft : colors.warningBg,
+                borderWidth: 1,
+                borderColor: /door/i.test(String(state.dropoffType || '')) ? colors.info : colors.warning,
+                borderRadius: 14,
+                padding: 12,
+                marginBottom: 14,
+              }}
+            >
+              <SolarIcon
+                name={/door/i.test(String(state.dropoffType || '')) ? 'Routing' : 'MapPoint'}
+                variant="duotone"
+                size={18}
+                color={/door/i.test(String(state.dropoffType || '')) ? colors.info : colors.warning}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: colors.textPrimary }}>
+                  {/door/i.test(String(state.dropoffType || ''))
+                    ? 'Door-to-Door Selected (Final once paid)'
+                    : 'Curb-side Selected · Strict No Detour (Final once paid)'}
+                </Text>
+                <Text style={{ fontSize: 11, fontFamily: 'Poppins_400Regular', color: colors.textSecondary, marginTop: 2, lineHeight: 16 }}>
+                  {/door/i.test(String(state.dropoffType || ''))
+                    ? 'Driver will come straight to your pickup and drop-off pins.'
+                    : 'Meet the driver curbside on their main route (nearest landmark if >15 m off-road). Remind your receiver too.'}
+                </Text>
+              </View>
             </View>
 
             {state.preferredProviderId && (
@@ -3529,6 +3624,29 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
           )}
         >
+          
+          {!!trackingData?.meetupLandmarkName && !trackingData?.pickupVerified && (
+            <View
+              style={[
+                styles.trackingCard,
+                { backgroundColor: colors.warningBg, borderColor: colors.warning, flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+              ]}
+            >
+              <SolarIcon name="MapPoint" variant="bold" size={20} color={colors.warning} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: colors.warning, letterSpacing: 0.6 }}>
+                  CURB-SIDE MEET-UP POINT (MAIN ROUTE)
+                </Text>
+                <Text style={{ fontSize: 14, fontFamily: 'Poppins_700Bold', color: colors.textPrimary, marginTop: 2 }}>
+                  Meet driver at: {trackingData.meetupLandmarkName}
+                </Text>
+                <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_400Regular', color: colors.textSecondary, marginTop: 2 }}>
+                  Drivers stay strictly on their main route for Curb-side orders. Please head to this landmark before the driver arrives.
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Provider card */}
           <View style={styles.trackingCard}>
             <View style={styles.cardTop}>

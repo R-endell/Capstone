@@ -48,6 +48,14 @@ const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck'];
 // shown in the same "boxes" language senders/providers already see elsewhere,
 // instead of a bare liter figure that doesn't read as physical space on its own.
 const LARGE_BOX_LITERS = 95;
+// Max volume is NEVER typed in: it is always derived from the cargo dimensions so the two
+// numbers can't contradict each other.  L x W x H (cm^3) / 1000 = liters.
+const calcLiters = (l: string, w: string, h: string): number => {
+  const L = parseFloat(l), W = parseFloat(w), H = parseFloat(h);
+  if (!(L > 0) || !(W > 0) || !(H > 0)) return 0;
+  return Math.round((L * W * H) / 1000);
+};
+
 const boxEquivalentLabel = (liters: number): string => {
   const n = Number(liters) || 0;
   if (n <= 0) return '';
@@ -71,11 +79,12 @@ export default function ManageVehicleScreen() {
 
   const [vehicleType, setVehicleType] = useState('Sedan');
   const [plateNumber, setPlateNumber] = useState('');
-  const [maxVolume, setMaxVolume] = useState('');
   const [maxWeight, setMaxWeight] = useState('');
   const [cargoLength, setCargoLength] = useState('');
   const [cargoWidth, setCargoWidth] = useState('');
   const [cargoHeight, setCargoHeight] = useState('');
+  // Auto-calculated from the three dimensions above (liters).
+  const maxVolume = calcLiters(cargoLength, cargoWidth, cargoHeight);
   const [vehicleDoc, setVehicleDoc] = useState<string | null>(null);
   const [docFileName, setDocFileName] = useState<string | null>(null);
 
@@ -234,9 +243,13 @@ export default function ManageVehicleScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!vehicleType || !plateNumber || !maxVolume || !maxWeight ||
+    if (!vehicleType || !plateNumber || !maxWeight ||
         !cargoLength || !cargoWidth || !cargoHeight) {
       Alert.alert('Required', 'Please fill in all fields');
+      return;
+    }
+    if (maxVolume <= 0) {
+      Alert.alert('Invalid dimensions', 'Length, width and height must be numbers greater than 0.');
       return;
     }
     if (!userId) { Alert.alert('Error', 'User not found'); return; }
@@ -246,7 +259,7 @@ export default function ManageVehicleScreen() {
       const vehicleData = {
         vehicle_type: vehicleType,
         plate_number: plateNumber.toUpperCase(),
-        max_volume_liters: parseFloat(maxVolume),
+        max_volume_liters: maxVolume,
         max_weight_kg: parseFloat(maxWeight),
         cargo_length_cm: parseFloat(cargoLength),
         cargo_width_cm: parseFloat(cargoWidth),
@@ -305,7 +318,6 @@ export default function ManageVehicleScreen() {
   const resetForm = () => {
     setVehicleType('Sedan');
     setPlateNumber('');
-    setMaxVolume('');
     setMaxWeight('');
     setCargoLength('');
     setCargoWidth('');
@@ -319,7 +331,6 @@ export default function ManageVehicleScreen() {
     setEditingVehicle(vehicle);
     setVehicleType(vehicle.vehicle_type);
     setPlateNumber(vehicle.plate_number);
-    setMaxVolume(vehicle.max_volume_liters.toString());
     setMaxWeight(vehicle.max_weight_kg.toString());
     setCargoLength(vehicle.cargo_length_cm.toString());
     setCargoWidth(vehicle.cargo_width_cm.toString());
@@ -561,20 +572,21 @@ export default function ManageVehicleScreen() {
 
               <View style={styles.rowInputs}>
                 <View style={styles.halfField}>
-                  <Text style={styles.inputLabel}>Max Volume (L)</Text>
-                  <View style={styles.inputWrapper}>
+                  <Text style={styles.inputLabel}>Max Volume (L) · Auto</Text>
+                  <View style={[styles.inputWrapper, { opacity: 0.75 }]}>
                     <SolarIcon name="Package" variant="linear" size={16} color={colors.textMuted} style={styles.inputIcon} />
                     <TextInput
                       style={styles.textInput}
-                      value={maxVolume}
-                      onChangeText={setMaxVolume}
-                      placeholder="500"
+                      value={maxVolume > 0 ? String(maxVolume) : ''}
+                      editable={false}
+                      placeholder="Auto"
                       placeholderTextColor={colors.textMuted}
-                      keyboardType="numeric"
                     />
                   </View>
-                  {boxEquivalentLabel(parseFloat(maxVolume) || 0) !== '' && (
-                    <Text style={styles.hintText}>{boxEquivalentLabel(parseFloat(maxVolume) || 0)} of trunk space</Text>
+                  {maxVolume > 0 ? (
+                    <Text style={styles.hintText}>{boxEquivalentLabel(maxVolume)} of trunk space</Text>
+                  ) : (
+                    <Text style={styles.hintText}>Calculated from the dimensions below</Text>
                   )}
                 </View>
                 <View style={styles.halfField}>
@@ -594,6 +606,7 @@ export default function ManageVehicleScreen() {
               </View>
 
               <Text style={styles.sectionLabel}>Cargo Dimensions (cm)</Text>
+              <Text style={styles.hintText}>Length × Width × Height ÷ 1000 = Max Volume in liters</Text>
               <View style={styles.rowInputs}>
                 <View style={styles.thirdField}>
                   <Text style={styles.inputLabelSmall}>Length</Text>

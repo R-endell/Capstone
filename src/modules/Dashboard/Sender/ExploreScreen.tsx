@@ -15,6 +15,7 @@ import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 import {
   LiveFix, fetchLiveFixes, subscribeLiveFixes, isFixFresh,
 } from '../../../services/providerLiveService';
+import { parseNaiveRouteTime } from '../../../services/routeService';
 import ProviderTrackModal, { TrackTrip } from './ProviderTrackModal';
 
 let Location: any = null;
@@ -82,7 +83,7 @@ type FilterState = {
   radiusKm: number | null;
 };
 
-const DEFAULT_RADIUS_KM = 10;
+const DEFAULT_RADIUS_KM: number | null = null; // show ALL providers by default (closest first)
 const RADIUS_OPTIONS: (number | null)[] = [2, 5, 10, 20, null];
 
 type LocStatus = 'loading' | 'granted' | 'denied' | 'unavailable';
@@ -99,6 +100,34 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
+// departure_time is a naive (no timezone) timestamp in the app's local frame, so compare with a naive local string.
+const naiveNowString = (): string => {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
+};
+// Daily/Weekly routes store the FIRST run's date, so after that day they would look "finished" forever.
+// Project them to their current/next run (today's window while it's still going, else the next one).
+const occurrenceFor = (
+  t: { departureTime: Date; endTime?: Date | null; routeFrequency: string },
+  nowMs: number,
+): { dep: Date; end: Date } => {
+  const dep = t.departureTime;
+  const depMs = safeTime(dep);
+  const endMs = t.endTime ? safeTime(t.endTime) : Infinity;
+  const durMs = endMs !== Infinity && endMs > depMs ? endMs - depMs : 4 * 60 * 60 * 1000;
+  const freq = (t.routeFrequency || '').trim().toLowerCase();
+  if ((freq !== 'daily' && freq !== 'weekly') || depMs > nowMs) {
+    return { dep, end: new Date(depMs + durMs) };
+  }
+  const today = new Date(nowMs);
+  for (let i = 0; i < 8; i++) {
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, dep.getHours(), dep.getMinutes());
+    if (freq === 'weekly' && start.getDay() !== dep.getDay()) continue;
+    if (start.getTime() + durMs >= nowMs) return { dep: start, end: new Date(start.getTime() + durMs) };
+  }
+  return { dep, end: new Date(depMs + durMs) };
+};
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
@@ -161,15 +190,14 @@ export default function ExploreScreen() {
       let query = supabase
         .from('provider_routes')
         .select(`
-          route_id, departure_time, end_time, route_frequency, provider_id,
+          route_id, departure_time, end_time, route_frequency, provider_id, is_selected,
           provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active ),
-          start_location:locations!provider_routes_start_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
-          end_location:locations!provider_routes_end_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
+          start_location:locations!provider_routes_start_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
+          end_location:locations!provider_routes_end_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
           vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        // Only the route each provider has SELECTED in their Jobs screen is visible to senders.
         .eq('is_selected', true)
         .order('departure_time', { ascending: true });
 
@@ -182,34 +210,35 @@ export default function ExploreScreen() {
 
       const mapped: Trip[] = (data || [])
         .filter((r: any) => myUserId == null || Number(r.provider_id) !== myUserId)
-        .filter((r: any) => {
-          const freq = (r.route_frequency || '').trim().toLowerCase();
-          if (freq === 'one-time' || freq === 'custom') {
-            const dep = r.departure_time ? new Date(r.departure_time) : new Date();
-            if (safeTime(dep) < Date.now()) return false;
-          }
-          return true;
-        })
         .map((r: any) => {
           const provider = r.provider || {};
           const vehicle = r.vehicle || {};
           const start = r.start_location || {};
           const end = r.end_location || {};
-          const dep = r.departure_time ? new Date(r.departure_time) : new Date();
+          const dep = r.departure_time ? parseNaiveRouteTime(r.departure_time) : new Date();
 
           let endTimeObj: Date;
           try {
-            endTimeObj = r.end_time && !isNaN(new Date(r.end_time).getTime())
-              ? new Date(r.end_time)
+            const parsedEnd = r.end_time ? parseNaiveRouteTime(r.end_time) : null;
+            endTimeObj = parsedEnd && !isNaN(parsedEnd.getTime())
+              ? parsedEnd
               : new Date(dep.getTime() + 4 * 60 * 60 * 1000);
           } catch {
             endTimeObj = new Date(dep.getTime() + 4 * 60 * 60 * 1000);
           }
 
-          const startSplit = splitAddress(start.street_address);
-          const endSplit = splitAddress(end.street_address);
-          const startSub = [start.barangay, start.city].filter(Boolean).join(', ') || startSplit.sub;
-          const endSub = [end.barangay, end.city].filter(Boolean).join(', ') || endSplit.sub;
+          const startTitle = (start.place_name || '').trim() || splitAddress(start.street_address).main;
+          const endTitle = (end.place_name || '').trim() || splitAddress(end.street_address).main;
+          const startSub = [
+            start.street_address && start.street_address !== startTitle ? start.street_address : '',
+            start.barangay && start.barangay !== 'Unknown' ? start.barangay : '',
+            start.city && start.city !== 'Unknown' ? start.city : '',
+          ].filter(Boolean).join(', ');
+          const endSub = [
+            end.street_address && end.street_address !== endTitle ? end.street_address : '',
+            end.barangay && end.barangay !== 'Unknown' ? end.barangay : '',
+            end.city && end.city !== 'Unknown' ? end.city : '',
+          ].filter(Boolean).join(', ');
 
           return {
             id: String(r.route_id),
@@ -218,8 +247,8 @@ export default function ExploreScreen() {
             name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
             isActive: !!provider.is_active,
             rating: 4.9,
-            pickup: start.street_address || 'Starting point',
-            dropoff: end.street_address || 'Destination',
+            pickup: startTitle || 'Starting point',
+            dropoff: endTitle || 'Destination',
             pickupSub: startSub,
             dropoffSub: endSub,
             pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },
@@ -325,16 +354,14 @@ export default function ExploreScreen() {
     trips.forEach((t) => {
       if (myUserId != null && t.providerId === myUserId) return;
 
-      const freq = (t.routeFrequency || '').trim().toLowerCase();
-      if (freq === 'one-time' || freq === 'custom') {
-        if (safeTime(t.departureTime) < now) return;
-      }
+      // current/next run of this route (matters for Daily/Weekly routes)
+      const occ = occurrenceFor(t, now);
 
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
-      const mins = minutesUntil(t.departureTime, now);
+      const mins = minutesUntil(occ.dep, now);
 
-      const endTimeMs = safeTime(t.endTime);
+      const endTimeMs = safeTime(occ.end);
       const isFinished = endTimeMs !== Infinity && now > endTimeMs;
 
       let state: TripState;
@@ -346,8 +373,7 @@ export default function ExploreScreen() {
       else state = 'offline';
 
       if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) return;
-      if (state === 'offline' && mins < -HIDE_DEPARTED_AFTER_MIN) return;
-      if (state === 'offline') return;
+      // 'offline' (provider not online yet) routes are still listed so every provider route is visible
 
       const ref = live && fix
         ? { lat: fix.latitude, lng: fix.longitude }
@@ -357,7 +383,9 @@ export default function ExploreScreen() {
 
       out.push({
         ...t,
-        timeLabel: formatTimeLabel(t.departureTime),
+        departureTime: occ.dep,
+        endTime: occ.end,
+        timeLabel: formatTimeLabel(occ.dep),
         fix: live ? fix : null,
         state,
         distanceKm,
@@ -459,6 +487,8 @@ export default function ExploreScreen() {
         return { label: 'On the way', color: ORANGE, bg: colors.accentSoft, icon: 'Package' };
       case 'soon':
         return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' };
+      case 'offline':
+        return { label: 'Not online yet', color: isDark ? '#94A3B8' : '#64748B', bg: isDark ? 'rgba(148,163,184,0.18)' : '#F1F5F9', icon: 'Clock' };
       case 'finished':
         return {
           label: 'Route Finished',
@@ -674,7 +704,7 @@ export default function ExploreScreen() {
         <View style={styles.locBanner}>
           <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
           <Text style={styles.locBannerText}>
-            {filters.radiusKm === null ? 'Showing providers closest to you' : `Providers within ${filters.radiusKm} km of you`}
+            {filters.radiusKm === null ? 'Showing all providers, closest first' : `Providers within ${filters.radiusKm} km of you`}
           </Text>
           <TouchableOpacity onPress={locateMe} hitSlop={10}>
             <SolarIcon name="Refresh" variant="linear" size={16} color={colors.textSecondary} />

@@ -1,8 +1,8 @@
 // src/modules/Dashboard/Sender/Delivery/DropoffTypeScreen.tsx
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  Animated, Easing, StatusBar, ScrollView,
+  Animated, Easing, StatusBar, ScrollView, Modal, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSchedule } from './ScheduleContext';
@@ -107,9 +107,20 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
     }
   }, [mode]);
 
-  const selectType = (type: 'curb-side' | 'door-to-door') => {
+  const [curbConfirmVisible, setCurbConfirmVisible] = useState(false);
+
+  const proceedWithType = (type: 'curb-side' | 'door-to-door') => {
+    setCurbConfirmVisible(false);
     dispatch({ type: 'SET_DROPOFF_TYPE', payload: type });
     navigation.navigate('ShipmentSize');
+  };
+
+  const selectType = (type: 'curb-side' | 'door-to-door') => {
+    if (type === 'curb-side') {
+      setCurbConfirmVisible(true);
+      return;
+    }
+    proceedWithType('door-to-door');
   };
 
   const fadeUp = (value: Animated.Value, distance = 24) => ({
@@ -176,15 +187,22 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
                 </View>
 
                 <View style={[styles.optionIconBox, state.dropoffType === 'curb-side' && styles.optionIconBoxActive]}>
-                  <SolarIcon 
-                    name="MapPoint" 
-                    variant="duotone"
-                    size={28} 
-                  />
+                  <SolarIcon name="MapPoint" variant="duotone" size={28} />
                 </View>
-                <Text style={styles.optionLabel}>Curb-side</Text>
+
+                <View style={styles.priceBadgeRow}>
+                  <Text style={styles.optionLabel}>Curb-side</Text>
+                  <View style={styles.pricePill}>
+                    <Text style={styles.pricePillText}>₱20 base</Text>
+                  </View>
+                </View>
+
+                <View style={styles.policyTag}>
+                  <Text style={styles.policyTagText}>STRICT NO DETOUR · MAIN ROAD ONLY</Text>
+                </View>
+
                 <Text style={styles.optionSub}>
-                  Receiver meets the vehicle at the pickup point
+                  Drivers stay strictly on their main route. Both you and your receiver must meet the driver curbside at the nearest main-road landmark (within 200 m).
                 </Text>
               </TouchableOpacity>
             </Animated.View>
@@ -203,28 +221,91 @@ export default function DropoffTypeScreen({ route, navigation }: any) {
                 </View>
 
                 <View style={[styles.optionIconBox, state.dropoffType === 'door-to-door' && styles.optionIconBoxActive]}>
-                  <SolarIcon 
-                    name="Routing" 
-                    variant="duotone"
-                    size={28} 
-                  />
+                  <SolarIcon name="Routing" variant="duotone" size={28} />
                 </View>
-                <Text style={styles.optionLabel}>Door-to-Door</Text>
+
+                <View style={styles.priceBadgeRow}>
+                  <Text style={styles.optionLabel}>Door-to-Door</Text>
+                  <View style={[styles.pricePill, styles.pricePillAccent]}>
+                    <Text style={[styles.pricePillText, { color: '#FFFFFF' }]}>₱45 base (+₱25)</Text>
+                  </View>
+                </View>
+
                 <Text style={styles.optionSub}>
-                  We deliver straight to the receiver's doorstep
+                  Driver detours off the main road (up to 500 m) to pick up and deliver straight to your exact gate or doorstep.
                 </Text>
               </TouchableOpacity>
             </Animated.View>
           </View>
 
           <View style={styles.infoFooter}>
-            <SolarIcon name="Info" variant="duotone" size={18} color={colors.textPrimary} />
+            <SolarIcon name="ShieldCheck" variant="duotone" size={18} color={colors.accent} />
             <Text style={styles.infoFooterText}>
-              You can change this later before confirming your booking.
+              Your delivery type is final once payment is completed. Choose Door-to-Door if you cannot walk to the main road.
             </Text>
           </View>
         </Animated.View>
       </ScrollView>
+
+      {/* Curb-side No-Detour Confirmation Modal */}
+      <Modal
+        visible={curbConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCurbConfirmVisible(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setCurbConfirmVisible(false)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <View style={styles.modalIconWrap}>
+              <SolarIcon name="MapPoint" variant="bold" size={26} color={colors.accent} />
+            </View>
+            <Text style={styles.modalTitle}>Curb-side Rules (No Detour)</Text>
+            <Text style={styles.modalSub}>
+              Before choosing Curb-side (₱20 base), please make sure you and your receiver agree to the following:
+            </Text>
+
+            <View style={styles.ruleList}>
+              <View style={styles.ruleRow}>
+                <SolarIcon name="CheckCircle" variant="duotone" size={16} color={colors.accent} />
+                <Text style={styles.ruleText}>
+                  <Text style={styles.ruleBold}>No side-street detours: </Text>
+                  The driver will stay strictly on their main route and will not enter inner streets or subdivisions.
+                </Text>
+              </View>
+              <View style={styles.ruleRow}>
+                <SolarIcon name="CheckCircle" variant="duotone" size={16} color={colors.accent} />
+                <Text style={styles.ruleText}>
+                  <Text style={styles.ruleBold}>Meet at a main-road landmark: </Text>
+                  If your pin is more than 15 m off the route, the app will guide you to the nearest landmark (e.g. store or corner) along the driver’s path.
+                </Text>
+              </View>
+              <View style={styles.ruleRow}>
+                <SolarIcon name="CheckCircle" variant="duotone" size={16} color={colors.accent} />
+                <Text style={styles.ruleText}>
+                  <Text style={styles.ruleBold}>Remind your receiver: </Text>
+                  Your receiver must also wait curbside along the main road. This choice is final once paid.
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.modalPrimaryBtn}
+              onPress={() => proceedWithType('curb-side')}
+              activeOpacity={0.9}
+            >
+              <Text style={styles.modalPrimaryText}>I Understand, Keep Curb-side (₱20)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalSwitchBtn}
+              onPress={() => proceedWithType('door-to-door')}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.modalSwitchText}>Switch to Door-to-Door (₱45 · +₱25)</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -435,5 +516,133 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     color: c.textPrimary,
     fontFamily: 'Poppins_500Medium',
     lineHeight: 18,
+  },
+
+  priceBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  pricePill: {
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: c.background,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  pricePillAccent: {
+    backgroundColor: c.accent,
+    borderColor: c.accent,
+  },
+  pricePillText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+  },
+  policyTag: {
+    backgroundColor: c.warningBg,
+    borderWidth: 1,
+    borderColor: c.warning,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginBottom: 8,
+  },
+  policyTagText: {
+    fontSize: 9.5,
+    fontFamily: 'Poppins_800ExtraBold',
+    color: c.warning,
+    letterSpacing: 0.5,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: c.card,
+    borderRadius: 20,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  modalIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: c.accentSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  modalSub: {
+    fontSize: 12.5,
+    fontFamily: 'Poppins_400Regular',
+    color: c.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  ruleList: {
+    gap: 10,
+    backgroundColor: c.background,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  ruleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  ruleText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: c.textPrimary,
+    lineHeight: 17,
+  },
+  ruleBold: {
+    fontFamily: 'Poppins_700Bold',
+  },
+  modalPrimaryBtn: {
+    backgroundColor: c.accent,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  modalPrimaryText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontFamily: 'Poppins_700Bold',
+  },
+  modalSwitchBtn: {
+    backgroundColor: c.accentSoft,
+    borderWidth: 1,
+    borderColor: c.accent,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  modalSwitchText: {
+    color: c.accent,
+    fontSize: 13.5,
+    fontFamily: 'Poppins_700Bold',
   },
 });

@@ -11,7 +11,7 @@ import NavigationMap, { NavInfo } from '../../../components/map/NavigationMap';
 import RoutePreviewMap from '../../../components/map/RoutePreviewMap';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { supabase } from '../../../utils/supabase';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { formatDateTime } from '../../../utils/dateUtils';
 import {
   getProviderDeliveries,
@@ -29,10 +29,13 @@ import { useProviderLocationBroadcast } from '../../../services/useProviderLocat
 import { useNavigationSession } from '../../../services/navigationSessionStore';
 import { clearLocationFix } from '../../../services/locationService';
 import { notifyUser } from '../../../services/pushService';
+import { requestDepositRefund } from '../../../services/depositRefundService';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+import { decode as decodeBase64 } from 'base64-arraybuffer';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -47,23 +50,21 @@ const CARGO_PHOTO_BUCKET = 'cargo-photos';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const NETWORK_TIMEOUT_MS = 12000;
 
-const SENDER_RATING_TAGS = [
-  'Accurate package info',
-  'Easy pickup',
-  'Responsive',
-  'Ready on time',
-  'Polite & friendly',
-];
-
-const RATING_LABELS: Record<number, string> = {
-  1: 'Poor',
-  2: 'Fair',
-  3: 'Good',
-  4: 'Great',
-  5: 'Excellent',
-};
-
 let Clipboard: any = null;
+let FileSystem: any = null;
+try { FileSystem = require('expo-file-system/legacy'); } catch {}
+if (!FileSystem?.readAsStringAsync) {
+  try { FileSystem = require('expo-file-system'); } catch {}
+}
+
+const readLocalFileAsArrayBuffer = async (uri: string): Promise<ArrayBuffer> => {
+  if (!FileSystem?.readAsStringAsync) {
+    throw new Error('File system module unavailable.');
+  }
+  const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+  if (!base64) throw new Error('Captured photo file is empty.');
+  return decodeBase64(base64);
+};
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -305,6 +306,20 @@ const buildTaskInfo = (d: any) => {
     senderId: request?.sender_id || sender?.user_id || null,
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
+    returnDeposit: Number(request?.return_deposit) || 0,
+    totalPaid: Number(request?.estimated_cost) || 0,
+    isReturned: String(request?.delivery_status || '') === 'Returned',
+    baseFare: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      return Number(request?.base_fare) || Math.max(0, est - dep);
+    })(),
+    platformFee: (() => {
+      const dep = Number(request?.return_deposit) || 0;
+      const est = Number(request?.estimated_cost) || 0;
+      const base = Number(request?.base_fare) || Math.max(0, est - dep);
+      return Math.round(base * 0.15 * 100) / 100;
+    })(),
     earnings: (() => {
       const status = String(request?.delivery_status || '');
       const base = Number(request?.base_fare) || 0;
@@ -418,6 +433,7 @@ type TabType = 'active' | 'scheduled' | 'completed' | 'cancelled' | 'all';
 export default function TaskScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
+  const taskRoute = useRoute<any>();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
@@ -449,6 +465,7 @@ export default function TaskScreen() {
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -491,13 +508,6 @@ export default function TaskScreen() {
   const [pkgInfo, setPkgInfo] = useState<any | null>(null);
   const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
   const [openingChat, setOpeningChat] = useState(false);
-
-  /* Sender Rating state (Provider rating the customer/sender) */
-  const [senderRatingByDelivery, setSenderRatingByDelivery] = useState<Record<number, { rating: number; comment: string; tags?: string[] }>>({});
-  const [senderStars, setSenderStars] = useState<number>(5);
-  const [senderSelectedTags, setSenderSelectedTags] = useState<string[]>([]);
-  const [senderComment, setSenderComment] = useState<string>('');
-  const [submittingSenderRating, setSubmittingSenderRating] = useState<boolean>(false);
 
   const [deliveryOTPModalVisible, setDeliveryOTPModalVisible] = useState(false);
   const [deliveryOTPTarget, setDeliveryOTPTarget] = useState<any>(null);
@@ -564,11 +574,18 @@ export default function TaskScreen() {
   useEffect(() => {
     if (selectedId == null) return;
     detailAnim.setValue(0);
-    setSenderStars(5);
-    setSenderSelectedTags([]);
-    setSenderComment('');
     Animated.timing(detailAnim, { toValue: 1, duration: 250, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, [selectedId, detailAnim]);
+
+  // Set when the provider arrived here from the navigation screen: going back returns there instead of leaving the app.
+  const returnToNavRef = useRef<any>(null);
+  const backToNavigation = useCallback(() => {
+    const p = returnToNavRef.current;
+    returnToNavRef.current = null;
+    setSelectedId(null);
+    navigation.navigate('ProviderNavigation', p || undefined);
+  }, [navigation]);
+  useFocusEffect(useCallback(() => () => { returnToNavRef.current = null; }, []));
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -576,11 +593,12 @@ export default function TaskScreen() {
       if (photoPreview) { setPhotoPreview(null); return true; }
       if (mapModalVisible) { setMapModalVisible(false); return true; }
       if (routePickerVisible) { setRoutePickerVisible(false); return true; }
+      if (returnToNavRef.current) { backToNavigation(); return true; }
       if (selectedId != null) { setSelectedId(null); return true; }
       return false;
     });
     return () => sub.remove();
-  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId]);
+  }, [podCameraOpen, photoPreview, mapModalVisible, routePickerVisible, selectedId, backToNavigation]);
 
   useEffect(() => {
     if (!verifyModalVisible || pickupPending) return;
@@ -678,28 +696,6 @@ export default function TaskScreen() {
       );
 
       const hydrated = await enrichDeliveries(await hydrateQr(uniqueDeliveries));
-
-      // Fetch existing ratings submitted by this provider for senders
-      const allIds = hydrated.map((d: any) => d.delivery_id).filter(Boolean);
-      if (allIds.length > 0) {
-        try {
-          const { data: existingRatings } = await supabase
-            .from('ratings')
-            .select('delivery_id, rating, comment')
-            .eq('rater_id', pid)
-            .in('delivery_id', allIds);
-
-          if (existingRatings && isMountedRef.current) {
-            const map: Record<number, { rating: number; comment: string }> = {};
-            existingRatings.forEach((r: any) => {
-              if (r.delivery_id) {
-                map[r.delivery_id] = { rating: Number(r.rating) || 5, comment: r.comment || '' };
-              }
-            });
-            setSenderRatingByDelivery(prev => ({ ...prev, ...map }));
-          }
-        } catch { /* ignore if ratings table differs */ }
-      }
 
       const cancelled = hydrated.filter(isCancelledDelivery);
       const completed = hydrated.filter(d => !isCancelledDelivery(d) && !!d.completed_at);
@@ -800,104 +796,144 @@ export default function TaskScreen() {
     }
   };
 
-  const toggleSenderTag = (tag: string) => {
-    setSenderSelectedTags(prev =>
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+  // ---------- Provider cancel (allowed BEFORE pickup only) ----------
+  const handleProviderCancel = (delivery: any) => {
+    if (cancellingId != null) return;
+    if (stageOf(delivery) !== 'pickup') {
+      Alert.alert('Cannot cancel', 'You can only cancel a delivery before the package has been picked up.');
+      return;
+    }
+    Alert.alert(
+      'Cancel this delivery?',
+      'You can only cancel before pickup. The sender will be notified and their payment refunded, and this job will be closed.',
+      [
+        { text: 'Keep Delivery', style: 'cancel' },
+        { text: 'Cancel Delivery', style: 'destructive', onPress: () => { void confirmProviderCancel(delivery); } },
+      ],
     );
   };
 
-  const handleSubmitSenderRating = async (d: any) => {
-    if (!providerId || submittingSenderRating) return;
-    const info = buildTaskInfo(d);
-    const senderId = info.senderId;
-    if (!senderId) {
-      Alert.alert('Unable to Rate', 'Sender information could not be found for this delivery.');
+  const confirmProviderCancel = async (delivery: any) => {
+    const deliveryId = delivery?.delivery_id;
+    const req = delivery?.delivery_requests || {};
+    const requestId = req.request_id ?? delivery?.request_id;
+    if (!deliveryId || !requestId) {
+      Alert.alert('Error', 'Missing delivery information. Please refresh and try again.');
       return;
     }
 
-    const composedComment = [
-      senderSelectedTags.length > 0 ? senderSelectedTags.join(' · ') : '',
-      senderComment.trim(),
-    ]
-      .filter(Boolean)
-      .join(' — ');
-
-    setSubmittingSenderRating(true);
+    setCancellingId(deliveryId);
     try {
-      const payload = {
-        delivery_id: d.delivery_id,
-        rater_id: providerId,
-        ratee_id: senderId,
-        rating: senderStars,
-        comment: composedComment || null,
-        created_at: new Date().toISOString(),
-      };
-
-      const { error } = await withTimeout(
-        supabase.from('ratings').insert(payload),
+      // Re-check on the server: pickup may have been verified since this screen last loaded.
+      const { data: qr } = await withTimeout(
+        supabase.from('qr_verifications').select('pickup_verified').eq('delivery_id', deliveryId).maybeSingle(),
         NETWORK_TIMEOUT_MS,
-        'Submitting rating timed out'
+      );
+      const { data: fresh } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .select('delivery_status, payment_status, escrow_status, sender_id')
+          .eq('request_id', requestId)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
-      if (error) {
-        const { error: fbErr } = await withTimeout(
-          supabase.from('feedback').insert({
-            delivery_id: d.delivery_id,
-            sender_id: providerId,
-            receiver_id: senderId,
-            rating: senderStars,
-            comments: composedComment || null,
-          }),
-          NETWORK_TIMEOUT_MS
-        );
-        if (fbErr) throw error;
+      const status = String(fresh?.delivery_status || '');
+      const pastPickup = ['In Transit', 'Awaiting Approval', 'Returning', 'Completed', 'Returned', 'Cancelled'].includes(status);
+      if (qr?.pickup_verified || pastPickup) {
+        Alert.alert('Cannot cancel', 'This delivery has already been picked up or closed, so it can no longer be cancelled.');
+        if (providerId) await fetchDeliveries(providerId);
+        return;
       }
 
-      if (isMountedRef.current) {
-        setSenderRatingByDelivery(prev => ({
-          ...prev,
-          [d.delivery_id]: {
-            rating: senderStars,
-            comment: composedComment,
-            tags: senderSelectedTags,
-          },
-        }));
+      const wasHeld = fresh?.payment_status === 'held' || fresh?.escrow_status === 'held';
+      let refundFailed = false;
+      if (wasHeld) {
+        try {
+          const { data: refundResult, error: refundErr } = await withTimeout(
+            supabase.functions.invoke('xendit-refund', {
+              body: { request_id: requestId, reason: 'REQUESTED_BY_CUSTOMER' },
+            }),
+            15_000,
+            'Refund initiation',
+          );
+          if (refundErr || !refundResult?.success) refundFailed = true;
+        } catch {
+          refundFailed = true;
+        }
       }
+
+      const { error: updErr } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .update({
+            delivery_status: 'Cancelled',
+            ...(refundFailed ? { refund_status: 'manual_required' } : {}),
+          })
+          .eq('request_id', requestId),
+        NETWORK_TIMEOUT_MS,
+      );
+      if (updErr) throw updErr;
 
       try {
-        await notifyUser(
-          senderId,
-          'You received a courier rating ⭐',
-          `Your courier rated your package & handoff ${senderStars}/5 stars.`,
-          { deliveryId: d.delivery_id }
-        );
-      } catch {}
+        await supabase.from('delivery_status_history').insert({ delivery_id: deliveryId, status: 'Cancelled' });
+      } catch { /* history is best-effort */ }
 
-      Alert.alert('Thank you!', 'Your rating for the sender has been submitted.');
+      const senderId = fresh?.sender_id ?? req.sender_id ?? req.sender?.user_id;
+      if (senderId) {
+        try {
+          await notifyUser(
+            senderId,
+            'Delivery cancelled by courier',
+            `Your courier cancelled #${trackingCode(requestId)} before pickup.` +
+              (wasHeld ? (refundFailed ? ' Please contact support so we can process your refund.' : ' Your payment is being refunded.') : ''),
+            { deliveryId },
+          );
+        } catch (e) {
+          console.warn('[TaskScreen] cancel notify failed:', e);
+        }
+      }
+
+      Alert.alert(
+        'Delivery cancelled',
+        refundFailed
+          ? 'The delivery was cancelled. The sender’s automatic refund could not be started and will be handled by support.'
+          : 'The delivery was cancelled and the sender has been notified.',
+      );
+      if (isMountedRef.current) setSelectedId(null);
+      if (providerId) await fetchDeliveries(providerId);
     } catch (e: any) {
-      Alert.alert('Rating Failed', e?.message || 'Could not submit your rating. Please try again.');
+      Alert.alert('Could not cancel', e?.message || 'Please check your connection and try again.');
     } finally {
-      if (isMountedRef.current) setSubmittingSenderRating(false);
+      if (isMountedRef.current) setCancellingId(null);
     }
   };
 
   const openVerifyModal = async (delivery: any) => {
-    const info = buildTaskInfo(delivery);
-    const geo = await verifyProviderWithinGeofence(info.pickup.lat, info.pickup.lng, 'pickup');
-    if (!geo.allowed) return;
+    try {
+      const info = buildTaskInfo(delivery);
+      const targetLat = delivery?.meetup_lat != null ? Number(delivery.meetup_lat) : info.pickup.lat;
+      const targetLng = delivery?.meetup_lng != null ? Number(delivery.meetup_lng) : info.pickup.lng;
+      const geo = await verifyProviderWithinGeofence(targetLat, targetLng, 'pickup');
+      if (!geo.allowed) return;
 
-    if (!cameraPermission?.granted) {
-      const res = await requestCameraPermission();
-      if (!res?.granted) {
-        Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
-        return;
+      if (!cameraPermission?.granted) {
+        const res = await requestCameraPermission();
+        if (!res?.granted) {
+          Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
+          return;
+        }
       }
+      setVerifyTarget(delivery);
+      setScanned(false);
+      setPinInput('');
+      setPickupPending(null);
+      setPickupPhotoUri(null);
+      setPickupCameraReady(false);
+      setVerifyModalVisible(true);
+    } catch (e: any) {
+      Alert.alert('Cannot Open Verification', e?.message || 'Please check location & camera permissions.');
     }
-    setVerifyTarget(delivery);
-    setScanned(false);
-    setPinInput('');
-    setPickupCameraReady(false);
-    setVerifyModalVisible(true);
   };
 
   const closeVerifyModal = () => {
@@ -1013,20 +1049,13 @@ export default function TaskScreen() {
       if (reqErr) throw reqErr;
 
       const info = buildTaskInfo(verifyTarget);
-      const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
-      const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
-      const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
-
-      const smsMsg = info.receiverPhone
-        ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
-        : '';
 
       if (info.senderId) {
         try {
           await notifyUser(
             info.senderId,
             'Your courier is on the way! 🚚',
-            `Package picked up. Have you notified ${info.receiverName || 'the receiver'}? Tap to call/message them.`,
+            `Package picked up. An automated SMS update has been sent to ${info.receiverName || 'the receiver'}.`,
             { deliveryId: verifyTarget?.delivery_id }
           );
         } catch (err) {
@@ -1034,30 +1063,14 @@ export default function TaskScreen() {
         }
       }
 
-      const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
-      if (info.receiverPhone) {
-        alertButtons.push({
-          text: 'Send SMS to Receiver',
-          onPress: () => {
-            const url = Platform.select({
-              ios: `sms:${info.receiverPhone}&body=${encodeURIComponent(smsMsg)}`,
-              android: `sms:${info.receiverPhone}?body=${encodeURIComponent(smsMsg)}`,
-            });
-            if (url) {
-              Linking.openURL(url).catch(() => {
-                Alert.alert('Cannot Open SMS', 'Your device cannot open the SMS app. Please notify the receiver manually.');
-              });
-            }
-          },
-        });
-      }
+      // Phase 4: Fully automated own-SIM SMS to receiver (replaces manual texting)
+      const smsSent = await triggerDeliverySmsMilestone(deliveryId, 'in_transit');
 
       Alert.alert(
         '✅ Item Collected',
-        info.receiverPhone
-          ? `Pickup verified. Tap below to notify ${info.receiverName || 'the receiver'} via SMS from your phone.`
-          : 'Pickup verified. (No receiver phone number on file.)',
-        alertButtons
+        smsSent
+          ? `Pickup verified. An automated SMS alert was sent to ${info.receiverName || 'the receiver'}.`
+          : 'Pickup verified. Live tracking is now active for the sender.',
       );
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
@@ -1073,9 +1086,14 @@ export default function TaskScreen() {
       const qrData = data.trim();
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('pickup_qr', qrData)
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) {
@@ -1111,9 +1129,13 @@ export default function TaskScreen() {
     try {
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
@@ -1187,10 +1209,13 @@ export default function TaskScreen() {
   };
 
   const uploadPickupPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pickup/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1284,10 +1309,13 @@ export default function TaskScreen() {
   };
 
   const uploadPodPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pod/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1397,67 +1425,15 @@ export default function TaskScreen() {
       );
       if (settleErr) throw settleErr;
 
+      // Option A (Return to Sender): give the sender's return deposit back now that the delivery succeeded.
+      // Runs in the background so the provider is never kept waiting; ActivityScreen retries if it fails.
       const returnDep = Number(deliveryOTPTarget?.delivery_requests?.return_deposit || 0);
       if (returnDep > 0 && requestId) {
-        try {
-          const { data: refundResult, error: refundErr } = await withTimeout(
-            supabase.functions.invoke(
-              'xendit-refund',
-              { body: { request_id: requestId, amount: returnDep, reason: 'REQUESTED_BY_CUSTOMER' } },
-            ),
-            NETWORK_TIMEOUT_MS,
-            'Deposit refund timed out'
-          );
-
-          const refundOk = !refundErr && refundResult?.success;
-
-          if (!refundOk) {
-            console.warn('[completeDelivery] refund failed:', refundErr?.message || refundResult);
-            await supabase
-              .from('delivery_requests')
-              .update({ refund_status: refundResult?.needs_manual ? 'manual_required' : 'failed' })
-              .eq('request_id', requestId);
-          } else {
-            const rawProvider = String(
-              deliveryOTPTarget?.escrow?.payment_method ||
-              deliveryOTPTarget?.delivery_requests?.payment_provider ||
-              ''
-            ).toLowerCase();
-            const txProvider = ['gcash', 'maya'].includes(rawProvider) ? rawProvider : 'gcash';
-
-            try {
-              await supabase.from('escrow_transactions').insert({
-                request_id: requestId,
-                event: 'deposit_refunded_to_sender',
-                amount: returnDep,
-                provider: txProvider,
-                notes: `Deposit refunded to sender on completed delivery | Amount=₱${returnDep}${
-                  rawProvider && rawProvider !== txProvider ? ` | WARN: unknown provider "${rawProvider}", assumed ${txProvider}` : ''
-                }`,
-              });
-
-              await supabase
-                .from('delivery_requests')
-                .update({
-                  refund_status: 'refunded',
-                  escrow_refunded_at: new Date().toISOString(),
-                })
-                .eq('request_id', requestId);
-            } catch (insertErr: any) {
-              console.error('[completeDelivery] refund row insert failed:', insertErr);
-              Alert.alert(
-                'Refund Sent — Record Missing',
-                `The ₱${returnDep.toFixed(2)} deposit was refunded to the sender, but the audit row could not be saved. Please note this for support.`
-              );
-            }
+        void requestDepositRefund(requestId, returnDep).then((r) => {
+          if (!r.ok && r.status !== 'skipped') {
+            console.warn('[completeDelivery] deposit refund not completed:', r.status, r.message);
           }
-        } catch (refundCallErr: any) {
-          console.warn('[completeDelivery] refund call threw:', refundCallErr);
-          await supabase
-            .from('delivery_requests')
-            .update({ refund_status: 'failed' })
-            .eq('request_id', requestId);
-        }
+        });
       }
 
       Alert.alert('✅ Delivery Complete!', 'Proof of delivery uploaded and payment has been released to your wallet.', [{ text: 'OK' }]);
@@ -1537,6 +1513,11 @@ export default function TaskScreen() {
         );
       }
 
+      const autoSmsOk = await triggerDeliverySmsMilestone(delivery.delivery_id, 'grace_timer');
+      if (autoSmsOk) {
+        updated.sms_receiver_at = nowIso;
+      }
+
       if (providerId) fetchDeliveries(providerId).catch(() => {});
     }
 
@@ -1562,10 +1543,15 @@ export default function TaskScreen() {
       Linking.openURL(`tel:${info.receiverPhone}`);
     } else if (kind === 'sms') {
       if (!info.receiverPhone) return;
+      const sent = await triggerDeliverySmsMilestone(graceDelivery.delivery_id, 'grace_timer');
       await supabase.from('deliveries').update({ sms_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, sms: true }));
-      const msg = encodeURIComponent(`Hi ${info.receiverName || ''}, I am your Pack-N-Ship courier waiting at the drop-off location. Please meet me within 10 minutes.`);
-      Linking.openURL(`sms:${info.receiverPhone}?body=${msg}`);
+      Alert.alert(
+        sent ? 'Automated SMS Sent' : 'SMS Already Sent',
+        sent
+          ? `An automated arrival SMS was sent to ${info.receiverName || 'the receiver'}.`
+          : `An automated arrival SMS was already sent to ${info.receiverName || 'the receiver'}.`,
+      );
     } else if (kind === 'chat') {
       await supabase.from('deliveries').update({ chat_sender_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, chat: true }));
@@ -1768,6 +1754,27 @@ export default function TaskScreen() {
     }
   }, [activeDeliveries, completedDeliveries, cancelledDeliveries, selectedId]);
 
+  // Deep link from the navigation screen: open this delivery's detail view (where the pickup / hand-over action lives)
+  // `openAction`: 'verify' = pickup / return QR-PIN scanner modal, 'complete' = drop-off proof-photo + OTP modal.
+  const openDeliveryParam = taskRoute.params?.openDeliveryId;
+  const openActionParam = taskRoute.params?.openAction as 'verify' | 'complete' | undefined;
+  useEffect(() => {
+    if (openDeliveryParam == null) return;
+    const id = Number(openDeliveryParam);
+    const d = [...activeDeliveries, ...completedDeliveries, ...cancelledDeliveries].find(x => x.delivery_id === id);
+    if (d) {
+      if (taskRoute.params?.returnToNav) returnToNavRef.current = taskRoute.params.returnToNav;
+      navigation.setParams({ openDeliveryId: undefined, openAction: undefined, returnToNav: undefined });
+      setSelectedId(id);
+      if (openActionParam === 'verify') void openVerifyModal(d);
+      else if (openActionParam === 'complete') void openDeliveryOTPModal(d);
+      return;
+    }
+    // the list may still be loading: wait for it, but do not keep the request pending forever
+    const t = setTimeout(() => navigation.setParams({ openDeliveryId: undefined, openAction: undefined }), 10000);
+    return () => clearTimeout(t);
+  }, [openDeliveryParam, openActionParam, activeDeliveries, completedDeliveries, cancelledDeliveries]);
+
   const fadeUp = (value: Animated.Value, distance = 24) => ({
     opacity: value,
     transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [distance, 0] }) }],
@@ -1883,18 +1890,6 @@ export default function TaskScreen() {
     () => activeDeliveries.filter(d => isScheduledDelivery(d) && matchesSelectedRoute(d)),
     [activeDeliveries, matchesSelectedRoute]
   );
-
-  const openRoute = (d: any) => {
-    const st = stageOf(d);
-    if (st !== 'pickup' && st !== 'transit') return;
-    const info = buildTaskInfo(d);
-    const t = st === 'pickup' ? info.pickup : info.dropoff;
-    if (t.lat == null || t.lng == null) {
-      Alert.alert('Route unavailable', `This order has no map coordinates for the ${st === 'pickup' ? 'pickup' : 'drop-off'} location.`);
-      return;
-    }
-    navigation.navigate('ProviderNavigation', { deliveryId: d.delivery_id });
-  };
 
   const selectedTask = selectedId != null ? allTasks.find(d => d.delivery_id === selectedId) || null : null;
 
@@ -2143,7 +2138,7 @@ export default function TaskScreen() {
             })}
           </View>
 
-          {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
+          {isCancelled && <Text style={styles.mCancelledText}>This booking was cancelled</Text>}
           {isReturning && !isCancelled && (
             <Text style={[styles.mCancelledText, { color: colors.warning }]}>
               Returning parcel to sender pickup pin
@@ -2158,21 +2153,6 @@ export default function TaskScreen() {
           </Text>
         </View>
 
-        {active && (
-          <View style={styles.oActions}>
-            <TouchableOpacity
-              style={[styles.oRouteBtn, { flex: 1 }]}
-              onPress={(e) => {
-                e.stopPropagation();
-                openRoute(d);
-              }}
-              activeOpacity={0.9}
-            >
-              <Ionicons name="navigate" size={18} color="#FFFFFF" />
-              <Text style={styles.oRouteText}>Start Route</Text>
-            </TouchableOpacity>
-          </View>
-        )}
       </TouchableOpacity>
     );
   };
@@ -2527,7 +2507,6 @@ export default function TaskScreen() {
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
     const active = stage === 'pickup' || stage === 'transit';
-    const submittedSenderRating = senderRatingByDelivery[d.delivery_id];
 
     const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
     const doneUpTo = stage === 'done' ? 4 : stage === 'transit' ? 2 : 0;
@@ -2546,7 +2525,7 @@ export default function TaskScreen() {
         <View style={[styles.dHeaderBar, { paddingTop: Math.max(insets.top, 16) + 12 }]}>
           <TouchableOpacity
             style={styles.dRoundBtnInline}
-            onPress={() => setSelectedId(null)}
+            onPress={() => { if (returnToNavRef.current) backToNavigation(); else setSelectedId(null); }}
             activeOpacity={0.85}
           >
             <SolarIcon name="ArrowLeft" variant="linear" size={22} color={colors.textPrimary} />
@@ -2643,18 +2622,6 @@ export default function TaskScreen() {
 
             <View style={{ marginTop: 18 }}>{renderRoute(info, { notes: true })}</View>
 
-            {/* Sender Card Container with Call/Chat (hidden when completed/cancelled) + Rating when completed */}
-            <View style={styles.dSecHead}>
-              <SolarIcon name="User" variant="duotone" size={18} color={colors.accent} />
-              <Text style={styles.dSecTitle}>Sender</Text>
-              {submittedSenderRating && (
-                <View style={styles.sdRatedBadge}>
-                  <Ionicons name="star" size={12} color={colors.accent} />
-                  <Text style={styles.sdRatedBadgeText}>{submittedSenderRating.rating}.0 Rated</Text>
-                </View>
-              )}
-            </View>
-
             <View style={styles.senderSectionCard}>
               <View style={styles.senderTopRow}>
                 <View style={[styles.mcAvatarSmall, { backgroundColor: BLUE }]}>
@@ -2703,98 +2670,6 @@ export default function TaskScreen() {
                   </View>
                 )}
               </View>
-
-              {isCompleted && (
-                <View style={styles.senderRateBox}>
-                  {submittedSenderRating ? (
-                    <View>
-                      <View style={styles.ratedHeaderRow}>
-                        <Text style={styles.rateBoxHeading}>Your rating for this sender</Text>
-                        <View style={{ flexDirection: 'row', gap: 4 }}>
-                          {[1, 2, 3, 4, 5].map(n => (
-                            <Ionicons
-                              key={n}
-                              name={n <= submittedSenderRating.rating ? 'star' : 'star-outline'}
-                              size={18}
-                              color={n <= submittedSenderRating.rating ? colors.accent : colors.textMuted}
-                            />
-                          ))}
-                        </View>
-                      </View>
-                      {!!submittedSenderRating.comment && (
-                        <Text style={styles.ratedCommentText}>"{submittedSenderRating.comment}"</Text>
-                      )}
-                    </View>
-                  ) : (
-                    <View>
-                      <Text style={styles.rateBoxHeading}>
-                        Rate {info.senderName || 'the Sender'}
-                      </Text>
-                      <Text style={styles.rateBoxSub}>
-                        How accurate were the package details and handoff?
-                      </Text>
-
-                      <View style={styles.starRow}>
-                        {[1, 2, 3, 4, 5].map(n => (
-                          <TouchableOpacity
-                            key={n}
-                            onPress={() => setSenderStars(n)}
-                            activeOpacity={0.75}
-                            hitSlop={6}
-                          >
-                            <Ionicons
-                              name={n <= senderStars ? 'star' : 'star-outline'}
-                              size={30}
-                              color={n <= senderStars ? colors.accent : colors.textMuted}
-                            />
-                          </TouchableOpacity>
-                        ))}
-                        <Text style={styles.starLabelText}>{RATING_LABELS[senderStars]}</Text>
-                      </View>
-
-                      <View style={styles.tagWrap}>
-                        {SENDER_RATING_TAGS.map(tag => {
-                          const on = senderSelectedTags.includes(tag);
-                          return (
-                            <TouchableOpacity
-                              key={tag}
-                              style={[styles.rateTag, on && styles.rateTagActive]}
-                              onPress={() => toggleSenderTag(tag)}
-                              activeOpacity={0.8}
-                            >
-                              <Text style={[styles.rateTagText, on && styles.rateTagTextActive]}>
-                                {tag}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-
-                      <TextInput
-                        style={styles.rateCommentInput}
-                        value={senderComment}
-                        onChangeText={setSenderComment}
-                        placeholder="Add an optional note about package accuracy or pickup..."
-                        placeholderTextColor={colors.textMuted}
-                        multiline
-                      />
-
-                      <TouchableOpacity
-                        style={[styles.rateSubmitBtn, submittingSenderRating && { opacity: 0.65 }]}
-                        onPress={() => handleSubmitSenderRating(d)}
-                        disabled={submittingSenderRating}
-                        activeOpacity={0.9}
-                      >
-                        {submittingSenderRating ? (
-                          <ActivityIndicator size="small" color="#FFFFFF" />
-                        ) : (
-                          <Text style={styles.rateSubmitBtnText}>Submit Rating</Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </View>
-              )}
             </View>
 
             {/* Receiver Card Container (Call only, hidden when completed/cancelled) */}
@@ -2860,6 +2735,21 @@ export default function TaskScreen() {
                     {d.receiver_notified ? 'Sender notified the receiver ✓' : 'Sender has not confirmed receiver yet'}
                   </Text>
                 </View>
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, { flex: 0, backgroundColor: colors.errorBg }]}
+                  onPress={() => handleProviderCancel(d)}
+                  disabled={cancellingId === d.delivery_id}
+                  activeOpacity={0.85}
+                >
+                  {cancellingId === d.delivery_id ? (
+                    <ActivityIndicator size="small" color={colors.error} />
+                  ) : (
+                    <>
+                      <Ionicons name="close-circle-outline" size={17} color={colors.error} />
+                      <Text style={[styles.mSoftText, { color: colors.error }]}>Cancel delivery (before pickup)</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             )}
 
@@ -3026,6 +2916,44 @@ export default function TaskScreen() {
               )}
             </View>
 
+            {!isCancelled && info.baseFare > 0 && (
+              <>
+                <View style={styles.dSecHead}>
+                  <SolarIcon name="Wallet" variant="duotone" size={18} />
+                  <Text style={styles.dSecTitle}>Payment Breakdown</Text>
+                </View>
+                <View style={styles.payRowsCard}>
+                  {([
+                    ['Delivery fare', money(info.baseFare), undefined, false],
+                    ['Platform fee (15%)', `-${money(info.platformFee)}`, colors.error, false],
+                    ...(info.returnDeposit > 0
+                      ? [[
+                          info.isReturned ? 'Return deposit (kept for return trip)' : 'Return deposit (refunded to sender)',
+                          info.isReturned ? `+${money(info.returnDeposit)}` : money(info.returnDeposit),
+                          info.isReturned ? colors.success : colors.textMuted,
+                          false,
+                        ]]
+                      : []),
+                    [info.isReturned || !released ? 'Your earnings' : 'Net earnings', money(info.earnings), colors.success, true],
+                    ['Sender paid in total', money(info.totalPaid), colors.textSecondary, false],
+                  ] as [string, string, string | undefined, boolean][]).map(([label, value, color, bold], i) => (
+                    <View key={label} style={[styles.payRow, i > 0 && styles.payRowBorder]}>
+                      <Text style={styles.payRowLabel}>{label}</Text>
+                      <Text
+                        style={[
+                          styles.payRowValue,
+                          !!color && { color },
+                          bold && { fontFamily: 'Poppins_700Bold' },
+                        ]}
+                      >
+                        {value}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+
             {(!!(d.escrow?.bc_escrow_tx_hash) || !!(d.qr_verifications?.bc_pickup_tx_hash) || !!(d.qr_verifications?.bc_dropoff_tx_hash)) && (
               <>
                 <View style={styles.dSecHead}>
@@ -3089,12 +3017,8 @@ export default function TaskScreen() {
 
         {active && (
           <View style={styles.dBar}>
-            <TouchableOpacity style={[styles.mSoftBtn, { flex: 1 }]} onPress={() => openRoute(d)} activeOpacity={0.85}>
-              <Ionicons name="navigate" size={18} color={colors.accent} />
-              <Text style={styles.mSoftText}>Navigate</Text>
-            </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.mPrimaryBtn, { flex: 1.4 }, awaitingApproval && { opacity: 0.55 }]}
+              style={[styles.mPrimaryBtn, { flex: 1 }, awaitingApproval && { opacity: 0.55 }]}
               disabled={awaitingApproval}
               onPress={() =>
                 stage === 'pickup' || d.delivery_requests?.delivery_status === 'Returning'
@@ -3356,20 +3280,6 @@ export default function TaskScreen() {
                 <Text style={styles.rtMain} numberOfLines={1}>{info.dropoff.main}</Text>
               </View>
             </View>
-            {(() => {
-              const st = stageOf(selectedTask);
-              if (st !== 'pickup' && st !== 'transit') return null;
-              return (
-                <TouchableOpacity
-                  style={[styles.mPrimaryBtn, { marginTop: 14 }]}
-                  onPress={() => { setMapModalVisible(false); openRoute(selectedTask); }}
-                  activeOpacity={0.9}
-                >
-                  <Ionicons name="navigate" size={18} color="#FFFFFF" />
-                  <Text style={styles.mPrimaryText}>Open Route</Text>
-                </TouchableOpacity>
-              );
-            })()}
           </View>
         </View>
       </Modal>
@@ -3600,8 +3510,11 @@ export default function TaskScreen() {
   const broadcastingDelivery = useMemo(() => {
     const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit' && !isAwaitingApproval(d));
     if (inTransit) return inTransit;
-    if (navSessionId == null) return null;
-    return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;
+    const headingToPickup =
+      (navSessionId != null
+        ? activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup')
+        : null) ?? activeDeliveries.find((d: any) => stageOf(d) === 'pickup');
+    return headingToPickup ?? null;
   }, [activeDeliveries, navSessionId]);
 
   const broadcastIdRef = useRef<number | null>(null);
@@ -4256,104 +4169,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontFamily: 'Poppins_700Bold',
     color: PURPLE,
   },
-  senderRateBox: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-  },
-  ratedHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  ratedCommentText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_500Medium',
-    fontStyle: 'italic',
-    color: c.textSecondary,
-    marginTop: 8,
-    lineHeight: 18,
-  },
-  rateBoxHeading: {
-    fontSize: 15,
-    fontFamily: 'Poppins_700Bold',
-    color: c.textPrimary,
-  },
-  rateBoxSub: {
-    fontSize: 12.5,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textSecondary,
-    marginTop: 2,
-    marginBottom: 12,
-  },
-  starRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
-  },
-  starLabelText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_700Bold',
-    color: c.accent,
-    marginLeft: 6,
-  },
-  tagWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  rateTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: c.background,
-    borderWidth: 1,
-    borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
-  },
-  rateTagActive: {
-    backgroundColor: c.accentSoft,
-    borderColor: c.accent,
-  },
-  rateTagText: {
-    fontSize: 12,
-    fontFamily: 'Poppins_600SemiBold',
-    color: c.textSecondary,
-  },
-  rateTagTextActive: {
-    color: c.accent,
-    fontFamily: 'Poppins_700Bold',
-  },
-  rateCommentInput: {
-    backgroundColor: c.background,
-    borderWidth: 1,
-    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: c.textPrimary,
-    minHeight: 72,
-    textAlignVertical: 'top',
-    marginBottom: 12,
-  },
-  rateSubmitBtn: {
-    backgroundColor: c.accent,
-    borderRadius: 24,
-    height: 46,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rateSubmitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-  },
-
   podPhotoCard: {
     width: '100%',
     height: 200,

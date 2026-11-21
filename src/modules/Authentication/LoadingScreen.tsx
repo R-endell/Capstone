@@ -14,7 +14,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
-import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
+import { resolveHomeRoute, isApprovedProvider } from '../../utils/resolveHomeRoute';
 import { registerPushToken } from '../../services/pushService';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
 
@@ -79,9 +79,11 @@ export default function LoadingScreen() {
           }
         })();
 
+        // Approved providers always land on the Jobs tab.
+        const goProvider = route === 'ProviderTabs' || (await isApprovedProvider(session.user.id)) === true;
         navigation.reset({
           index: 0,
-          routes: [{ name: route }],
+          routes: [goProvider ? ({ name: 'ProviderTabs', params: { screen: 'Jobs' } } as any) : { name: route }],
         });
       } catch (error) {
         console.error('Session restore error:', error);
