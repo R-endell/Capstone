@@ -97,6 +97,9 @@ type RouteData = {
   receiverNotified?: boolean;
   dropoffArrivedAt?: string | null;
   receiverPhone?: string | null;
+  meetupLandmarkName?: string | null;
+  meetupLat?: number | null;
+  meetupLng?: number | null;
 };
 
 type PayInfo = {
@@ -1184,6 +1187,7 @@ export default function BookingScreen({ route, navigation }: any) {
           .select(`
             delivery_id, request_id, provider_id, accepted_at, completed_at, estimated_eta,
             provider_on_way_at, provider_eta_mins, receiver_notified, dropoff_arrived_at,
+            meetup_landmark_name, meetup_lat, meetup_lng,
             vehicle:vehicles(vehicle_id, vehicle_type, plate_number, max_weight_kg),
             request:delivery_requests(
               request_id, delivery_status, receiver_phone,
@@ -1246,6 +1250,9 @@ export default function BookingScreen({ route, navigation }: any) {
         receiverNotified: !!(d as any).receiver_notified,
         dropoffArrivedAt: (d as any).dropoff_arrived_at ?? null,
         receiverPhone: req?.receiver_phone ?? null,
+        meetupLandmarkName: (d as any).meetup_landmark_name ?? null,
+        meetupLat: (d as any).meetup_lat ?? null,
+        meetupLng: (d as any).meetup_lng ?? null,
       });
       setTrackingVehicle((d as any).vehicle ?? null);
 
@@ -2969,6 +2976,39 @@ export default function BookingScreen({ route, navigation }: any) {
               <Text style={styles.rvTitle}>Review & pay</Text>
             </View>
 
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 10,
+                backgroundColor: /door/i.test(String(state.dropoffType || '')) ? colors.infoSoft : colors.warningBg,
+                borderWidth: 1,
+                borderColor: /door/i.test(String(state.dropoffType || '')) ? colors.info : colors.warning,
+                borderRadius: 14,
+                padding: 12,
+                marginBottom: 14,
+              }}
+            >
+              <SolarIcon
+                name={/door/i.test(String(state.dropoffType || '')) ? 'Routing' : 'MapPoint'}
+                variant="duotone"
+                size={18}
+                color={/door/i.test(String(state.dropoffType || '')) ? colors.info : colors.warning}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: colors.textPrimary }}>
+                  {/door/i.test(String(state.dropoffType || ''))
+                    ? 'Door-to-Door Selected (Final once paid)'
+                    : 'Curb-side Selected · Strict No Detour (Final once paid)'}
+                </Text>
+                <Text style={{ fontSize: 11, fontFamily: 'Poppins_400Regular', color: colors.textSecondary, marginTop: 2, lineHeight: 16 }}>
+                  {/door/i.test(String(state.dropoffType || ''))
+                    ? 'Driver will come straight to your pickup and drop-off pins.'
+                    : 'Meet the driver curbside on their main route (nearest landmark if >15 m off-road). Remind your receiver too.'}
+                </Text>
+              </View>
+            </View>
+
             {state.preferredProviderId && (
               <View style={styles.preferredProviderBanner}>
                 <View style={styles.preferredProviderIcon}>
@@ -3584,6 +3624,29 @@ export default function BookingScreen({ route, navigation }: any) {
             </View>
           )}
         >
+          
+          {!!trackingData?.meetupLandmarkName && !trackingData?.pickupVerified && (
+            <View
+              style={[
+                styles.trackingCard,
+                { backgroundColor: colors.warningBg, borderColor: colors.warning, flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+              ]}
+            >
+              <SolarIcon name="MapPoint" variant="bold" size={20} color={colors.warning} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontFamily: 'Poppins_800ExtraBold', color: colors.warning, letterSpacing: 0.6 }}>
+                  CURB-SIDE MEET-UP POINT (MAIN ROUTE)
+                </Text>
+                <Text style={{ fontSize: 14, fontFamily: 'Poppins_700Bold', color: colors.textPrimary, marginTop: 2 }}>
+                  Meet driver at: {trackingData.meetupLandmarkName}
+                </Text>
+                <Text style={{ fontSize: 11.5, fontFamily: 'Poppins_400Regular', color: colors.textSecondary, marginTop: 2 }}>
+                  Drivers stay strictly on their main route for Curb-side orders. Please head to this landmark before the driver arrives.
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Provider card */}
           <View style={styles.trackingCard}>
             <View style={styles.cardTop}>

@@ -15,6 +15,7 @@ import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 import {
   LiveFix, fetchLiveFixes, subscribeLiveFixes, isFixFresh,
 } from '../../../services/providerLiveService';
+import { parseNaiveRouteTime } from '../../../services/routeService';
 import ProviderTrackModal, { TrackTrip } from './ProviderTrackModal';
 
 let Location: any = null;
@@ -189,15 +190,15 @@ export default function ExploreScreen() {
       let query = supabase
         .from('provider_routes')
         .select(`
-          route_id, departure_time, end_time, route_frequency, provider_id,
+          route_id, departure_time, end_time, route_frequency, provider_id, is_selected,
           provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active ),
-          start_location:locations!provider_routes_start_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
-          end_location:locations!provider_routes_end_location_id_fkey ( street_address, barangay, city, latitude, longitude ),
+          start_location:locations!provider_routes_start_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
+          end_location:locations!provider_routes_end_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
           vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        // EVERY active provider route is listed (selected or not, today or any future date).
+        .eq('is_selected', true)
         .order('departure_time', { ascending: true });
 
       if (myUserId != null) {
@@ -214,21 +215,30 @@ export default function ExploreScreen() {
           const vehicle = r.vehicle || {};
           const start = r.start_location || {};
           const end = r.end_location || {};
-          const dep = r.departure_time ? new Date(r.departure_time) : new Date();
+          const dep = r.departure_time ? parseNaiveRouteTime(r.departure_time) : new Date();
 
           let endTimeObj: Date;
           try {
-            endTimeObj = r.end_time && !isNaN(new Date(r.end_time).getTime())
-              ? new Date(r.end_time)
+            const parsedEnd = r.end_time ? parseNaiveRouteTime(r.end_time) : null;
+            endTimeObj = parsedEnd && !isNaN(parsedEnd.getTime())
+              ? parsedEnd
               : new Date(dep.getTime() + 4 * 60 * 60 * 1000);
           } catch {
             endTimeObj = new Date(dep.getTime() + 4 * 60 * 60 * 1000);
           }
 
-          const startSplit = splitAddress(start.street_address);
-          const endSplit = splitAddress(end.street_address);
-          const startSub = [start.barangay, start.city].filter(Boolean).join(', ') || startSplit.sub;
-          const endSub = [end.barangay, end.city].filter(Boolean).join(', ') || endSplit.sub;
+          const startTitle = (start.place_name || '').trim() || splitAddress(start.street_address).main;
+          const endTitle = (end.place_name || '').trim() || splitAddress(end.street_address).main;
+          const startSub = [
+            start.street_address && start.street_address !== startTitle ? start.street_address : '',
+            start.barangay && start.barangay !== 'Unknown' ? start.barangay : '',
+            start.city && start.city !== 'Unknown' ? start.city : '',
+          ].filter(Boolean).join(', ');
+          const endSub = [
+            end.street_address && end.street_address !== endTitle ? end.street_address : '',
+            end.barangay && end.barangay !== 'Unknown' ? end.barangay : '',
+            end.city && end.city !== 'Unknown' ? end.city : '',
+          ].filter(Boolean).join(', ');
 
           return {
             id: String(r.route_id),
@@ -237,8 +247,8 @@ export default function ExploreScreen() {
             name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
             isActive: !!provider.is_active,
             rating: 4.9,
-            pickup: start.street_address || 'Starting point',
-            dropoff: end.street_address || 'Destination',
+            pickup: startTitle || 'Starting point',
+            dropoff: endTitle || 'Destination',
             pickupSub: startSub,
             dropoffSub: endSub,
             pickupCoords: { lat: Number(start.latitude) || 0, lng: Number(start.longitude) || 0 },

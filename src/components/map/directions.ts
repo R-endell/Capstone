@@ -1,25 +1,29 @@
 // src/components/map/directions.ts
-// Turn-by-turn route between two points.
-//   1) Google Routes API, called through the `google-routes` Supabase edge function so the
-//      Routes key lives in a server-side secret and never ships inside the app.
-//   2) Falls back to OSRM (free, no key) if the function / Google refuses or is unreachable.
 import { supabase } from '../../utils/supabase';
 import type { LatLng } from './roadRoute';
 
 export type NavStep = { instruction: string; maneuver: string; distanceM: number };
 
+export type TrafficSpeed = 'NORMAL' | 'SLOW' | 'TRAFFIC_JAM';
+
+export type TrafficInterval = {
+  startPolylinePointIndex: number;
+  endPolylinePointIndex: number;
+  speed: TrafficSpeed;
+};
+
 export type NavRoute = {
   coords: LatLng[];
   distanceM: number;
   durationS: number;
-  steps: NavStep[];             // one entry per step; instruction may be '' for "keep going"
+  staticDurationS?: number;
+  trafficIntervals?: TrafficInterval[];
+  steps: NavStep[];
   source: 'google' | 'osrm' | 'straight';
 };
 
-// If Google rejects the key (API not enabled / restricted) stop asking for this session.
 let googleDisabled = false;
 
-/** Google's encoded polyline -> coordinates. */
 export function decodePolyline(str: string): LatLng[] {
   const out: LatLng[] = [];
   let index = 0, lat = 0, lng = 0;
@@ -55,7 +59,6 @@ async function googleRoute(a: LatLng, b: LatLng): Promise<NavRoute | null> {
       },
     });
     if (error) {
-      // function not deployed (404), key secret missing (503) or access refused (403): stop asking this session
       const status = (error as any)?.context?.status;
       if (status === 404 || status === 403 || status === 503) {
         googleDisabled = true;
@@ -65,8 +68,12 @@ async function googleRoute(a: LatLng, b: LatLng): Promise<NavRoute | null> {
     }
     if (data?.error) {
       const code = data.error.status;
-      if (code === 'PERMISSION_DENIED' || code === 'REQUEST_DENIED' || code === 'KEY_MISSING' ||
-          (code === 'INVALID_ARGUMENT' && /key/i.test(data.error.message || ''))) {
+      if (
+        code === 'PERMISSION_DENIED' ||
+        code === 'REQUEST_DENIED' ||
+        code === 'KEY_MISSING' ||
+        (code === 'INVALID_ARGUMENT' && /key/i.test(data.error.message || ''))
+      ) {
         googleDisabled = true;
         console.warn('[directions] Google Routes API unavailable, using OSRM:', data.error.message || code);
       }
@@ -82,10 +89,24 @@ async function googleRoute(a: LatLng, b: LatLng): Promise<NavRoute | null> {
       distanceM: Number(s.distanceMeters) || 0,
     }));
 
+    const rawIntervals = r?.travelAdvisory?.speedReadingIntervals;
+    const trafficIntervals: TrafficInterval[] | undefined = Array.isArray(rawIntervals)
+      ? rawIntervals.map((iv: any) => ({
+          startPolylinePointIndex: Number(iv.startPolylinePointIndex) || 0,
+          endPolylinePointIndex: Number(iv.endPolylinePointIndex) || 0,
+          speed: (iv.speed || 'NORMAL') as TrafficSpeed,
+        }))
+      : undefined;
+
+    const durationS = parseInt(String(r.duration || '0').replace('s', ''), 10) || 0;
+    const staticDurationS = parseInt(String(r.staticDuration || '0').replace('s', ''), 10) || undefined;
+
     return {
       coords: decodePolyline(enc),
       distanceM: Number(r.distanceMeters) || 0,
-      durationS: parseInt(String(r.duration || '0').replace('s', ''), 10) || 0,
+      durationS,
+      staticDurationS,
+      trafficIntervals,
       steps,
       source: 'google',
     };
@@ -141,7 +162,6 @@ export async function getNavRoute(a: LatLng, b: LatLng): Promise<NavRoute> {
   return { coords: [a, b], distanceM: d, durationS: d / (25000 / 3600), steps: [], source: 'straight' };
 }
 
-/* ------------------------------ formatting ------------------------------ */
 export const fmtDistance = (m: number | null | undefined) => {
   if (m == null || !isFinite(m)) return '—';
   if (m < 1000) return `${Math.max(10, Math.round(m / 10) * 10)} m`;

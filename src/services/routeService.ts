@@ -2,9 +2,10 @@
 import { ShipmentItem } from '../modules/Dashboard/Sender/Delivery/ScheduleContext';
 import { supabase } from '../utils/supabase';
 import { getActiveRouteId, setActiveRouteId, getDemoMode } from './activeRouteStore';
+import { getNavRoute } from '../components/map/directions';
 
 let CURBSIDE_BASE_FEE = 20;
-let DOOR_TO_DOOR_BASE_FEE = 35;
+let DOOR_TO_DOOR_BASE_FEE = 45;
 let PER_KM = 8;
 let SIZE_FEE: Record<'Small' | 'Medium' | 'Large', number> = {
   Small: 0,
@@ -114,7 +115,6 @@ export async function getRoadDistanceKm(
   pickup: { latitude: number; longitude: number },
   dropoff: { latitude: number; longitude: number },
 ): Promise<number> {
-  // Always sync latest rates from Supabase delivery_rates first
   await syncDeliveryRatesFromDB();
 
   const key = cacheKey(pickup, dropoff);
@@ -124,26 +124,14 @@ export async function getRoadDistanceKm(
   const fallback = quickEstimateKm(pickup, dropoff);
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${pickup.longitude},${pickup.latitude};${dropoff.longitude},${dropoff.latitude}` +
-      `?overview=false`;
-
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-
-    const data = await res.json();
-
-    if (data?.code === 'Ok' && data.routes?.[0]?.distance) {
-      const km = data.routes[0].distance / 1000;
+    const nav = await getNavRoute(pickup, dropoff);
+    if (nav.source !== 'straight' && nav.distanceM > 0) {
+      const km = nav.distanceM / 1000;
       distanceCache.set(key, km);
       return km;
     }
-  } catch (e) {
-    console.warn('[routeService] OSRM failed/timeout, using quick estimate');
+  } catch {
+    console.warn('[routeService] getNavRoute failed, using quick estimate');
   }
 
   distanceCache.set(key, fallback);
@@ -237,46 +225,48 @@ export const parseNaiveRouteTime = (s?: string | null): Date => {
 };
 
 /**
- * Fetches full road polyline coordinates and road distance (km) from OSRM
- * so PostGIS can build `corridor_geom` via trigger.
+ * Fetches traffic-aware, one-way-respecting road polyline & distance via Google Routes
+ * (with automatic OSRM fallback). Never silently saves a 2-point straight line when `requireRoad` is true.
  */
 export async function fetchRouteCorridorAndDistance(
   start: RouteCoord,
   end: RouteCoord,
-): Promise<{ coords: RouteCoord[]; distanceKm: number }> {
-  const fallbackCoords: RouteCoord[] = [
+  opts: { requireRoad?: boolean } = {},
+): Promise<{ coords: RouteCoord[]; distanceKm: number; source: 'google' | 'osrm' | 'straight' }> {
+  const nav = await getNavRoute(
     { latitude: Number(start.latitude), longitude: Number(start.longitude) },
     { latitude: Number(end.latitude), longitude: Number(end.longitude) },
-  ];
-  const fallbackKm = Number(quickEstimateKm(fallbackCoords[0], fallbackCoords[1]).toFixed(2));
+  );
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${start.longitude},${start.latitude};${end.longitude},${end.latitude}` +
-      `?overview=full&geometries=geojson`;
-
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    const data = await res.json();
-
-    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates?.length >= 2) {
-      const coords: RouteCoord[] = data.routes[0].geometry.coordinates.map((c: number[]) => ({
-        latitude: Number(c[1]),
-        longitude: Number(c[0]),
-      }));
-      const distanceKm = data.routes[0].distance
-        ? Number((data.routes[0].distance / 1000).toFixed(2))
-        : fallbackKm;
-      return { coords, distanceKm };
+  if (nav.source === 'straight' || nav.coords.length <= 2) {
+    if (opts.requireRoad) {
+      throw new Error(
+        'Could not calculate a drivable road route right now. Please check your internet connection and try again.',
+      );
     }
-  } catch {
-    // fall through to straight-line fallback
+    const fallbackCoords: RouteCoord[] = [
+      { latitude: Number(start.latitude), longitude: Number(start.longitude) },
+      { latitude: Number(end.latitude), longitude: Number(end.longitude) },
+    ];
+    return {
+      coords: fallbackCoords,
+      distanceKm: Number(quickEstimateKm(fallbackCoords[0], fallbackCoords[1]).toFixed(2)),
+      source: 'straight',
+    };
   }
 
-  return { coords: fallbackCoords, distanceKm: fallbackKm };
+  // Thin to <= 250 points so PostGIS & map polygon buffering stay fast
+  let coords = nav.coords;
+  if (coords.length > 250) {
+    const step = (coords.length - 1) / 249;
+    const thin: RouteCoord[] = [];
+    for (let i = 0; i < 249; i++) thin.push(coords[Math.round(i * step)]);
+    thin.push(coords[coords.length - 1]);
+    coords = thin;
+  }
+
+  const distanceKm = Number((nav.distanceM / 1000).toFixed(2));
+  return { coords, distanceKm, source: nav.source };
 }
 
 /**
@@ -484,6 +474,7 @@ export async function createProviderRouteWithGuardrails(
   const { coords, distanceKm } = await fetchRouteCorridorAndDistance(
     { latitude: Number(startLocation.latitude), longitude: Number(startLocation.longitude) },
     { latitude: Number(endLocation.latitude), longitude: Number(endLocation.longitude) },
+    { requireRoad: true },
   );
 
   // Guardrail 4: Coverage flag (> 25 km = Admin review)
@@ -547,6 +538,7 @@ export async function updateProviderRouteWithGuardrails(
   const { coords, distanceKm } = await fetchRouteCorridorAndDistance(
     { latitude: Number(input.startLocation.latitude), longitude: Number(input.startLocation.longitude) },
     { latitude: Number(input.endLocation.latitude), longitude: Number(input.endLocation.longitude) },
+    { requireRoad: true },
   );
 
   const computedEnd = input.endTimeObj

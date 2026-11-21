@@ -223,3 +223,91 @@ export const getAccurateFix = async (): Promise<Location.LocationObject> => {
       .catch((e) => finish(e));
   });
 };
+
+
+export interface RouteLandmark {
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+
+const IGNORED_LANDMARK_TYPES = new Set([
+  'route',
+  'street_address',
+  'postal_code',
+  'plus_code',
+  'political',
+  'locality',
+  'sublocality',
+]);
+
+/**
+ * Finds the nearest recognizable main-route landmark (store, eatery, terminal, etc.)
+ * around a projected point on the driver's road. Falls back to the street name if none found.
+ */
+export async function findNearestRouteLandmark(lat: number, lng: number): Promise<RouteLandmark> {
+  const fallback: RouteLandmark = {
+    name: 'Main road meet-up point',
+    address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+    lat,
+    lng,
+  };
+  if (!HAS_GOOGLE_KEY) return fallback;
+
+  // 1) Try Google Places Nearby Search within 80 m of the snapped main-route point
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+        'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types',
+      },
+      body: JSON.stringify({
+        maxResultCount: 5,
+        rankPreference: 'DISTANCE',
+        locationRestriction: {
+          circle: { center: { latitude: lat, longitude: lng }, radius: 80.0 },
+        },
+      }),
+    });
+    clearTimeout(timer);
+    const data = await res.json();
+    const hit = (data?.places || []).find(
+      (p: any) =>
+        p?.displayName?.text &&
+        p?.location &&
+        !(p.types || []).some((t: string) => IGNORED_LANDMARK_TYPES.has(t)),
+    );
+    if (hit) {
+      return {
+        name: String(hit.displayName.text).trim(),
+        address: String(hit.formattedAddress || '').trim(),
+        lat: Number(hit.location.latitude) || lat,
+        lng: Number(hit.location.longitude) || lng,
+      };
+    }
+  } catch { /* fall through to reverse geocode */ }
+
+  // 2) Fallback: street name on the main road via Google Geocoder
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const resolved = await fetchGoogleAddress({ lat, lng }, ctrl.signal);
+    clearTimeout(timer);
+    if (resolved?.street && resolved.street !== 'Not identified') {
+      return {
+        name: `Along ${resolved.street}`,
+        address: resolved.formatted || resolved.street,
+        lat,
+        lng,
+      };
+    }
+  } catch { /* keep fallback */ }
+
+  return fallback;
+}
