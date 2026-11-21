@@ -45,6 +45,26 @@ const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
 const trackingCode = (id: any) => `PNS-${String(id).padStart(4, '0')}`;
 const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
 
+const PAID_STATUSES = ['held', 'paid', 'released'];
+const isRequestPaidStatus = (paymentStatus?: string | null) =>
+  PAID_STATUSES.includes(String(paymentStatus || '').toLowerCase());
+
+// Reads naive Manila timestamps ("2026-11-21 08:15:00") as local time without adding +8 hours
+const parseNaiveSchedule = (raw?: string | null): Date | null => {
+  if (!raw) return null;
+  const m = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return new Date(raw);
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+};
+
+const formatNaiveSchedule = (raw?: string | null): string => {
+  const d = parseNaiveSchedule(raw);
+  if (!d || isNaN(d.getTime())) return '—';
+  const datePart = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const timePart = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return `${datePart} · ${timePart}`;
+};
+
 const findRouteOwner = (nav: any, names: string[]): { owner: any; name: string } | null => {
   let current = nav;
   while (current) {
@@ -305,6 +325,9 @@ interface Delivery {
   pickup_photo_taken_at?: string | null;
   provider?: any;
   vehicle?: any;
+  meetup_landmark_name?: string | null;
+  meetup_lat?: number | null;
+  meetup_lng?: number | null;
 }
 
 interface QrRow {
@@ -619,6 +642,7 @@ export default function ActivityScreen() {
           )
         `)
         .eq('sender_id', currentUserId)
+        .in('payment_status', ['held', 'paid', 'released', 'refunded'])
         .order('created_at', { ascending: false });
 
       if (requestsError) throw requestsError;
@@ -686,7 +710,7 @@ export default function ActivityScreen() {
       };
 
       const mappedDeliveries: MappedDelivery[] = (requests || []).map((item: any) => {
-        const scheduleDate = item.scheduled_time ? new Date(item.scheduled_time) : new Date(item.created_at);
+        const scheduleDate = item.scheduled_time ? (parseNaiveSchedule(item.scheduled_time) || new Date(item.created_at)) : new Date(item.created_at);
         const delivery = deliveryByRequestId.get(item.request_id);
 
         const pickup = describePlace(item.pickup_location);
@@ -734,9 +758,11 @@ export default function ActivityScreen() {
         else if (status === 'Pending') {
           statusDisplay = delivery
             ? 'Matched'
-            : hasPreferredProvider
-              ? 'Waiting for Acceptance'
-              : 'Waiting for Provider';
+            : !isRequestPaidStatus(item.payment_status)
+              ? 'Payment Pending'
+              : hasPreferredProvider
+                ? 'Waiting for Acceptance'
+                : 'Waiting for Provider';
         }
 
         const joinedReceiver = item.receiver || (item.receiver_id != null ? receiverById[item.receiver_id] : null);
@@ -1204,16 +1230,19 @@ export default function ActivityScreen() {
       {
         text: 'Yes, Cancel', style: 'destructive', onPress: async () => {
           const reqId: number = rawData.request_id;
+          const trackingId = trackingCode(reqId);
           const providerId: number | null = selectedDelivery?.provider_id ?? rawData.preferred_provider_id ?? null;
-          const amount: number = Number(selectedDelivery?.price) || 0;
+          const amount: number = Number(rawData.estimated_cost ?? selectedDelivery?.price) || 0;
 
+          let wasHeld = false;
           let refundSucceeded = false;
           let refundFailed = false;
+          let refundErrorMsg = '';
 
           try {
             const { data: reqRow } = await supabase
               .from('delivery_requests')
-              .select('payment_status, escrow_status, delivery_status')
+              .select('payment_status, escrow_status, delivery_status, estimated_cost, payment_provider')
               .eq('request_id', reqId)
               .maybeSingle();
 
@@ -1229,7 +1258,8 @@ export default function ActivityScreen() {
               return;
             }
 
-            const wasHeld =
+            const effectiveAmount = Number(reqRow?.estimated_cost ?? amount) || 0;
+            wasHeld =
               reqRow?.payment_status === 'held' ||
               reqRow?.escrow_status === 'held';
 
@@ -1246,22 +1276,61 @@ export default function ActivityScreen() {
                   refundSucceeded = true;
                 } else {
                   refundFailed = true;
+                  refundErrorMsg = refundResult?.error || refundErr?.message || 'Refund could not be started.';
                   updateData.refund_status = refundResult?.needs_manual ? 'manual_required' : 'failed';
                 }
-              } catch {
+              } catch (e: any) {
                 refundFailed = true;
+                refundErrorMsg = e?.message || 'Network error contacting payment service.';
                 updateData.refund_status = 'failed';
               }
             }
 
-            await supabase.from('delivery_requests').update(updateData).eq('request_id', reqId);
+            // Cancel request & immediately revoke any pending provider matches
+            await Promise.all([
+              supabase.from('delivery_requests').update(updateData).eq('request_id', reqId),
+              supabase
+                .from('route_request_matches')
+                .update({ status: 'revoked' })
+                .eq('request_id', reqId)
+                .in('status', ['matched', 'expired']),
+            ]);
+
+            if (refundFailed) {
+              await supabase.from('escrow_transactions').insert({
+                request_id: reqId,
+                event: 'refund_auto_failed',
+                amount: effectiveAmount,
+                provider: reqRow?.payment_provider ?? null,
+                notes: `Auto-refund failed on Activity cancel: ${refundErrorMsg}`,
+              });
+            }
+
+            // Record in-app notification so it appears in the sender's Notifications bell
+            const senderUid = userId ?? rawData.sender_id;
+            const amtLabel = effectiveAmount > 0 ? ` of ₱${effectiveAmount.toFixed(2)}` : '';
+            if (senderUid) {
+              try {
+                await supabase.from('notification_log').insert({
+                  user_id: senderUid,
+                  title: 'Booking Cancelled',
+                  body: refundSucceeded
+                    ? `Booking #${trackingId} was cancelled. Your refund${amtLabel} has been initiated (arrives in a few mins to 3–5 business days).`
+                    : refundFailed
+                      ? `Booking #${trackingId} was cancelled, but auto-refund could not start. Contact support with #${trackingId}.`
+                      : `Booking #${trackingId} was cancelled. No payment was taken.`,
+                  type: 'payment',
+                  ref_id: reqId,
+                });
+              } catch { /* non-blocking */ }
+            }
 
             setSelectedId(null);
             fetchData();
 
             fireCancelNotification({
               requestId: reqId,
-              amount,
+              amount: effectiveAmount,
               refunded: refundSucceeded,
               refundFailed,
             });
@@ -1270,14 +1339,32 @@ export default function ActivityScreen() {
               notifyProviderOfCancellation({
                 providerId,
                 requestId: reqId,
-                amount,
+                amount: effectiveAmount,
               });
+            }
+
+            // Visible confirmation dialog on screen
+            if (refundSucceeded) {
+              Alert.alert(
+                'Booking Cancelled & Refund Initiated',
+                `Booking #${trackingId} has been cancelled.\n\nA refund${amtLabel} has been initiated back to your ${reqRow?.payment_provider ? String(reqRow.payment_provider).toUpperCase() : 'wallet'}. Most refunds arrive within a few minutes (up to 3–5 business days).`,
+              );
+            } else if (refundFailed) {
+              Alert.alert(
+                'Booking Cancelled — Refund Needs Review',
+                `Booking #${trackingId} was cancelled, but automatic refund failed:\n${refundErrorMsg}\n\nYour funds are still safe in escrow. Please contact support with tracking ID #${trackingId}.`,
+              );
+            } else {
+              Alert.alert(
+                'Booking Cancelled',
+                `Booking #${trackingId} has been cancelled.${wasHeld ? '' : ' No payment was taken.'}`,
+              );
             }
           } catch {
             Alert.alert('Error', 'Could not cancel the delivery.');
           }
-        }
-      }
+        },
+      },
     ]);
   };
 
@@ -1641,10 +1728,13 @@ export default function ActivityScreen() {
   const renderShipmentCard = (item: MappedDelivery) => {
     const stage = stageOf(item);
     const awaitingApproval = isAwaitingApproval(item);
+    const isCancelled = stage === 'cancelled';
+    const isUnpaid = !isRequestPaidStatus(item.rawData?.payment_status) && !item.isMatched && !isCancelled;
     const meta = awaitingApproval
       ? { label: 'Approve Delivery', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
-      : statusMeta(stage, item.hasPreferredProvider);
-    const isCancelled = stage === 'cancelled';
+      : isUnpaid
+        ? { label: 'Payment Incomplete', bg: colors.errorBg, fg: colors.error, icon: 'Card' }
+        : statusMeta(stage, item.hasPreferredProvider);
     const isActive = stage === 'pickup' || stage === 'transit' || stage === 'pending';
     const receiverName = item.receiver?.receiver_name || item.receiver?.receiver_phone || 'Receiver';
     const receiverPhone = item.receiver?.receiver_phone || null;
@@ -1782,14 +1872,18 @@ export default function ActivityScreen() {
               <SolarIcon name="Pen" variant="linear" size={16} color={colors.accent} />
               <Text style={styles.oChatText}>Edit</Text>
             </TouchableOpacity>
-            {!item.hasPreferredProvider && (
+            {(isUnpaid || !item.hasPreferredProvider) && (
               <TouchableOpacity
                 style={styles.oRouteBtn}
-                onPress={() => handleResumeFindingProvider(item)}
+                onPress={() =>
+                  isUnpaid
+                    ? navigation.navigate('DeliveryPayment', { requestId: item.request_id, amount: Number(item.price) || 0 })
+                    : handleResumeFindingProvider(item)
+                }
                 activeOpacity={0.9}
               >
-                <SolarIcon name="Magnifier" variant="linear" size={16} color="#FFFFFF" />
-                <Text style={styles.oRouteText}>Find Provider</Text>
+                <SolarIcon name={isUnpaid ? 'Card' : 'Magnifier'} variant="linear" size={16} color="#FFFFFF" />
+                <Text style={styles.oRouteText}>{isUnpaid ? 'Complete Payment' : 'Find Provider'}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -1880,11 +1974,14 @@ export default function ActivityScreen() {
   const renderDetailView = (d: MappedDelivery) => {
     const stage = stageOf(d);
     const awaitingApproval = isAwaitingApproval(d);
-    const meta = awaitingApproval
-      ? { label: 'Awaiting Your Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
-      : statusMeta(stage, d.hasPreferredProvider);
     const code = trackingCode(d.request_id);
     const isCancelled = stage === 'cancelled';
+    const isUnpaid = !isRequestPaidStatus(d.rawData?.payment_status) && !d.isMatched && !isCancelled;
+    const meta = awaitingApproval
+      ? { label: 'Awaiting Your Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
+      : isUnpaid
+        ? { label: 'Payment Incomplete', bg: colors.errorBg, fg: colors.error, icon: 'Card' }
+        : statusMeta(stage, d.hasPreferredProvider);
     const isCompleted = stage === 'done';
     const pickupPhotoUrl = (d.deliveryData as any)?.pickup_photo_url || null;
     const isPickedUp =
@@ -1920,17 +2017,21 @@ export default function ActivityScreen() {
     const released = isCompleted || /complet|releas/i.test(escrowStatus);
     const paymentLabel = isCancelled
       ? 'Refunded / Cancelled'
-      : released
-        ? 'Released to provider'
-        : (d.isMatched || d.rawData?.payment_status === 'held')
-          ? 'Held in escrow'
-          : 'Awaiting provider';
+      : isUnpaid
+        ? (d.rawData?.payment_status === 'processing' ? 'Payment Incomplete' : 'Unpaid')
+        : released
+          ? 'Released to provider'
+          : (d.isMatched || d.rawData?.payment_status === 'held')
+            ? 'Held in escrow'
+            : 'Awaiting provider';
 
     const payoutProvider = escrowRow?.payment_method || d.payment_method;
 
     const recipientName = d.rawData?.fallback_recipient_name || 'the authorized person';
     const hintText = awaitingApproval
       ? `Your provider couldn't reach the receiver and left the package with ${recipientName}. Check the photo below, then approve if it was handed to the right person.`
+      : isUnpaid
+        ? 'Payment was not completed yet. Tap "Complete Payment" below so providers can see and accept your request.'
       : stage === 'pending'
       ? d.hasPreferredProvider
         ? `Sent directly to ${d.provider_name}. Waiting for the provider to accept your delivery request along their route.`
@@ -1938,7 +2039,6 @@ export default function ActivityScreen() {
       : stage === 'pickup'
         ? 'Your provider is heading to pickup. Show your Pickup QR or 4-digit PIN when they arrive.'
         : 'Your package is on the way! Share the 6-digit Delivery OTP with the receiver so they can confirm arrival.';
-
     const canRate = d.isMatched && isCompleted;
 
     const isReturnedToSender =
@@ -2007,7 +2107,7 @@ export default function ActivityScreen() {
               </TouchableOpacity>
             </View>
             {!!d.rawData?.scheduled_time && (
-              <Text style={styles.dWhen}>Scheduled · {formatDateTime(d.rawData.scheduled_time)}</Text>
+              <Text style={styles.dWhen}>Scheduled · {formatNaiveSchedule(d.rawData.scheduled_time)}</Text>
             )}
 
             {!isCancelled && (
@@ -2030,6 +2130,62 @@ export default function ActivityScreen() {
                     </View>
                   );
                 })}
+              </View>
+            )}
+
+            {!!d.deliveryData?.meetup_landmark_name && !isPickedUp && !isCancelled && (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                  backgroundColor: colors.warningBg,
+                  borderWidth: 1.5,
+                  borderColor: colors.warning,
+                  borderRadius: 14,
+                  padding: 14,
+                  marginBottom: 16,
+                }}
+              >
+                <SolarIcon name="MapPoint" variant="bold" size={22} color={colors.warning} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 10.5, fontFamily: 'Poppins_800ExtraBold', color: colors.warning, letterSpacing: 0.7 }}>
+                    CURB-SIDE MEET-UP LANDMARK
+                  </Text>
+                  <Text style={{ fontSize: 15, fontFamily: 'Poppins_700Bold', color: colors.textPrimary, marginTop: 2 }}>
+                    {d.deliveryData.meetup_landmark_name}
+                  </Text>
+                  <Text style={{ fontSize: 12, fontFamily: 'Poppins_400Regular', color: colors.textSecondary, marginTop: 3, lineHeight: 17 }}>
+                    Your pickup pin is off the driver’s main road. Meet the driver curbside at this landmark along their route.
+                  </Text>
+                  {d.deliveryData.meetup_lat != null && d.deliveryData.meetup_lng != null && (
+                    <TouchableOpacity
+                      style={{
+                        alignSelf: 'flex-start',
+                        marginTop: 10,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 6,
+                        backgroundColor: colors.card,
+                        paddingHorizontal: 12,
+                        paddingVertical: 7,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: colors.warning,
+                      }}
+                      onPress={() => {
+                        const url = `https://www.google.com/maps/search/?api=1&query=${d.deliveryData?.meetup_lat},${d.deliveryData?.meetup_lng}`;
+                        Linking.openURL(url).catch(() => {});
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      <SolarIcon name="Routing" variant="bold" size={14} color={colors.warning} />
+                      <Text style={{ fontSize: 12, fontFamily: 'Poppins_700Bold', color: colors.warning }}>
+                        Open Meet-Up Point in Maps
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
             )}
 
@@ -2237,7 +2393,7 @@ export default function ActivityScreen() {
                 </Text>
               </View>
 
-              {!!payoutProvider && (
+              {!isUnpaid && !!payoutProvider && (
                 <View style={[styles.payRow, styles.payRowBorder]}>
                   <Text style={styles.payRowLabel}>Paid Via</Text>
                   <PaymentMethodBadge provider={payoutProvider} />
@@ -2251,7 +2407,9 @@ export default function ActivityScreen() {
               const done = d.status === 'Completed';
               const fee = d.payout_fee;
               const courierNet = Math.round((d.payout_base - fee) * 100) / 100;
-              const depositNote = returned
+              const depositNote = isUnpaid
+                ? 'Not yet paid'
+                : returned
                 ? 'Paid to provider for the return trip'
                 : !done
                   ? 'Held in escrow, refunded if delivery succeeds'
@@ -2273,7 +2431,7 @@ export default function ActivityScreen() {
                   false,
                 ]);
               }
-              rows.push(['Total paid', money(d.price), undefined, true]);
+              rows.push([isUnpaid ? 'Amount due (unpaid)' : 'Total paid', money(d.price), undefined, true]);
               return (
                 <>
                   <View style={styles.dSecHead}>
@@ -2582,20 +2740,22 @@ export default function ActivityScreen() {
             <TouchableOpacity
               style={[styles.mPrimaryBtn, { flex: 1.4 }]}
               onPress={() =>
-                d.hasPreferredProvider
-                  ? openLiveTrack(d)
-                  : handleResumeFindingProvider(d)
+                isUnpaid
+                  ? navigation.navigate('DeliveryPayment', { requestId: d.request_id, amount: Number(d.price) || 0 })
+                  : d.hasPreferredProvider
+                    ? openLiveTrack(d)
+                    : handleResumeFindingProvider(d)
               }
               activeOpacity={0.9}
             >
               <SolarIcon
-                name={d.hasPreferredProvider ? 'Routing' : 'Magnifier'}
+                name={isUnpaid ? 'Card' : d.hasPreferredProvider ? 'Routing' : 'Magnifier'}
                 variant="linear"
                 size={18}
                 color="#FFFFFF"
               />
               <Text style={styles.mPrimaryText}>
-                {d.hasPreferredProvider ? 'Track Provider' : 'Find Provider'}
+                {isUnpaid ? 'Complete Payment' : d.hasPreferredProvider ? 'Track Provider' : 'Find Provider'}
               </Text>
             </TouchableOpacity>
           </View>

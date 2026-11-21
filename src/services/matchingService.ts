@@ -299,7 +299,10 @@ export function isRequestWithinRouteCorridor(route: any, req: any): boolean {
 
   const pu = projectPointToPolyline({ lat: Number(puLoc.latitude), lng: Number(puLoc.longitude) }, corridor);
   const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
-  const limit = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : corridorLimitM(corridor);
+  const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+  const limit = canUseFallback
+    ? getFallbackCorridorM(req.pickup_type)
+    : getPrimaryCorridorM(req.pickup_type);
   const isForward = dr.fraction >= pu.fraction - 0.02;
   return isForward && pu.minDistanceM <= limit && dr.minDistanceM <= limit;
 }
@@ -387,26 +390,51 @@ export function isRouteTimeValidForRequest(route: any, request: any, now = new D
 }
 
 /**
- * STRICT corridor: the sender's pickup AND drop-off must each be within this many meters of the
- * provider's actual road route (corridor_path). A provider only matches when they really drive past both.
+ * Synced matching radii (identical to Supabase `evaluate_route_matches`):
+ *  - Curb-side (No Detour): 200 m primary / 300 m fallback (sender/receiver walks to main road)
+ *  - Door-to-Door:          500 m primary / 1,000 m fallback
+ *  - Curb-side meet-up snap threshold: 15 m (pins > 15 m off-route get a main-road landmark prompt)
  */
-export const CORRIDOR_MATCH_M = 200;
-// Only when a route has no real road polyline (routing service was down, so we saved a 2-point straight
-// line): a straight line is just an approximation of the road, so allow a wider tolerance for those.
-const STRAIGHT_LINE_CORRIDOR_M = 1500;
-// Wider corridor, used ONLY for routes the provider explicitly unlocked fallback matching on.
-export const FALLBACK_CORRIDOR_M = 3000;
-const corridorLimitM = (corridor: { latitude: number; longitude: number }[]): number =>
-  corridor.length > 2 ? CORRIDOR_MATCH_M : STRAIGHT_LINE_CORRIDOR_M;
+export const CURBSIDE_CORRIDOR_M = 200;
+export const DOOR_TO_DOOR_CORRIDOR_M = 500;
+export const CURBSIDE_FALLBACK_M = 300;
+export const DOOR_TO_DOOR_FALLBACK_M = 1000;
+export const CURBSIDE_LANDMARK_SNAP_M = 15;
 
-function projectPointToPolyline(
+// Backwards-compatible aliases
+export const CORRIDOR_MATCH_M = CURBSIDE_CORRIDOR_M;
+export const FALLBACK_CORRIDOR_M = DOOR_TO_DOOR_FALLBACK_M;
+
+export function isDoorToDoorType(pickupType?: string | null): boolean {
+  return /door/i.test(String(pickupType || ''));
+}
+
+export function getPrimaryCorridorM(pickupType?: string | null): number {
+  // If pickup_type wasn't selected in a lightweight query, don't falsely reject Door-to-Door rows
+  if (pickupType == null || pickupType === '') return DOOR_TO_DOOR_CORRIDOR_M;
+  return isDoorToDoorType(pickupType) ? DOOR_TO_DOOR_CORRIDOR_M : CURBSIDE_CORRIDOR_M;
+}
+
+export function getFallbackCorridorM(pickupType?: string | null): number {
+  if (pickupType == null || pickupType === '') return DOOR_TO_DOOR_FALLBACK_M;
+  return isDoorToDoorType(pickupType) ? DOOR_TO_DOOR_FALLBACK_M : CURBSIDE_FALLBACK_M;
+}
+
+export function projectPointToPolyline(
   pt: { lat: number; lng: number },
   polyline: { latitude: number; longitude: number }[],
-): { minDistanceM: number; fraction: number } {
-  if (!polyline || polyline.length === 0) return { minDistanceM: Infinity, fraction: 0 };
+): { minDistanceM: number; fraction: number; projLat: number; projLng: number } {
+  if (!polyline || polyline.length === 0) {
+    return { minDistanceM: Infinity, fraction: 0, projLat: pt.lat, projLng: pt.lng };
+  }
   if (polyline.length === 1) {
     const dKm = calculateDistance(pt.lat, pt.lng, polyline[0].latitude, polyline[0].longitude);
-    return { minDistanceM: dKm * 1000, fraction: 0 };
+    return {
+      minDistanceM: Math.round(dKm * 1000),
+      fraction: 0,
+      projLat: polyline[0].latitude,
+      projLng: polyline[0].longitude,
+    };
   }
   let totalLengthKm = 0;
   const segLengths: number[] = [];
@@ -422,10 +450,17 @@ function projectPointToPolyline(
   }
   if (totalLengthKm <= 0) {
     const dKm = calculateDistance(pt.lat, pt.lng, polyline[0].latitude, polyline[0].longitude);
-    return { minDistanceM: dKm * 1000, fraction: 0 };
+    return {
+      minDistanceM: Math.round(dKm * 1000),
+      fraction: 0,
+      projLat: polyline[0].latitude,
+      projLng: polyline[0].longitude,
+    };
   }
   let bestDistKm = Infinity;
   let bestFraction = 0;
+  let bestLat = polyline[0].latitude;
+  let bestLng = polyline[0].longitude;
   let traversedKm = 0;
   for (let i = 0; i < polyline.length - 1; i++) {
     const a = polyline[i];
@@ -445,10 +480,17 @@ function projectPointToPolyline(
     if (distKm < bestDistKm) {
       bestDistKm = distKm;
       bestFraction = (traversedKm + t * segLen) / totalLengthKm;
+      bestLat = projLat;
+      bestLng = projLng;
     }
     traversedKm += segLen;
   }
-  return { minDistanceM: Math.round(bestDistKm * 1000), fraction: Number(bestFraction.toFixed(4)) };
+  return {
+    minDistanceM: Math.round(bestDistKm * 1000),
+    fraction: Number(bestFraction.toFixed(4)),
+    projLat: bestLat,
+    projLng: bestLng,
+  };
 }
 
 export async function ensureRouteCorridorBackfilled(routeId: number): Promise<void> {
@@ -563,10 +605,9 @@ async function evaluatePairAndUpsertMatch(
     corridor,
   );
 
-  const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-  const maxCorridorM = corridorLimitM(corridor);
-  // Wider corridor only for routes where the provider unlocked fallback matching.
-  const fallbackMaxM = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : maxCorridorM;
+  const maxCorridorM = getPrimaryCorridorM(reqRow.pickup_type);
+  const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+  const fallbackMaxM = canUseFallback ? getFallbackCorridorM(reqRow.pickup_type) : maxCorridorM;
 
   const fitsCapacity =
     Number(route.remaining_weight_kg ?? 100) >= reqWeight &&
@@ -577,7 +618,7 @@ async function evaluatePairAndUpsertMatch(
 
   const withinPrimary = puProj.minDistanceM <= maxCorridorM && doProj.minDistanceM <= maxCorridorM;
   const withinFallback =
-    Boolean(route.fallback_unlocked) &&
+    canUseFallback &&
     puProj.minDistanceM <= fallbackMaxM &&
     doProj.minDistanceM <= fallbackMaxM;
 
@@ -625,7 +666,7 @@ async function evaluatePairAndUpsertMatch(
     provider_id: route.provider_id,
     match_score: computedScore,
     is_fallback: !isPreferredRoute && !withinPrimary,
-    fallback_type: !isPreferredRoute && !withinPrimary ? 'CONDITION_A' : null,
+    fallback_type: !isPreferredRoute && !withinPrimary ? (route.fallback_reason || 'CONDITION_A') : null,
     pickup_dist_m: Math.round(puProj.minDistanceM),
     dropoff_dist_m: Math.round(doProj.minDistanceM),
     pickup_fraction: puProj.fraction,
@@ -1003,7 +1044,10 @@ export async function explainMatchesForRequest(requestId: number) {
       const dr = projectPointToPolyline({ lat: Number(doLoc.latitude), lng: Number(doLoc.longitude) }, corridor);
       pickupM = Math.round(pu.minDistanceM);
       dropoffM = Math.round(dr.minDistanceM);
-      const limit = route.fallback_unlocked ? FALLBACK_CORRIDOR_M : corridorLimitM(corridor);
+      const canUseFallback = Boolean(route.fallback_unlocked) && !Boolean(route.fallback_used);
+      const limit = canUseFallback
+        ? getFallbackCorridorM(reqRow.pickup_type)
+        : getPrimaryCorridorM(reqRow.pickup_type);
       if (pu.minDistanceM > limit) reasons.push(`pickup ${pickupM} m from route (limit ${limit} m)`);
       if (dr.minDistanceM > limit) reasons.push(`dropoff ${dropoffM} m from route (limit ${limit} m)`);
       if (!(dr.fraction >= pu.fraction - 0.02)) reasons.push('dropoff comes BEFORE pickup along this route (wrong direction)');
@@ -1121,8 +1165,9 @@ export async function evaluateAndFetchRouteMatches(
         corridor,
       );
       const isDoorToDoor = /door/i.test(String(reqRow.pickup_type || ''));
-      const maxCorridorM = corridorLimitM(corridor);
-      const fallbackMaxM = routeRow.fallback_unlocked ? FALLBACK_CORRIDOR_M : maxCorridorM;
+      const canUseFallback = Boolean(routeRow.fallback_unlocked) && !Boolean(routeRow.fallback_used);
+      const maxCorridorM = getPrimaryCorridorM(reqRow.pickup_type);
+      const fallbackMaxM = canUseFallback ? getFallbackCorridorM(reqRow.pickup_type) : maxCorridorM;
       const isForward = doProj.fraction >= puProj.fraction - 0.02;
       const withinCorridor = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
 
@@ -1395,8 +1440,8 @@ export async function runPeriodicFallbackAndMatchCheck() {
               userRow.user_id,
               'Fallback Request Unlocked! 📦',
               m.fallback_type === 'CONDITION_B'
-                ? '1 hour before departure with 0 matches: 1 wider 3 km fallback request is now available on your route.'
-                : 'Add-On Fallback unlocked! You have remaining trunk space for 1 extra delivery within 3 km.',
+                ? 'No matches 2 hours after posting: 1 wider fallback request (up to 300 m Curb-side / 1 km Door-to-Door) is now available on your route.'
+                : 'Add-On Fallback unlocked! You have remaining trunk space for 1 extra delivery (up to 300 m Curb-side / 1 km Door-to-Door).',
               { routeId: r.route_id, requestId: m.request_id },
             );
           } else {
@@ -1439,8 +1484,8 @@ export function startBackgroundMatcher() {
           Alert.alert(
             row.is_fallback ? '📦 Fallback Request Unlocked!' : `🎯 ${Math.round(Number(row.match_score))}% Route Match!`,
             row.is_fallback
-              ? 'A 3 km fallback delivery request along your route is now available in My Route Requests.'
-              : 'A new sender request along your route corridor matched (≥60%). Open My Route Requests to review.',
+              ? 'A fallback delivery request (up to 300 m Curb-side / 1 km Door-to-Door) along your route is now available in My Route Requests.'
+              : 'A new sender request along your route corridor matched. Open My Route Requests to review.',
             [{ text: 'Got it', style: 'default' }],
           );
         }
