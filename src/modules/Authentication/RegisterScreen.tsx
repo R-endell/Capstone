@@ -7,7 +7,6 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { decode } from 'base64-arraybuffer';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -50,6 +49,21 @@ const getDeviceCoords = async (): Promise<{ lat: number; lng: number } | null> =
 
     return null;
   } catch {
+    try {
+      const lastKnown = await Location.getLastKnownPositionAsync();
+      if (
+        lastKnown?.coords &&
+        typeof lastKnown.coords.latitude === 'number' &&
+        typeof lastKnown.coords.longitude === 'number'
+      ) {
+        return {
+          lat: lastKnown.coords.latitude,
+          lng: lastKnown.coords.longitude,
+        };
+      }
+    } catch {
+      // ignore fallback error
+    }
     return null;
   }
 };
@@ -63,6 +77,17 @@ const friendlyAuthError = (err: any): string => {
     friendly = "We couldn't send the verification email right now. Please check your email address and try again shortly.";
   }
   return __DEV__ && friendly !== raw ? `${friendly}\n\n[dev] ${raw}` : friendly;
+};
+
+type PendingAddressPayload = {
+  authUserId: string;
+  street_address: string;
+  barangay: string;
+  city: string;
+  province: string;
+  zip_code: string;
+  latitude: number;
+  longitude: number;
 };
 
 export default function RegisterScreen() {
@@ -96,8 +121,7 @@ export default function RegisterScreen() {
   const [termsError, setTermsError] = useState('');
   const [termsOpen, setTermsOpen] = useState(false);
 
-  const [imageUri, setImageUri] = useState<string | null>(null);
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
+  const [imageBase64] = useState<string | null>(null);
 
   const [firstNameError, setFirstNameError] = useState('');
   const [lastNameError, setLastNameError] = useState('');
@@ -221,7 +245,47 @@ export default function RegisterScreen() {
 
   const pendingFinalizeRef = useRef<Promise<void> | null>(null);
   const profileLinkRef = useRef<{ authUserId: string; update: Record<string, unknown> } | null>(null);
+  const pendingAddressRef = useRef<PendingAddressPayload | null>(null);
   const termsPendingRef = useRef(false);
+
+  const saveAddressAndLinkUser = async (payload: PendingAddressPayload): Promise<boolean> => {
+    const { data: locData, error: locError } = await supabase
+      .from('locations')
+      .insert({
+        street_address: payload.street_address,
+        barangay: payload.barangay,
+        city: payload.city,
+        province: payload.province,
+        zip_code: payload.zip_code,
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+      })
+      .select('location_id')
+      .single();
+
+    if (locError || !locData?.location_id) {
+      throw locError || new Error('Could not insert location');
+    }
+
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      const { data: updatedRows, error: userError } = await supabase
+        .from('users')
+        .update({ location_id: locData.location_id })
+        .eq('auth_id', payload.authUserId)
+        .select('user_id');
+      if (userError) throw userError;
+      if (updatedRows && updatedRows.length > 0) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // Location created but users row not ready yet; keep location_id for post-OTP link
+    profileLinkRef.current = {
+      authUserId: payload.authUserId,
+      update: { ...(profileLinkRef.current?.update || {}), location_id: locData.location_id },
+    };
+    return false;
+  };
 
   const handleSignUp = async () => {
     const firstNameValidation = validateName(firstName, 'First name');
@@ -247,6 +311,7 @@ export default function RegisterScreen() {
     setLoading(true);
     pendingFinalizeRef.current = null;
     profileLinkRef.current = null;
+    pendingAddressRef.current = null;
     termsPendingRef.current = false;
 
     const coords = await getDeviceCoords();
@@ -279,6 +344,14 @@ export default function RegisterScreen() {
       }
       lap('duplicate checks');
 
+      const addrPayload = {
+        street_address: structuredAddress.street.trim(),
+        barangay: structuredAddress.barangay.trim(),
+        city: structuredAddress.city.trim(),
+        province: structuredAddress.province.trim(),
+        zip_code: structuredAddress.zip_code.trim(),
+      };
+
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: email.trim(),
         password,
@@ -288,6 +361,7 @@ export default function RegisterScreen() {
             last_name: lastName.trim(),
             phone: cleanedPhone,
             avatar_url: '',
+            ...addrPayload,
             terms_version: POLICY_VERSION,
             terms_accepted_at: new Date().toISOString(),
           },
@@ -305,13 +379,19 @@ export default function RegisterScreen() {
         return;
       }
 
+      const fullAddressPayload: PendingAddressPayload = {
+        authUserId,
+        ...addrPayload,
+        latitude: coords.lat,
+        longitude: coords.lng,
+      };
+      pendingAddressRef.current = fullAddressPayload;
+
       const finalizeProfile = async () => {
         if (!hasSession) {
-          const { error: signInError } = await supabase.auth.signInWithPassword({
-            email: email.trim(),
-            password,
-          });
-          if (signInError) console.warn('Could not sign in immediately after signup.');
+          // Email confirmation is ON: defer DB writes until verifyOtp grants an authenticated session.
+          termsPendingRef.current = true;
+          return;
         }
 
         const uploadAvatarPromise = (async () => {
@@ -331,84 +411,43 @@ export default function RegisterScreen() {
           return '';
         })();
 
-        const insertLocationPromise = (async () => {
-          const { data: locData, error: locError } = await supabase
-            .from('locations')
-            .insert({
-              street_address: structuredAddress.street.trim(),
-              barangay: structuredAddress.barangay.trim(),
-              city: structuredAddress.city.trim(),
-              province: structuredAddress.province.trim(),
-              zip_code: structuredAddress.zip_code.trim(),
-              latitude: coords.lat,
-              longitude: coords.lng,
-            })
-            .select('location_id')
-            .single();
-          if (locError) throw locError;
-          return locData.location_id;
-        })();
+        const [avatarUrl, addressLinked] = await Promise.all([
+          uploadAvatarPromise,
+          saveAddressAndLinkUser(fullAddressPayload),
+        ]);
 
-        const [avatarUrl, locationId] = await Promise.all([uploadAvatarPromise, insertLocationPromise]);
+        if (addressLinked) {
+          pendingAddressRef.current = null;
+        }
 
-        const authMetaPromise: Promise<unknown> = avatarUrl
-          ? supabase.auth
-              .updateUser({ data: { avatar_url: avatarUrl } })
-              .catch((e: unknown) => console.warn('Avatar metadata update failed:', e))
-          : Promise.resolve();
-
-        const profileUpdate = { location_id: locationId, profile_photo: avatarUrl || null };
-        const deadline = Date.now() + 2500;
-        let profileLinked = false;
-        while (!profileLinked && Date.now() < deadline) {
-          const { data: updatedRows, error: userError } = await supabase
+        if (avatarUrl) {
+          await supabase.auth
+            .updateUser({ data: { avatar_url: avatarUrl } })
+            .catch((e: unknown) => console.warn('Avatar metadata update failed:', e));
+          await supabase
             .from('users')
-            .update(profileUpdate)
-            .eq('auth_id', authUserId)
-            .select('user_id');
-          if (userError) {
-            console.error('User Update Error:', userError);
-            throw userError;
-          }
-          if (updatedRows && updatedRows.length > 0) profileLinked = true;
-          else await new Promise((resolve) => setTimeout(resolve, 80));
-        }
-        if (!profileLinked) {
-          console.warn('users row not updatable before verification; will retry after the code is accepted.');
-          profileLinkRef.current = { authUserId, update: profileUpdate };
+            .update({ profile_photo: avatarUrl })
+            .eq('auth_id', authUserId);
         }
 
-        if (profileLinked) {
-          try {
-            await recordTermsAcceptance('signup');
-          } catch (e) {
-            console.warn('Could not record terms acceptance yet; will retry after verification:', e);
-            termsPendingRef.current = true;
-          }
-        } else {
+        try {
+          await recordTermsAcceptance('signup');
+        } catch (e) {
+          console.warn('Could not record terms acceptance yet:', e);
           termsPendingRef.current = true;
         }
 
-        await authMetaPromise;
         await supabase.auth.signOut({ scope: 'local' });
       };
 
       pendingFinalizeRef.current = finalizeProfile().then(
-        () => lap('address, photo and profile saved (background)'),
+        () => lap('profile finalize step done'),
         (e: unknown) => {
-          console.error('Profile save failed after signup:', e);
-          Alert.alert(
-            'Account created',
-            "Your account was created, but we couldn't save your home address or photo. Please check them after you sign in.",
-          );
+          console.warn('Pre-verification profile save deferred:', e);
         },
       );
 
       if (hasSession) {
-        console.warn(
-          '[signup] signUp returned a session: email confirmation is OFF on this Supabase project, so no code was sent. ' +
-            'Turn on "Confirm email" (Authentication > Providers > Email) to send codes.',
-        );
         await pendingFinalizeRef.current;
         Alert.alert(
           'Account created',
@@ -448,6 +487,16 @@ export default function RegisterScreen() {
       });
 
       if (error) throw error;
+
+      // Now authenticated: save home address into public.locations and link users.location_id
+      if (pendingAddressRef.current) {
+        try {
+          const linked = await saveAddressAndLinkUser(pendingAddressRef.current);
+          if (linked) pendingAddressRef.current = null;
+        } catch (addrErr) {
+          console.warn('Could not save address after verification:', addrErr);
+        }
+      }
 
       const pendingLink = profileLinkRef.current;
       if (pendingLink) {
@@ -894,19 +943,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     header: { fontSize: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginBottom: 8, letterSpacing: -0.5 },
     subHeader: { fontSize: 15, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 22 },
     emailHighlight: { color: c.textPrimary, fontFamily: 'Poppins_600SemiBold' },
-
-    imageUploadSection: { alignItems: 'center', marginBottom: 20 },
-    imagePicker: {
-      width: 76, height: 76, borderRadius: 38, backgroundColor: c.card,
-      justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: c.border, position: 'relative',
-    },
-    imagePlaceholder: { justifyContent: 'center', alignItems: 'center' },
-    profilePreview: { width: 76, height: 76, borderRadius: 38 },
-    uploadBadge: {
-      position: 'absolute', bottom: 0, right: 0, backgroundColor: ORANGE,
-      width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center',
-      borderWidth: 2, borderColor: c.card,
-    },
 
     formContainer: { marginBottom: 16 },
     addressRow: { flexDirection: 'row', justifyContent: 'space-between' },

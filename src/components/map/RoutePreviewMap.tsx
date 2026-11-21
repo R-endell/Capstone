@@ -6,6 +6,7 @@ import { View, Text, StyleSheet, StyleProp, ViewStyle, Easing } from 'react-nati
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
 import { MAP_PROPS } from '../../utils/mapConfig';
+import { fetchRoadRoute } from './roadRoute';
 
 export const BRAND_ORANGE = '#FF751F';   // same orange as the app logo / notification colour
 
@@ -52,21 +53,8 @@ const thin = (pts: LatLng[], max = 220): LatLng[] => {
   return out;
 };
 
-const fetchRoad = async (a: LatLng, b: LatLng): Promise<LatLng[]> => {
-  const straight = [a, b];
-  try {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${a.longitude},${a.latitude};${b.longitude},${b.latitude}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const coords = data?.routes?.[0]?.geometry?.coordinates;
-    if (data?.code === 'Ok' && Array.isArray(coords) && coords.length > 1) {
-      return thin(coords.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })));
-    }
-  } catch { /* fall back to a straight line */ }
-  return straight;
-};
+const fetchRoad = async (a: LatLng, b: LatLng): Promise<LatLng[]> =>
+  fetchRoadRoute(a, b, 220);
 
 /** Portion [0..1] of the polyline, measured by distance (so the fill moves at a steady speed). */
 const slice = (pts: LatLng[], cum: number[], t: number): LatLng[] => {

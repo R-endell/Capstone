@@ -34,6 +34,8 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+import { decode as decodeBase64 } from 'base64-arraybuffer';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -49,6 +51,20 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const NETWORK_TIMEOUT_MS = 12000;
 
 let Clipboard: any = null;
+let FileSystem: any = null;
+try { FileSystem = require('expo-file-system/legacy'); } catch {}
+if (!FileSystem?.readAsStringAsync) {
+  try { FileSystem = require('expo-file-system'); } catch {}
+}
+
+const readLocalFileAsArrayBuffer = async (uri: string): Promise<ArrayBuffer> => {
+  if (!FileSystem?.readAsStringAsync) {
+    throw new Error('File system module unavailable.');
+  }
+  const base64 = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+  if (!base64) throw new Error('Captured photo file is empty.');
+  return decodeBase64(base64);
+};
 try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
 
 const { width: SCREEN_W } = Dimensions.get('window');
@@ -449,6 +465,7 @@ export default function TaskScreen() {
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -779,23 +796,144 @@ export default function TaskScreen() {
     }
   };
 
-  const openVerifyModal = async (delivery: any) => {
-    const info = buildTaskInfo(delivery);
-    const geo = await verifyProviderWithinGeofence(info.pickup.lat, info.pickup.lng, 'pickup');
-    if (!geo.allowed) return;
+  // ---------- Provider cancel (allowed BEFORE pickup only) ----------
+  const handleProviderCancel = (delivery: any) => {
+    if (cancellingId != null) return;
+    if (stageOf(delivery) !== 'pickup') {
+      Alert.alert('Cannot cancel', 'You can only cancel a delivery before the package has been picked up.');
+      return;
+    }
+    Alert.alert(
+      'Cancel this delivery?',
+      'You can only cancel before pickup. The sender will be notified and their payment refunded, and this job will be closed.',
+      [
+        { text: 'Keep Delivery', style: 'cancel' },
+        { text: 'Cancel Delivery', style: 'destructive', onPress: () => { void confirmProviderCancel(delivery); } },
+      ],
+    );
+  };
 
-    if (!cameraPermission?.granted) {
-      const res = await requestCameraPermission();
-      if (!res?.granted) {
-        Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
+  const confirmProviderCancel = async (delivery: any) => {
+    const deliveryId = delivery?.delivery_id;
+    const req = delivery?.delivery_requests || {};
+    const requestId = req.request_id ?? delivery?.request_id;
+    if (!deliveryId || !requestId) {
+      Alert.alert('Error', 'Missing delivery information. Please refresh and try again.');
+      return;
+    }
+
+    setCancellingId(deliveryId);
+    try {
+      // Re-check on the server: pickup may have been verified since this screen last loaded.
+      const { data: qr } = await withTimeout(
+        supabase.from('qr_verifications').select('pickup_verified').eq('delivery_id', deliveryId).maybeSingle(),
+        NETWORK_TIMEOUT_MS,
+      );
+      const { data: fresh } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .select('delivery_status, payment_status, escrow_status, sender_id')
+          .eq('request_id', requestId)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
+      );
+
+      const status = String(fresh?.delivery_status || '');
+      const pastPickup = ['In Transit', 'Awaiting Approval', 'Returning', 'Completed', 'Returned', 'Cancelled'].includes(status);
+      if (qr?.pickup_verified || pastPickup) {
+        Alert.alert('Cannot cancel', 'This delivery has already been picked up or closed, so it can no longer be cancelled.');
+        if (providerId) await fetchDeliveries(providerId);
         return;
       }
+
+      const wasHeld = fresh?.payment_status === 'held' || fresh?.escrow_status === 'held';
+      let refundFailed = false;
+      if (wasHeld) {
+        try {
+          const { data: refundResult, error: refundErr } = await withTimeout(
+            supabase.functions.invoke('xendit-refund', {
+              body: { request_id: requestId, reason: 'REQUESTED_BY_CUSTOMER' },
+            }),
+            15_000,
+            'Refund initiation',
+          );
+          if (refundErr || !refundResult?.success) refundFailed = true;
+        } catch {
+          refundFailed = true;
+        }
+      }
+
+      const { error: updErr } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .update({
+            delivery_status: 'Cancelled',
+            ...(refundFailed ? { refund_status: 'manual_required' } : {}),
+          })
+          .eq('request_id', requestId),
+        NETWORK_TIMEOUT_MS,
+      );
+      if (updErr) throw updErr;
+
+      try {
+        await supabase.from('delivery_status_history').insert({ delivery_id: deliveryId, status: 'Cancelled' });
+      } catch { /* history is best-effort */ }
+
+      const senderId = fresh?.sender_id ?? req.sender_id ?? req.sender?.user_id;
+      if (senderId) {
+        try {
+          await notifyUser(
+            senderId,
+            'Delivery cancelled by courier',
+            `Your courier cancelled #${trackingCode(requestId)} before pickup.` +
+              (wasHeld ? (refundFailed ? ' Please contact support so we can process your refund.' : ' Your payment is being refunded.') : ''),
+            { deliveryId },
+          );
+        } catch (e) {
+          console.warn('[TaskScreen] cancel notify failed:', e);
+        }
+      }
+
+      Alert.alert(
+        'Delivery cancelled',
+        refundFailed
+          ? 'The delivery was cancelled. The sender’s automatic refund could not be started and will be handled by support.'
+          : 'The delivery was cancelled and the sender has been notified.',
+      );
+      if (isMountedRef.current) setSelectedId(null);
+      if (providerId) await fetchDeliveries(providerId);
+    } catch (e: any) {
+      Alert.alert('Could not cancel', e?.message || 'Please check your connection and try again.');
+    } finally {
+      if (isMountedRef.current) setCancellingId(null);
     }
-    setVerifyTarget(delivery);
-    setScanned(false);
-    setPinInput('');
-    setPickupCameraReady(false);
-    setVerifyModalVisible(true);
+  };
+
+  const openVerifyModal = async (delivery: any) => {
+    try {
+      const info = buildTaskInfo(delivery);
+      const targetLat = delivery?.meetup_lat != null ? Number(delivery.meetup_lat) : info.pickup.lat;
+      const targetLng = delivery?.meetup_lng != null ? Number(delivery.meetup_lng) : info.pickup.lng;
+      const geo = await verifyProviderWithinGeofence(targetLat, targetLng, 'pickup');
+      if (!geo.allowed) return;
+
+      if (!cameraPermission?.granted) {
+        const res = await requestCameraPermission();
+        if (!res?.granted) {
+          Alert.alert('Camera Permission', 'Camera access is required to scan QR codes.');
+          return;
+        }
+      }
+      setVerifyTarget(delivery);
+      setScanned(false);
+      setPinInput('');
+      setPickupPending(null);
+      setPickupPhotoUri(null);
+      setPickupCameraReady(false);
+      setVerifyModalVisible(true);
+    } catch (e: any) {
+      Alert.alert('Cannot Open Verification', e?.message || 'Please check location & camera permissions.');
+    }
   };
 
   const closeVerifyModal = () => {
@@ -911,20 +1049,13 @@ export default function TaskScreen() {
       if (reqErr) throw reqErr;
 
       const info = buildTaskInfo(verifyTarget);
-      const courierName = userData ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() : 'Your Courier';
-      const plateNumber = verifyTarget?.vehicles?.plate_number || 'Assigned Vehicle';
-      const etaText = verifyTarget?.estimated_eta ? formatDateTime(verifyTarget.estimated_eta) : 'Soon';
-
-      const smsMsg = info.receiverPhone
-        ? `Hi ${info.receiverName || 'Receiver'}, your package from ${info.senderName || 'Sender'} is on the way! Courier: ${courierName} (${plateNumber}). ETA: ${etaText}. Please be ready to receive it. Track here: https://packnship.streamlit.app/`
-        : '';
 
       if (info.senderId) {
         try {
           await notifyUser(
             info.senderId,
             'Your courier is on the way! 🚚',
-            `Package picked up. Have you notified ${info.receiverName || 'the receiver'}? Tap to call/message them.`,
+            `Package picked up. An automated SMS update has been sent to ${info.receiverName || 'the receiver'}.`,
             { deliveryId: verifyTarget?.delivery_id }
           );
         } catch (err) {
@@ -932,30 +1063,14 @@ export default function TaskScreen() {
         }
       }
 
-      const alertButtons: any[] = [{ text: 'Close', style: 'cancel' }];
-      if (info.receiverPhone) {
-        alertButtons.push({
-          text: 'Send SMS to Receiver',
-          onPress: () => {
-            const url = Platform.select({
-              ios: `sms:${info.receiverPhone}&body=${encodeURIComponent(smsMsg)}`,
-              android: `sms:${info.receiverPhone}?body=${encodeURIComponent(smsMsg)}`,
-            });
-            if (url) {
-              Linking.openURL(url).catch(() => {
-                Alert.alert('Cannot Open SMS', 'Your device cannot open the SMS app. Please notify the receiver manually.');
-              });
-            }
-          },
-        });
-      }
+      // Phase 4: Fully automated own-SIM SMS to receiver (replaces manual texting)
+      const smsSent = await triggerDeliverySmsMilestone(deliveryId, 'in_transit');
 
       Alert.alert(
         '✅ Item Collected',
-        info.receiverPhone
-          ? `Pickup verified. Tap below to notify ${info.receiverName || 'the receiver'} via SMS from your phone.`
-          : 'Pickup verified. (No receiver phone number on file.)',
-        alertButtons
+        smsSent
+          ? `Pickup verified. An automated SMS alert was sent to ${info.receiverName || 'the receiver'}.`
+          : 'Pickup verified. Live tracking is now active for the sender.',
       );
       closeVerifyModal();
       if (providerId) await fetchDeliveries(providerId);
@@ -971,9 +1086,14 @@ export default function TaskScreen() {
       const qrData = data.trim();
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('pickup_qr', qrData).eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('pickup_qr', qrData)
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) {
@@ -1009,9 +1129,13 @@ export default function TaskScreen() {
     try {
       const { data: row, error } = await withTimeout(
         supabase
-          .from('qr_verifications').select('*')
-          .eq('delivery_id', verifyTarget.delivery_id).single(),
-        NETWORK_TIMEOUT_MS
+          .from('qr_verifications')
+          .select('*')
+          .eq('delivery_id', verifyTarget.delivery_id)
+          .order('qr_id', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
       );
 
       if (error || !row) throw new Error('QR record not found for this delivery.');
@@ -1085,10 +1209,13 @@ export default function TaskScreen() {
   };
 
   const uploadPickupPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pickup/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1182,10 +1309,13 @@ export default function TaskScreen() {
   };
 
   const uploadPodPhoto = async (uri: string, deliveryId: number): Promise<string> => {
-    const ext = uri.split('.').pop()?.toLowerCase() || 'jpg';
+    const ext = (uri.split('?')[0].split('.').pop() || 'jpg').toLowerCase();
     const filePath = `pod/delivery_${deliveryId}_${Date.now()}.${ext}`;
-    const res = await withTimeout(fetch(uri), NETWORK_TIMEOUT_MS, 'Photo read timed out');
-    const arrayBuffer = await res.arrayBuffer();
+    const arrayBuffer = await withTimeout(
+      readLocalFileAsArrayBuffer(uri),
+      NETWORK_TIMEOUT_MS,
+      'Photo read timed out',
+    );
 
     const { error: upErr } = await withTimeout(
       supabase.storage
@@ -1383,6 +1513,11 @@ export default function TaskScreen() {
         );
       }
 
+      const autoSmsOk = await triggerDeliverySmsMilestone(delivery.delivery_id, 'grace_timer');
+      if (autoSmsOk) {
+        updated.sms_receiver_at = nowIso;
+      }
+
       if (providerId) fetchDeliveries(providerId).catch(() => {});
     }
 
@@ -1408,10 +1543,15 @@ export default function TaskScreen() {
       Linking.openURL(`tel:${info.receiverPhone}`);
     } else if (kind === 'sms') {
       if (!info.receiverPhone) return;
+      const sent = await triggerDeliverySmsMilestone(graceDelivery.delivery_id, 'grace_timer');
       await supabase.from('deliveries').update({ sms_receiver_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, sms: true }));
-      const msg = encodeURIComponent(`Hi ${info.receiverName || ''}, I am your Pack-N-Ship courier waiting at the drop-off location. Please meet me within 10 minutes.`);
-      Linking.openURL(`sms:${info.receiverPhone}?body=${msg}`);
+      Alert.alert(
+        sent ? 'Automated SMS Sent' : 'SMS Already Sent',
+        sent
+          ? `An automated arrival SMS was sent to ${info.receiverName || 'the receiver'}.`
+          : `An automated arrival SMS was already sent to ${info.receiverName || 'the receiver'}.`,
+      );
     } else if (kind === 'chat') {
       await supabase.from('deliveries').update({ chat_sender_at: nowIso }).eq('delivery_id', graceDelivery.delivery_id);
       setContactLogs(prev => ({ ...prev, chat: true }));
@@ -1998,7 +2138,7 @@ export default function TaskScreen() {
             })}
           </View>
 
-          {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
+          {isCancelled && <Text style={styles.mCancelledText}>This booking was cancelled</Text>}
           {isReturning && !isCancelled && (
             <Text style={[styles.mCancelledText, { color: colors.warning }]}>
               Returning parcel to sender pickup pin
@@ -2595,6 +2735,21 @@ export default function TaskScreen() {
                     {d.receiver_notified ? 'Sender notified the receiver ✓' : 'Sender has not confirmed receiver yet'}
                   </Text>
                 </View>
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, { flex: 0, backgroundColor: colors.errorBg }]}
+                  onPress={() => handleProviderCancel(d)}
+                  disabled={cancellingId === d.delivery_id}
+                  activeOpacity={0.85}
+                >
+                  {cancellingId === d.delivery_id ? (
+                    <ActivityIndicator size="small" color={colors.error} />
+                  ) : (
+                    <>
+                      <Ionicons name="close-circle-outline" size={17} color={colors.error} />
+                      <Text style={[styles.mSoftText, { color: colors.error }]}>Cancel delivery (before pickup)</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             )}
 
@@ -3355,8 +3510,11 @@ export default function TaskScreen() {
   const broadcastingDelivery = useMemo(() => {
     const inTransit = activeDeliveries.find((d: any) => stageOf(d) === 'transit' && !isAwaitingApproval(d));
     if (inTransit) return inTransit;
-    if (navSessionId == null) return null;
-    return activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup') ?? null;
+    const headingToPickup =
+      (navSessionId != null
+        ? activeDeliveries.find((d: any) => d.delivery_id === navSessionId && stageOf(d) === 'pickup')
+        : null) ?? activeDeliveries.find((d: any) => stageOf(d) === 'pickup');
+    return headingToPickup ?? null;
   }, [activeDeliveries, navSessionId]);
 
   const broadcastIdRef = useRef<number | null>(null);

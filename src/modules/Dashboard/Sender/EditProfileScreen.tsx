@@ -1,8 +1,8 @@
-// src/modules/Dashboard/Sender/EditProfileScreen.tsx
+// src/modules/Dashboard/Provider/EditProfileScreen.tsx
 //
-// Sender edit profile — orange hero header + overlapping avatar.
-// Home address is entered via text inputs while live GPS coordinates are
-// captured silently in the background when saving.
+// Provider edit profile — flat transparent header, avatar in its own card.
+// Home address loads from public.locations (via location_id) with user_metadata fallback,
+// and captures live GPS coordinates silently in the background when saving.
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
@@ -18,7 +18,22 @@ import { decode } from 'base64-arraybuffer';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../utils/supabase';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
-import { SolarIcon } from '../../../components/ui/SolarIcon';
+
+const cleanField = (val: any, placeholders: string[] = ['Unknown']): string => {
+  const s = typeof val === 'string' ? val.trim() : '';
+  if (!s) return '';
+  if (placeholders.some((p) => p.toLowerCase() === s.toLowerCase())) return '';
+  return s;
+};
+
+const splitStreetAndUnit = (rawStreet: string): { street: string; unit: string } => {
+  const trimmed = rawStreet.trim();
+  const match = trimmed.match(/^(.*?)\s*\(([^()]+)\)\s*$/);
+  if (match && match[1].trim()) {
+    return { street: match[1].trim(), unit: match[2].trim() };
+  }
+  return { street: trimmed, unit: '' };
+};
 
 const getDeviceCoords = async (): Promise<{ lat: number; lng: number } | null> => {
   try {
@@ -80,6 +95,7 @@ export default function EditProfileScreen() {
 
   const [unitInfo, setUnitInfo] = useState('');
   const [locationId, setLocationId] = useState<number | null>(null);
+  const [savedCoords, setSavedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [structuredAddress, setStructuredAddress] = useState({
     street: '',
     barangay: '',
@@ -137,42 +153,91 @@ export default function EditProfileScreen() {
 
   useEffect(() => {
     const fetchUserData = async () => {
-      const { data: { user }, error } = await supabase.auth.getUser();
-      if (error) {
-        Alert.alert('Error', 'Could not load user data.');
-      } else if (user) {
-        setFirstName(user.user_metadata?.first_name || '');
-        setLastName(user.user_metadata?.last_name || '');
-        setPhone(user.user_metadata?.phone || '');
-        setEmail(user.email || '');
-        setImageUri(user.user_metadata?.avatar_url || null);
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) {
+          if (error) Alert.alert('Error', 'Could not load user data.');
+          setLoading(false);
+          return;
+        }
+
+        const meta = user.user_metadata || {};
 
         const { data: userData } = await supabase
           .from('users')
-          .select('location_id, locations (street_address, barangay, city, province, zip_code, latitude, longitude)')
+          .select(
+            'first_name, last_name, phone_number, profile_photo, location_id, ' +
+            'locations:locations!users_location_id_fkey (street_address, barangay, city, province, zip_code, latitude, longitude)',
+          )
           .eq('auth_id', user.id)
           .maybeSingle();
 
-        if (userData?.locations) {
-          const loc: any = userData.locations;
-          const rawBarangay = (loc.barangay || '').trim();
+        const row: any = userData || null;
+
+        setFirstName(row?.first_name || meta.first_name || '');
+        setLastName(row?.last_name || meta.last_name || '');
+        setPhone(row?.phone_number || meta.phone || meta.phone_number || '');
+        setEmail(user.email || '');
+        setImageUri(row?.profile_photo || meta.avatar_url || null);
+
+        let loc: any = Array.isArray(row?.locations) ? row.locations[0] : row?.locations;
+
+        // Direct fallback query if join didn't hydrate but location_id exists
+        if (!loc && row?.location_id) {
+          const { data: locRow } = await supabase
+            .from('locations')
+            .select('street_address, barangay, city, province, zip_code, latitude, longitude')
+            .eq('location_id', row.location_id)
+            .maybeSingle();
+          if (locRow) loc = locRow;
+        }
+
+        if (row?.location_id) {
+          setLocationId(Number(row.location_id));
+        }
+
+        if (loc) {
+          const rawStreet = cleanField(loc.street_address);
+          const { street, unit: parsedUnit } = splitStreetAndUnit(rawStreet);
+
+          const rawBarangay = cleanField(loc.barangay);
           const looksLikeUnit =
             !!rawBarangay &&
             (/^(unit|apt|floor|flr|bldg|building|rm|room)\b/i.test(rawBarangay) ||
               /^\d+[a-z]?$/i.test(rawBarangay));
 
           setStructuredAddress({
-            street: loc.street_address || '',
-            barangay: looksLikeUnit ? '' : rawBarangay && rawBarangay !== 'Unknown' ? rawBarangay : '',
-            city: loc.city && loc.city !== 'Unknown' ? loc.city : '',
-            province: loc.province && loc.province !== 'Unknown' ? loc.province : '',
-            zip_code: loc.zip_code && loc.zip_code !== '0000' ? loc.zip_code : '',
+            street,
+            barangay: looksLikeUnit ? '' : rawBarangay,
+            city: cleanField(loc.city),
+            province: cleanField(loc.province),
+            zip_code: cleanField(loc.zip_code, ['0000', 'Unknown']),
           });
-          setUnitInfo(looksLikeUnit ? rawBarangay : '');
-          setLocationId(userData.location_id || null);
+          setUnitInfo(parsedUnit || (looksLikeUnit ? rawBarangay : ''));
+
+          const lat = Number(loc.latitude);
+          const lng = Number(loc.longitude);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+            setSavedCoords({ lat, lng });
+          }
+        } else {
+          // Fallback to registration metadata if locations row wasn't linked yet
+          const metaStreet = cleanField(meta.street_address || meta.street || meta.home_address || meta.address);
+          const { street, unit: parsedUnit } = splitStreetAndUnit(metaStreet);
+          setStructuredAddress({
+            street,
+            barangay: cleanField(meta.barangay),
+            city: cleanField(meta.city),
+            province: cleanField(meta.province),
+            zip_code: cleanField(meta.zip_code || meta.zipCode, ['0000', 'Unknown']),
+          });
+          setUnitInfo(cleanField(meta.unit_info || meta.unit) || parsedUnit);
         }
+      } catch (e) {
+        console.warn('[EditProfile] fetchUserData error:', e);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     fetchUserData();
   }, []);
@@ -213,7 +278,7 @@ export default function EditProfileScreen() {
 
     setSaving(true);
 
-    const coords = await getDeviceCoords();
+    const coords = (await getDeviceCoords()) || savedCoords;
     if (!coords) {
       setSaving(false);
       Alert.alert('Location Required', 'Location is required to save your address.');
@@ -233,8 +298,22 @@ export default function EditProfileScreen() {
         finalAvatarUrl = publicUrl;
       }
 
+      const fullStreet = unitInfo.trim()
+        ? `${structuredAddress.street.trim()} (${unitInfo.trim()})`
+        : structuredAddress.street.trim();
+
       const { error: updateError } = await supabase.auth.updateUser({
-        data: { first_name: firstName, last_name: lastName, phone, avatar_url: finalAvatarUrl },
+        data: {
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          phone: phone.trim(),
+          avatar_url: finalAvatarUrl,
+          street_address: fullStreet,
+          barangay: structuredAddress.barangay.trim(),
+          city: structuredAddress.city.trim(),
+          province: structuredAddress.province.trim(),
+          zip_code: structuredAddress.zip_code.trim(),
+        },
       });
       if (updateError) throw updateError;
 
@@ -242,14 +321,15 @@ export default function EditProfileScreen() {
       if (user) {
         const { error: tableError } = await supabase
           .from('users')
-          .update({ first_name: firstName, last_name: lastName, profile_photo: finalAvatarUrl })
+          .update({
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            phone_number: phone.trim() || null,
+            profile_photo: finalAvatarUrl,
+          })
           .eq('auth_id', user.id);
 
         if (tableError) console.warn('Could not update users table:', tableError);
-
-        const fullStreet = unitInfo.trim()
-          ? `${structuredAddress.street.trim()} (${unitInfo.trim()})`
-          : structuredAddress.street.trim();
 
         const locPayload = {
           street_address: fullStreet,
@@ -262,13 +342,15 @@ export default function EditProfileScreen() {
         };
 
         if (locationId) {
-          await supabase.from('locations').update(locPayload).eq('location_id', locationId);
+          const { error: locErr } = await supabase.from('locations').update(locPayload).eq('location_id', locationId);
+          if (locErr) throw locErr;
         } else {
-          const { data: newLoc } = await supabase
+          const { data: newLoc, error: insErr } = await supabase
             .from('locations')
             .insert(locPayload)
             .select('location_id')
             .single();
+          if (insErr) throw insErr;
           if (newLoc) {
             setLocationId(newLoc.location_id);
             await supabase.from('users').update({ location_id: newLoc.location_id }).eq('auth_id', user.id);
@@ -302,11 +384,13 @@ export default function EditProfileScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle={colors.statusBarStyle} translucent backgroundColor="transparent" />
+      <StatusBar barStyle={colors.statusBarStyle} backgroundColor="transparent" translucent />
 
-      <Animated.View style={[styles.header, { paddingTop: insets.top + 12 }, fadeUp(headerAnim, -14)]}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.7}>
-          <SolarIcon name="ArrowLeft" variant="linear" size={18} color={colors.textPrimary} />
+      <Animated.View
+        style={[styles.header, { paddingTop: Math.max(insets.top, 16) + 10 }, fadeUp(headerAnim, -14)]}
+      >
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={22} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Profile</Text>
         <View style={{ width: 42 }} />
@@ -315,13 +399,13 @@ export default function EditProfileScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {/* Avatar */}
-          <Animated.View style={[styles.avatarSection, fadeUp(avatarAnim, 20)]}>
+          <Animated.View style={[styles.avatarCard, fadeUp(avatarAnim, 20)]}>
             <TouchableOpacity style={styles.imagePicker} onPress={pickImage} activeOpacity={0.85}>
               {imageUri ? (
                 <Image source={{ uri: imageUri }} style={styles.profilePreview} />
               ) : (
                 <View style={styles.imagePlaceholder}>
-                  <Ionicons name="person" size={48} color="#FFFFFF" />
+                  <Ionicons name="person" size={44} color={colors.accent} />
                 </View>
               )}
               <View style={styles.cameraBadge}>
@@ -589,33 +673,33 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
 
     header: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      backgroundColor: c.background, paddingHorizontal: 16, paddingBottom: 12, zIndex: 10,
+      paddingHorizontal: 16, paddingBottom: 14,
     },
     backButton: {
       width: 42, height: 42, borderRadius: 21, backgroundColor: c.card,
       justifyContent: 'center', alignItems: 'center',
       borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-      shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: isDark ? 0.2 : 0.02, shadowRadius: 6, elevation: 0,
     },
-    headerTitle: { fontSize: 20, lineHeight: 28, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+    headerTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
 
-    scrollContent: { paddingBottom: 60, paddingTop: 8, paddingHorizontal: 16, gap: 16 },
-    bottomSpacer: { height: 40 },
+    scrollContent: { paddingHorizontal: 20, paddingTop: 6, paddingBottom: 60, gap: 16 },
+    bottomSpacer: { height: 24 },
 
-    avatarSection: { alignItems: 'center', marginTop: 4, marginBottom: 8 },
+    avatarCard: {
+      alignItems: 'center', backgroundColor: c.card, borderRadius: 16, padding: 20,
+      borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+    },
     imagePicker: {
-      width: 110, height: 110, borderRadius: 55, backgroundColor: c.accent,
+      width: 100, height: 100, borderRadius: 50, backgroundColor: c.accentSoft,
       justifyContent: 'center', alignItems: 'center',
-      borderWidth: 4, borderColor: c.card,
-      overflow: 'visible',
+      borderWidth: 2, borderColor: c.accent, overflow: 'visible',
     },
-    profilePreview: { width: 102, height: 102, borderRadius: 51 },
+    profilePreview: { width: 96, height: 96, borderRadius: 48 },
     imagePlaceholder: { justifyContent: 'center', alignItems: 'center' },
     cameraBadge: {
-      position: 'absolute', bottom: 2, right: 2, width: 32, height: 32, borderRadius: 16,
-      backgroundColor: c.textPrimary, justifyContent: 'center', alignItems: 'center',
-      borderWidth: 3, borderColor: c.card,
+      position: 'absolute', bottom: 0, right: 0, width: 30, height: 30, borderRadius: 15,
+      backgroundColor: c.accent, justifyContent: 'center', alignItems: 'center',
+      borderWidth: 2.5, borderColor: c.card,
     },
     uploadHint: { marginTop: 12, fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
 
@@ -627,6 +711,8 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
     sectionNumberBadge: {
       width: 26, height: 26, borderRadius: 13, backgroundColor: c.accent,
       justifyContent: 'center', alignItems: 'center',
+      shadowColor: c.accent, shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.3, shadowRadius: 4, elevation: 2,
     },
     sectionNumberText: { fontSize: 12, fontFamily: 'Poppins_800ExtraBold', color: '#FFFFFF' },
     sectionTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, letterSpacing: -0.2 },
@@ -647,7 +733,9 @@ const makeStyles = (c: ThemeColors, isDark: boolean) =>
 
     saveButton: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: c.accent,
-      paddingVertical: 16, borderRadius: 16, gap: 8,
+      paddingVertical: 16, borderRadius: 14, gap: 8,
+      shadowColor: c.accent, shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.3, shadowRadius: 12, elevation: 5,
     },
     saveButtonDisabled: { backgroundColor: c.textMuted, shadowOpacity: 0, elevation: 0 },
     saveButtonText: { color: '#FFFFFF', fontFamily: 'Poppins_700Bold', fontSize: 15, letterSpacing: 0.2 },

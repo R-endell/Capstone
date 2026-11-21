@@ -19,6 +19,8 @@ import {
   isValidPhMobileOrTestNumber, isSavedWalletNumberValid, XENDIT_TEST_SCENARIO_NUMBERS,
 } from '../../../services/withdrawalService';
 
+import { fetchHeldEarnings, summarizeHold, formatHoldCountdown, HeldEarning } from '../../../services/cashoutHold';
+
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
 
@@ -43,6 +45,15 @@ export default function CashoutScreen() {
   const [providerId, setProviderId] = useState<number | null>(route.params?.providerId ?? null);
   const [wallet, setWallet] = useState<ProviderWallet | null>(null);
   const [activeWithdrawal, setActiveWithdrawal] = useState<WithdrawalRequest | null>(null);
+
+  // 24-hour hold: earnings completed less than 24h ago cannot be cashed out yet.
+  const [heldEarnings, setHeldEarnings] = useState<HeldEarning[]>([]);
+  const [holdLoadFailed, setHoldLoadFailed] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const [step, setStep] = useState<StepState>('form');
   const [method, setMethod] = useState<PaymentProvider>('gcash');
@@ -82,6 +93,15 @@ export default function CashoutScreen() {
 
       const walletRow = await fetchProviderWallet(pid);
       setWallet(walletRow);
+
+      // Fail closed: if the hold cannot be verified, cashing out stays disabled.
+      try {
+        setHeldEarnings(await fetchHeldEarnings(pid));
+        setHoldLoadFailed(false);
+      } catch (holdErr) {
+        console.warn('[Cashout] hold check failed:', holdErr);
+        setHoldLoadFailed(true);
+      }
 
       if (walletRow) {
         setAccountHolderName(walletRow.bank_acc_holder || defaultName);
@@ -127,18 +147,26 @@ export default function CashoutScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [resultWithdrawal?.withdrawal_id, activeWithdrawal?.withdrawal_id, providerId]);
 
-  const availableBalance = Number(wallet?.balance || 0);
+  const walletBalance = Number(wallet?.balance || 0);
+  const hold = summarizeHold(heldEarnings, nowMs);
+  // Cashable = wallet balance minus earnings still inside the 24h hold.
+  const availableBalance = holdLoadFailed ? 0 : Math.max(0, Math.round((walletBalance - hold.locked) * 100) / 100);
   const parsedAmount = Number(amountInput || 0);
   const cleanAccount = accountNumber.replace(/\s+/g, '');
   const isTestScenarioAccount = XENDIT_TEST_SCENARIO_NUMBERS.has(cleanAccount);
 
   const getValidationError = (): string | null => {
     if (!wallet) return 'Wallet is not initialized yet.';
+    if (holdLoadFailed) return 'We could not verify your 24-hour earnings hold. Please go back and try again.';
     if (activeWithdrawal) return 'You already have an active withdrawal in progress.';
     if (!amountInput || isNaN(parsedAmount) || parsedAmount <= 0) return 'Enter a cashout amount greater than ₱0.00.';
     if (parsedAmount < MIN_CASHOUT_AMOUNT) return `Minimum cashout amount is ₱${MIN_CASHOUT_AMOUNT.toFixed(2)}.`;
     if (parsedAmount > MAX_CASHOUT_AMOUNT) return `Maximum cashout per transaction is ₱${MAX_CASHOUT_AMOUNT.toLocaleString()}.`;
-    if (parsedAmount > availableBalance) return `Amount exceeds your available balance of ₱${availableBalance.toFixed(2)}.`;
+    if (parsedAmount > availableBalance) {
+      return hold.locked > 0 && parsedAmount <= walletBalance
+        ? `Only ₱${availableBalance.toFixed(2)} is cashable right now. ₱${hold.locked.toFixed(2)} is on hold until 24 hours after delivery completion.`
+        : `Amount exceeds your cashable balance of ₱${availableBalance.toFixed(2)}.`;
+    }
     if (!isValidPhMobileOrTestNumber(cleanAccount, true)) return 'Enter a valid 11-digit mobile number (09XXXXXXXXX).';
     if (accountHolderName.trim().length < 2) return 'Enter the full account holder name registered with your e-wallet.';
     return null;
@@ -248,7 +276,7 @@ export default function CashoutScreen() {
             <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Account Holder</Text><Text style={styles.receiptValue}>{resultWithdrawal.account_holder_name || accountHolderName}</Text></View>
             <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Reference ID</Text><Text style={styles.receiptValue}>{resultWithdrawal.xendit_reference_id || `pns_wd_${resultWithdrawal.withdrawal_id}`}</Text></View>
             {!!resultWithdrawal.xendit_payout_id && <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Xendit Payout ID</Text><Text style={styles.receiptValue} numberOfLines={1}>{resultWithdrawal.xendit_payout_id}</Text></View>}
-            <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}><Text style={styles.receiptLabel}>Remaining Wallet Balance</Text><Text style={[styles.receiptValue, { color: colors.accent }]}>₱{availableBalance.toFixed(2)}</Text></View>
+            <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}><Text style={styles.receiptLabel}>Remaining Wallet Balance</Text><Text style={[styles.receiptValue, { color: colors.accent }]}>₱{walletBalance.toFixed(2)}</Text></View>
           </View>
 
           {isProcessing && (
@@ -303,8 +331,8 @@ export default function CashoutScreen() {
             </View>
             <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Account Number</Text><Text style={styles.receiptValue}>{cleanAccount}</Text></View>
             <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Account Holder Name</Text><Text style={styles.receiptValue}>{accountHolderName.trim()}</Text></View>
-            <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Current Wallet Balance</Text><Text style={styles.receiptValue}>₱{availableBalance.toFixed(2)}</Text></View>
-            <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}><Text style={styles.receiptLabel}>Balance After Cashout</Text><Text style={[styles.receiptValue, { color: colors.accent }]}>₱{Math.max(0, availableBalance - parsedAmount).toFixed(2)}</Text></View>
+            <View style={styles.receiptRow}><Text style={styles.receiptLabel}>Current Wallet Balance</Text><Text style={styles.receiptValue}>₱{walletBalance.toFixed(2)}</Text></View>
+            <View style={[styles.receiptRow, { borderBottomWidth: 0 }]}><Text style={styles.receiptLabel}>Balance After Cashout</Text><Text style={[styles.receiptValue, { color: colors.accent }]}>₱{Math.max(0, walletBalance - parsedAmount).toFixed(2)}</Text></View>
           </View>
 
           {isTestScenarioAccount && (
@@ -367,6 +395,15 @@ export default function CashoutScreen() {
             <Text style={styles.maxChipText}>MAX</Text>
           </TouchableOpacity>
         </View>
+
+        {hold.locked > 0 && hold.nextUnlockAt != null && (
+          <View style={styles.warningNote}>
+            <SolarIcon name="Clock" variant="duotone" size={16} color={colors.warning} />
+            <Text style={styles.warningNoteText}>
+              ₱{hold.locked.toFixed(2)} is on hold. Earnings can be cashed out 24 hours after the delivery is completed. Next unlock in {formatHoldCountdown(hold.nextUnlockAt - nowMs)}.
+            </Text>
+          </View>
+        )}
 
         {activeWithdrawal && (
           <View style={styles.activeLockCard}>

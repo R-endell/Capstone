@@ -14,7 +14,7 @@ import type { RootStackParamList } from '../../../App';
 import { supabase } from '../../utils/supabase';
 import { registerPushToken } from '../../services/pushService';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
-import { resolveHomeRoute } from '../../utils/resolveHomeRoute';
+import { resolveHomeRoute, isApprovedProvider } from '../../utils/resolveHomeRoute';
 
 // --- UI COMPONENTS ---
 import { PhIcon } from '../../components/ui/PhIcon';
@@ -277,7 +277,12 @@ export default function LoginScreen() {
         console.warn('[push] registration skipped:', e);
       }
     })();
-    navigation.reset({ index: 0, routes: [{ name: route }] });
+    // Approved providers always land on the Jobs tab after every login.
+    const goProvider = route === 'ProviderTabs' || (await isApprovedProvider(authId)) === true;
+    navigation.reset({
+      index: 0,
+      routes: [goProvider ? ({ name: 'ProviderTabs', params: { screen: 'Jobs' } } as any) : { name: route }],
+    });
   };
 
   const handleGoogleLogin = async () => {

@@ -15,6 +15,8 @@ import DraggableSheet from '../../../../components/ui/DraggableSheet';
 import { useSchedule } from './ScheduleContext';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { MAP_PROPS } from '../../../../utils/mapConfig';
+import { getNavRoute } from '../../../../components/map/directions';
+import { CURBSIDE_CORRIDOR_M, DOOR_TO_DOOR_CORRIDOR_M } from '../../../../services/matchingService';
 
 // --- BLACK constant is kept (see §5A analysis: avoids dark-mode contrast regression) ---
 const BLACK = '#111827';
@@ -188,18 +190,11 @@ function evaluateRouteAlignment(
 }
 
 const fetchOsrmRoute = async (a: Coord, b: Coord): Promise<Coord[]> => {
-  const fallback = [a, b];
   try {
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${a.longitude},${a.latitude};${b.longitude},${b.latitude}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data?.code === 'Ok' && data.routes?.[0]?.geometry?.coordinates) {
-      return data.routes[0].geometry.coordinates.map((c: number[]) => ({ latitude: c[1], longitude: c[0] }));
-    }
+    const nav = await getNavRoute(a, b);
+    if (nav.source !== 'straight' && nav.coords.length > 1) return nav.coords;
   } catch { /* fall back to straight line */ }
-  return fallback;
+  return [a, b];
 };
 
 export default function LocationSelectScreen({ route, navigation }: any) {
@@ -217,7 +212,7 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     : (isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17,24,39,0.06)');
 
   const isDoorToDoor = /door/i.test(String(state.dropoffType || ''));
-  const baseCorridorM = isDoorToDoor ? 1500 : 500;
+  const baseCorridorM = isDoorToDoor ? DOOR_TO_DOOR_CORRIDOR_M : CURBSIDE_CORRIDOR_M;
 
   const preferredRoute = state.preferredRoute ?? null;
   const hasPreferredRoute = !!(
@@ -552,7 +547,8 @@ export default function LocationSelectScreen({ route, navigation }: any) {
     if (state.isEdit && existingLoc?.latitude && existingLoc?.longitude) {
       const target = { latitude: existingLoc.latitude, longitude: existingLoc.longitude };
       setMarkerCoord(target);
-      resolveAt(target, existingLoc.address ? { name: existingLoc.address.split(',')[0], sub: existingLoc.address } : undefined);
+      const savedTitle = (existingLoc as any).place_name || (existingLoc as any).name || existingLoc.address?.split(',')[0];
+      resolveAt(target, savedTitle ? { name: savedTitle, sub: existingLoc.address } : undefined);
       return;
     }
     if (hasPreferredRoute && routePointA && routePointB) {
@@ -658,7 +654,15 @@ export default function LocationSelectScreen({ route, navigation }: any) {
       return;
     }
     const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
-    const locationInfo = { name: addressName, address: fullAddress, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ...structuredAddress, note: note.trim() || undefined };
+    const locationInfo = {
+      name: addressName,
+      place_name: addressName,
+      address: fullAddress,
+      latitude: markerCoord.latitude,
+      longitude: markerCoord.longitude,
+      ...structuredAddress,
+      note: note.trim() || undefined,
+    };
     saveRecent({ name: addressName, address: addressSub || addressName, latitude: markerCoord.latitude, longitude: markerCoord.longitude, ts: Date.now() });
     if (route.params?.fromExplore) {
       dispatch({ type: route.params.for === 'pickup' ? 'SET_EXPLORE_PICKUP' : 'SET_EXPLORE_DROPOFF', payload: locationInfo });

@@ -7,7 +7,7 @@ import {
   TextInput, Keyboard, useWindowDimensions, Easing, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Polyline, Polygon, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
@@ -33,6 +33,12 @@ import {
   declineMatchedRequest as declineMatchedRequestService,
   getProviderDeliveries,
   RouteMatchRow,
+  CURBSIDE_CORRIDOR_M,
+  DOOR_TO_DOOR_CORRIDOR_M,
+  DOOR_TO_DOOR_FALLBACK_M,
+  projectPointToPolyline,
+  isDoorToDoorType,
+  CURBSIDE_LANDMARK_SNAP_M,
 } from '../../../services/matchingService';
 import { ordersFromDeliveries, planTrip, TripOrder } from '../../../services/tripPlanner';
 import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
@@ -46,6 +52,12 @@ import { useReconnectEpoch } from '../../../services/connectivityStore';
 import { isRouteExpired } from './Manage/ManageRoutesScreen';
 import { SolarIcon, SolarIconName } from '../../../components/ui/SolarIcon';
 import DraggableSheet, { DraggableSheetHandle } from '../../../components/ui/DraggableSheet';
+import { getNavRoute } from '../../../components/map/directions';
+import { buildCorridorPolygon } from '../../../utils/corridorBuffer';
+import { findNearestRouteLandmark } from '../../../utils/addressGeocoding';
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+import { setBroadcastTarget } from '../../../services/locationBroadcastStore';
+import { startBackgroundLocationUpdates } from '../../../services/backgroundLocationTask';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
@@ -90,6 +102,7 @@ interface Location {
   zip_code: string;
   latitude: number;
   longitude: number;
+  place_name?: string
 }
 interface Vehicle {
   vehicle_id: number;
@@ -121,6 +134,7 @@ interface Route {
   start_location?: Location;
   end_location?: Location;
   vehicle?: Vehicle;
+  corridor_path?: Coord[];
 }
 
 interface JobItem {
@@ -208,6 +222,7 @@ const randPin = () => String(Math.floor(1000 + Math.random() * 9000));
 const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
 const requestCode = (id: number) => `PNS-${String(id).padStart(4, '0')}`;
 const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
+
 const isLocalPhoto = (v: any) => typeof v === 'string' && /^(file|content):/i.test(v);
 
 const toPhotoUrl = (v: any): string | null => {
@@ -477,28 +492,17 @@ const fetchRoadCoordsStrict = async (
   const cached = ROAD_CACHE.get(key);
   if (cached) return cached;
 
-  const url =
-    `https://router.project-osrm.org/route/v1/driving/` +
-    `${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=geojson`;
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), OSRM_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (res.ok) {
-        const data = await res.json();
-        const pts = data?.routes?.[0]?.geometry?.coordinates;
-        if (data?.code === 'Ok' && Array.isArray(pts) && pts.length > 1) {
-          const coords = thin(pts.map((c: number[]) => ({ latitude: c[1], longitude: c[0] })));
-          ROAD_CACHE.set(key, coords);
-          return coords;
-        }
-      }
-    } catch { /* timeout / offline: retry once, then give up */ }
-    finally { clearTimeout(timer); }
-    if (attempt === 0) await new Promise<void>(r => setTimeout(r, 600));
-  }
+  try {
+    const nav = await getNavRoute(
+      { latitude: a.lat, longitude: a.lng },
+      { latitude: b.lat, longitude: b.lng },
+    );
+    if (nav.source !== 'straight' && nav.coords.length > 1) {
+      const coords = thin(nav.coords);
+      ROAD_CACHE.set(key, coords);
+      return coords;
+    }
+  } catch { /* fall through */ }
   return null;
 };
 
@@ -559,19 +563,13 @@ const TRIP_PAD = 9; // room for the number badge so the marker bitmap does not c
 const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
   lat, lng, title, street, kind, mk,
 }: { lat: number; lng: number; title: string; street?: string; kind: 'start' | 'end'; mk: MapMarkerStyles }) {
-  const [track, setTrack] = useState(true);
-  useEffect(() => {
-    setTrack(true);
-    const t = setTimeout(() => setTrack(false), 800);
-    return () => clearTimeout(t);
-  }, [title, street]);
   const labelH = street ? LABEL_H2 : LABEL_H;
 
   return (
     <Marker
       coordinate={{ latitude: lat, longitude: lng }}
       anchor={{ x: 0.5, y: (PIN / 2) / (PIN + LABEL_GAP + labelH) }}
-      tracksViewChanges={track}
+      tracksViewChanges={true}
       zIndex={5}
     >
       <View style={mk.placeWrap}>
@@ -597,19 +595,13 @@ const RoutePlaceMarker = React.memo(function RoutePlaceMarker({
 const TripPinMarker = React.memo(function TripPinMarker({
   pin, mk,
 }: { pin: TripPin; mk: MapMarkerStyles }) {
-  const [track, setTrack] = useState(true);
-  useEffect(() => {
-    setTrack(true);
-    const t = setTimeout(() => setTrack(false), 800);
-    return () => clearTimeout(t);
-  }, [pin.title, pin.order, pin.kind]);
   const isPickup = pin.kind === 'pickup';
 
   return (
     <Marker
       coordinate={{ latitude: pin.lat, longitude: pin.lng }}
       anchor={{ x: 0.5, y: (TRIP_PAD + PIN / 2) / (TRIP_PAD + PIN) }}
-      tracksViewChanges={track}
+      tracksViewChanges={true}
       zIndex={6}
     >
       <View style={mk.tripWrap}>
@@ -626,15 +618,8 @@ const TripPinMarker = React.memo(function TripPinMarker({
 const ProviderPin = React.memo(function ProviderPin({
   lat, lng, online, accent, mk,
 }: { lat: number; lng: number; online: boolean; accent: string; mk: MapMarkerStyles }) {
-  const [track, setTrack] = useState(true);
-  useEffect(() => {
-    setTrack(true);
-    const t = setTimeout(() => setTrack(false), 1000);
-    return () => clearTimeout(t);
-  }, [online]);
-
   return (
-    <Marker coordinate={{ latitude: lat, longitude: lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={track} zIndex={10}>
+    <Marker coordinate={{ latitude: lat, longitude: lng }} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={true} zIndex={10}>
       <View style={mk.courierPin}>
         <SolarIcon name="Car" variant="bold" size={26} color={online ? accent : '#64748B'} />
       </View>
@@ -648,7 +633,15 @@ const toNum = (v: any): number | null => {
   return v != null && v !== '' && Number.isFinite(n) ? n : null;
 };
 
-const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, online = true, trip = [] }: any) => {
+const ProviderMap = React.memo(({
+  provider,
+  route,
+  recenterTick,
+  padBottom,
+  online = true,
+  trip = [],
+  showRadius = true,
+}: any) => {
   const { colors } = useTheme();
   const mapStyles = useMemo(() => makeMapStyles(), []);
   const focused = useIsFocused();
@@ -702,10 +695,16 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
     return () => clearTimeout(t);
   }, [tripKey, routeKey, padBottom]);
 
+  const savedCorridor: Coord[] = useMemo(() => {
+    const raw = route?.corridorPath;
+    if (Array.isArray(raw) && raw.length > 2) return raw;
+    return [];
+  }, [route?.corridorPath]);
+
   // Load the road line. A failed / slow request never blocks the line: a straight placeholder is
   // drawn straight away and the real road replaces it as soon as it arrives (retrying in the background).
   useEffect(() => {
-    if (!routeKey) { roadLoadedKey.current = ''; setRoad(null); return; }
+    if (!routeKey || savedCorridor.length > 2) { roadLoadedKey.current = ''; setRoad(null); return; }
     if (roadLoadedKey.current === routeKey) return;
 
     let cancelled = false;
@@ -724,15 +723,31 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
     // netEpoch: the 3 automatic retries can all fail while offline; when the internet is back, try again.
     // A road that is already loaded is kept (early return above), so a drop never erases or distorts the line.
-  }, [routeKey, netEpoch]);
+  }, [routeKey, savedCorridor.length, netEpoch]);
 
   const lineCoords = useMemo<Coord[]>(() => {
     if (!hasRoute) return [];
-    // only the real road geometry of THIS route is drawn. No straight start->end placeholder: while the router is slow
-    // (or for an older route) that placeholder was the stray line cutting across the map.
+    if (savedCorridor.length > 2) return savedCorridor;
     if (road && road.key === routeKey) return road.coords;
     return [];
-  }, [hasRoute, road, routeKey]);
+  }, [hasRoute, savedCorridor, road, routeKey]);
+
+  const fallbackActive = Boolean(route?.fallbackUnlocked) && !Boolean(route?.fallbackUsed);
+
+  const curbPolygon = useMemo(
+    () => (showRadius && lineCoords.length > 2 ? buildCorridorPolygon(lineCoords, CURBSIDE_CORRIDOR_M) : []),
+    [showRadius, lineCoords],
+  );
+  const doorPolygon = useMemo(
+    () => (showRadius && lineCoords.length > 2 ? buildCorridorPolygon(lineCoords, DOOR_TO_DOOR_CORRIDOR_M) : []),
+    [showRadius, lineCoords],
+  );
+  const fallbackPolygon = useMemo(
+    () => (showRadius && fallbackActive && lineCoords.length > 2
+      ? buildCorridorPolygon(lineCoords, DOOR_TO_DOOR_FALLBACK_M)
+      : []),
+    [showRadius, fallbackActive, lineCoords],
+  );
 
   // Android can drop the native line / pins when the map surface is recreated (app resumed from the
   // background or lock screen, screen refocused). Remount the overlays so they are drawn again.
@@ -794,6 +809,7 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       {...MAP_PROPS}
       userInterfaceStyle="light"
       style={StyleSheet.absoluteFill}
+      showsTraffic
       initialRegion={{
         latitude: provider?.lat ?? DEFAULT_CENTER.latitude,
         longitude: provider?.lng ?? DEFAULT_CENTER.longitude,
@@ -807,6 +823,38 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
       rotateEnabled={false}
       pitchEnabled={false}
     >
+      {/* Matching corridor radii (outermost first so inner zones stay crisp) */}
+      {hasRoute && fallbackPolygon.length > 3 && (
+        <Polygon
+          key={`poly-fb-${overlayEpoch}-${routeKey}`}
+          coordinates={fallbackPolygon}
+          fillColor="rgba(139, 92, 246, 0.08)"
+          strokeColor="rgba(139, 92, 246, 0.45)"
+          strokeWidth={1.5}
+          zIndex={1}
+        />
+      )}
+      {hasRoute && doorPolygon.length > 3 && (
+        <Polygon
+          key={`poly-door-${overlayEpoch}-${routeKey}`}
+          coordinates={doorPolygon}
+          fillColor="rgba(59, 130, 246, 0.10)"
+          strokeColor="rgba(59, 130, 246, 0.45)"
+          strokeWidth={1.5}
+          zIndex={2}
+        />
+      )}
+      {hasRoute && curbPolygon.length > 3 && (
+        <Polygon
+          key={`poly-curb-${overlayEpoch}-${routeKey}`}
+          coordinates={curbPolygon}
+          fillColor="rgba(255, 117, 31, 0.18)"
+          strokeColor="rgba(255, 117, 31, 0.70)"
+          strokeWidth={2}
+          zIndex={3}
+        />
+      )}
+
       {/* the posted route: always drawn, with or without accepted orders */}
       {hasRoute && lineCoords.length > 1 && (
         <Polyline
@@ -816,6 +864,7 @@ const ProviderMap = React.memo(({ provider, route, recenterTick, padBottom, onli
           strokeWidth={6}
           lineCap="round"
           lineJoin="round"
+          zIndex={4}
         />
       )}
       {hasRoute && (
@@ -1324,6 +1373,7 @@ const RouteLocationPickerModal = ({
     const fullAddress = `${addressName}${addressSub && addressSub !== addressName ? ', ' + addressSub : ''}`;
     const locationInfo = {
       address: fullAddress,
+      place_name: addressName,
       latitude: markerCoord.latitude,
       longitude: markerCoord.longitude,
       ...structuredAddress,
@@ -1728,6 +1778,9 @@ export default function JobsScreen() {
   const [locDenied, setLocDenied] = useState(false);
   const [recenterTick, setRecenterTick] = useState(0);
 
+  const [showRadius, setShowRadius] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(false);
+
   const [awaiting, setAwaiting] = useState<JobRequest[]>([]);
   const [lapsedIds, setLapsedIds] = useState<number[]>([]);
   const awaitingSeqRef = useRef(0);
@@ -1736,6 +1789,7 @@ export default function JobsScreen() {
   // Pickups and drop-offs are sequenced by the shortest path (a drop-off always comes after its own pickup),
   // so the provider never backtracks. Drop-off pins only appear on the map once the parcel is picked up.
   const [tripOrders, setTripOrders] = useState<TripOrder[]>([]);
+  const [driveUnlockAt, setDriveUnlockAt] = useState<Date | null>(null);
   const [tripOrigin, setTripOrigin] = useState<{ lat: number; lng: number } | null>(null);
   const myLocRef = useRef<{ lat: number; lng: number } | null>(null);
   useEffect(() => {
@@ -1752,6 +1806,34 @@ export default function JobsScreen() {
       const next = ordersFromDeliveries(list, activeRouteRef.current?.route_id ?? null);
       const sig = (a: TripOrder[]) => a.map(o => `${o.deliveryId}:${o.stage}`).join('|');
       setTripOrders(prev => (sig(prev) === sig(next) ? prev : next));
+
+      // Unlock "Drive now" immediately if any order is Send-Now, In Transit, Returning, or <= 1 hr from pickup
+      const activeIds = new Set(next.map(o => o.deliveryId));
+      const activeRaw = list.filter(d => activeIds.has(Number(d.delivery_id)));
+      let hasImmediate = false;
+      let earliestSchedMs = Infinity;
+      const nowMs = Date.now();
+
+      for (const d of activeRaw) {
+        const ord = next.find(o => o.deliveryId === Number(d.delivery_id));
+        const schedStr = d?.delivery_requests?.scheduled_time;
+        if (!ord || ord.stage !== 'pickup' || !schedStr) {
+          hasImmediate = true;
+          break;
+        }
+        const schedMs = parseNaiveIsoString(String(schedStr).replace(' ', 'T')).getTime();
+        if (isNaN(schedMs) || schedMs - nowMs <= 60 * 60 * 1000) {
+          hasImmediate = true;
+          break;
+        }
+        if (schedMs < earliestSchedMs) earliestSchedMs = schedMs;
+      }
+
+      setDriveUnlockAt(
+        !hasImmediate && Number.isFinite(earliestSchedMs)
+          ? new Date(earliestSchedMs - 60 * 60 * 1000)
+          : null,
+      );
     } catch { /* keep the last known trip */ }
   }, []);
 
@@ -1785,6 +1867,16 @@ export default function JobsScreen() {
     [tripPlan],
   );
   const driveNow = () => {
+    if (driveUnlockAt && Date.now() < driveUnlockAt.getTime()) {
+      const unlockStr = driveUnlockAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const pickupStr = new Date(driveUnlockAt.getTime() + 60 * 60 * 1000)
+        .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      Alert.alert(
+        'Too Early to Drive',
+        `Your next pickup is scheduled for ${pickupStr}. Navigation unlocks 1 hour before pickup (at ${unlockStr}).`,
+      );
+      return;
+    }
     const el: any = (activeRoute ?? endedRoute)?.end_location;
     const lat = Number(el?.latitude);
     const lng = Number(el?.longitude);
@@ -1793,6 +1885,7 @@ export default function JobsScreen() {
     const sLat2 = Number(sl?.latitude);
     const sLng2 = Number(sl?.longitude);
     const sp = describePlace(sl);
+    
     navigation.navigate('ProviderNavigation', {
       routeId: activeRoute?.route_id ?? null,
       routeEnd: el && Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng, title: ep.main, sub: ep.sub } : null,
@@ -1958,11 +2051,13 @@ export default function JobsScreen() {
 
   const hasOffers = awaiting.length > 0;
 
+  // The bottom tab bar stays visible even when the provider goes offline
+  // (the Account tab shows the online / offline status).
   useFocusEffect(
     useCallback(() => {
-      setTabBarHidden(!loading && !isOnline && !hasOffers);
+      setTabBarHidden(false);
       return () => setTabBarHidden(false);
-    }, [isOnline, loading, hasOffers]),
+    }, []),
   );
 
   const goToTasks = () => {
@@ -2055,7 +2150,7 @@ export default function JobsScreen() {
           .eq('delivery_status', 'Pending')
           .in('payment_status', ['held', 'paid', 'released']),
         supabase.from('route_request_matches')
-          .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
+          .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, fallback_used, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
           .eq('route_id', selectedRoute.route_id)
           .in('status', ['matched', 'expired'])
@@ -2460,6 +2555,7 @@ export default function JobsScreen() {
 
       if (!location) {
         const { data: newLoc, error } = await supabase.from('locations').insert({
+          place_name: locData.place_name || locData.street_address || 'Pinned location',
           street_address: locData.street_address || 'Pinned location',
           barangay: locData.barangay || 'Unknown',
           city: locData.city || 'Unknown',
@@ -2470,6 +2566,14 @@ export default function JobsScreen() {
         }).select('*').single();
         if (error) throw error;
         location = newLoc;
+      } else if (!location.place_name && locData.place_name) {
+        const { data: updatedLoc } = await supabase
+          .from('locations')
+          .update({ place_name: locData.place_name })
+          .eq('location_id', location.location_id)
+          .select('*')
+          .single();
+        if (updatedLoc) location = updatedLoc;
       }
 
       if (type === 'start') setNewRouteStart(location);
@@ -2848,6 +2952,35 @@ export default function JobsScreen() {
         return;
       }
 
+      // Curb-side strict No-Detour check: if sender's pickup pin is > 15 m off the main route,
+      // snap to the nearest main-road landmark so the driver never detours off-route.
+      let meetupPatch: {
+        meetup_landmark_name?: string;
+        meetup_lat?: number;
+        meetup_lng?: number;
+      } = {};
+      const matchedRouteObj = routes.find(r => r.route_id === resolvedRouteId) ?? activeRoute;
+      const routePolyline = Array.isArray(matchedRouteObj?.corridor_path) ? matchedRouteObj!.corridor_path! : [];
+      if (
+        !isDoorToDoorType(req.pickup_type) &&
+        req.pickup.lat != null &&
+        req.pickup.lng != null &&
+        routePolyline.length >= 2
+      ) {
+        const proj = projectPointToPolyline(
+          { lat: Number(req.pickup.lat), lng: Number(req.pickup.lng) },
+          routePolyline,
+        );
+        if (proj.minDistanceM > CURBSIDE_LANDMARK_SNAP_M) {
+          const landmark = await findNearestRouteLandmark(proj.projLat, proj.projLng);
+          meetupPatch = {
+            meetup_landmark_name: landmark.name,
+            meetup_lat: landmark.lat,
+            meetup_lng: landmark.lng,
+          };
+        }
+      }
+
       const { data: delivery, error: deliveryError } = await supabase.from('deliveries').insert({
         request_id: req.request_id,
         provider_id: providerId,
@@ -2855,6 +2988,7 @@ export default function JobsScreen() {
         route_id: resolvedRouteId,
         accepted_at: new Date().toISOString(),
         estimated_eta: new Date(Date.now() + 3600000).toISOString(),
+        ...meetupPatch,
       }).select('*').single();
       if (deliveryError) {
         await supabase.from('delivery_requests').update({ delivery_status: 'Pending' }).eq('request_id', req.request_id);
@@ -2925,13 +3059,28 @@ export default function JobsScreen() {
           try {
             await notifyUser(
               requestData.sender_id,
-              'Route-Matched Courier Accepted! 🚚',
-              `Your courier accepted parcel #${code} along the declared route.`,
+              meetupPatch.meetup_landmark_name
+                ? 'Curb-side Meet-Up Point Assigned 📍'
+                : 'Route-Matched Courier Accepted! 🚚',
+              meetupPatch.meetup_landmark_name
+                ? `Your courier accepted #${code}. Meet curbside at ${meetupPatch.meetup_landmark_name} along the main route (no detours).`
+                : `Your courier accepted parcel #${code} along the declared route.`,
               { deliveryId: delivery.delivery_id },
             );
           } catch { /* ignore */ }
         }
       }
+
+      // Phase 4: Auto-start live GPS broadcasting & fire automated own-SIM SMS immediately on accept
+      void setBroadcastTarget({
+        deliveryId: delivery.delivery_id,
+        providerId,
+        startedAt: new Date().toISOString(),
+      }).then(() => startBackgroundLocationUpdates()).catch(() => {});
+
+      void triggerDeliverySmsMilestone(delivery.delivery_id, 'accepted', {
+        landmarkName: meetupPatch.meetup_landmark_name ?? null,
+      });
 
       setDetailRequestId(null);
       void refreshMatches(providerIdRef.current, activeRouteRef.current, false);
@@ -3087,7 +3236,7 @@ export default function JobsScreen() {
               {o.isFallback && (
                 <View style={styles.fallbackBadge}>
                   <SolarIcon name="Routing" variant="linear" size={12} color="#FFFFFF" />
-                  <Text style={styles.fallbackBadgeText}>FALLBACK ({o.fallbackType === 'CONDITION_A' ? 'ADD-ON' : '1H BACKUP'})</Text>
+                  <Text style={styles.fallbackBadgeText}>FALLBACK ({o.fallbackType === 'CONDITION_A' ? 'ADD-ON' : '2H BACKUP'})</Text>
                 </View>
               )}
             </View>
@@ -3357,10 +3506,22 @@ export default function JobsScreen() {
               Next: {next.kind === 'pickup' ? 'pick up at' : next.isReturn ? 'return to' : 'drop off at'} {next.point.main}
             </Text>
           </View>
-          <TouchableOpacity style={styles.driveBtn} onPress={driveNow} activeOpacity={0.9}>
-            <SolarIcon name="Routing" variant="bold" size={14} color="#FFFFFF" />
-            <Text style={styles.driveBtnText}>Drive now</Text>
-          </TouchableOpacity>
+          {(() => {
+            const locked = !!(driveUnlockAt && Date.now() < driveUnlockAt.getTime());
+            const unlockLabel = driveUnlockAt
+              ? driveUnlockAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+              : '';
+            return (
+              <TouchableOpacity
+                style={[styles.driveBtn, locked && { backgroundColor: colors.textMuted }]}
+                onPress={driveNow}
+                activeOpacity={0.9}
+              >
+                <SolarIcon name={locked ? 'Clock' : 'Routing'} variant="bold" size={14} color="#FFFFFF" />
+                <Text style={styles.driveBtnText}>{locked ? `At ${unlockLabel}` : 'Drive now'}</Text>
+              </TouchableOpacity>
+            );
+          })()}
         </View>
 
         {shown.map((s, i) => (
@@ -3483,6 +3644,9 @@ export default function JobsScreen() {
       ? {
           start: { lat: sLoc.latitude, lng: sLoc.longitude, title: sAddr.main, sub: sAddr.sub },
           end: { lat: eLoc.latitude, lng: eLoc.longitude, title: eAddr.main, sub: eAddr.sub },
+          corridorPath: Array.isArray((mapSrcRoute as any)?.corridor_path) ? (mapSrcRoute as any).corridor_path : [],
+          fallbackUnlocked: Boolean(mapSrcRoute?.fallback_unlocked),
+          fallbackUsed: Boolean(mapSrcRoute?.fallback_used),
         }
       : null;
 
@@ -3498,6 +3662,7 @@ export default function JobsScreen() {
           recenterTick={recenterTick}
           padBottom={sheetHeight + 24}
           trip={tripPins}
+          showRadius={showRadius}
         />
 
         <Animated.View
@@ -3532,10 +3697,105 @@ export default function JobsScreen() {
               <SolarIcon name="Compass" variant="duotone" size={20} color={colors.textPrimary} />
             </TouchableOpacity>
 
+            {mapRoute && (
+              <TouchableOpacity
+                style={[styles.mapToolBtn, showRadius && { backgroundColor: colors.accent, borderColor: colors.accent }]}
+                onPress={() => setShowRadius(v => !v)}
+                activeOpacity={0.85}
+              >
+                <SolarIcon name="Map" variant="duotone" size={20} color={showRadius ? '#FFFFFF' : colors.textPrimary} />
+              </TouchableOpacity>
+            )}
+
             {isOnline && (
               <TouchableOpacity style={[styles.mapToolBtn, styles.sosToolBtn]} onPress={triggerSOS} activeOpacity={0.85}>
                 <SolarIcon name="ShieldCheck" variant="bold" size={20} color="#FFFFFF" />
               </TouchableOpacity>
+            )}
+          </View>
+
+          <View style={[styles.topLeftLegends, { top: !isOnline ? 54 : 0 }]} pointerEvents="box-none">
+            <TouchableOpacity
+              style={styles.legendTogglePill}
+              onPress={() => setLegendOpen(v => !v)}
+              activeOpacity={0.85}
+            >
+              <SolarIcon name="InfoCircle" variant="duotone" size={15} color={colors.accent} />
+              <Text style={styles.legendToggleText}>Legend</Text>
+              <SolarIcon
+                name={legendOpen ? 'AltArrowUp' : 'AltArrowDown'}
+                variant="bold"
+                size={13}
+                color={colors.textSecondary}
+              />
+            </TouchableOpacity>
+
+            {legendOpen && (
+              <View style={styles.legendCard}>
+                {mapRoute && showRadius && (
+                  <View style={styles.legendSection}>
+                    <Text style={styles.legendSectionTitle}>MATCHING RADIUS</Text>
+                    <View style={styles.legendRow}>
+                      <View style={styles.radiusLegendItem}>
+                        <View style={[styles.radiusLegendDot, { backgroundColor: BRAND_ORANGE }]} />
+                        <Text style={styles.radiusLegendText}>200m Curb</Text>
+                      </View>
+                      <View style={styles.radiusLegendItem}>
+                        <View style={[styles.radiusLegendDot, { backgroundColor: '#3B82F6' }]} />
+                        <Text style={styles.radiusLegendText}>500m Door</Text>
+                      </View>
+                      {mapRoute.fallbackUnlocked && !mapRoute.fallbackUsed && (
+                        <View style={styles.radiusLegendItem}>
+                          <View style={[styles.radiusLegendDot, { backgroundColor: '#8B5CF6' }]} />
+                          <Text style={styles.radiusLegendText}>1km Backup</Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                <View style={styles.legendSection}>
+                  <Text style={styles.legendSectionTitle}>LIVE TRAFFIC</Text>
+                  <View style={styles.legendRow}>
+                    <View style={styles.radiusLegendItem}>
+                      <View style={[styles.radiusLegendDot, { backgroundColor: '#22C55E' }]} />
+                      <Text style={styles.radiusLegendText}>Light</Text>
+                    </View>
+                    <View style={styles.radiusLegendItem}>
+                      <View style={[styles.radiusLegendDot, { backgroundColor: '#F59E0B' }]} />
+                      <Text style={styles.radiusLegendText}>Moderate</Text>
+                    </View>
+                    <View style={styles.radiusLegendItem}>
+                      <View style={[styles.radiusLegendDot, { backgroundColor: '#EF4444' }]} />
+                      <Text style={styles.radiusLegendText}>Heavy</Text>
+                    </View>
+                  </View>
+                </View>
+
+                <View style={[styles.legendSection, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                  <Text style={styles.legendSectionTitle}>MAP PINS</Text>
+                  <View style={styles.legendRow}>
+                    <View style={styles.radiusLegendItem}>
+                      <SolarIcon name="Car" variant="bold" size={12} color={isOnline ? colors.accent : '#64748B'} />
+                      <Text style={styles.radiusLegendText}>You</Text>
+                    </View>
+                    <View style={styles.radiusLegendItem}>
+                      <View style={[styles.radiusLegendDot, { backgroundColor: BRAND_ORANGE }]} />
+                      <Text style={styles.radiusLegendText}>Start</Text>
+                    </View>
+                    <View style={styles.radiusLegendItem}>
+                      <SolarIcon name="Flag" variant="bold" size={11} color={colors.textPrimary} />
+                      <Text style={styles.radiusLegendText}>End</Text>
+                    </View>
+                    <View style={styles.radiusLegendItem}>
+                      <View style={{ width: 13, height: 13, borderRadius: 7, backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: '#FFF', fontSize: 8, fontFamily: 'Poppins_800ExtraBold' }}>1</Text>
+                      </View>
+                      <Text style={styles.radiusLegendText}>Stop</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
             )}
           </View>
 
@@ -3675,7 +3935,7 @@ export default function JobsScreen() {
             <View style={styles.guardrailNotice}>
               <SolarIcon name="ShieldCheck" variant="duotone" size={16} color={colors.accent} />
               <Text style={styles.guardrailNoticeText}>
-                Guardrail: Post ≥2 hrs early for Condition B fallback · Destinations must be ≥3 km apart · Max 4-hr window.
+                Guardrail: Condition B fallback unlocks 2 hrs after posting if 0 matches · Destinations must be ≥3 km apart · Max 4-hr window.
               </Text>
             </View>
 
@@ -3690,7 +3950,7 @@ export default function JobsScreen() {
                   <SolarIcon name="MapPoint" variant="linear" size={14} color="#FFF" />
                 </View>
                 <Text style={styles.locationSelectorText} numberOfLines={1}>
-                  {newRouteStart ? newRouteStart.street_address : 'Set Starting Point'}
+                  {newRouteStart ? (newRouteStart.place_name || newRouteStart.street_address) : 'Set Starting Point'}
                 </Text>
               </TouchableOpacity>
               <View style={{ height: 10 }} />
@@ -3703,7 +3963,7 @@ export default function JobsScreen() {
                   <SolarIcon name="MapPoint" variant="linear" size={14} color="#FFF" />
                 </View>
                 <Text style={styles.locationSelectorText} numberOfLines={1}>
-                  {newRouteEnd ? newRouteEnd.street_address : 'Set Destination (≥3 km apart)'}
+                  {newRouteEnd ? (newRouteEnd.place_name || newRouteEnd.street_address) : 'Set Destination (≥3 km apart)'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -4010,8 +4270,8 @@ export default function JobsScreen() {
                         ? `Every ${WEEKDAY_LABELS[rDate.getDay()]} · ${timeStr}`
                         : `${rDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${timeStr}`;
 
-                  const startAddr = splitAddress(r.start_location?.street_address);
-                  const endAddr = splitAddress(r.end_location?.street_address);
+                  const startAddr = describePlace(r.start_location);
+                  const endAddr = describePlace(r.end_location);
 
                   return (
                     <TouchableOpacity
@@ -4082,6 +4342,65 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
         borderWidth: 1.5, borderColor: c.card, justifyContent: 'center', alignItems: 'center',
       },
     mapToolBadgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+    topLeftLegends: {
+      position: 'absolute',
+      left: 0,
+      maxWidth: '78%',
+      alignItems: 'flex-start',
+      gap: 6,
+    },
+    legendTogglePill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: c.card,
+      borderWidth: 1,
+      borderColor: hair,
+      borderRadius: 20,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: isDark ? 0.35 : 0.1,
+      shadowRadius: 8,
+      elevation: 4,
+    },
+    legendToggleText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
+    legendCard: {
+      backgroundColor: c.card,
+      borderWidth: 1,
+      borderColor: hair,
+      borderRadius: 14,
+      padding: 12,
+      gap: 10,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: isDark ? 0.4 : 0.12,
+      shadowRadius: 10,
+      elevation: 5,
+    },
+    legendSection: {
+      gap: 5,
+      paddingBottom: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: c.divider,
+    },
+    legendSectionTitle: {
+      fontSize: 9,
+      fontFamily: 'Poppins_800ExtraBold',
+      color: c.textMuted,
+      letterSpacing: 0.7,
+    },
+    legendRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 10 },
+    radiusLegendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    radiusLegendDot: { width: 8, height: 8, borderRadius: 4 },
+    radiusLegendText: { fontSize: 11, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+    trafficLegendLabel: {
+      fontSize: 9,
+      fontFamily: 'Poppins_800ExtraBold',
+      color: c.textMuted,
+      letterSpacing: 0.6,
+    },
     locWarnText: { fontSize: 12, fontFamily: 'Poppins_600SemiBold', color: c.warning },
     svcPill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: c.infoSoft, borderWidth: 1, borderColor: c.info, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 8 },
     svcPillText: { fontSize: 11.5, fontFamily: 'Poppins_800ExtraBold', color: c.info },

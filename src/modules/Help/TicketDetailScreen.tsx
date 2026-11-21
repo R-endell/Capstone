@@ -366,7 +366,7 @@ export default function TicketDetailScreen() {
           <View style={[styles.respondBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             {canRespond ? (
               <>
-                <Text style={styles.respondNote}>You can respond once. Our team reviews both sides before deciding.</Text>
+                <Text style={styles.respondNote}>You can respond once. Our team reviews both sides before deciding. If the report is upheld, the sender is refunded and a strike may be added to your account.</Text>
                 <Animated.View style={{ width: '100%', transform: [{ scale: btnScale }] }}>
                   <TouchableOpacity
                     style={styles.primaryBtn}

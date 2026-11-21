@@ -102,8 +102,8 @@ const GUIDES = [
 ] as const;
 
 const FAQS = [
-  { q: 'How do I book a delivery?', a: 'Open the Explore tab. Tap Send Package Now for an instant booking or Schedule a Delivery to plan ahead, then set your pickup and drop-off points and describe your package.' },
-  { q: 'Send Now vs. Schedule?', a: 'Send Package Now books a delivery right away. Schedule a Delivery lets you choose a future date and time.' },
+  { q: 'How do I book a delivery?', a: 'Open the Explore tab. Tap Send Package Today for an instant booking or Schedule a Delivery to plan ahead, then set your pickup and drop-off points and describe your package.' },
+  { q: 'Send Today vs. Schedule?', a: 'Send Package Today books a delivery within the day. Schedule a Delivery lets you choose a future date and time.' },
   { q: 'How is the price estimated?', a: 'The estimate depends on box size and the provider’s vehicle. You’ll see it on each provider’s card before sending a request.' },
   { q: 'What if something goes wrong?', a: 'Report it from the Dispute Center. Add details and photos so the team can review the case.' },
 ] as const;
@@ -404,7 +404,7 @@ export default function HomeScreen() {
               <Image source={ICON_3D_SEND} style={styles.actionIcon3D} resizeMode="contain" />
             </View>
             <View style={styles.actionTextWrap}>
-              <Text style={styles.actionTitlePrimary}>Send Package Now</Text>
+              <Text style={styles.actionTitlePrimary}>Send Package Today</Text>
               <Text style={styles.actionSubPrimary}>Instant booking & real-time tracking</Text>
             </View>
             <View style={styles.primaryArrowBox}>

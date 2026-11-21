@@ -68,50 +68,25 @@ export default function AddItemScreen({ route, navigation }: any) {
   const takePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission required', 'Allow camera access to take a package picture.');
+      Alert.alert('Camera permission required', 'Allow camera access to take a live photo of the package.');
       return;
     }
+    // Camera only: the sender must take a LIVE photo. No gallery / file uploads.
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ['images'],
-      allowsEditing: true,
+      allowsEditing: false,
       quality: 0.7,
     });
     if (!result.canceled) {
       setPhotoUri(result.assets[0].uri);
       setPhotoError(false);
     }
-  };
-
-  const chooseFromFiles = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission required', 'Allow access to your files and photos to add a package picture.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      quality: 0.7,
-    });
-    if (!result.canceled) {
-      setPhotoUri(result.assets[0].uri);
-      setPhotoError(false);
-    }
-  };
-
-  // Ask how the sender wants to add the photo: camera or files/gallery.
-  const pickImage = () => {
-    Alert.alert('Package photo', 'How would you like to add the photo?', [
-      { text: 'Take Photo', onPress: takePhoto },
-      { text: 'Choose from Files', onPress: chooseFromFiles },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
   };
 
   const addItem = () => {
     if (!photoUri) {
       setPhotoError(true);
-      Alert.alert('Photo required', 'Please add a photo of the package. Take a photo or choose one from your files.');
+      Alert.alert('Live photo required', 'Please take a live photo of the package using your camera.');
       return;
     }
     if (!description.trim()) {
@@ -175,7 +150,7 @@ export default function AddItemScreen({ route, navigation }: any) {
             </Text>
             <TouchableOpacity
               style={[styles.photoBox, photoUri && styles.photoBoxFilled, photoError && !photoUri && styles.photoBoxError]}
-              onPress={pickImage}
+              onPress={takePhoto}
               activeOpacity={0.85}
             >
               {photoUri ? (
@@ -183,7 +158,7 @@ export default function AddItemScreen({ route, navigation }: any) {
                   <Image source={{ uri: photoUri }} style={styles.photoPreview} />
                   <View style={styles.replaceBadge}>
                     <SolarIcon name="Camera" variant="linear" size={12} color="#FFFFFF" />
-                    <Text style={styles.replaceBadgeText}>Replace</Text>
+                    <Text style={styles.replaceBadgeText}>Retake</Text>
                   </View>
                 </View>
               ) : (
@@ -191,9 +166,9 @@ export default function AddItemScreen({ route, navigation }: any) {
                   <View style={styles.photoIconCircle}>
                     <SolarIcon name="Camera" variant="duotone" size={28} color={colors.accent} />
                   </View>
-                  <Text style={styles.photoPlaceholderTitle}>Add package photo (required)</Text>
+                  <Text style={styles.photoPlaceholderTitle}>Take a live photo (required)</Text>
                   <Text style={[styles.photoPlaceholderText, photoError && { color: colors.error }]}>
-                    Take a photo or choose one from your files
+                    Camera only. Gallery uploads are not allowed
                   </Text>
                 </>
               )}

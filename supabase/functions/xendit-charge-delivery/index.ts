@@ -44,16 +44,36 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // Idempotency: a session already exists for this request
+    // Check existing 'processing' session with Xendit first; if not already completed, create a fresh session so retries always get a valid token
     if (reqRow.payment_reference && reqRow.payment_status === 'processing') {
-      return new Response(
-        JSON.stringify({
-          status: 'processing',
-          message: 'A payment session is already active for this request.',
-          payment_reference: reqRow.payment_reference,
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      try {
+        const checkRes = await fetch(
+          `https://api.xendit.co/sessions/${encodeURIComponent(reqRow.payment_reference)}`,
+          {
+            method: 'GET',
+            headers: { Authorization: `Basic ${btoa(XENDIT_SECRET_KEY + ':')}` },
+          },
+        )
+        if (checkRes.ok) {
+          const existing = await checkRes.json()
+          if (existing?.status === 'COMPLETED') {
+            await supabase
+              .from('delivery_requests')
+              .update({
+                payment_status: 'held',
+                escrow_status: 'held',
+                paid_at: new Date().toISOString(),
+              })
+              .eq('request_id', requestId)
+            return new Response(JSON.stringify({ status: 'held', message: 'Already paid' }), {
+              status: 200,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            })
+          }
+        }
+      } catch (checkErr) {
+        console.warn('[CHARGE] Existing session check failed, creating fresh session:', checkErr)
+      }
     }
 
     // 2. Load user's Xendit customer

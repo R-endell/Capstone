@@ -49,6 +49,36 @@ interface EarningRow {
   refund_status: string | null;     // state of the deposit refund to the sender
 }
 
+/* ------------------------------------------------------------------ */
+/* 24-hour cash-out hold: an earning is only cashable 24h after the    */
+/* delivery was completed.                                             */
+/* ------------------------------------------------------------------ */
+const CASHOUT_HOLD_MS = 24 * 60 * 60 * 1000;
+
+const toMs = (ts: string | null | undefined): number | null => {
+  if (!ts) return null;
+  let raw = String(ts);
+  // Naive DB timestamps are stored in UTC.
+  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)) raw = raw.replace(' ', 'T') + 'Z';
+  const ms = new Date(raw).getTime();
+  return isNaN(ms) ? null : ms;
+};
+
+/** When this earning becomes cashable (ms epoch), or null if it is not an earned row. */
+const cashableAtOf = (r: EarningRow): number | null => {
+  if (r.display_status !== 'earned') return null;
+  const base = toMs(r.delivery_completed_at) ?? toMs(r.processed_at) ?? toMs(r.created_at);
+  return base == null ? null : base + CASHOUT_HOLD_MS;
+};
+
+const formatCountdown = (ms: number): string => {
+  const totalMins = Math.max(1, Math.ceil(ms / 60000));
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+
 export default function EarningsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -70,6 +100,13 @@ export default function EarningsScreen() {
   const [totalEarned, setTotalEarned] = useState(0);
   const [totalPending, setTotalPending] = useState(0);
   const [completedJobs, setCompletedJobs] = useState(0);
+
+  // Ticks every minute so held earnings unlock on screen without a manual refresh.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const [detailRow, setDetailRow] = useState<EarningRow | null>(null);
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
@@ -353,6 +390,36 @@ export default function EarningsScreen() {
 
   const renderWalletCard = () => {
     const balance = Number(walletData?.balance || 0);
+
+    // Earnings completed less than 24h ago are still on hold and cannot be cashed out.
+    const heldRows = earnings.filter((r) => {
+      const at = cashableAtOf(r);
+      return at != null && at > nowMs;
+    });
+    const lockedAmount = Math.round(heldRows.reduce((s, r) => s + r.display_amount, 0) * 100) / 100;
+    const cashableBalance = Math.max(0, Math.round((balance - lockedAmount) * 100) / 100);
+    const nextUnlockAt = heldRows.reduce<number | null>((min, r) => {
+      const at = cashableAtOf(r)!;
+      return min == null || at < min ? at : min;
+    }, null);
+
+    const openCashout = () => {
+      if (walletMissing) {
+        Alert.alert('Wallet Not Ready', 'Complete a delivery first to initialize your wallet.');
+        return;
+      }
+      if (cashableBalance <= 0) {
+        Alert.alert(
+          'Earnings on hold',
+          lockedAmount > 0 && nextUnlockAt != null
+            ? `Earnings can be cashed out 24 hours after the delivery is completed.\n\n₱${lockedAmount.toFixed(2)} unlocks in ${formatCountdown(nextUnlockAt - nowMs)}.`
+            : 'You have no cashable balance yet.',
+        );
+        return;
+      }
+      navigation.navigate('Cashout', { providerId, cashableBalance, lockedAmount });
+    };
+
     const hasGcash = isSavedWalletNumberValid(walletData?.gcash_number);
     const hasMaya = isSavedWalletNumberValid(walletData?.maya_number);
 
@@ -365,24 +432,18 @@ export default function EarningsScreen() {
               <View style={styles.walletIconBox}>
                 <SolarIcon name="Wallet" variant="duotone" size={18} color={colors.accent} />
               </View>
-              <Text style={styles.balanceLabel}>AVAILABLE BALANCE</Text>
+              <Text style={styles.balanceLabel}>CASHABLE BALANCE</Text>
             </View>
             <Text style={styles.balanceAmount} numberOfLines={1} adjustsFontSizeToFit>
               <Text style={styles.currencySymbol}>₱</Text>
-              {balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {cashableBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </Text>
           </View>
 
           <TouchableOpacity
             style={styles.withdrawBtn}
             activeOpacity={0.85}
-            onPress={() => {
-              if (walletMissing) {
-                Alert.alert('Wallet Not Ready', 'Complete a delivery first to initialize your wallet.');
-                return;
-              }
-              navigation.navigate('Cashout', { providerId });
-            }}
+            onPress={openCashout}
           >
             <SolarIcon name="AltArrowUp" variant="bold" size={16} color="#FFFFFF" />
             <Text style={styles.withdrawBtnText}>Cash Out</Text>
@@ -390,13 +451,21 @@ export default function EarningsScreen() {
         </View>
 
         {/* Status Pills (Pending Escrow / Payout in Progress) */}
-        {(totalPending > 0 || activeWithdrawalsTotal > 0) && (
+        {(totalPending > 0 || activeWithdrawalsTotal > 0 || lockedAmount > 0) && (
           <View style={styles.walletStatusList}>
             {totalPending > 0 && (
               <View style={styles.pendingPill}>
                 <SolarIcon name="Clock" variant="bold" size={13} color={colors.warning} />
                 <Text style={styles.pendingText}>
                   ₱{totalPending.toFixed(2)} held in escrow
+                </Text>
+              </View>
+            )}
+            {lockedAmount > 0 && nextUnlockAt != null && (
+              <View style={styles.pendingPill}>
+                <SolarIcon name="Clock" variant="bold" size={13} color={colors.warning} />
+                <Text style={styles.pendingText}>
+                  ₱{lockedAmount.toFixed(2)} on hold · next unlock in {formatCountdown(nextUnlockAt - nowMs)}
                 </Text>
               </View>
             )}
@@ -429,7 +498,7 @@ export default function EarningsScreen() {
               <TouchableOpacity
                 style={styles.payoutTile}
                 activeOpacity={0.8}
-                onPress={() => navigation.navigate('Cashout', { providerId })}
+                onPress={() => navigation.navigate('Cashout', { providerId, cashableBalance, lockedAmount })}
               >
                 <View style={styles.payoutLogoBox}>
                   <Image source={GCASH_LOGO} style={{ width: 20, height: 20 }} resizeMode="contain" />
@@ -446,7 +515,7 @@ export default function EarningsScreen() {
               <TouchableOpacity
                 style={styles.payoutTile}
                 activeOpacity={0.8}
-                onPress={() => navigation.navigate('Cashout', { providerId })}
+                onPress={() => navigation.navigate('Cashout', { providerId, cashableBalance, lockedAmount })}
               >
                 <View style={styles.payoutLogoBox}>
                   <Image source={MAYA_LOGO} style={{ width: 20, height: 20 }} resizeMode="contain" />
@@ -505,6 +574,12 @@ export default function EarningsScreen() {
     else if (isRefunded) { statusColor = colors.textSecondary; statusBg = colors.divider; statusIcon = 'ArrowLeft'; statusLabel = 'Refunded'; }
     else if (isPending) { statusLabel = item.delivery_completed_at ? 'Releasing' : 'In Escrow'; }
 
+    const rowCashAt = cashableAtOf(item);
+    if (isEarned && rowCashAt != null && rowCashAt > nowMs) {
+      statusColor = colors.warning; statusBg = colors.warningBg; statusIcon = 'Clock';
+      statusLabel = `Unlocks in ${formatCountdown(rowCashAt - nowMs)}`;
+    }
+
     const stamp = item.processed_at || item.delivery_completed_at || item.created_at;
 
     return (
@@ -514,21 +589,25 @@ export default function EarningsScreen() {
             <SolarIcon name={statusIcon} variant="linear" size={20} color={statusColor} />
           </View>
           <View style={styles.transactionDetails}>
-            <View style={styles.txTitleRow}>
-              <Text style={styles.transactionTitle}>Delivery #{item.delivery_id}</Text>
+            <Text style={styles.transactionTitle} numberOfLines={1}>
+              Delivery #{item.delivery_id}
+            </Text>
+            <Text style={styles.transactionSubtitle} numberOfLines={1}>
+              {formatDate(stamp)}
+              {item.payment_method ? ` • ${titleCase(item.payment_method)}` : ''}
+            </Text>
+            <View style={styles.badgeRow}>
               <View style={[styles.miniStatusPill, { backgroundColor: statusBg }]}>
                 <Text style={[styles.miniStatusText, { color: statusColor }]}>{statusLabel}</Text>
               </View>
               {isReturnOption(item) && (
                 <View style={styles.returnPill}>
-                  <Text style={styles.returnPillText}>{item.is_returned ? 'Returned' : 'Return to Sender'}</Text>
+                  <Text style={styles.returnPillText}>
+                    {item.is_returned ? 'Returned' : 'Return to Sender'}
+                  </Text>
                 </View>
               )}
             </View>
-            <Text style={styles.transactionSubtitle} numberOfLines={1}>
-              {formatDate(stamp)}
-              {item.payment_method ? ` • ${titleCase(item.payment_method)}` : ''}
-            </Text>
           </View>
         </View>
         <View style={styles.transactionRight}>
@@ -737,6 +816,12 @@ export default function EarningsScreen() {
     else if (isFrozen) { headColor = colors.error; headBg = colors.errorBg; headIcon = 'Snowflake'; headLabel = 'Frozen (emergency)'; }
     else if (isRefunded) { headColor = colors.textSecondary; headBg = colors.divider; headIcon = 'ArrowLeft'; headLabel = 'Refunded to sender'; }
     else if (isPending) { headLabel = r.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
+
+    const detailCashAt = cashableAtOf(r);
+    if (isEarned && detailCashAt != null && detailCashAt > nowMs) {
+      headColor = colors.warning; headBg = colors.warningBg; headIcon = 'Clock';
+      headLabel = `Earned · cashable in ${formatCountdown(detailCashAt - nowMs)}`;
+    }
 
     const fare = Number(r.base_fare ?? r.total_amount ?? r.amount ?? 0);
     const baseAmount = r.base_amount != null ? Number(r.base_amount) : null;
@@ -1186,10 +1271,27 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderWidth: 1,
     borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
   },
-  transactionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, marginRight: 10 },
+  transactionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    marginRight: 12,
+  },
   iconContainer: { width: 42, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  transactionDetails: { flex: 1, justifyContent: 'center' },
+  transactionDetails: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+  },
   txTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
   transactionTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
   miniStatusPill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   miniStatusText: { fontSize: 10, fontFamily: 'Poppins_700Bold' },
@@ -1198,7 +1300,10 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   privacyNoteE: { fontSize: 11, fontFamily: 'Poppins_400Regular', color: c.textMuted, lineHeight: 16 },
   transactionSubtitle: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
   paymentMethodRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2, gap: 5 },
-  transactionRight: { alignItems: 'flex-end' },
+  transactionRight: {
+    alignItems: 'flex-end',
+    flexShrink: 0,
+  },
   transactionAmount: { fontSize: 15.5, fontFamily: 'Poppins_700Bold', letterSpacing: -0.3, fontVariant: ['tabular-nums'] },
   penaltyText: { fontSize: 10.5, fontFamily: 'Poppins_600SemiBold', color: c.error, marginTop: 2 },
 
