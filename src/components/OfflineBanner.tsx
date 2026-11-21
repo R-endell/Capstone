@@ -1,8 +1,4 @@
 // src/components/OfflineBanner.tsx
-//
-// Alert strip (NOT a modal) shown over every screen while there is no internet.
-// "Reconnect" re-checks right away; as soon as the internet is back the strip turns green, screens refresh
-// themselves (they listen to useReconnectEpoch) and the strip slides away.
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, TouchableOpacity, ActivityIndicator, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,13 +15,19 @@ export default function OfflineBanner() {
 
   useEffect(() => {
     if (visible) setMounted(true);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!mounted) return;
     Animated.timing(slide, {
       toValue: visible ? 1 : 0,
       duration: 220,
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => { if (finished && !visible) setMounted(false); });
-  }, [visible, slide]);
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished && !visible) setMounted(false);
+    });
+  }, [visible, mounted, slide]);
 
   if (!mounted) return null;
 
@@ -36,7 +38,10 @@ export default function OfflineBanner() {
       style={[
         styles.wrap,
         { paddingTop: insets.top + 6 },
-        { opacity: slide, transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) }] },
+        {
+          opacity: slide,
+          transform: [{ translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [-60, 0] }) }],
+        },
       ]}
     >
       <View style={[styles.bar, restored ? styles.barOk : styles.barOff]}>
@@ -44,11 +49,16 @@ export default function OfflineBanner() {
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>{restored ? 'Back online' : 'No internet connection'}</Text>
           <Text style={styles.sub} numberOfLines={1}>
-            {restored ? 'Refreshing your data…' : 'Maps and jobs may not update until you reconnect.'}
+            {restored ? 'Refreshing all screens…' : 'Maps and jobs may not update until you reconnect.'}
           </Text>
         </View>
         {!restored && (
-          <TouchableOpacity style={styles.btn} activeOpacity={0.85} onPress={() => { void retryConnection(); }} disabled={checking}>
+          <TouchableOpacity
+            style={styles.btn}
+            activeOpacity={0.85}
+            onPress={() => { void retryConnection(); }}
+            disabled={checking}
+          >
             {checking
               ? <ActivityIndicator size="small" color="#B91C1C" />
               : <Text style={styles.btnText}>Reconnect</Text>}

@@ -654,6 +654,8 @@ export default function BookingScreen({ route, navigation }: any) {
   const resumedRef = useRef<number | null>(null);
   const resumeReceiverRef = useRef<any>(null);
   const searchStartRef = useRef<number | null>(null);
+  // Always points at the latest handleTopBackPress so effects (hardware back) can call it.
+  const topBackRef = useRef<() => void>(() => {});
 
   const [longSearch, setLongSearch] = useState(false);
   const [dotCount, setDotCount] = useState(0);
@@ -937,11 +939,23 @@ export default function BookingScreen({ route, navigation }: any) {
 
   useEffect(() => {
     const locked = bookingState === 'finding' && !longSearch;
-    navigation.setOptions({ gestureEnabled: !locked });
-    if (!locked) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    // After payment (finding / matched / no_match) the booking flow behind this screen
+    // (receiver modal, size, locations...) must never be reachable by swiping or by the
+    // Android back button. Back always exits to the Activity > Pending tab instead.
+    const postPayment =
+      !!savedRequestId &&
+      !isResumedSession.current &&
+      (bookingState === 'finding' || bookingState === 'matched' || bookingState === 'no_match');
+
+    navigation.setOptions({ gestureEnabled: !(locked || postPayment) });
+    if (!locked && !postPayment) return;
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!locked) topBackRef.current();
+      return true;
+    });
     return () => sub.remove();
-  }, [bookingState, longSearch, navigation]);
+  }, [bookingState, longSearch, navigation, savedRequestId]);
 
   useEffect(() => {
     if (bookingState === 'finding') {
@@ -2527,6 +2541,33 @@ export default function BookingScreen({ route, navigation }: any) {
   };
 
   const handleTopBackPress = () => {
+    // Payment is already done: leave the whole booking flow and land on Activity > Pending.
+    // A plain goBack() here would drop the user back into the receiver modal / booking flow.
+    const postPayment =
+      !!savedRequestId &&
+      !isResumedSession.current &&
+      (bookingState === 'finding' || bookingState === 'matched' || bookingState === 'no_match');
+    if (postPayment) {
+      if (matchChannelRef.current) {
+        supabase.removeChannel(matchChannelRef.current);
+        matchChannelRef.current = null;
+      }
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+        searchTimeoutRef.current = null;
+      }
+      setIsSearching(false);
+      proceedingRef.current = false;
+      proceedReturnToRef.current = null;
+      setSavingBooking(false);
+      dispatch({ type: 'RESET' });
+      navigation.popTo('MainTabs', {
+        screen: 'Activity',
+        params: { tab: 'pending', pendingRequestId: savedRequestId ?? undefined },
+      });
+      return;
+    }
+
     if (bookingState === 'tracking' && !isResumedSession.current && !initialDeliveryId && !isProviderMode) {
       dispatch({ type: 'RESET' });
       proceedingRef.current = false;
@@ -2537,6 +2578,7 @@ export default function BookingScreen({ route, navigation }: any) {
     }
     navigation.goBack();
   };
+  topBackRef.current = handleTopBackPress;
 
   const handleSelectReceiver = () => {
     navigation.navigate('ReceiverPicker', {

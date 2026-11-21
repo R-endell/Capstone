@@ -11,7 +11,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, StatusBar, ActivityIndicator,
-  Animated, PanResponder, Dimensions, ScrollView, Modal, Pressable, Image,
+  Animated, PanResponder, Dimensions, ScrollView, Modal, Pressable, Image, Alert, Linking,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,6 +26,22 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
 import { useReconnectEpoch } from '../../../services/connectivityStore';
+<<<<<<< Updated upstream
+=======
+import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
+import { getOrCreateChatRoom } from '../../../utils/chatHelpers';
+import { formatDateTime } from '../../../utils/dateUtils';
+
+let Clipboard: any = null;
+try { Clipboard = require('expo-clipboard'); } catch { Clipboard = null; }
+
+const BLUE = '#3B82F6';
+const PURPLE = '#8B5CF6';
+const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
+const initials = (n?: string | null) =>
+  (n || '?').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
+>>>>>>> Stashed changes
 
 // distances are always shown in METERS (1,240 m)
 const fmtMeters = (m: number | null | undefined) =>
@@ -117,6 +133,72 @@ const buildPkgDetails = (d: any): PkgDetails => {
   };
 };
 
+// ---- order details (mirrors the Task screen's detail view) ----
+const PLUS_CODE = /[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}/i;
+const isCodeLike = (s: string) => {
+  const x = (s ?? '').trim();
+  if (!x) return true;
+  if (/^unknown$/i.test(x)) return true;
+  if (PLUS_CODE.test(x)) return true;
+  return /^[A-Za-z0-9+\-_.]{6,}$/.test(x) && /\d/.test(x) && /[A-Za-z]/.test(x);
+};
+const readableParts = (a?: string | null): string[] =>
+  (a ?? '').replace(PLUS_CODE, '').split(',').map(p => p.trim())
+    .filter(p => p && !isCodeLike(p) && !/^\d{4,6}$/.test(p));
+
+const describePlace = (l: any): { main: string; road: string } => {
+  const parts = readableParts(l?.street_address);
+  const name = typeof l?.place_name === 'string' && !isCodeLike(l.place_name) ? l.place_name.trim() : '';
+  const road = typeof l?.road === 'string' && !isCodeLike(l.road) ? l.road.trim() : '';
+  const brgy = typeof l?.barangay === 'string' && !isCodeLike(l.barangay) ? l.barangay.trim() : '';
+  const localities = [l?.city, l?.province, l?.barangay]
+    .filter((v: any) => typeof v === 'string').map((v: string) => v.trim().toLowerCase());
+  const placeParts = parts.filter(p => !localities.includes(p.toLowerCase()));
+  const main = name || placeParts[0] || road || brgy || parts[0] || 'Selected location';
+  const street = road || placeParts.find(p => p !== main) || '';
+  const city = typeof l?.city === 'string' && !isCodeLike(l.city) ? l.city.trim() : '';
+  const bottom = [street && street !== main ? street : '', brgy && brgy !== main ? brgy : '']
+    .filter(Boolean).join(', ')
+    || parts.slice(1, 3).join(', ')
+    || (city && city !== main ? city : '');
+  return { main, road: bottom };
+};
+
+const buildOrderInfo = (d: any) => {
+  const request = d?.delivery_requests || null;
+  const cargo = Array.isArray(request?.cargo) ? request.cargo[0] : request?.cargo;
+  const receiver = Array.isArray(request?.receiver) ? request.receiver[0] : request?.receiver;
+  const dims = [cargo?.cargo_length_cm, cargo?.cargo_width_cm, cargo?.cargo_height_cm];
+  const deposit = Number(request?.return_deposit) || 0;
+  const est = Number(request?.estimated_cost) || 0;
+  const baseFare = Number(request?.base_fare) || Math.max(0, est - deposit);
+  const status = String(request?.delivery_status || '');
+  const net = Math.round((Number(request?.base_fare) || 0) * 0.85 * 100) / 100;
+  const earnings = status === 'Returned' ? ((net + deposit) || est) : status === 'Completed' ? (net || est) : est;
+  return {
+    serviceLabel: /door/i.test(String(request?.pickup_type || '')) ? 'Door-to-Door' : 'Curb-side',
+    isDoor: /door/i.test(String(request?.pickup_type || '')),
+    scheduledTime: (request?.scheduled_time as string | null) || null,
+    pickup: describePlace(request?.pickup_location),
+    dropoff: describePlace(request?.dropoff_location),
+    pickupNote: (request?.pickup_note as string | null) || null,
+    dropoffNote: (request?.dropoff_note as string | null) || null,
+    receiverName: (receiver?.receiver_name as string | null) || null,
+    receiverPhone: (request?.receiver_phone || receiver?.receiver_phone || null) as string | null,
+    senderId: (request?.sender_id ?? null) as number | null,
+    dims: dims.every(v => Number(v) > 0) ? `${dims[0]} × ${dims[1]} × ${dims[2]} cm` : null,
+    baseFare,
+    platformFee: Math.round(baseFare * 0.15 * 100) / 100,
+    returnDeposit: deposit,
+    totalPaid: est,
+    isReturned: status === 'Returned',
+    earnings,
+    paymentProvider: (request?.payment_provider as string | null) || null,
+    pickupPhoto: toPhotoUrl(d?.pickup_photo_url) || (typeof d?.pickup_photo_url === 'string' ? d.pickup_photo_url : null),
+    pickupPhotoAt: (d?.pickup_photo_taken_at as string | null) || null,
+  };
+};
+
 const SIZE_META: Record<'Small' | 'Medium' | 'Large', { letter: string; kg: string; color: string; bg: string }> = {
   Small:  { letter: 'S', kg: `${SHIPMENT_SIZE_SPECS.Small.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Small.inchesLabel}`,  color: '#0284C7', bg: 'rgba(2,132,199,0.12)' },
   Medium: { letter: 'M', kg: `${SHIPMENT_SIZE_SPECS.Medium.weightRangeLabel} · ${SHIPMENT_SIZE_SPECS.Medium.inchesLabel}`, color: '#D97706', bg: 'rgba(217,119,6,0.14)' },
@@ -160,6 +242,36 @@ export default function ProviderNavigationScreen() {
   );
   const [routeLine, setRouteLine] = useState<{ latitude: number; longitude: number }[] | null>(null);
   const [pkgDeliveryId, setPkgDeliveryId] = useState<number | null>(null);
+  const [orderExtra, setOrderExtra] = useState<Record<number, { sender: any | null; escrowStatus: string | null }>>({});
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [openingChat, setOpeningChat] = useState(false);
+  const [failedPhotos, setFailedPhotos] = useState<Record<string, boolean>>({});
+
+  // sender contact + payment status are not part of the trip list, so load them when an order is opened
+  useEffect(() => {
+    if (pkgDeliveryId == null) return;
+    const dRaw = rawDeliveries.find(x => Number(x?.delivery_id) === pkgDeliveryId);
+    if (!dRaw) return;
+    const senderId = dRaw?.delivery_requests?.sender_id ?? null;
+    let cancelled = false;
+    (async () => {
+      let sender: any = null;
+      let escrowStatus: string | null = null;
+      try {
+        if (senderId != null) {
+          const { data } = await supabase.from('users').select('user_id, first_name, last_name, phone_number').eq('user_id', senderId).maybeSingle();
+          sender = data || null;
+        }
+      } catch { /* optional */ }
+      try {
+        const { data } = await supabase.from('escrow_payments').select('escrow_status').eq('delivery_id', pkgDeliveryId).limit(1).maybeSingle();
+        escrowStatus = (data as any)?.escrow_status ?? null;
+      } catch { /* optional */ }
+      if (!cancelled) setOrderExtra(prev => ({ ...prev, [pkgDeliveryId]: { sender, escrowStatus } }));
+    })();
+    return () => { cancelled = true; };
+  }, [pkgDeliveryId]);
   const [trafficOn, setTrafficOn] = useState(true);
   const netEpoch = useReconnectEpoch();   // +1 every time the internet comes back
   const mapHandle = useRef<NavigationMapHandle>(null);
@@ -475,73 +587,379 @@ export default function ProviderNavigationScreen() {
     );
   }
 
+  const callPhone = (phone: string | null | undefined, name?: string | null) => {
+    if (!phone) { Alert.alert('No Phone Number', `No phone number is available for ${name || 'this contact'}.`); return; }
+    Linking.openURL(`tel:${String(phone).replace(/\s+/g, '')}`).catch(() => {
+      Alert.alert('Unable to Call', 'Your device cannot open the phone dialer.');
+    });
+  };
+
+  const copyCode = async (code: string) => {
+    try {
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(code);
+        setCopiedCode(true);
+        setTimeout(() => setCopiedCode(false), 1800);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const messageSender = async (deliveryId: number) => {
+    if (openingChat) return;
+    try {
+      setOpeningChat(true);
+      const roomId = await getOrCreateChatRoom(deliveryId);
+      if (!roomId) { Alert.alert('Error', 'Could not open chat.'); return; }
+      setPkgDeliveryId(null);
+      navigation.navigate('ProviderTabs', { screen: 'Messages', params: { openRoomId: roomId } });
+    } catch {
+      Alert.alert('Chat unavailable', 'Could not open the conversation with the sender.');
+    } finally {
+      if (aliveRef.current) setOpeningChat(false);
+    }
+  };
+
   const renderPkgModal = () => {
-    const info = pkgDeliveryId != null ? pkgMap[pkgDeliveryId] : null;
-    const rows = info ? (['Small', 'Medium', 'Large'] as const).filter(k => info.counts[k] > 0) : [];
-    const photos = info ? info.items.filter(i => !!i.photo) : [];
-    const stage = info ? orders.find(o => o.deliveryId === info.deliveryId)?.stage : undefined;
-    const goAction: 'verify' | 'complete' = stage === 'transit' ? 'complete' : 'verify';
-    const goLabel =
-      stage === 'transit' ? `Go to Task · Hand over #${info?.code ?? ''}`
-      : stage === 'return' ? `Go to Task · Verify return #${info?.code ?? ''}`
-      : `Go to Task · Verify pickup #${info?.code ?? ''}`;
+    const p = pkgDeliveryId != null ? pkgMap[pkgDeliveryId] : null;
+    const dRaw = pkgDeliveryId != null ? rawDeliveries.find(x => Number(x?.delivery_id) === pkgDeliveryId) : null;
+    const visible = !!p && !!dRaw;
+    const o = visible ? buildOrderInfo(dRaw) : null;
+    const extra = p ? orderExtra[p.deliveryId] : undefined;
+    const senderName = extra?.sender ? [extra.sender.first_name, extra.sender.last_name].filter(Boolean).join(' ') || null : null;
+    const senderPhone: string | null = extra?.sender?.phone_number ?? null;
+
+    const stage = p ? orders.find(x => x.deliveryId === p.deliveryId)?.stage : undefined;
+    const isTransit = stage === 'transit';
+    const isReturnStage = stage === 'return';
+    const goAction: 'verify' | 'complete' = isTransit ? 'complete' : 'verify';
+    const goLabel = isTransit ? 'Go to Task · Hand over' : isReturnStage ? 'Go to Task · Verify return' : 'Go to Task · Verify pickup';
+
+    const statusMeta = isTransit
+      ? { label: 'In Transit', bg: colors.accentSoft, fg: colors.accent }
+      : isReturnStage
+        ? { label: 'Returning', bg: colors.warningBg, fg: colors.warning }
+        : { label: 'Awaiting Pickup', bg: 'rgba(59,130,246,0.14)', fg: BLUE };
+
+    const progressSteps = ['Accepted', 'To pickup', 'Picked up', 'To drop-off', 'Delivered'];
+    const doneUpTo = isTransit || isReturnStage ? 2 : 0;
+    const currentStep = isTransit || isReturnStage ? 3 : 1;
+
+    const hintText = isReturnStage
+      ? 'The drop-off could not be completed. Bring the parcel back to the sender’s pickup pin and verify the return.'
+      : isTransit
+        ? `Hand over ${o?.isDoor ? 'at the door' : 'at the curb or entrance'}, take a Proof of Delivery photo, and enter the receiver’s 6-digit OTP.`
+        : 'Meet the sender, then verify with their QR or 4-digit PIN.';
+
+    const escrowStatus = String(extra?.escrowStatus || '');
+    const released = /complet|releas/i.test(escrowStatus);
+    const paymentLabel = released ? 'Completed' : (!escrowStatus || /hold/i.test(escrowStatus)) ? 'Held in escrow' : escrowStatus;
+    const payProvider = String(o?.paymentProvider || '').toLowerCase();
+    const payVia = payProvider.includes('gcash') ? 'GCash' : payProvider.includes('maya') ? 'Maya' : null;
+
     return (
-      <Modal visible={!!info} transparent animationType="fade" onRequestClose={() => setPkgDeliveryId(null)}>
-        <Pressable style={styles.pkgOverlay} onPress={() => setPkgDeliveryId(null)}>
-          <Pressable style={styles.pkgCard} onPress={() => { /* keep open */ }}>
-            <View style={styles.pkgHead}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.pkgTitle}>{info ? `${info.totalItems} ${info.totalItems === 1 ? 'pkg' : 'pkgs'}` : ''} in this order</Text>
-                {!!info && <Text style={styles.pkgCode}>#{info.code}</Text>}
-              </View>
-              <TouchableOpacity onPress={() => setPkgDeliveryId(null)} hitSlop={10}>
-                <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
-              </TouchableOpacity>
-            </View>
+      <Modal visible={visible} transparent animationType="slide" onRequestClose={() => { if (photoPreview) setPhotoPreview(null); else setPkgDeliveryId(null); }}>
+        <View style={styles.odOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setPkgDeliveryId(null)} />
 
-            {photos.length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }} contentContainerStyle={{ gap: 10 }}>
-                {photos.map((it, i) => (
-                  <Image key={`${it.photo}-${i}`} source={{ uri: it.photo as string }} style={styles.pkgPhoto} />
-                ))}
-              </ScrollView>
-            )}
+          {!!p && !!o && (
+            <View style={[styles.odSheet, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+              <View style={styles.odHandle} />
 
-            {rows.length === 0 && <Text style={styles.pkgSub}>No size details were provided for this order.</Text>}
-            {rows.map(k => (
-              <View key={k} style={styles.pkgRow}>
-                <View style={[styles.sizeBadge, { backgroundColor: SIZE_META[k].bg }]}>
-                  <Text style={[styles.sizeBadgeText, { color: SIZE_META[k].color }]}>{SIZE_META[k].letter}</Text>
-                </View>
+              <View style={styles.odHeader}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.pkgName}>{k}</Text>
-                  <Text style={styles.pkgSub}>{SIZE_META[k].kg}</Text>
+                  <Text style={styles.odHeaderTitle}>Order Details</Text>
+                  <Text style={styles.odHeaderSub}>{p.totalItems} {p.totalItems === 1 ? 'package' : 'packages'} in this order</Text>
                 </View>
-                <Text style={styles.pkgQty}>×{info!.counts[k]}</Text>
+                <TouchableOpacity style={styles.odCloseBtn} onPress={() => setPkgDeliveryId(null)} hitSlop={10} activeOpacity={0.85}>
+                  <SolarIcon name="CloseCircle" variant="linear" size={22} color={colors.textPrimary} />
+                </TouchableOpacity>
               </View>
-            ))}
 
-            {!!info && (info.weightKg != null || info.fragile) && (
-              <View style={styles.pkgMetaRow}>
-                {info.weightKg != null && <Text style={styles.pkgMeta}>{info.weightKg} kg</Text>}
-                {info.fragile && <Text style={[styles.pkgMeta, { color: colors.error }]}>Fragile</Text>}
-              </View>
-            )}
-            {!!info && (
-              <View style={styles.pkgRoute}>
-                <Text style={styles.pkgRouteText} numberOfLines={1}>From: {info.pickup}</Text>
-                <Text style={styles.pkgRouteText} numberOfLines={1}>To: {info.dropoff}</Text>
-              </View>
-            )}
+              <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={styles.odBody} showsVerticalScrollIndicator={false}>
+                {/* service + status */}
+                <View style={styles.odTopRow}>
+                  <View style={styles.odSvcPill}>
+                    <SolarIcon name="Package" variant="duotone" size={16} color={BLUE} />
+                    <Text style={styles.odSvcPillText}>{o.serviceLabel}</Text>
+                  </View>
+                  <View style={[styles.odStPill, { backgroundColor: statusMeta.bg }]}>
+                    <View style={[styles.odStDot, { backgroundColor: statusMeta.fg }]} />
+                    <Text style={[styles.odStPillText, { color: statusMeta.fg }]}>{statusMeta.label.toUpperCase()}</Text>
+                  </View>
+                </View>
 
-            {!!info && (
-              <TouchableOpacity style={styles.pkgGoBtn} activeOpacity={0.85} onPress={() => goToTasks(info.deliveryId, goAction)}>
-                <SolarIcon name="Package" variant="bold" size={18} color="#FFFFFF" />
-                <Text style={styles.pkgGoText}>{goLabel}</Text>
-              </TouchableOpacity>
-            )}
-          </Pressable>
-        </Pressable>
+                {/* tracking code */}
+                <View style={styles.odCodeRow}>
+                  <Text style={styles.odCode} selectable numberOfLines={1}>#{p.code}</Text>
+                  <TouchableOpacity onPress={() => copyCode(p.code)} activeOpacity={0.7} hitSlop={8} style={styles.odCopy}>
+                    <SolarIcon name={copiedCode ? 'CheckCircle' : 'Copy'} variant="linear" size={16} color={colors.accent} />
+                    <Text style={styles.odCopyLabel}>{copiedCode ? 'Copied' : 'Copy'}</Text>
+                  </TouchableOpacity>
+                </View>
+                {!!o.scheduledTime && <Text style={styles.odWhen}>Scheduled · {formatDateTime(o.scheduledTime)}</Text>}
+
+                {/* progress */}
+                <View style={styles.odStepper}>
+                  {progressSteps.map((label, i) => {
+                    const done = i <= doneUpTo;
+                    const cur = i === currentStep;
+                    const reached = done || cur;
+                    return (
+                      <View key={label} style={styles.odStepCol}>
+                        <View style={styles.odStepLineRow}>
+                          <View style={[styles.odStepLine, i === 0 && { backgroundColor: 'transparent' }, reached && i > 0 && { backgroundColor: colors.accent }]} />
+                          <View style={[styles.odStepDot, done && styles.odStepDotDone, cur && styles.odStepDotCurrent]}>
+                            {done ? <SolarIcon name="Check" variant="linear" size={14} color="#FFFFFF" />
+                              : cur ? <View style={styles.odStepDotInner} /> : null}
+                          </View>
+                          <View style={[styles.odStepLine, i === progressSteps.length - 1 && { backgroundColor: 'transparent' }, done && i < progressSteps.length - 1 && { backgroundColor: colors.accent }]} />
+                        </View>
+                        <Text style={[styles.odStepLabel, reached && styles.odStepLabelOn]} numberOfLines={2}>{label}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.odHint}>
+                  <SolarIcon name="Info" variant="duotone" size={18} color={colors.accent} />
+                  <Text style={styles.odHintText}>{hintText}</Text>
+                </View>
+
+                {/* route */}
+                <View style={{ marginTop: 18 }}>
+                  {[
+                    { key: 'p', label: 'PICKUP', pt: o.pickup, note: o.pickupNote, kind: 'pickup' as const },
+                    { key: 'd', label: 'DROP-OFF', pt: o.dropoff, note: o.dropoffNote, kind: 'dropoff' as const },
+                  ].map((r, i) => (
+                    <View key={r.key} style={styles.odRtRow}>
+                      <View style={styles.odRtRail}>
+                        {r.kind === 'pickup' ? (
+                          <View style={styles.odRtPickPin}><Ionicons name="cube" size={14} color="#FFFFFF" /></View>
+                        ) : (
+                          <View style={styles.odRtDropPin}><Ionicons name="person" size={16} color="#000000" /></View>
+                        )}
+                        {i === 0 && <View style={styles.odRtLine} />}
+                      </View>
+                      <View style={[styles.odRtText, i === 0 && { paddingBottom: 14 }]}>
+                        <Text style={styles.odRtLabel}>{r.label}</Text>
+                        <Text style={styles.odRtMain} numberOfLines={2}>{r.pt.main}</Text>
+                        {!!r.pt.road && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                            <SolarIcon name="MapPoint" variant="linear" size={12} color={colors.textMuted} />
+                            <Text style={styles.odRtSub} numberOfLines={2}>{r.pt.road}</Text>
+                          </View>
+                        )}
+                        {!!r.note && (
+                          <View style={styles.odNote}>
+                            <SolarIcon name="ChatCircleText" variant="duotone" size={14} />
+                            <Text style={styles.odNoteText}>{r.note}</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* sender */}
+                <View style={styles.odSecHead}>
+                  <SolarIcon name="User" variant="duotone" size={18} color={BLUE} />
+                  <Text style={styles.odSecTitle}>Sender</Text>
+                </View>
+                <View style={styles.odCard}>
+                  <View style={styles.odContactRow}>
+                    <View style={[styles.odAvatar, { backgroundColor: BLUE }]}>
+                      <Text style={styles.odAvatarText}>{initials(senderName)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.odRole}>CUSTOMER / SENDER</Text>
+                      <Text style={styles.odName} numberOfLines={1}>{senderName || (extra ? 'N/A' : 'Loading…')}</Text>
+                      {!!senderPhone && <Text style={styles.odPhone}>{senderPhone}</Text>}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      {!!senderPhone && (
+                        <TouchableOpacity style={styles.odCallCircle} onPress={() => callPhone(senderPhone, senderName)} activeOpacity={0.8} hitSlop={6}>
+                          <SolarIcon name="Phone" variant="linear" size={16} color={colors.accent} />
+                        </TouchableOpacity>
+                      )}
+                      <TouchableOpacity style={styles.odChatPill} onPress={() => messageSender(p.deliveryId)} disabled={openingChat} activeOpacity={0.85}>
+                        {openingChat ? (
+                          <ActivityIndicator size="small" color={colors.accent} />
+                        ) : (
+                          <>
+                            <SolarIcon name="ChatCircleText" variant="linear" size={16} color={colors.accent} />
+                            <Text style={styles.odChatPillText}>Chat</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+
+                {/* receiver */}
+                <View style={styles.odSecHead}>
+                  <SolarIcon name="User" variant="duotone" size={18} color={PURPLE} />
+                  <Text style={styles.odSecTitle}>Receiver</Text>
+                </View>
+                <View style={styles.odCard}>
+                  <View style={styles.odContactRow}>
+                    <View style={[styles.odAvatar, { backgroundColor: PURPLE }]}>
+                      <Text style={styles.odAvatarText}>{initials(o.receiverName)}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.odRole}>RECIPIENT / RECEIVER</Text>
+                      <Text style={styles.odName} numberOfLines={1}>{o.receiverName || 'N/A'}</Text>
+                      {!!o.receiverPhone && <Text style={styles.odPhone}>{o.receiverPhone}</Text>}
+                    </View>
+                    {!!o.receiverPhone && (
+                      <TouchableOpacity style={styles.odReceiverCall} onPress={() => callPhone(o.receiverPhone, o.receiverName)} activeOpacity={0.85}>
+                        <SolarIcon name="Phone" variant="linear" size={16} color={PURPLE} />
+                        <Text style={styles.odReceiverCallText}>Call</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+
+                {/* proof of pickup */}
+                {!!o.pickupPhoto && (
+                  <>
+                    <View style={styles.odSecHead}>
+                      <SolarIcon name="Camera" variant="duotone" size={18} color={colors.accent} />
+                      <Text style={styles.odSecTitle}>Proof of Pickup</Text>
+                    </View>
+                    <TouchableOpacity style={styles.odPodCard} activeOpacity={0.9} onPress={() => setPhotoPreview(o.pickupPhoto)}>
+                      <Image source={{ uri: o.pickupPhoto }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                      <View style={styles.odPodOverlay}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                          <SolarIcon name="Maximize" variant="linear" size={13} color="#FFFFFF" />
+                          <Text style={styles.odPodBadgeText}>Tap to view full photo</Text>
+                        </View>
+                        {!!o.pickupPhotoAt && <Text style={styles.odPodTime}>{formatDateTime(o.pickupPhotoAt)}</Text>}
+                      </View>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+                {/* package & payment */}
+                <View style={styles.odSecHead}>
+                  <SolarIcon name="Package" variant="duotone" size={18} />
+                  <Text style={styles.odSecTitle}>Package &amp; Payment</Text>
+                </View>
+                <View style={{ gap: 8, marginBottom: 12 }}>
+                  {p.items.map((it, i) => {
+                    const meta = it.size && (SIZE_META as any)[it.size] ? (SIZE_META as any)[it.size] : null;
+                    const showPhoto = !!it.photo && !failedPhotos[it.photo];
+                    return (
+                      <View key={i} style={styles.odItemRow}>
+                        {showPhoto ? (
+                          <TouchableOpacity activeOpacity={0.9} onPress={() => setPhotoPreview(it.photo)} style={styles.odItemPhotoWrap}>
+                            <Image
+                              source={{ uri: it.photo as string }}
+                              style={{ width: '100%', height: '100%' }}
+                              resizeMode="cover"
+                              onError={() => setFailedPhotos(prev => ({ ...prev, [it.photo as string]: true }))}
+                            />
+                            {meta && (
+                              <View style={[styles.odItemTag, { backgroundColor: meta.bg }]}>
+                                <Text style={[styles.odItemTagText, { color: meta.color }]}>{meta.letter}</Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={[styles.odItemPhotoWrap, { alignItems: 'center', justifyContent: 'center' }, meta && { backgroundColor: meta.bg }]}>
+                            <Text style={[styles.odItemEmptyText, meta && { color: meta.color }]}>{meta ? meta.letter : i + 1}</Text>
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.odItemTitle} numberOfLines={2}>
+                            {p.items.length > 1 ? `Package ${i + 1}` : 'Package'}
+                            {it.size ? ` · ${it.size}` : ''}
+                            {it.fragile && <Text style={{ color: colors.error, fontFamily: 'Poppins_700Bold' }}> · Fragile</Text>}
+                          </Text>
+                          {!!it.description && <Text style={styles.odItemText} numberOfLines={2}>{it.description}</Text>}
+                          {!!meta && <Text style={styles.odItemText}>{meta.kg}</Text>}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.odPayCard}>
+                  <View style={styles.odPayRow}>
+                    <Text style={styles.odPayLabel}>You Earn</Text>
+                    <Text style={[styles.odPayValue, { color: colors.success, fontFamily: 'Poppins_700Bold' }]}>{money(o.earnings)}</Text>
+                  </View>
+                  <View style={[styles.odPayRow, styles.odPayBorder]}>
+                    <Text style={styles.odPayLabel}>Payment Status</Text>
+                    <Text style={[styles.odPayValue, released && { color: colors.success }]}>{paymentLabel}</Text>
+                  </View>
+                  {p.weightKg != null && (
+                    <View style={[styles.odPayRow, styles.odPayBorder]}>
+                      <Text style={styles.odPayLabel}>Total Weight</Text>
+                      <Text style={styles.odPayValue}>{p.weightKg} kg</Text>
+                    </View>
+                  )}
+                  {!!o.dims && (
+                    <View style={[styles.odPayRow, styles.odPayBorder]}>
+                      <Text style={styles.odPayLabel}>Dimensions</Text>
+                      <Text style={styles.odPayValue}>{o.dims}</Text>
+                    </View>
+                  )}
+                  {!!payVia && (
+                    <View style={[styles.odPayRow, styles.odPayBorder]}>
+                      <Text style={styles.odPayLabel}>Sender Paid Via</Text>
+                      <Text style={[styles.odPayValue, { color: payVia === 'GCash' ? '#0284C7' : '#059669' }]}>{payVia}</Text>
+                    </View>
+                  )}
+                </View>
+
+                {o.baseFare > 0 && (
+                  <>
+                    <View style={styles.odSecHead}>
+                      <SolarIcon name="Wallet" variant="duotone" size={18} />
+                      <Text style={styles.odSecTitle}>Payment Breakdown</Text>
+                    </View>
+                    <View style={styles.odPayCard}>
+                      {([
+                        ['Delivery fare', money(o.baseFare), undefined, false],
+                        ['Platform fee (15%)', `-${money(o.platformFee)}`, colors.error, false],
+                        ...(o.returnDeposit > 0
+                          ? [[
+                              o.isReturned ? 'Return deposit (kept for return trip)' : 'Return deposit (refunded to sender)',
+                              o.isReturned ? `+${money(o.returnDeposit)}` : money(o.returnDeposit),
+                              o.isReturned ? colors.success : colors.textMuted,
+                              false,
+                            ]]
+                          : []),
+                        [o.isReturned || !released ? 'Your earnings' : 'Net earnings', money(o.earnings), colors.success, true],
+                        ['Sender paid in total', money(o.totalPaid), colors.textSecondary, false],
+                      ] as [string, string, string | undefined, boolean][]).map(([label, value, color, bold], i) => (
+                        <View key={label} style={[styles.odPayRow, i > 0 && styles.odPayBorder]}>
+                          <Text style={[styles.odPayLabel, { flex: 1, paddingRight: 10 }]}>{label}</Text>
+                          <Text style={[styles.odPayValue, !!color && { color }, bold && { fontFamily: 'Poppins_700Bold' }]}>{value}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                )}
+              </ScrollView>
+
+              <View style={styles.odFooter}>
+                <TouchableOpacity style={styles.odGoBtn} activeOpacity={0.85} onPress={() => goToTasks(p.deliveryId, goAction)}>
+                  <SolarIcon name="Package" variant="bold" size={18} color="#FFFFFF" />
+                  <Text style={styles.odGoText} numberOfLines={1}>{goLabel}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* full-size photo viewer (inside the same modal so it works on iOS too) */}
+          {!!photoPreview && (
+            <Pressable style={styles.odPhotoViewer} onPress={() => setPhotoPreview(null)}>
+              <Image source={{ uri: photoPreview }} style={{ width: '100%', height: '80%' }} resizeMode="contain" />
+              <Text style={styles.odPhotoViewerHint}>Tap anywhere to close</Text>
+            </Pressable>
+          )}
+        </View>
       </Modal>
     );
   };
@@ -797,6 +1215,85 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   stopTitle: { color: c.textPrimary, fontSize: 15, fontFamily: 'Poppins_600SemiBold', marginTop: 1 },
   stopSub: { color: c.textSecondary, fontSize: 12.5, fontFamily: 'Poppins_400Regular' },
   stopLocked: { color: c.textMuted, fontSize: 11.5, fontFamily: 'Poppins_500Medium', marginTop: 2 },
+
+  // ---- order details sheet (same look as the Task screen's detail view) ----
+  odOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  odSheet: { backgroundColor: c.background, borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: '92%', overflow: 'hidden' },
+  odHandle: { alignSelf: 'center', width: 44, height: 5, borderRadius: 3, backgroundColor: c.divider, marginTop: 10 },
+  odHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12 },
+  odHeaderTitle: { fontSize: 20, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.3 },
+  odHeaderSub: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+  odCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  odBody: { paddingHorizontal: 20, paddingBottom: 24 },
+  odTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  odSvcPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(59,130,246,0.12)', borderWidth: 1, borderColor: 'rgba(59,130,246,0.35)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  odSvcPillText: { fontSize: 12, fontFamily: 'Poppins_700Bold', color: BLUE },
+  odStPill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  odStDot: { width: 7, height: 7, borderRadius: 4 },
+  odStPillText: { fontSize: 11, fontFamily: 'Poppins_700Bold', letterSpacing: 0.4 },
+  odCodeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  odCode: { fontSize: 24, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.4, flexShrink: 1 },
+  odCopy: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  odCopyLabel: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent },
+  odWhen: { fontSize: 13, fontFamily: 'Poppins_600SemiBold', color: c.accent, marginTop: 4 },
+  odStepper: { flexDirection: 'row', backgroundColor: c.card, borderRadius: 12, paddingVertical: 16, paddingHorizontal: 8, marginTop: 16, marginBottom: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  odStepCol: { flex: 1, alignItems: 'center' },
+  odStepLineRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
+  odStepLine: { flex: 1, height: 3, backgroundColor: c.divider },
+  odStepDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: c.divider, backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  odStepDotDone: { backgroundColor: c.accent, borderColor: c.accent },
+  odStepDotCurrent: { borderColor: c.accent },
+  odStepDotInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: c.accent },
+  odStepLabel: { fontSize: 10, fontFamily: 'Poppins_600SemiBold', color: c.textMuted, marginTop: 8, textAlign: 'center' },
+  odStepLabelOn: { color: c.textPrimary },
+  odHint: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: c.accentSoft, borderRadius: 12, padding: 14, marginTop: 4 },
+  odHintText: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', lineHeight: 19, color: c.textPrimary },
+  odRtRow: { flexDirection: 'row', gap: 14 },
+  odRtRail: { alignItems: 'center', width: 32 },
+  odRtPickPin: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F27024', borderWidth: 3, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 4 },
+  odRtDropPin: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 3 },
+  odRtLine: { position: 'absolute', top: 36, bottom: -4, width: 2, borderRadius: 1, backgroundColor: c.border },
+  odRtText: { flex: 1 },
+  odRtLabel: { fontSize: 10, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.8 },
+  odRtMain: { fontSize: 16, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, marginTop: 2 },
+  odRtSub: { flex: 1, fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary },
+  odNote: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: 8, backgroundColor: c.accentSoft, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  odNoteText: { flex: 1, fontSize: 12, fontFamily: 'Poppins_500Medium', lineHeight: 17, color: c.textPrimary },
+  odSecHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24, marginBottom: 14 },
+  odSecTitle: { flex: 1, fontSize: 18, fontFamily: 'Poppins_700Bold', color: c.textPrimary, letterSpacing: -0.2 },
+  odCard: { backgroundColor: c.card, borderRadius: 14, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 16 },
+  odContactRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  odAvatar: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  odAvatarText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'Poppins_700Bold' },
+  odRole: { fontSize: 9, fontFamily: 'Poppins_700Bold', color: c.textMuted, letterSpacing: 0.4 },
+  odName: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  odPhone: { fontSize: 12, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+  odCallCircle: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', backgroundColor: c.card, alignItems: 'center', justifyContent: 'center' },
+  odChatPill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.accentSoft, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, borderWidth: 1, borderColor: c.accent },
+  odChatPillText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: c.accent },
+  odReceiverCall: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(139,92,246,0.12)', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(139,92,246,0.35)' },
+  odReceiverCallText: { fontSize: 13, fontFamily: 'Poppins_700Bold', color: PURPLE },
+  odPodCard: { width: '100%', height: 200, borderRadius: 12, overflow: 'hidden', backgroundColor: c.background, borderWidth: 1.5, borderColor: c.success },
+  odPodOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10, backgroundColor: 'rgba(17,24,39,0.72)' },
+  odPodBadgeText: { color: '#FFFFFF', fontSize: 12, fontFamily: 'Poppins_600SemiBold' },
+  odPodTime: { color: 'rgba(255,255,255,0.85)', fontSize: 11, fontFamily: 'Poppins_500Medium' },
+  odItemRow: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: 12 },
+  odItemPhotoWrap: { width: 64, height: 64, borderRadius: 12, overflow: 'hidden', backgroundColor: c.divider },
+  odItemTag: { position: 'absolute', right: 4, bottom: 4, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  odItemTagText: { fontSize: 10, fontFamily: 'Poppins_800ExtraBold' },
+  odItemEmptyText: { fontSize: 22, fontFamily: 'Poppins_800ExtraBold', color: c.textSecondary },
+  odItemTitle: { fontSize: 14, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary },
+  odItemText: { fontSize: 13, fontFamily: 'Poppins_400Regular', color: c.textSecondary, lineHeight: 18, marginTop: 2 },
+  odPayCard: { backgroundColor: c.card, borderRadius: 12, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', overflow: 'hidden' },
+  odPayRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14 },
+  odPayBorder: { borderTopWidth: 1, borderTopColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' },
+  odPayLabel: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textSecondary },
+  odPayValue: { fontSize: 15, fontFamily: 'Poppins_600SemiBold', color: c.textPrimary, textAlign: 'right' },
+  odFooter: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.divider, backgroundColor: c.background },
+  odGoBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: c.accent, borderRadius: 14, height: 52, paddingHorizontal: 16 },
+  odGoText: { color: '#FFFFFF', fontSize: 15, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
+  odPhotoViewer: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.94)', alignItems: 'center', justifyContent: 'center' },
+  odPhotoViewerHint: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontFamily: 'Poppins_500Medium', marginTop: 12 },
 
   pkgOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', paddingHorizontal: 24 },
   pkgCard: { backgroundColor: c.card, borderRadius: 24, padding: 24, maxHeight: '85%' },

@@ -449,6 +449,7 @@ export default function TaskScreen() {
   useEffect(() => { providerIdRef.current = providerId; }, [providerId]);
 
   const [pingingId, setPingingId] = useState<number | null>(null);
+  const [cancellingId, setCancellingId] = useState<number | null>(null);
 
   const [verifyModalVisible, setVerifyModalVisible] = useState(false);
   const [verifyTarget, setVerifyTarget] = useState<any>(null);
@@ -776,6 +777,119 @@ export default function TaskScreen() {
       Alert.alert('Error', error?.message || 'Could not send the notification. Please try again.');
     } finally {
       if (isMountedRef.current) setPingingId(null);
+    }
+  };
+
+  // ---------- Provider cancel (allowed BEFORE pickup only) ----------
+  const handleProviderCancel = (delivery: any) => {
+    if (cancellingId != null) return;
+    if (stageOf(delivery) !== 'pickup') {
+      Alert.alert('Cannot cancel', 'You can only cancel a delivery before the package has been picked up.');
+      return;
+    }
+    Alert.alert(
+      'Cancel this delivery?',
+      'You can only cancel before pickup. The sender will be notified and their payment refunded, and this job will be closed.',
+      [
+        { text: 'Keep Delivery', style: 'cancel' },
+        { text: 'Cancel Delivery', style: 'destructive', onPress: () => { void confirmProviderCancel(delivery); } },
+      ],
+    );
+  };
+
+  const confirmProviderCancel = async (delivery: any) => {
+    const deliveryId = delivery?.delivery_id;
+    const req = delivery?.delivery_requests || {};
+    const requestId = req.request_id ?? delivery?.request_id;
+    if (!deliveryId || !requestId) {
+      Alert.alert('Error', 'Missing delivery information. Please refresh and try again.');
+      return;
+    }
+
+    setCancellingId(deliveryId);
+    try {
+      // Re-check on the server: pickup may have been verified since this screen last loaded.
+      const { data: qr } = await withTimeout(
+        supabase.from('qr_verifications').select('pickup_verified').eq('delivery_id', deliveryId).maybeSingle(),
+        NETWORK_TIMEOUT_MS,
+      );
+      const { data: fresh } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .select('delivery_status, payment_status, escrow_status, sender_id')
+          .eq('request_id', requestId)
+          .maybeSingle(),
+        NETWORK_TIMEOUT_MS,
+      );
+
+      const status = String(fresh?.delivery_status || '');
+      const pastPickup = ['In Transit', 'Awaiting Approval', 'Returning', 'Completed', 'Returned', 'Cancelled'].includes(status);
+      if (qr?.pickup_verified || pastPickup) {
+        Alert.alert('Cannot cancel', 'This delivery has already been picked up or closed, so it can no longer be cancelled.');
+        if (providerId) await fetchDeliveries(providerId);
+        return;
+      }
+
+      const wasHeld = fresh?.payment_status === 'held' || fresh?.escrow_status === 'held';
+      let refundFailed = false;
+      if (wasHeld) {
+        try {
+          const { data: refundResult, error: refundErr } = await withTimeout(
+            supabase.functions.invoke('xendit-refund', {
+              body: { request_id: requestId, reason: 'REQUESTED_BY_CUSTOMER' },
+            }),
+            15_000,
+            'Refund initiation',
+          );
+          if (refundErr || !refundResult?.success) refundFailed = true;
+        } catch {
+          refundFailed = true;
+        }
+      }
+
+      const { error: updErr } = await withTimeout(
+        supabase
+          .from('delivery_requests')
+          .update({
+            delivery_status: 'Cancelled',
+            ...(refundFailed ? { refund_status: 'manual_required' } : {}),
+          })
+          .eq('request_id', requestId),
+        NETWORK_TIMEOUT_MS,
+      );
+      if (updErr) throw updErr;
+
+      try {
+        await supabase.from('delivery_status_history').insert({ delivery_id: deliveryId, status: 'Cancelled' });
+      } catch { /* history is best-effort */ }
+
+      const senderId = fresh?.sender_id ?? req.sender_id ?? req.sender?.user_id;
+      if (senderId) {
+        try {
+          await notifyUser(
+            senderId,
+            'Delivery cancelled by courier',
+            `Your courier cancelled #${trackingCode(requestId)} before pickup.` +
+              (wasHeld ? (refundFailed ? ' Please contact support so we can process your refund.' : ' Your payment is being refunded.') : ''),
+            { deliveryId },
+          );
+        } catch (e) {
+          console.warn('[TaskScreen] cancel notify failed:', e);
+        }
+      }
+
+      Alert.alert(
+        'Delivery cancelled',
+        refundFailed
+          ? 'The delivery was cancelled. The sender’s automatic refund could not be started and will be handled by support.'
+          : 'The delivery was cancelled and the sender has been notified.',
+      );
+      if (isMountedRef.current) setSelectedId(null);
+      if (providerId) await fetchDeliveries(providerId);
+    } catch (e: any) {
+      Alert.alert('Could not cancel', e?.message || 'Please check your connection and try again.');
+    } finally {
+      if (isMountedRef.current) setCancellingId(null);
     }
   };
 
@@ -1998,7 +2112,7 @@ export default function TaskScreen() {
             })}
           </View>
 
-          {isCancelled && <Text style={styles.mCancelledText}>Cancelled by the sender</Text>}
+          {isCancelled && <Text style={styles.mCancelledText}>This booking was cancelled</Text>}
           {isReturning && !isCancelled && (
             <Text style={[styles.mCancelledText, { color: colors.warning }]}>
               Returning parcel to sender pickup pin
@@ -2595,6 +2709,21 @@ export default function TaskScreen() {
                     {d.receiver_notified ? 'Sender notified the receiver ✓' : 'Sender has not confirmed receiver yet'}
                   </Text>
                 </View>
+                <TouchableOpacity
+                  style={[styles.mSoftBtn, { flex: 0, backgroundColor: colors.errorBg }]}
+                  onPress={() => handleProviderCancel(d)}
+                  disabled={cancellingId === d.delivery_id}
+                  activeOpacity={0.85}
+                >
+                  {cancellingId === d.delivery_id ? (
+                    <ActivityIndicator size="small" color={colors.error} />
+                  ) : (
+                    <>
+                      <Ionicons name="close-circle-outline" size={17} color={colors.error} />
+                      <Text style={[styles.mSoftText, { color: colors.error }]}>Cancel delivery (before pickup)</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             )}
 
