@@ -80,6 +80,8 @@ export async function triggerDeliverySmsMilestone(
         request_id,
         provider_id,
         meetup_landmark_name,
+        meetup_lat,
+        meetup_lng,
         sms_milestones_sent,
         vehicle:vehicles(vehicle_type, plate_number),
         request:delivery_requests(
@@ -88,8 +90,8 @@ export async function triggerDeliverySmsMilestone(
           receiver_phone,
           pickup_type,
           receiver:receiver_id(receiver_name, receiver_phone),
-          pickup_location:locations!delivery_requests_pickup_location_id_fkey(place_name, street_address),
-          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(place_name, street_address)
+          pickup_location:locations!delivery_requests_pickup_location_id_fkey(place_name, street_address, barangay, city, latitude, longitude),
+          dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(place_name, street_address, barangay, city, latitude, longitude)
         )
       `)
       .eq('delivery_id', deliveryId)
@@ -113,6 +115,24 @@ export async function triggerDeliverySmsMilestone(
     const puLoc: any = Array.isArray(req?.pickup_location) ? req.pickup_location[0] : req?.pickup_location;
     const doLoc: any = Array.isArray(req?.dropoff_location) ? req.dropoff_location[0] : req?.dropoff_location;
 
+    const formatPlace = (primary: string | null | undefined, loc: any, fallback: string) => {
+      const main = (primary || loc?.place_name || loc?.street_address || fallback).trim();
+      const extraParts = [loc?.street_address, loc?.barangay, loc?.city]
+        .filter((v: any) => typeof v === 'string' && v.trim() && !/^unknown$/i.test(v.trim()))
+        .map((v: string) => v.trim())
+        .filter((v: string) => !main.toLowerCase().includes(v.toLowerCase()));
+      const context = Array.from(new Set(extraParts)).slice(0, 2).join(', ');
+      return context ? `${main} (${context})` : main;
+    };
+
+    const makeMapSuffix = (lat?: any, lng?: any) => {
+      const la = Number(lat);
+      const ln = Number(lng);
+      return Number.isFinite(la) && Number.isFinite(ln) && la !== 0 && ln !== 0
+        ? ` Map: https://maps.google.com/?q=${la.toFixed(6)},${ln.toFixed(6)}`
+        : '';
+    };
+
     // Fetch sender & driver names/phones
     const userIds = [req?.sender_id, del.provider_id].filter(Boolean);
     const { data: users } = await supabase
@@ -128,9 +148,16 @@ export async function triggerDeliverySmsMilestone(
     const plate = veh?.plate_number ? ` (${veh.plate_number})` : '';
     const senderName = sender?.first_name || 'Sender';
     const receiverName = rcv?.receiver_name || 'Receiver';
+    const isCurbside = !/door/i.test(String(req?.pickup_type || ''));
     const landmark = extra?.landmarkName || del.meetup_landmark_name || null;
-    const pickupPlace = landmark || puLoc?.place_name || puLoc?.street_address || 'the pickup point';
-    const dropoffPlace = doLoc?.place_name || doLoc?.street_address || 'the drop-off point';
+
+    const pickupPlace = formatPlace(landmark, puLoc, 'the pickup point');
+    const pickupMap = makeMapSuffix(
+      del.meetup_lat ?? puLoc?.latitude,
+      del.meetup_lng ?? puLoc?.longitude,
+    );
+    const dropoffPlace = formatPlace(null, doLoc, 'the drop-off point');
+    const dropoffMap = makeMapSuffix(doLoc?.latitude, doLoc?.longitude);
     const etaText = extra?.etaMins && extra.etaMins > 0 ? ` (ETA ~${extra.etaMins} min)` : '';
 
     // Pick recipient phone & message per milestone
@@ -144,42 +171,44 @@ export async function triggerDeliverySmsMilestone(
       case 'accepted':
         toPhone = senderPhone;
         body = landmark
-          ? `Pack-N-Ship #${code}: ${driverName}${plate} accepted your Curb-side delivery. Please meet curbside at ${landmark} along the main route.`
-          : `Pack-N-Ship #${code}: ${driverName}${plate} accepted your delivery and will head to ${pickupPlace}.`;
+          ? `Pack-N-Ship #${code}: ${driverName}${plate} accepted your Curb-side delivery. Meet curbside at ${pickupPlace} along the main route.${pickupMap}`
+          : `Pack-N-Ship #${code}: ${driverName}${plate} accepted your delivery and will head to ${pickupPlace}.${pickupMap}`;
         break;
 
       case 'pickup_approaching':
         toPhone = senderPhone;
         body = `Pack-N-Ship #${code}: ${driverName}${plate} is approaching ${pickupPlace}${etaText}${
           extra?.turnInstruction ? ` (${extra.turnInstruction})` : ''
-        }. Please be ready with your Pickup QR/PIN.`;
+        }. Be ready with your Pickup QR/PIN.${pickupMap}`;
         break;
 
       case 'pickup_arrived':
         toPhone = senderPhone;
-        body = `Pack-N-Ship #${code}: ${driverName}${plate} has arrived at ${pickupPlace}. Please meet them now with your package and Pickup QR/PIN.`;
+        body = `Pack-N-Ship #${code}: ${driverName}${plate} has arrived at ${pickupPlace}. Please meet them now with your package and Pickup QR/PIN.${pickupMap}`;
         break;
 
       case 'in_transit':
         toPhone = receiverPhone;
-        body = `Pack-N-Ship #${code}: Hi ${receiverName}, your package from ${senderName} has been picked up by ${driverName}${plate} and is now on the way to ${dropoffPlace}.`;
+        body = `Pack-N-Ship #${code}: Hi ${receiverName}, your package from ${senderName} was picked up by ${driverName}${plate} and is on the way to ${dropoffPlace}${
+          isCurbside ? ' (Curb-side meetup on main road)' : ''
+        }.${dropoffMap}`;
         break;
 
       case 'dropoff_approaching':
         toPhone = receiverPhone;
         body = `Pack-N-Ship #${code}: ${driverName}${plate} is nearby and approaching ${dropoffPlace}${etaText}${
           extra?.turnInstruction ? ` (${extra.turnInstruction})` : ''
-        }. Please be ready to receive your package.`;
+        }. Please be ready with your 6-digit OTP.${dropoffMap}`;
         break;
 
       case 'dropoff_arrived':
         toPhone = receiverPhone;
-        body = `Pack-N-Ship #${code}: ${driverName}${plate} has arrived at ${dropoffPlace}. Please meet the driver now with your 6-digit Delivery OTP.`;
+        body = `Pack-N-Ship #${code}: ${driverName}${plate} has arrived at ${dropoffPlace}. Meet the driver now with your 6-digit Delivery OTP.${dropoffMap}`;
         break;
 
       case 'grace_timer':
         toPhone = receiverPhone;
-        body = `Pack-N-Ship #${code}: ${driverName}${plate} is waiting at ${dropoffPlace}. Please meet them within 10 minutes to claim your package.`;
+        body = `Pack-N-Ship #${code}: ${driverName}${plate} is waiting at ${dropoffPlace}. Please meet them within 10 mins to claim your package.${dropoffMap}`;
         break;
     }
 
@@ -201,6 +230,90 @@ export async function triggerDeliverySmsMilestone(
     return true;
   } catch (e: any) {
     console.warn(`[autoSms] Failed ${cacheKey}:`, e?.message || e);
+    return false;
+  } finally {
+    inFlightKeys.delete(cacheKey);
+  }
+}
+
+/**
+ * Option A: Called on the SENDER'S device right after pickup is verified so the
+ * 6-digit Delivery OTP + exact drop-off map pin is sent directly from the Sender's SIM
+ * (keeping the OTP completely hidden from the Provider's Sent SMS).
+ */
+export async function sendSenderDeliveryOtpSms(params: {
+  deliveryId: number;
+  requestId: number;
+  receiverPhone?: string | null;
+  receiverName?: string | null;
+  otp: string;
+  dropoffLabel?: string | null;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
+  pickupType?: string | null;
+}): Promise<boolean> {
+  const { deliveryId, requestId, otp } = params;
+  if (!deliveryId || !otp) return false;
+
+  const cacheKey = `${deliveryId}:delivery_otp_sent`;
+  if (sentCache.has(cacheKey) || inFlightKeys.has(cacheKey)) return false;
+
+  if (Platform.OS !== 'android' || !isAutoSmsAvailable()) return false;
+
+  const toPhone = normalizePhPhone(params.receiverPhone);
+  if (!toPhone) return false;
+
+  inFlightKeys.add(cacheKey);
+  try {
+    const granted = await ensureSmsPermission();
+    if (!granted) return false;
+
+    const { data: del } = await supabase
+      .from('deliveries')
+      .select('sms_milestones_sent')
+      .eq('delivery_id', deliveryId)
+      .maybeSingle();
+
+    const alreadySent: Record<string, string> =
+      del?.sms_milestones_sent && typeof del.sms_milestones_sent === 'object'
+        ? { ...(del.sms_milestones_sent as Record<string, string>) }
+        : {};
+
+    if (alreadySent.delivery_otp_sent) {
+      sentCache.add(cacheKey);
+      return false;
+    }
+
+    const code = `PNS-${String(requestId).padStart(4, '0')}`;
+    const rcvName = params.receiverName || 'Receiver';
+    const isCurbside = !/door/i.test(String(params.pickupType || ''));
+    const la = Number(params.dropoffLat);
+    const ln = Number(params.dropoffLng);
+    const mapLink =
+      Number.isFinite(la) && Number.isFinite(ln) && la !== 0 && ln !== 0
+        ? ` Pin: https://maps.google.com/?q=${la.toFixed(6)},${ln.toFixed(6)}`
+        : '';
+    const placePart = params.dropoffLabel ? ` Drop-off: ${params.dropoffLabel}${isCurbside ? ' (Curb-side)' : ''}.` : '';
+
+    const body =
+      `Pack-N-Ship #${code}: Hi ${rcvName}, your 6-digit Delivery OTP is ${otp}. ` +
+      `Read this code to the driver upon arrival.${placePart}${mapLink} Track: https://packnship.streamlit.app/`;
+
+    const ok = await sendSilentSms(toPhone, body);
+    if (!ok) return false;
+
+    alreadySent.delivery_otp_sent = new Date().toISOString();
+    sentCache.add(cacheKey);
+
+    await supabase
+      .from('deliveries')
+      .update({ sms_milestones_sent: alreadySent })
+      .eq('delivery_id', deliveryId);
+
+    console.log(`[autoSms] Sender auto-sent Delivery OTP for delivery #${deliveryId} to ${toPhone}`);
+    return true;
+  } catch (e: any) {
+    console.warn(`[autoSms] Sender OTP SMS failed:`, e?.message || e);
     return false;
   } finally {
     inFlightKeys.delete(cacheKey);

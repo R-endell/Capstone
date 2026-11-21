@@ -375,14 +375,14 @@ export function isRouteTimeValidForRequest(route: any, request: any, now = new D
 
   if (!isRouteRunningToday(route, now)) return false;
 
-  const routeDepToday = getRouteTodayDepartureDate(route, now);
+  const { end: routeEndToday } = getRouteWindowOnDay(route, now);
   const bookedAt = parseRequestCreatedTime(request);
 
-  if (bookedAt.getTime() > routeDepToday.getTime()) {
+  if (bookedAt.getTime() > routeEndToday.getTime()) {
     return false;
   }
 
-  if (now.getTime() > routeDepToday.getTime()) {
+  if (now.getTime() > routeEndToday.getTime()) {
     return false;
   }
 
@@ -493,6 +493,136 @@ export function projectPointToPolyline(
   };
 }
 
+export const LIVE_GPS_STALE_MS = 5 * 60 * 1000; // 5 minutes
+export const AHEAD_OF_DRIVER_BUFFER = 0.02;     // ~2% fraction tolerance for GPS jitter
+export const ROUTE_END_CUTOFF_FRACTION = 0.92;  // Stop matching Send-Now once >= 92% of route is done
+export const DRIVER_OFF_ROUTE_THRESHOLD_M = 1000;
+
+export interface DriverLivePos {
+  latitude: number;
+  longitude: number;
+  updated_at?: string | null;
+}
+
+export interface AheadCheckResult {
+  allowed: boolean;
+  reason?: string;
+  driverFraction?: number;
+}
+
+/**
+ * Option B: For Send-Now requests after a route's departure time, verifies the driver has a
+ * fresh GPS ping (<= 5 min old) and has not already passed the pickup point along the corridor.
+ */
+export function checkPickupAheadOfDriver(params: {
+  route: any;
+  request: any;
+  corridor: { latitude: number; longitude: number }[];
+  pickupFraction: number;
+  driverLoc: DriverLivePos | null;
+  now?: Date;
+}): AheadCheckResult {
+  const { route, request, corridor, pickupFraction, driverLoc, now = new Date() } = params;
+
+  // Direct requests and Scheduled bookings are not filtered by live GPS position
+  if (request?.preferred_provider_id != null || !isSendNowRequest(request)) {
+    return { allowed: true };
+  }
+
+  // Before departure time today, allow the full route (0.0 -> 1.0)
+  const { start: routeDepToday } = getRouteWindowOnDay(route, now);
+  if (now.getTime() <= routeDepToday.getTime()) {
+    return { allowed: true };
+  }
+
+  // After departure time: require fresh live GPS (<= 5 minutes)
+  if (
+    !driverLoc ||
+    !Number.isFinite(Number(driverLoc.latitude)) ||
+    !Number.isFinite(Number(driverLoc.longitude))
+  ) {
+    return { allowed: false, reason: 'post-departure send-now: no live driver GPS available' };
+  }
+
+  if (driverLoc.updated_at) {
+    const updatedMs = new Date(driverLoc.updated_at).getTime();
+    const ageMs = now.getTime() - updatedMs;
+    if (!Number.isFinite(ageMs) || ageMs > LIVE_GPS_STALE_MS) {
+      return {
+        allowed: false,
+        reason: `post-departure send-now: driver GPS is stale (>${Math.round(LIVE_GPS_STALE_MS / 60000)} min old)`,
+      };
+    }
+  }
+
+  if (!corridor || corridor.length < 2) {
+    return { allowed: true };
+  }
+
+  const drvProj = projectPointToPolyline(
+    { lat: Number(driverLoc.latitude), lng: Number(driverLoc.longitude) },
+    corridor,
+  );
+
+  let effectiveDriverFraction = drvProj.fraction;
+  if (drvProj.minDistanceM > DRIVER_OFF_ROUTE_THRESHOLD_M) {
+    const startPt = corridor[0];
+    const endPt = corridor[corridor.length - 1];
+    const distToStart = calculateDistance(driverLoc.latitude, driverLoc.longitude, startPt.latitude, startPt.longitude);
+    const distToEnd = calculateDistance(driverLoc.latitude, driverLoc.longitude, endPt.latitude, endPt.longitude);
+    if (distToStart <= distToEnd) {
+      // Running late near start -> treat as not departed yet
+      effectiveDriverFraction = 0;
+    } else {
+      return {
+        allowed: false,
+        driverFraction: drvProj.fraction,
+        reason: 'post-departure send-now: driver is off-route near destination',
+      };
+    }
+  }
+
+  if (effectiveDriverFraction >= ROUTE_END_CUTOFF_FRACTION) {
+    return {
+      allowed: false,
+      driverFraction: effectiveDriverFraction,
+      reason: `post-departure send-now: driver nearly finished route (${Math.round(effectiveDriverFraction * 100)}%)`,
+    };
+  }
+
+  if (pickupFraction < effectiveDriverFraction - AHEAD_OF_DRIVER_BUFFER) {
+    return {
+      allowed: false,
+      driverFraction: effectiveDriverFraction,
+      reason: `pickup already passed (driver at ${Math.round(effectiveDriverFraction * 100)}%, pickup at ${Math.round(pickupFraction * 100)}%)`,
+    };
+  }
+
+  return { allowed: true, driverFraction: effectiveDriverFraction };
+}
+
+async function fetchDriverLiveLocationMap(providerIds: number[]): Promise<Map<number, DriverLivePos>> {
+  const map = new Map<number, DriverLivePos>();
+  const unique = Array.from(new Set(providerIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)));
+  if (unique.length === 0) return map;
+  try {
+    const { data } = await supabase
+      .from('provider_live_locations')
+      .select('provider_id, latitude, longitude, updated_at')
+      .in('provider_id', unique);
+    for (const row of (data || []) as any[]) {
+      map.set(Number(row.provider_id), {
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        updated_at: row.updated_at ?? null,
+      });
+    }
+  } catch (e) {
+    console.warn('[matchingService] fetchDriverLiveLocationMap warning:', e);
+  }
+  return map;
+}
+
 export async function ensureRouteCorridorBackfilled(routeId: number): Promise<void> {
   try {
     const { data: route } = await supabase
@@ -547,6 +677,7 @@ async function evaluatePairAndUpsertMatch(
   now: Date,
   shouldNotify: boolean,
   isDemo: boolean = false,
+  driverLoc?: DriverLivePos | null,
 ): Promise<boolean> {
   if (!route || !reqRow || reqRow.delivery_status !== 'Pending') return false;
   // Not paid yet (sender still on receiver / payment step): no match, no notification.
@@ -622,8 +753,29 @@ async function evaluatePairAndUpsertMatch(
     puProj.minDistanceM <= fallbackMaxM &&
     doProj.minDistanceM <= fallbackMaxM;
 
-  if (!isPreferredRoute && !(fitsCapacity && isForward && (withinPrimary || withinFallback))) {
-    // Ensure any stale/previous match for this non-matching route is revoked
+  let resolvedDriverLoc = driverLoc;
+  if (!isDemo && !isPreferredRoute && resolvedDriverLoc === undefined && isSendNowRequest(reqRow)) {
+    const { start: depToday } = getRouteWindowOnDay(route, now);
+    if (now.getTime() > depToday.getTime()) {
+      const liveMap = await fetchDriverLiveLocationMap([Number(route.provider_id)]);
+      resolvedDriverLoc = liveMap.get(Number(route.provider_id)) ?? null;
+    }
+  }
+
+  const aheadCheck =
+    isDemo || isPreferredRoute
+      ? { allowed: true }
+      : checkPickupAheadOfDriver({
+          route,
+          request: reqRow,
+          corridor,
+          pickupFraction: puProj.fraction,
+          driverLoc: resolvedDriverLoc ?? null,
+          now,
+        });
+
+  if (!isPreferredRoute && !(fitsCapacity && isForward && aheadCheck.allowed && (withinPrimary || withinFallback))) {
+    // Ensure any stale/previous match for this non-matching or already-passed route is revoked
     await supabase
       .from('route_request_matches')
       .update({ status: 'revoked' })
@@ -877,10 +1029,16 @@ export async function syncAllActiveRoutesTodayForRequest(
       }
     }
 
+    const driverLocMap =
+      !isDemo && isSendNowRequest(reqRow)
+        ? await fetchDriverLiveLocationMap(candidateRoutes.map((r) => Number(r.provider_id)))
+        : new Map<number, DriverLivePos>();
+
     const validRouteIds = new Set<number>();
     for (const route of candidateRoutes) {
       await ensureRouteCorridorBackfilled(route.route_id);
-      const matched = await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify, isDemo);
+      const drvLoc = driverLocMap.get(Number(route.provider_id)) ?? null;
+      const matched = await evaluatePairAndUpsertMatch(route, reqRow, now, shouldNotify, isDemo, drvLoc);
       if (matched) {
         validRouteIds.add(Number(route.route_id));
       }
@@ -970,9 +1128,14 @@ export async function syncOpenPendingRequestsForRoute(routeId: number): Promise<
       .in('request_id', reqIds);
     const takenSet = new Set((existingDelivs || []).map((d: any) => d.request_id));
 
+    const liveMap = !isDemo
+      ? await fetchDriverLiveLocationMap([Number(route.provider_id)])
+      : new Map<number, DriverLivePos>();
+    const driverLoc = liveMap.get(Number(route.provider_id)) ?? null;
+
     for (const reqRow of pendingReqs) {
       if (takenSet.has(reqRow.request_id)) continue;
-      await evaluatePairAndUpsertMatch(route, reqRow, now, false, isDemo);
+      await evaluatePairAndUpsertMatch(route, reqRow, now, false, isDemo, driverLoc);
     }
   } catch (e) {
     console.warn('[matchingService] syncOpenPendingRequestsForRoute warning:', e);
@@ -1009,6 +1172,9 @@ export async function explainMatchesForRequest(requestId: number) {
   const cargo = Array.isArray(reqRow.cargo) ? reqRow.cargo[0] : reqRow.cargo;
   const reqWeight = Number(cargo?.total_weight_kg) || 5;
   const reqVol = computeCargoVolumeLiters(cargo);
+  const driverLocMap = sendNow
+    ? await fetchDriverLiveLocationMap((routes || []).map((r: any) => Number(r.provider_id)))
+    : new Map<number, DriverLivePos>();
   const report = (routes || []).map((route: any) => {
     const reasons: string[] = [];
     if (Number(route.provider_id) === Number(reqRow.sender_id)) reasons.push('own route (sender = provider)');
@@ -1051,6 +1217,17 @@ export async function explainMatchesForRequest(requestId: number) {
       if (pu.minDistanceM > limit) reasons.push(`pickup ${pickupM} m from route (limit ${limit} m)`);
       if (dr.minDistanceM > limit) reasons.push(`dropoff ${dropoffM} m from route (limit ${limit} m)`);
       if (!(dr.fraction >= pu.fraction - 0.02)) reasons.push('dropoff comes BEFORE pickup along this route (wrong direction)');
+      if (sendNow) {
+        const ahead = checkPickupAheadOfDriver({
+          route,
+          request: reqRow,
+          corridor,
+          pickupFraction: pu.fraction,
+          driverLoc: driverLocMap.get(Number(route.provider_id)) ?? null,
+          now,
+        });
+        if (!ahead.allowed && ahead.reason) reasons.push(ahead.reason);
+      }
     } else {
       reasons.push('no corridor / missing coordinates');
     }
@@ -1142,6 +1319,11 @@ export async function evaluateAndFetchRouteMatches(
           ]
         : [];
 
+  const liveMap = !isDemo
+    ? await fetchDriverLiveLocationMap([Number(routeRow.provider_id)])
+    : new Map<number, DriverLivePos>();
+  const driverLoc = liveMap.get(Number(routeRow.provider_id)) ?? null;
+
   const strictlyValid: any[] = [];
   for (const m of afterPreferred) {
     const reqRow = m.request;
@@ -1170,8 +1352,18 @@ export async function evaluateAndFetchRouteMatches(
       const fallbackMaxM = canUseFallback ? getFallbackCorridorM(reqRow.pickup_type) : maxCorridorM;
       const isForward = doProj.fraction >= puProj.fraction - 0.02;
       const withinCorridor = puProj.minDistanceM <= fallbackMaxM && doProj.minDistanceM <= fallbackMaxM;
+      const aheadCheck = isDemo
+        ? { allowed: true }
+        : checkPickupAheadOfDriver({
+            route: routeRow,
+            request: reqRow,
+            corridor,
+            pickupFraction: puProj.fraction,
+            driverLoc,
+            now,
+          });
 
-      if (!isForward || !withinCorridor) {
+      if (!isForward || !withinCorridor || !aheadCheck.allowed) {
         await supabase
           .from('route_request_matches')
           .update({ status: 'revoked' })

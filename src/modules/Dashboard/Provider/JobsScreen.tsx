@@ -39,9 +39,10 @@ import {
   projectPointToPolyline,
   isDoorToDoorType,
   CURBSIDE_LANDMARK_SNAP_M,
+  checkPickupAheadOfDriver,
 } from '../../../services/matchingService';
 import { ordersFromDeliveries, planTrip, TripOrder } from '../../../services/tripPlanner';
-import { createProviderRouteWithGuardrails, getTodayRouteStats } from '../../../services/routeService';
+import { createProviderRouteWithGuardrails, getTodayRouteStats, MAX_DAILY_ROUTES } from '../../../services/routeService';
 import { notifyUser } from '../../../services/pushService';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
@@ -58,6 +59,11 @@ import { findNearestRouteLandmark } from '../../../utils/addressGeocoding';
 import { triggerDeliverySmsMilestone } from '../../../services/autoSmsService';
 import { setBroadcastTarget } from '../../../services/locationBroadcastStore';
 import { startBackgroundLocationUpdates } from '../../../services/backgroundLocationTask';
+import {
+  pushProviderLiveLocation,
+  fetchProviderLiveLocation,
+  clearProviderLiveLocation,
+} from '../../../services/locationService';
 
 const EMPTY_COMPASS_ICON = require('../../../../assets/empty-state-compass-icon.png');
 
@@ -2148,12 +2154,28 @@ export default function JobsScreen() {
           .eq('delivery_status', 'Pending')
           .in('payment_status', ['held', 'paid', 'released']),
         supabase.from('route_request_matches')
-          .select(`*, route:provider_routes(route_id, is_active, is_deleted, fallback_unlocked, fallback_used, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
+          .select(`*, route:provider_routes(route_id, departure_time, end_time, route_frequency, is_active, is_deleted, fallback_unlocked, fallback_used, corridor_path, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests (${sel})`)
           .eq('provider_id', pid)
           .eq('route_id', selectedRoute.route_id)
           .in('status', ['matched', 'expired'])
           .order('match_score', { ascending: false }),
       ]);
+
+      const isDemo = await getDemoMode();
+      const dbLive = await fetchProviderLiveLocation(pid);
+      const liveNow = dbLive
+        ? {
+            latitude: dbLive.latitude,
+            longitude: dbLive.longitude,
+            updated_at: dbLive.updated_at,
+          }
+        : myLocRef.current
+          ? {
+              latitude: myLocRef.current.lat,
+              longitude: myLocRef.current.lng,
+              updated_at: new Date().toISOString(),
+            }
+          : null;
 
       const byReq = new Map<number, RouteMatchRow>();
       const lapsed = new Set<number>();
@@ -2168,12 +2190,34 @@ export default function JobsScreen() {
         if (route && (route.is_deleted || route.is_active === false)) continue;
         if (req.preferred_provider_id != null && Number(req.preferred_provider_id) !== Number(pid)) continue;
         const isDirect = req.preferred_provider_id != null && Number(req.preferred_provider_id) === Number(pid);
-        // Strict corridor: the provider must really drive within ~200 m of BOTH pickup and drop-off.
-        // Stored rows from older versions / DB functions that don't satisfy it are hidden and revoked.
+        // Strict corridor: the provider must really drive within the allowed band of BOTH pickup and drop-off.
         if (!isDirect && !isRequestWithinRouteCorridor(route ?? selectedRoute, req)) {
           supabase.from('route_request_matches').update({ status: 'revoked' }).eq('match_id', m.match_id)
             .then(() => {}, () => {});
           continue;
+        }
+        // Option B: after departure, hide & revoke Send-Now pickups the driver already passed
+        if (!isDemo && !isDirect && req.pickup_location?.latitude != null) {
+          const effRoute = route ?? selectedRoute;
+          const corridor = Array.isArray(effRoute?.corridor_path) ? effRoute.corridor_path : [];
+          if (corridor.length >= 2) {
+            const puProj = projectPointToPolyline(
+              { lat: Number(req.pickup_location.latitude), lng: Number(req.pickup_location.longitude) },
+              corridor,
+            );
+            const ahead = checkPickupAheadOfDriver({
+              route: effRoute,
+              request: req,
+              corridor,
+              pickupFraction: puProj.fraction,
+              driverLoc: liveNow,
+            });
+            if (!ahead.allowed) {
+              supabase.from('route_request_matches').update({ status: 'revoked' }).eq('match_id', m.match_id)
+                .then(() => {}, () => {});
+              continue;
+            }
+          }
         }
         const live = m.status === 'matched';
         if (!live && !isDirect) {
@@ -2455,6 +2499,7 @@ export default function JobsScreen() {
       // another provider accepting a request inserts a deliveries row: drop it from my list right away
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, scheduleRouteReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_live_locations', filter: `provider_id=eq.${providerId}` }, scheduleRefresh)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
         void loadNotifs();
         const row: any = payload.new;
@@ -2520,6 +2565,22 @@ export default function JobsScreen() {
   const openAddRouteModal = async () => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
+
+    let countToday = usedTodayCount;
+    try {
+      const stats = await getTodayRouteStats(pid);
+      countToday = stats.usedTodayCount;
+      setUsedTodayCount(countToday);
+    } catch { /* fall back to cached count */ }
+
+    if (countToday >= MAX_DAILY_ROUTES) {
+      Alert.alert(
+        'Daily Route Limit Reached',
+        `You have already used ${countToday}/${MAX_DAILY_ROUTES} routes today. Deleted and recurring routes count toward your daily limit. Please try again tomorrow.`,
+      );
+      return;
+    }
+
     setRoutePickerVisible(false);
     const initial = new Date(Date.now() + 135 * 60 * 1000);
     setNewRouteStart(null);
@@ -2564,7 +2625,7 @@ export default function JobsScreen() {
         }).select('*').single();
         if (error) throw error;
         location = newLoc;
-      } else if (!location.place_name && locData.place_name) {
+      } else if (locData.place_name && !isCodeLike(locData.place_name) && location.place_name !== locData.place_name) {
         const { data: updatedLoc } = await supabase
           .from('locations')
           .update({ place_name: locData.place_name })
@@ -2632,6 +2693,7 @@ export default function JobsScreen() {
       return;
     }
 
+    const now = new Date();
     const effectiveDate = computeNewRouteEffectiveDate();
     const combined = new Date(
       effectiveDate.getFullYear(),
@@ -2642,6 +2704,16 @@ export default function JobsScreen() {
       0,
       0,
     );
+
+    if (newRouteFrequency === 'Daily' && combined.getTime() < now.getTime()) {
+      combined.setDate(combined.getDate() + 1);
+    } else if (newRouteFrequency === 'Weekly' && combined.getTime() < now.getTime()) {
+      combined.setDate(combined.getDate() + 7);
+    } else if (newRouteFrequency === 'One-time' && combined.getTime() < now.getTime()) {
+      Alert.alert('Invalid Time', 'You cannot schedule a one-time route in the past.');
+      return;
+    }
+
     const endTimeObj = new Date(combined.getTime() + newRouteDurationHours * 60 * 60 * 1000);
 
     setNewRouteSubmitting(true);
@@ -2727,6 +2799,16 @@ export default function JobsScreen() {
       if (onErr) { Alert.alert('Could not go online', onErr.message); return; }
       isOnlineRef.current = true;
       setIsOnline(true);
+      if (myLocRef.current) {
+        await pushProviderLiveLocation(pid, currentRoute.route_id, {
+          latitude: myLocRef.current.lat,
+          longitude: myLocRef.current.lng,
+          heading: myLoc?.heading ?? null,
+          speed: null,
+          accuracy: null,
+          updated_at: new Date().toISOString(),
+        });
+      }
       await refreshMatches(pid, currentRoute, true);
     } else {
       Alert.alert('Go Offline', "You won't receive any new requests while you are offline. Requests currently on your list will be hidden.", [
@@ -2745,6 +2827,7 @@ export default function JobsScreen() {
             setCheckingMatches(false);
             setDetailRequestId(null);
 
+            void clearProviderLiveLocation(pid);
             const { error: offErr } = await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
             if (offErr) {
               // could not persist: go back to the real state instead of pretending to be offline
@@ -2791,6 +2874,34 @@ export default function JobsScreen() {
       return () => { cancelled = true; sub?.remove(); };
     }, []),
   );
+
+  // Option B heartbeat: publish live GPS to provider_live_locations while online (every move >=10s + 60s keepalive)
+  const lastLivePushRef = useRef(0);
+  useEffect(() => {
+    if (!isOnline || !providerId || !myLoc) return;
+
+    const sendFix = (force = false) => {
+      const nowMs = Date.now();
+      if (!force && nowMs - lastLivePushRef.current < 10_000) return;
+      lastLivePushRef.current = nowMs;
+      void pushProviderLiveLocation(providerId, activeRouteRef.current?.route_id ?? null, {
+        latitude: myLoc.lat,
+        longitude: myLoc.lng,
+        heading: myLoc.heading,
+        speed: null,
+        accuracy: null,
+        updated_at: new Date().toISOString(),
+      });
+    };
+
+    sendFix(false);
+    const keepAlive = setInterval(() => {
+      if (!isOnlineRef.current) return;
+      sendFix(true);
+    }, 60_000);
+
+    return () => clearInterval(keepAlive);
+  }, [isOnline, providerId, myLoc?.lat, myLoc?.lng, activeRoute?.route_id]);
 
   const decliningRef = useRef<Set<number>>(new Set());
 
@@ -4033,27 +4144,37 @@ export default function JobsScreen() {
               </View>
             </View>
 
-            {newRouteFrequency === 'Daily' ? (
-              <View style={styles.formGroup}>
-                <Text style={styles.inputLabel}>Departure Time (Today)</Text>
-                <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
-                  <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
-                  <Text style={styles.dateTimeValue}>
-                    {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
-                </TouchableOpacity>
-                {newRouteShowTimePicker && (
-                  <DateTimePicker
-                    value={newRouteDepartureTime}
-                    mode="time"
-                    onChange={(e, t) => {
-                      setNewRouteShowTimePicker(Platform.OS === 'ios');
-                      if (e.type === 'set' && t) setNewRouteDepartureTime(t);
-                    }}
-                  />
-                )}
-              </View>
-            ) : newRouteFrequency === 'Weekly' ? (
+            {newRouteFrequency === 'Daily' ? (() => {
+                const now = new Date();
+                const todaySlot = new Date(
+                  now.getFullYear(), now.getMonth(), now.getDate(),
+                  newRouteDepartureTime.getHours(), newRouteDepartureTime.getMinutes(), 0, 0,
+                );
+                const startsTomorrow = todaySlot.getTime() < now.getTime();
+                return (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.inputLabel}>
+                      Daily Departure Time ({startsTomorrow ? 'Starts Tomorrow' : 'Starts Today'})
+                    </Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => setNewRouteShowTimePicker(true)}>
+                      <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
+                      <Text style={styles.dateTimeValue}>
+                        {newRouteDepartureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {newRouteShowTimePicker && (
+                      <DateTimePicker
+                        value={newRouteDepartureTime}
+                        mode="time"
+                        onChange={(e, t) => {
+                          setNewRouteShowTimePicker(Platform.OS === 'ios');
+                          if (e.type === 'set' && t) setNewRouteDepartureTime(t);
+                        }}
+                      />
+                    )}
+                  </View>
+                );
+              })() : newRouteFrequency === 'Weekly' ? (
               <View style={styles.formGroup}>
                 <Text style={styles.inputLabel}>Repeats on</Text>
                 <View style={styles.weekdayRow}>

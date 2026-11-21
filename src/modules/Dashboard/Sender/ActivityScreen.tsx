@@ -6,7 +6,7 @@ import {
   BackHandler, StatusBar, Platform, Linking, Image, Share, KeyboardAvoidingView, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect, useRoute, CommonActions } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useIsFocused, useRoute, CommonActions } from '@react-navigation/native';
 import QRCode from 'react-native-qrcode-svg';
 import * as Notifications from 'expo-notifications';
 import { supabase } from '../../../utils/supabase';
@@ -20,6 +20,13 @@ import { SolarIcon } from '../../../components/ui/SolarIcon';
 import { Ionicons } from '@expo/vector-icons';
 import { createTicket } from '../../../services/ticketService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { sendSenderDeliveryOtpSms } from '../../../services/autoSmsService';
+import {
+  enrichRouteMatchRows,
+  isRequestWithinRouteCorridor,
+  syncAllActiveRoutesTodayForRequest,
+  RouteMatchRow,
+} from '../../../services/matchingService';
 
 const GCASH_LOGO = require('../../../../assets/gcash.png');
 const MAYA_LOGO = require('../../../../assets/maya.png');
@@ -45,7 +52,7 @@ const money = (n: any) => `₱${Number(n || 0).toFixed(2)}`;
 const trackingCode = (id: any) => `PNS-${String(id).padStart(4, '0')}`;
 const serviceLabel = (t?: string | null) => (/door/i.test(String(t || '')) ? 'Door-to-Door' : 'Curb-side');
 
-const PAID_STATUSES = ['held', 'paid', 'released'];
+const PAID_STATUSES = ['held', 'paid', 'released', 'completed'];
 const isRequestPaidStatus = (paymentStatus?: string | null) =>
   PAID_STATUSES.includes(String(paymentStatus || '').toLowerCase());
 
@@ -106,6 +113,71 @@ const PaymentMethodBadge = ({ provider, size = 20 }: { provider?: string | null;
         <Image source={logo} style={{ width: size, height: size }} resizeMode="contain" />
       </View>
       <Text style={{ fontSize: 12, fontFamily: 'Poppins_700Bold', color: tint }}>{label}</Text>
+    </View>
+  );
+};
+
+const SearchingPulse = ({ compact = false }: { compact?: boolean }) => {
+  const ring1 = useRef(new Animated.Value(0)).current;
+  const ring2 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const wave = (anim: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: 1,
+            duration: 1800,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ]),
+      );
+    const l1 = wave(ring1, 0);
+    const l2 = wave(ring2, 900);
+    l1.start();
+    l2.start();
+    return () => {
+      l1.stop();
+      l2.stop();
+    };
+  }, [ring1, ring2]);
+
+  const size = compact ? 36 : 46;
+  const ringSize = compact ? 32 : 42;
+
+  return (
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      {[ring1, ring2].map((anim, idx) => (
+        <Animated.View
+          key={idx}
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            width: ringSize,
+            height: ringSize,
+            borderRadius: ringSize / 2,
+            borderWidth: 2,
+            borderColor: BRAND_ORANGE,
+            transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.65] }) }],
+            opacity: anim.interpolate({ inputRange: [0, 0.2, 1], outputRange: [0, 0.55, 0] }),
+          }}
+        />
+      ))}
+      <View
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: BRAND_ORANGE,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <SolarIcon name="Magnifier" variant="bold" size={compact ? 16 : 20} color="#FFFFFF" />
+      </View>
     </View>
   );
 };
@@ -454,7 +526,11 @@ export default function ActivityScreen() {
   const deliveriesSigRef = useRef('');
   const myIdsRef = useRef<{ requests: Set<number>; deliveries: Set<number> }>({ requests: new Set(), deliveries: new Set() });
   const otpAttemptRef = useRef<Record<number, number>>({});
+  const isFocused = useIsFocused();
   const [deliveries, setDeliveries] = useState<MappedDelivery[]>([]);
+  const deliveriesRef = useRef<MappedDelivery[]>([]);
+  useEffect(() => { deliveriesRef.current = deliveries; }, [deliveries]);
+  const [matchedByRequest, setMatchedByRequest] = useState<Record<number, RouteMatchRow[]>>({});
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showPickupQR, setShowPickupQR] = useState(false);
   const [showDeliveryOTP, setShowDeliveryOTP] = useState(false);
@@ -642,7 +718,7 @@ export default function ActivityScreen() {
           )
         `)
         .eq('sender_id', currentUserId)
-        .in('payment_status', ['held', 'paid', 'released', 'refunded'])
+        .in('payment_status', ['held', 'paid', 'released', 'completed', 'refunded'])
         .order('created_at', { ascending: false });
 
       if (requestsError) throw requestsError;
@@ -868,7 +944,46 @@ export default function ActivityScreen() {
         };
       });
 
+      // Fetch live matched (not yet accepted) providers for all pending requests
+      const pendingReqIds = mappedDeliveries
+        .filter((m) => !m.isMatched && m.status !== 'Cancelled' && m.status !== 'Completed')
+        .map((m) => m.request_id);
+
+      const nextMatchedMap: Record<number, RouteMatchRow[]> = {};
+      if (pendingReqIds.length > 0) {
+        try {
+          const { data: rawMatches } = await supabase
+            .from('route_request_matches')
+            .select(
+              '*, route:provider_routes(*, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude)), request:delivery_requests(pickup_type, pickup_location:locations!delivery_requests_pickup_location_id_fkey(latitude,longitude), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey(latitude,longitude))',
+            )
+            .in('request_id', pendingReqIds)
+            .eq('status', 'matched')
+            .order('match_score', { ascending: false });
+
+          const byReq: Record<number, any[]> = {};
+          for (const row of rawMatches || []) {
+            const r = Array.isArray(row.route) ? row.route[0] : row.route;
+            const rq = Array.isArray(row.request) ? row.request[0] : row.request;
+            if (!isRequestWithinRouteCorridor(r, rq)) continue;
+            const rid = Number(row.request_id);
+            if (!byReq[rid]) byReq[rid] = [];
+            byReq[rid].push(row);
+          }
+
+          await Promise.all(
+            Object.entries(byReq).map(async ([ridStr, rows]) => {
+              const enriched = await enrichRouteMatchRows(rows);
+              if (enriched.length > 0) {
+                nextMatchedMap[Number(ridStr)] = enriched;
+              }
+            }),
+          );
+        } catch { /* non-blocking */ }
+      }
+
       if (seq === fetchSeqRef.current) {
+        setMatchedByRequest(nextMatchedMap);
         const sig = JSON.stringify(mappedDeliveries);
         if (sig !== deliveriesSigRef.current) {
           deliveriesSigRef.current = sig;
@@ -919,33 +1034,80 @@ export default function ActivityScreen() {
     if ((rid != null && ids.requests.has(Number(rid))) || (did != null && ids.deliveries.has(Number(did)))) scheduleRefresh();
   }, [scheduleRefresh]);
 
+  const syncPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncPendingInFlightRef = useRef(false);
+
+  const schedulePendingResync = useCallback(() => {
+    if (syncPendingTimerRef.current) clearTimeout(syncPendingTimerRef.current);
+    syncPendingTimerRef.current = setTimeout(async () => {
+      syncPendingTimerRef.current = null;
+      if (syncPendingInFlightRef.current) return;
+      const pendingPaidIds = deliveriesRef.current
+        .filter((d) => !d.isMatched && d.status !== 'Cancelled' && d.status !== 'Completed' && isRequestPaidStatus(d.rawData?.payment_status))
+        .map((d) => d.request_id);
+      if (pendingPaidIds.length === 0) return;
+
+      syncPendingInFlightRef.current = true;
+      try {
+        await Promise.all(
+          pendingPaidIds.map((rid) =>
+            syncAllActiveRoutesTodayForRequest(rid, { notify: false }).catch(() => []),
+          ),
+        );
+        scheduleRefresh();
+      } finally {
+        syncPendingInFlightRef.current = false;
+      }
+    }, 500);
+  }, [scheduleRefresh]);
+
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel(`sender-activity-${userId}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests', filter: `sender_id=eq.${userId}` }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'route_request_matches' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets', filter: `reporter_id=eq.${userId}` }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_live_locations' }, schedulePendingResync)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes' }, schedulePendingResync)
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') scheduleRefresh();
+        if (status === 'SUBSCRIBED') {
+          scheduleRefresh();
+          schedulePendingResync();
+        }
       });
 
     const appStateSub = AppState.addEventListener('change', (s) => {
-      if (s === 'active') scheduleRefresh();
+      if (s === 'active') {
+        scheduleRefresh();
+        schedulePendingResync();
+      }
     });
 
     return () => {
       if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
+      if (syncPendingTimerRef.current) { clearTimeout(syncPendingTimerRef.current); syncPendingTimerRef.current = null; }
       appStateSub.remove();
       supabase.removeChannel(channel);
     };
-  }, [userId, scheduleRefresh, onRelatedChange]);
+  }, [userId, scheduleRefresh, onRelatedChange, schedulePendingResync]);
+
+  // Safety-net live resync every 15s while ActivityScreen is focused and has pending paid shipments
+  useEffect(() => {
+    if (!userId || !isFocused) return;
+    const id = setInterval(() => {
+      schedulePendingResync();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [userId, isFocused, schedulePendingResync]);
 
   useEffect(() => {
+    // 1. Ensure a 6-digit OTP exists for every picked-up active delivery
     const pending = deliveries.filter(
       (d) => d.isMatched && d.qr?.pickup_verified && !d.deliveryData?.completed_at && !d.confirmation?.system_otp && d.status !== 'Cancelled' && d.status !== 'Awaiting Approval',
     );
@@ -962,6 +1124,39 @@ export default function ActivityScreen() {
         if (error || !data?.success) return;
         fetchData();
       } catch { /* ignore */ }
+    });
+
+    // 2. Auto-send the 6-digit Delivery OTP + Google Maps drop-off pin from Sender's SIM (once per delivery)
+    const readyToSendOtp = deliveries.filter((d) => {
+      const sentMap = (d.deliveryData as any)?.sms_milestones_sent;
+      return (
+        d.isMatched &&
+        d.qr?.pickup_verified &&
+        !d.deliveryData?.completed_at &&
+        !!d.confirmation?.system_otp &&
+        !d.confirmation?.otp_verified &&
+        d.status !== 'Cancelled' &&
+        d.status !== 'Awaiting Approval' &&
+        !sentMap?.delivery_otp_sent
+      );
+    });
+
+    readyToSendOtp.forEach((d) => {
+      const deliveryId = d.deliveryData?.delivery_id;
+      const otp = d.confirmation?.system_otp;
+      if (!deliveryId || !otp) return;
+      const dropoffLabel = [d.dropoff_main, d.dropoff_road].filter(Boolean).join(', ');
+      void sendSenderDeliveryOtpSms({
+        deliveryId,
+        requestId: d.request_id,
+        receiverPhone: d.receiver?.receiver_phone || d.rawData?.receiver_phone,
+        receiverName: d.receiver?.receiver_name,
+        otp,
+        dropoffLabel,
+        dropoffLat: d.coords?.dropoff?.latitude,
+        dropoffLng: d.coords?.dropoff?.longitude,
+        pickupType: d.pickup_type,
+      });
     });
   }, [deliveries]);
 
@@ -1739,15 +1934,19 @@ export default function ActivityScreen() {
     const receiverName = item.receiver?.receiver_name || item.receiver?.receiver_phone || 'Receiver';
     const receiverPhone = item.receiver?.receiver_phone || null;
 
-    const providerName = item.isMatched
-      ? item.provider_name
-      : item.hasPreferredProvider
-        ? item.provider_name
-        : 'Searching...';
-
-    const providerSubBadge = !item.isMatched && item.hasPreferredProvider
-      ? 'Awaiting acceptance'
+    const matchedList = matchedByRequest[item.request_id] || [];
+    const topMatch = matchedList[0] || null;
+    const topMatchName = topMatch?.provider
+      ? `${topMatch.provider.first_name || ''} ${topMatch.provider.last_name || ''}`.trim()
       : null;
+
+    const effectiveStatusMeta = awaitingApproval
+      ? { label: 'Approve Delivery', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
+      : isUnpaid
+        ? { label: 'Payment Incomplete', bg: colors.errorBg, fg: colors.error, icon: 'Card' }
+        : stage === 'pending' && (matchedList.length > 0 || item.hasPreferredProvider)
+          ? { label: 'Waiting for Acceptance', bg: 'rgba(59,130,246,0.14)', fg: BLUE, icon: 'Hourglass' }
+          : statusMeta(stage, item.hasPreferredProvider);
 
     return (
       <TouchableOpacity
@@ -1819,13 +2018,56 @@ export default function ActivityScreen() {
           )}
 
           <View style={styles.oContactsRow}>
-            {renderMiniContact({
-              role: 'PROVIDER',
-              name: providerName,
-              phone: (item.isMatched || item.hasPreferredProvider) ? (item.provider_phone || null) : null,
-              color: BLUE,
-              subBadge: providerSubBadge,
-            })}
+            {item.isMatched ? (
+              renderMiniContact({
+                role: 'PROVIDER (ASSIGNED)',
+                name: item.provider_name,
+                phone: item.provider_phone || null,
+                color: BLUE,
+              })
+            ) : matchedList.length > 0 ? (
+              <View style={styles.mcRow}>
+                <View style={[styles.mcAvatarSmall, { backgroundColor: BRAND_ORANGE }]}>
+                  <Text style={styles.mcAvatarTextSmall}>{initials(topMatchName || 'P')}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.mcRoleSmall} numberOfLines={1}>
+                    {matchedList.length > 1
+                      ? `${matchedList.length} PROVIDERS MATCHED · NOT ASSIGNED YET`
+                      : 'MATCHED PROVIDER · NOT ASSIGNED YET'}
+                  </Text>
+                  <Text style={styles.mcNameSmall} numberOfLines={1}>
+                    {topMatchName || 'Matched Provider'}
+                    {matchedList.length > 1 ? ` +${matchedList.length - 1} more` : ''}
+                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 }}>
+                    <ActivityIndicator size={10} color={BRAND_ORANGE} />
+                    <Text style={[styles.mcSubBadgeSmall, { color: BRAND_ORANGE, marginTop: 0 }]}>
+                      Waiting for acceptance
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : item.hasPreferredProvider ? (
+              renderMiniContact({
+                role: 'SELECTED PROVIDER · NOT ASSIGNED YET',
+                name: item.provider_name,
+                phone: null,
+                color: BLUE,
+                subBadge: 'Waiting for acceptance',
+              })
+            ) : (
+              <View style={styles.mcRow}>
+                <SearchingPulse compact />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.mcRoleSmall}>PROVIDER</Text>
+                  <Text style={styles.mcNameSmall}>Searching for providers…</Text>
+                  <Text style={[styles.mcSubBadgeSmall, { color: colors.textSecondary }]}>
+                    Scanning active routes along your corridor
+                  </Text>
+                </View>
+              </View>
+            )}
             {renderMiniContact({
               role: 'RECEIVER',
               name: receiverName,
@@ -2522,22 +2764,118 @@ export default function ActivityScreen() {
                   )}
                 </View>
                 <View style={styles.sdCardInner}>
-                  {/* Provider Info + Plate Number inside Rate Your Provider */}
+                  {/* Live Provider Status: Assigned vs. Matched (Waiting for Acceptance) vs. Searching */}
                   <View style={styles.providerInfoBlock}>
-                    {renderMiniContact({
-                      role: 'PROVIDER',
-                      name: (d.isMatched || d.hasPreferredProvider) ? d.provider_name : 'Searching...',
-                      phone: (d.isMatched || d.hasPreferredProvider) ? (d.provider_phone || null) : null,
-                      color: BLUE,
-                      subBadge: !d.isMatched && d.hasPreferredProvider ? 'Waiting for acceptance' : null,
-                    })}
-                    {d.isMatched && !!vehiclePlateSummary && (
-                      <View style={styles.plateBadgeRow}>
-                        <Ionicons name="car-outline" size={15} color={colors.textSecondary} />
-                        <Text style={styles.plateBadgeLabel}>Plate &amp; Vehicle:</Text>
-                        <Text style={styles.plateBadgeValue}>{vehiclePlateSummary}</Text>
-                      </View>
-                    )}
+                    {(() => {
+                      const matchedList = matchedByRequest[d.request_id] || [];
+
+                      if (d.isMatched) {
+                        return (
+                          <>
+                            {renderMiniContact({
+                              role: 'ASSIGNED PROVIDER',
+                              name: d.provider_name,
+                              phone: d.provider_phone || null,
+                              color: BLUE,
+                              subBadge: 'Accepted your delivery',
+                            })}
+                            {!!vehiclePlateSummary && (
+                              <View style={styles.plateBadgeRow}>
+                                <Ionicons name="car-outline" size={15} color={colors.textSecondary} />
+                                <Text style={styles.plateBadgeLabel}>Plate &amp; Vehicle:</Text>
+                                <Text style={styles.plateBadgeValue}>{vehiclePlateSummary}</Text>
+                              </View>
+                            )}
+                          </>
+                        );
+                      }
+
+                      if (matchedList.length > 0) {
+                        return (
+                          <View style={{ gap: 10 }}>
+                            <View style={styles.waitingAcceptBanner}>
+                              <ActivityIndicator size="small" color={BRAND_ORANGE} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.waitingAcceptTitle}>
+                                  {matchedList.length} Provider{matchedList.length === 1 ? '' : 's'} Matched · Waiting for Acceptance
+                                </Text>
+                                <Text style={styles.waitingAcceptSub}>
+                                  Not assigned yet — updates live as soon as a provider accepts.
+                                </Text>
+                              </View>
+                            </View>
+
+                            {matchedList.map((m) => {
+                              const pName = m.provider
+                                ? `${m.provider.first_name || ''} ${m.provider.last_name || ''}`.trim()
+                                : `Provider #${m.provider_id}`;
+                              const vehSummary = m.vehicle
+                                ? [m.vehicle.vehicle_type, m.vehicle.plate_number].filter(Boolean).join(' • ')
+                                : 'Courier Vehicle';
+                              return (
+                                <View key={`${m.route_id}-${m.provider_id}`} style={styles.matchedCandidateCard}>
+                                  <View style={[styles.mcAvatarSmall, { backgroundColor: BRAND_ORANGE }]}>
+                                    <Text style={styles.mcAvatarTextSmall}>{initials(pName)}</Text>
+                                  </View>
+                                  <View style={{ flex: 1 }}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                                      <Text style={styles.mcNameSmall} numberOfLines={1}>{pName}</Text>
+                                      <View style={styles.matchScoreChip}>
+                                        <Text style={styles.matchScoreChipText}>{Math.round(m.match_score)}% match</Text>
+                                      </View>
+                                    </View>
+                                    <Text style={styles.candidateMetaText} numberOfLines={1}>
+                                      {vehSummary}
+                                      {m.rating_count && m.rating_count > 0
+                                        ? ` · ★ ${Number(m.rating_avg || 0).toFixed(1)}`
+                                        : ' · New'}
+                                    </Text>
+                                    <Text style={styles.candidateWaitingText}>
+                                      Waiting for acceptance (not assigned yet)
+                                    </Text>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        );
+                      }
+
+                      if (d.hasPreferredProvider) {
+                        return (
+                          <View style={{ gap: 10 }}>
+                            <View style={styles.waitingAcceptBanner}>
+                              <ActivityIndicator size="small" color={BRAND_ORANGE} />
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.waitingAcceptTitle}>Waiting for Acceptance</Text>
+                                <Text style={styles.waitingAcceptSub}>
+                                  Request sent directly — not assigned until the provider accepts.
+                                </Text>
+                              </View>
+                            </View>
+                            {renderMiniContact({
+                              role: 'SELECTED PROVIDER',
+                              name: d.provider_name,
+                              phone: null,
+                              color: BLUE,
+                              subBadge: 'Waiting for acceptance',
+                            })}
+                          </View>
+                        );
+                      }
+
+                      return (
+                        <View style={styles.searchingBox}>
+                          <SearchingPulse />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.searchingTitle}>Searching for providers…</Text>
+                            <Text style={styles.searchingSub}>
+                              Checking active drivers along your route. This updates automatically in real time.
+                            </Text>
+                          </View>
+                        </View>
+                      );
+                    })()}
                   </View>
 
                   <View style={styles.sdStarsRow}>
@@ -3455,6 +3793,82 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     color: c.textPrimary,
     flex: 1,
     textAlign: 'right',
+  },
+  searchingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  searchingTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+  },
+  searchingSub: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: c.textSecondary,
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  waitingAcceptBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: c.accentSoft,
+    borderWidth: 1,
+    borderColor: BRAND_ORANGE,
+  },
+  waitingAcceptTitle: {
+    fontSize: 12.5,
+    fontFamily: 'Poppins_700Bold',
+    color: c.textPrimary,
+  },
+  waitingAcceptSub: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textSecondary,
+    marginTop: 1,
+  },
+  matchedCandidateCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+  },
+  matchScoreChip: {
+    backgroundColor: c.successBg,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  matchScoreChipText: {
+    fontSize: 10,
+    fontFamily: 'Poppins_700Bold',
+    color: c.success,
+  },
+  candidateMetaText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: c.textSecondary,
+    marginTop: 2,
+  },
+  candidateWaitingText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: BRAND_ORANGE,
+    marginTop: 3,
   },
 
   sdCardInner: { backgroundColor: c.background, borderWidth: 1, borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', borderRadius: 12, padding: 16 },

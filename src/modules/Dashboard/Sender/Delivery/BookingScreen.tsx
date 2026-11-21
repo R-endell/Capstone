@@ -628,19 +628,26 @@ export default function BookingScreen({ route, navigation }: any) {
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
   const mk = useMemo(() => makeMarkerStyles(colors), [colors]);
 
-  const initialDeliveryId: number | null = route.params?.deliveryId ? Number(route.params.deliveryId) : null;
+  const initialDeliveryId: number | null = route.params?.deliveryId ? Number(route.params?.deliveryId) : null;
   const providerParamId: number | undefined = route.params?.providerId;
   const routeParamId: number | undefined = route.params?.routeId;
   const isProviderMode = route.params?.mode === 'provider' && !!providerParamId;
+  const resumeRequestId: number | undefined = route.params?.requestId ?? route.params?.request_id;
+  const isResume = !!route.params?.resume && !!resumeRequestId;
+  const isPostPaymentEntry = !!route.params?.paymentJustCompleted && !!resumeRequestId;
 
   const [bookingState, setBookingState] = useState<'review' | 'finding' | 'matched' | 'no_match' | 'tracking'>(
-    initialDeliveryId || isProviderMode ? 'tracking' : 'review'
+    initialDeliveryId || isProviderMode
+      ? 'tracking'
+      : isResume || isPostPaymentEntry
+        ? 'finding'
+        : 'review'
   );
   const [activeDeliveryId, setActiveDeliveryId] = useState<number | null>(initialDeliveryId);
   const [matchFound, setMatchFound] = useState(false);
   const [isDirectPreferredProvider, setIsDirectPreferredProvider] = useState(false);
   const [isAcceptedByProvider, setIsAcceptedByProvider] = useState(!!initialDeliveryId);
-  const [isSearching, setIsSearching] = useState(false);
+  const [isSearching, setIsSearching] = useState(isResume || isPostPaymentEntry);
   const [providerData, setProviderData] = useState<any>(null);
   const [matchedProvidersList, setMatchedProvidersList] = useState<RouteMatchRow[]>([]);
   const [savedRequestId, setSavedRequestId] = useState<number | null>(null);
@@ -649,9 +656,6 @@ export default function BookingScreen({ route, navigation }: any) {
   const [routeFrequency, setRouteFrequency] = useState<string | null>(null);
 
   const [providerRating, setProviderRating] = useState<ProviderRating | null>(null);
-
-  const resumeRequestId: number | undefined = route.params?.requestId ?? route.params?.request_id;
-  const isResume = !!route.params?.resume && !!resumeRequestId;
   const [resumeInfo, setResumeInfo] = useState<any>(null);
   const [resumeSubId, setResumeSubId] = useState<number | null>(null);
   const resumedRef = useRef<number | null>(null);
@@ -1751,8 +1755,60 @@ export default function BookingScreen({ route, navigation }: any) {
               setMatchFound(true);
               setIsSearching(false);
               setBookingState(prev => (prev === 'tracking' ? 'tracking' : 'matched'));
+              return;
             }
           }
+          if (isMountedRef.current) {
+            setMatchedProvidersList([]);
+            setBookingState(prev => (prev === 'matched' && !isDirectPreferredProvider ? 'finding' : prev));
+          }
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'provider_live_locations' },
+        () => {
+          void (async () => {
+            try {
+              const fresh = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
+              if (!isMountedRef.current) return;
+              if (fresh.length > 0) {
+                if (searchTimeoutRef.current && stopTimerOnMatch) {
+                  clearTimeout(searchTimeoutRef.current);
+                  searchTimeoutRef.current = null;
+                }
+                setMatchedProvidersList(fresh);
+                setIsDirectPreferredProvider(false);
+                setIsAcceptedByProvider(false);
+                setMatchFound(true);
+                setIsSearching(false);
+                setBookingState(prev => (prev === 'tracking' ? 'tracking' : 'matched'));
+              } else {
+                const diag = await explainMatchesForRequest(requestId).catch(() => null);
+                if (diag) console.log('[BookingScreen] LIVE RE-EVAL (0 matches):', JSON.stringify(diag, null, 2));
+                setMatchedProvidersList([]);
+                setBookingState(prev => (prev === 'matched' && !isDirectPreferredProvider ? 'finding' : prev));
+              }
+            } catch { /* ignore */ }
+          })();
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'provider_routes' },
+        () => {
+          void (async () => {
+            try {
+              const fresh = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
+              if (!isMountedRef.current) return;
+              if (fresh.length > 0) {
+                setMatchedProvidersList(fresh);
+                setMatchFound(true);
+                setIsSearching(false);
+                setBookingState(prev => (prev === 'tracking' ? 'tracking' : 'matched'));
+              }
+            } catch { /* ignore */ }
+          })();
         },
       )
       .subscribe();
@@ -1972,14 +2028,37 @@ export default function BookingScreen({ route, navigation }: any) {
   const resumeBooking = async (requestId: number) => {
     if (savedRequestId === requestId && bookingState !== 'review') return;
     try {
-      const { data: req, error } = await withTimeout(
-        supabase
-          .from('delivery_requests')
-          .select(`*, pickup_location:locations!delivery_requests_pickup_location_id_fkey (*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*), receiver:receivers!delivery_requests_receiver_id_fkey (receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite)`)
-          .eq('request_id', requestId)
-          .maybeSingle(),
-      );
-      if (error) throw error;
+      searchStartRef.current = Date.now();
+
+      const [reqRes, delRes, existingMatchRes] = await Promise.all([
+        withTimeout(
+          supabase
+            .from('delivery_requests')
+            .select(`*, pickup_location:locations!delivery_requests_pickup_location_id_fkey (*), dropoff_location:locations!delivery_requests_dropoff_location_id_fkey (*), receiver:receivers!delivery_requests_receiver_id_fkey (receiver_id, receiver_name, receiver_phone, receiver_email, is_favorite)`)
+            .eq('request_id', requestId)
+            .maybeSingle(),
+        ),
+        withTimeout(
+          supabase
+            .from('deliveries')
+            .select('*')
+            .eq('request_id', requestId)
+            .order('accepted_at', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ),
+        withTimeout(
+          supabase
+            .from('route_request_matches')
+            .select('*, route:provider_routes(*, start_location:locations!provider_routes_start_location_id_fkey(latitude,longitude), end_location:locations!provider_routes_end_location_id_fkey(latitude,longitude))')
+            .eq('request_id', requestId)
+            .eq('status', 'matched')
+            .order('match_score', { ascending: false }),
+        ),
+      ]);
+
+      if (reqRes.error) throw reqRes.error;
+      const req = reqRes.data;
       if (!req) {
         Alert.alert('Order not found', 'This delivery request no longer exists.');
         navigation.goBack();
@@ -2021,16 +2100,7 @@ export default function BookingScreen({ route, navigation }: any) {
       resumeReceiverRef.current = rcv;
       if (rcv) setReceiver(rcv);
 
-      const { data: delivery } = await withTimeout(
-        supabase
-          .from('deliveries')
-          .select('*')
-          .eq('request_id', requestId)
-          .order('accepted_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      );
-
+      const delivery = delRes.data;
       if (delivery && isMountedRef.current) {
         setActiveDeliveryId(delivery.delivery_id);
         setTrackingLoading(true);
@@ -2069,6 +2139,36 @@ export default function BookingScreen({ route, navigation }: any) {
         return;
       }
 
+      // Fast path: show existing matched providers immediately without waiting on a full corridor rescan
+      const strictExisting = (existingMatchRes.data || []).filter((m: any) => {
+        const r = Array.isArray(m.route) ? m.route[0] : m.route;
+        return isRequestWithinRouteCorridor(r, req);
+      });
+
+      if (strictExisting.length > 0) {
+        const enriched = await enrichRouteMatchRows(strictExisting);
+        if (enriched.length > 0 && isMountedRef.current) {
+          setMatchedProvidersList(enriched);
+          setIsDirectPreferredProvider(false);
+          setIsAcceptedByProvider(false);
+          setMatchFound(true);
+          setIsSearching(false);
+          setBookingState('matched');
+          attachAcceptanceAndMatchListener(requestId, true);
+          // Refresh any newer routes silently in the background
+          void syncAllActiveRoutesTodayForRequest(requestId, { notify: false }).then((fresh) => {
+            if (fresh.length > 0 && isMountedRef.current) setMatchedProvidersList(fresh);
+          });
+          return;
+        }
+      }
+
+      // Slow path: keep showing the radar search animation while scanning active routes
+      if (isMountedRef.current) {
+        setResumeSubId(requestId);
+        setBookingState('finding');
+      }
+
       const matchedNow = await syncAllActiveRoutesTodayForRequest(requestId, { notify: false });
       if (matchedNow.length > 0 && isMountedRef.current) {
         setMatchedProvidersList(matchedNow);
@@ -2078,14 +2178,14 @@ export default function BookingScreen({ route, navigation }: any) {
         setIsSearching(false);
         setBookingState('matched');
         attachAcceptanceAndMatchListener(requestId, true);
-        return;
-      }
-
-      const createdMs = req.created_at ? new Date(req.created_at).getTime() : NaN;
-      searchStartRef.current = searchStartTimes.get(requestId) ?? (!isNaN(createdMs) ? createdMs : Date.now());
-      if (isMountedRef.current) {
-        setResumeSubId(requestId);
-        setBookingState('finding');
+      } else {
+        try {
+          console.log(
+            '[BookingScreen] RESUME NO MATCHES for request',
+            requestId,
+            JSON.stringify(await explainMatchesForRequest(requestId), null, 2),
+          );
+        } catch { /* ignore */ }
       }
     } catch (err: any) {
       Alert.alert('Error', 'Could not load this order.');
@@ -2879,7 +2979,9 @@ export default function BookingScreen({ route, navigation }: any) {
                 <Text style={styles.payTitle}>Total pay</Text>
                 <Text style={styles.paySub}>Held in escrow</Text>
               </View>
-              <Text style={styles.payAmount}>₱{totalEscrowAmount.toFixed(2)}</Text>
+              <Text style={styles.payAmount}>
+                {totalEscrowAmount > 0 ? `₱${totalEscrowAmount.toFixed(2)}` : '—'}
+              </Text>
             </View>
 
             <TouchableOpacity
@@ -3284,15 +3386,15 @@ export default function BookingScreen({ route, navigation }: any) {
                   {isAcceptedByProvider
                     ? 'Provider Accepted!'
                     : isDirectPreferredProvider
-                      ? 'Request Sent to Provider'
-                      : `${matchedProvidersList.length} Provider${matchedProvidersList.length === 1 ? '' : 's'} Matched Your Route`}
+                      ? 'Waiting for Acceptance'
+                      : `${matchedProvidersList.length} Provider${matchedProvidersList.length === 1 ? '' : 's'} Matched`}
                 </Text>
                 <Text style={styles.matchedHeaderSub}>
                   {isAcceptedByProvider
                     ? 'Your courier is heading to pickup'
                     : isDirectPreferredProvider
-                      ? 'Awaiting confirmation from your chosen courier'
-                      : 'Matched along your pickup & drop-off corridor'}
+                      ? 'Not assigned yet · Waiting for your chosen courier to accept'
+                      : 'Waiting for acceptance · Not assigned yet'}
                 </Text>
               </View>
             </View>
@@ -3514,6 +3616,12 @@ export default function BookingScreen({ route, navigation }: any) {
                                   </Text>
                                 </View>
                               )}
+
+                              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                                <View style={styles.awaitingPill}>
+                                  <Text style={styles.awaitingPillText}>Waiting for acceptance · Not assigned</Text>
+                                </View>
+                              </View>
                             </View>
                           </View>
                         </View>

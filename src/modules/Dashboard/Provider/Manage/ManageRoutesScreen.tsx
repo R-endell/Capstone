@@ -494,6 +494,7 @@ const LocationPickerModal = ({
   const resolveSeq = useRef(0);
   const lastResolved = useRef<Coord | null>(null);
   const lastPoiTap = useRef(0);
+  const ignoreRegionUntil = useRef(0);
   const markerRef = useRef<Coord>(initialCoords || { latitude: 10.3157, longitude: 123.8854 });
 
   const [markerCoord, setMarkerCoord] = useState<Coord>(initialCoords || { latitude: 10.3157, longitude: 123.8854 });
@@ -629,6 +630,7 @@ const LocationPickerModal = ({
 
   const moveTo = (coords: Coord, label?: Label) => {
     if (settleTimer.current) clearTimeout(settleTimer.current);
+    ignoreRegionUntil.current = Date.now() + 900;
     setMarkerCoord(coords);
     mapRef.current?.animateToRegion({ ...coords, latitudeDelta: ZOOM_DELTA, longitudeDelta: ZOOM_DELTA }, 450);
     resolveAt(coords, label);
@@ -764,8 +766,10 @@ const LocationPickerModal = ({
     if (!isDraggingMap) setIsDraggingMap(true);
   };
 
-  const onRegionChangeComplete = (region: Region) => {
+  const onRegionChangeComplete = (region: Region, details?: { isGesture?: boolean }) => {
     setIsDraggingMap(false);
+    if (details?.isGesture === false) return;
+    if (details?.isGesture !== true && Date.now() < ignoreRegionUntil.current) return;
     const center = { latitude: region.latitude, longitude: region.longitude };
     if (lastResolved.current && metersBetween(lastResolved.current, center) < SAME_SPOT_METERS) return;
     setMarkerCoord(center);
@@ -1133,6 +1137,11 @@ export default function ManageRoutesScreen() {
       const province = locData.province || 'Unknown';
       const zip = locData.zip_code || '0000';
 
+      const cleanPlaceName =
+        typeof locData.place_name === 'string' && !isCodeLike(locData.place_name)
+          ? locData.place_name.trim()
+          : null;
+
       const { data: existing } = await supabase
         .from('locations')
         .select('*')
@@ -1146,6 +1155,7 @@ export default function ManageRoutesScreen() {
         const { data: newLoc, error } = await supabase
           .from('locations')
           .insert({
+            place_name: cleanPlaceName || streetAddress,
             street_address: streetAddress,
             barangay, city, province,
             zip_code: zip,
@@ -1156,6 +1166,14 @@ export default function ManageRoutesScreen() {
           .single();
         if (error) throw error;
         location = newLoc as LocationType;
+      } else if (cleanPlaceName && location.place_name !== cleanPlaceName) {
+        const { data: updatedLoc } = await supabase
+          .from('locations')
+          .update({ place_name: cleanPlaceName })
+          .eq('location_id', location.location_id)
+          .select('*')
+          .single();
+        if (updatedLoc) location = updatedLoc as LocationType;
       }
 
       // Attach place_name and road to the location object so the UI can render the landmark properly
@@ -1221,21 +1239,18 @@ export default function ManageRoutesScreen() {
 
     if (selectedFrequency === 'Daily') {
       if (combined.getTime() < now.getTime()) {
-        return Alert.alert(
-          'Invalid Time',
-          `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Please pick a departure time that has not passed yet today.`,
-        );
+        combined.setDate(combined.getDate() + 1); // passed today -> starts tomorrow
       }
     } else if (selectedFrequency === 'Weekly') {
       if (isSameDayAsToday && combined.getTime() < now.getTime()) {
-        return Alert.alert(
-          'Invalid Time',
-          `That time has already passed for today (${WEEKDAY_LABELS[selectedWeekday]}). Please choose a later time or another day.`,
-        );
+        combined.setDate(combined.getDate() + 7); // passed today -> starts next week
       }
     } else {
       if (combined.getTime() < now.getTime()) {
-        return Alert.alert('Invalid Time', 'You cannot schedule a route in the past. Please select a valid future date and time.');
+        return Alert.alert(
+          'Invalid Time',
+          'You cannot schedule a one-time route in the past. Please select a valid future date and time.',
+        );
       }
     }
 
@@ -1371,7 +1386,24 @@ export default function ManageRoutesScreen() {
     setModalVisible(true);
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
+    let countToday = usedTodayCount;
+    if (userId) {
+      try {
+        const stats = await getTodayRouteStats(userId);
+        countToday = stats.usedTodayCount;
+        setUsedTodayCount(countToday);
+      } catch { /* fall back to cached count */ }
+    }
+
+    if (countToday >= MAX_DAILY_ROUTES) {
+      Alert.alert(
+        'Daily Route Limit Reached',
+        `You have already used ${countToday}/${MAX_DAILY_ROUTES} routes today. Deleted and recurring routes count toward your daily limit. Please try again tomorrow.`,
+      );
+      return;
+    }
+
     resetForm();
     setModalVisible(true);
   };
@@ -1827,39 +1859,37 @@ export default function ManageRoutesScreen() {
                 </View>
               </View>
 
-              {selectedFrequency === 'Daily' ? (
-                <View style={styles.formGroup}>
-                  <Text style={styles.inputLabel}>Departure Time (Today)</Text>
-                  <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
-                    <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
-                    <Text style={styles.dateTimeValue}>{departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                  </TouchableOpacity>
-                  {showTimePicker && (
-                    <DateTimePicker
-                      value={departureTime}
-                      mode="time"
-                      onChange={(e, t) => {
-                        setShowTimePicker(Platform.OS === 'ios');
-                        if (e.type === 'set' && t) {
-                          const now = new Date();
-                          const candidate = new Date(
-                            now.getFullYear(), now.getMonth(), now.getDate(),
-                            t.getHours(), t.getMinutes(), 0, 0,
-                          );
-                          if (candidate.getTime() < now.getTime()) {
-                            Alert.alert(
-                              'Invalid Time',
-                              `It is currently ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You cannot select a time that has already passed today.`,
-                            );
-                            return;
-                          }
-                          setDepartureTime(t);
-                        }
-                      }}
-                    />
-                  )}
-                </View>
-              ) : selectedFrequency === 'Weekly' ? (
+              {selectedFrequency === 'Daily' ? (() => {
+                const now = new Date();
+                const todaySlot = new Date(
+                  now.getFullYear(), now.getMonth(), now.getDate(),
+                  departureTime.getHours(), departureTime.getMinutes(), 0, 0,
+                );
+                const startsTomorrow = todaySlot.getTime() < now.getTime();
+                return (
+                  <View style={styles.formGroup}>
+                    <Text style={styles.inputLabel}>
+                      Daily Departure Time ({startsTomorrow ? 'Starts Tomorrow' : 'Starts Today'})
+                    </Text>
+                    <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
+                      <SolarIcon name="Clock" variant="linear" size={16} color={colors.accent} />
+                      <Text style={styles.dateTimeValue}>
+                        {departureTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </TouchableOpacity>
+                    {showTimePicker && (
+                      <DateTimePicker
+                        value={departureTime}
+                        mode="time"
+                        onChange={(e, t) => {
+                          setShowTimePicker(Platform.OS === 'ios');
+                          if (e.type === 'set' && t) setDepartureTime(t);
+                        }}
+                      />
+                    )}
+                  </View>
+                );
+              })() : selectedFrequency === 'Weekly' ? (
                 <View style={styles.formGroup}>
                   <Text style={styles.inputLabel}>Repeats on</Text>
                   <View style={styles.weekdayRow}>

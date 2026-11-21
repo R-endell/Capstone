@@ -123,3 +123,78 @@ export async function clearLocationFix(deliveryId: number): Promise<void> {
     console.warn('[location] clearLocationFix threw:', e);
   }
 }
+
+/**
+ * Upsert the provider's latest online GPS fix into `provider_live_locations`
+ * for mid-trip Ahead-of-Driver Send-Now matching. Never rejects.
+ */
+export async function pushProviderLiveLocation(
+  providerId: number,
+  routeId: number | null | undefined,
+  fix: ProviderFix,
+): Promise<void> {
+  try {
+    if (!providerId) return;
+    if (!isFiniteNum(fix?.latitude) || !isFiniteNum(fix?.longitude)) return;
+
+    const payload: Record<string, any> = {
+      provider_id: providerId,
+      latitude: fix.latitude,
+      longitude: fix.longitude,
+      heading: isFiniteNum(fix.heading) ? fix.heading : null,
+      speed: isFiniteNum(fix.speed) ? fix.speed : null,
+      accuracy: isFiniteNum(fix.accuracy) ? fix.accuracy : null,
+      updated_at: fix.updated_at || new Date().toISOString(),
+    };
+    if (routeId !== undefined) {
+      payload.route_id = routeId;
+    }
+
+    const { error } = await supabase
+      .from('provider_live_locations')
+      .upsert(payload, { onConflict: 'provider_id' });
+    if (error) console.warn('[location] pushProviderLiveLocation failed:', error.message);
+  } catch (e) {
+    console.warn('[location] pushProviderLiveLocation threw:', e);
+  }
+}
+
+/**
+ * Fetch the latest live GPS fix for a provider. Never rejects.
+ */
+export async function fetchProviderLiveLocation(
+  providerId: number,
+): Promise<(ProviderFix & { provider_id: number; route_id: number | null }) | null> {
+  try {
+    if (!providerId) return null;
+    const { data, error } = await supabase
+      .from('provider_live_locations')
+      .select('provider_id, route_id, latitude, longitude, heading, speed, accuracy, updated_at')
+      .eq('provider_id', providerId)
+      .maybeSingle();
+    if (error) {
+      console.warn('[location] fetchProviderLiveLocation error:', error.message);
+      return null;
+    }
+    return (data as any) || null;
+  } catch (e) {
+    console.warn('[location] fetchProviderLiveLocation threw:', e);
+    return null;
+  }
+}
+
+/**
+ * Remove the provider's live GPS row (called when going offline). Never rejects.
+ */
+export async function clearProviderLiveLocation(providerId: number): Promise<void> {
+  try {
+    if (!providerId) return;
+    const { error } = await supabase
+      .from('provider_live_locations')
+      .delete()
+      .eq('provider_id', providerId);
+    if (error) console.warn('[location] clearProviderLiveLocation error:', error.message);
+  } catch (e) {
+    console.warn('[location] clearProviderLiveLocation threw:', e);
+  }
+}

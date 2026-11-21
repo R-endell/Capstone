@@ -110,6 +110,25 @@ if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
             return;
           }
           console.warn('[bg-location] upsert failed:', dbErr.message);
+        } else {
+          // Keep provider_live_locations fresh during active transit (omit route_id so existing value is preserved)
+          const { error: liveErr } = await supabase
+            .from('provider_live_locations')
+            .upsert(
+              {
+                provider_id: target.providerId,
+                latitude,
+                longitude,
+                heading: payload.heading,
+                speed: payload.speed,
+                accuracy: payload.accuracy,
+                updated_at: payload.updated_at,
+              },
+              { onConflict: 'provider_id' },
+            );
+          if (liveErr) {
+            console.warn('[bg-location] provider_live_locations upsert failed:', liveErr.message);
+          }
         }
       } catch (e) {
         console.warn('[bg-location] upsert threw:', e);

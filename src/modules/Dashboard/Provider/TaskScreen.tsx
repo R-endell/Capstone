@@ -1048,6 +1048,11 @@ export default function TaskScreen() {
       );
       if (reqErr) throw reqErr;
 
+      // Pre-generate the 6-digit Delivery OTP immediately so the Sender's app can auto-SMS it to the receiver
+      void supabase.functions
+        .invoke('generate-delivery-otp', { body: { action: 'generate', delivery_id: deliveryId } })
+        .catch(() => {});
+
       const info = buildTaskInfo(verifyTarget);
 
       if (info.senderId) {
