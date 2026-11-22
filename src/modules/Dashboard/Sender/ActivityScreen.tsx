@@ -876,8 +876,6 @@ export default function ActivityScreen() {
         }
       }
 
-      // Completed deliveries whose "Return to Sender" deposit was never refunded (e.g. the provider's app
-      // closed or the refund failed): retry once per session, then refresh so the status line updates.
       mappedDeliveries.forEach((m) => {
         if (m.status !== 'Completed') return;
         if (!needsDepositRefund(m.rawData) || wasDepositRefundAttempted(m.request_id)) return;
@@ -1286,7 +1284,6 @@ export default function ActivityScreen() {
               }
             }
 
-            // Cancel request & immediately revoke any pending provider matches
             await Promise.all([
               supabase.from('delivery_requests').update(updateData).eq('request_id', reqId),
               supabase
@@ -1306,7 +1303,6 @@ export default function ActivityScreen() {
               });
             }
 
-            // Record in-app notification so it appears in the sender's Notifications bell
             const senderUid = userId ?? rawData.sender_id;
             const amtLabel = effectiveAmount > 0 ? ` of ₱${effectiveAmount.toFixed(2)}` : '';
             if (senderUid) {
@@ -1343,7 +1339,6 @@ export default function ActivityScreen() {
               });
             }
 
-            // Visible confirmation dialog on screen
             if (refundSucceeded) {
               Alert.alert(
                 'Booking Cancelled & Refund Initiated',
@@ -2041,18 +2036,6 @@ export default function ActivityScreen() {
         : 'Your package is on the way! Share the 6-digit Delivery OTP with the receiver so they can confirm arrival.';
     const canRate = d.isMatched && isCompleted;
 
-    const isReturnedToSender =
-      d.status === 'Returned' ||
-      !!(d.deliveryData as any)?.returned_at ||
-      !!(d.qr as any)?.return_verified;
-    const isApprovedSafeDrop =
-      d.rawData?.fallback_action === 'leave_with_guard' &&
-      isCompleted &&
-      !!(d.deliveryData as any)?.failure_reason;
-    const showDisputeButton =
-      !isReturnedToSender &&
-      !isApprovedSafeDrop &&
-      (isCompleted || d.status === 'Returning' || awaitingApproval);
     const ratingLabels = ['Poor', 'Fair', 'Good', 'Very good', 'Excellent'];
     const shownRating = ratingSaved ? ratingSaved.rating : ratingValue;
 
@@ -2371,7 +2354,6 @@ export default function ActivityScreen() {
               </View>
             )}
 
-            {/* 2-Column Payment Rows */}
             <View style={styles.payRowsCard}>
               <View style={styles.payRow}>
                 <Text style={styles.payRowLabel}>Total Pay</Text>
@@ -2522,7 +2504,6 @@ export default function ActivityScreen() {
                   )}
                 </View>
                 <View style={styles.sdCardInner}>
-                  {/* Provider Info + Plate Number inside Rate Your Provider */}
                   <View style={styles.providerInfoBlock}>
                     {renderMiniContact({
                       role: 'PROVIDER',
@@ -2912,7 +2893,8 @@ export default function ActivityScreen() {
     const receiverName = selectedDelivery.receiver?.receiver_name || 'the receiver';
 
     const trackingId = `PNS-${String(selectedDelivery.request_id).padStart(4, '0')}`;
-    const smsMessage = `Hi ${receiverName}, here is your delivery OTP for shipment #${trackingId}: ${otp || '------'}. Please read this code to the provider when they arrive.\n\nYou can also track your package here: https://packnship.streamlit.app/`;
+    const trackingUrl = `https://packnshiptrackshipment.streamlit.app/?tracking=${encodeURIComponent(trackingId)}`;
+    const smsMessage = `Hi ${receiverName}, here is your delivery OTP for shipment #${trackingId}: ${otp || '------'}. Please read this code to the provider when they arrive.\n\nTrack your package live here: ${trackingUrl}`;
 
     const sendSMS = () => {
       if (!otp) return;
