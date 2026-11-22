@@ -307,6 +307,7 @@ const buildTaskInfo = (d: any) => {
     senderName: sender ? [sender.first_name, sender.last_name].filter(Boolean).join(' ') || null : null,
     senderPhone: sender?.phone_number || null,
     returnDeposit: Number(request?.return_deposit) || 0,
+    disputeRefundAmount: Number(d?.dispute_refund_amount || 0),
     totalPaid: Number(request?.estimated_cost) || 0,
     isReturned: String(request?.delivery_status || '') === 'Returned',
     baseFare: (() => {
@@ -337,8 +338,10 @@ const enrichDeliveries = async (list: any[]) => {
   if (!list || list.length === 0) return list;
   const senderIds = Array.from(new Set(list.map(d => d.delivery_requests?.sender_id).filter(Boolean)));
   const deliveryIds = list.map(d => d.delivery_id).filter(Boolean);
+  const requestIds = Array.from(new Set(list.map(d => d.delivery_requests?.request_id ?? d.request_id).filter(Boolean)));
   const senders: Record<number, any> = {};
   const escrows: Record<number, any> = {};
+  const disputeRefunds: Record<number, number> = {};
   try {
     if (senderIds.length) {
       const { data } = await withTimeout(
@@ -357,13 +360,33 @@ const enrichDeliveries = async (list: any[]) => {
       (data || []).forEach((e: any) => { escrows[e.delivery_id] = e; });
     }
   } catch { }
+  try {
+    if (requestIds.length) {
+      const { data } = await withTimeout(
+        supabase
+          .from('escrow_transactions')
+          .select('request_id, amount')
+          .in('request_id', requestIds as number[])
+          .eq('event', 'dispute_refund_after_release')
+          .order('created_at', { ascending: false }),
+        NETWORK_TIMEOUT_MS
+      );
+      (data || []).forEach((row: any) => {
+        if (disputeRefunds[row.request_id] == null) {
+          disputeRefunds[row.request_id] = Number(row.amount || 0);
+        }
+      });
+    }
+  } catch { }
   return list.map(d => {
     const rawEscrow = d.escrow || escrows[d.delivery_id] || null;
     const provider = d.delivery_requests?.payment_provider || null;
+    const reqId = d.delivery_requests?.request_id ?? d.request_id;
     return {
       ...d,
       sender: d.sender || senders[d.delivery_requests?.sender_id] || null,
       escrow: rawEscrow ? { ...rawEscrow, payment_method: provider } : (provider ? { payment_method: provider } : null),
+      dispute_refund_amount: reqId ? (disputeRefunds[reqId] || 0) : 0,
     };
   });
 };
@@ -1722,6 +1745,7 @@ export default function TaskScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments', filter: `provider_id=eq.${providerId}` }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_transactions' }, refresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, () => {
         fetchProviderRoutes(providerId).then(() => fetchDeliveries(providerId));
       })
@@ -1802,15 +1826,30 @@ export default function TaskScreen() {
     return !!req.scheduled_time;
   };
 
+  const isCompletedDisputeRefund = (d: any): boolean => {
+    const isDone = !!d?.completed_at;
+    if (!isDone) return false;
+    const escStatus = String(d?.escrow?.escrow_status || '').toLowerCase();
+    const reqEscStatus = String(d?.delivery_requests?.escrow_status || '').toLowerCase();
+    return Number(d?.dispute_refund_amount || 0) > 0 || escStatus === 'refunded' || reqEscStatus === 'refunded';
+  };
+
   const stageOf = (d: any): 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (isCancelledDelivery(d)) return 'cancelled';
     if (d?.completed_at) return 'done';
     return isPickupVerified(d) ? 'transit' : 'pickup';
   };
 
-  const statusMeta = (stage: 'pickup' | 'transit' | 'done' | 'cancelled', awaitingApproval = false) => {
+  const statusMeta = (
+    stage: 'pickup' | 'transit' | 'done' | 'cancelled',
+    awaitingApproval = false,
+    disputeRefunded = false,
+  ) => {
     if (awaitingApproval && stage === 'transit') {
       return { label: 'Awaiting Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' };
+    }
+    if (stage === 'done' && disputeRefunded) {
+      return { label: 'Completed · Refunded', bg: colors.warningBg, fg: colors.warning, icon: 'CheckCircle' };
     }
     switch (stage) {
       case 'done':
@@ -2036,7 +2075,8 @@ export default function TaskScreen() {
     const info = buildTaskInfo(d);
     if (!info.request) return null;
     const stage = stageOf(d);
-    const meta = statusMeta(stage, isAwaitingApproval(d));
+    const disputeRefunded = isCompletedDisputeRefund(d);
+    const meta = statusMeta(stage, isAwaitingApproval(d), disputeRefunded);
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
     const active = stage === 'pickup' || stage === 'transit';
@@ -2139,6 +2179,11 @@ export default function TaskScreen() {
           </View>
 
           {isCancelled && <Text style={styles.mCancelledText}>This booking was cancelled</Text>}
+          {disputeRefunded && (
+            <Text style={styles.mCancelledText}>
+              Dispute refund: {info.disputeRefundAmount > 0 ? `${money(info.disputeRefundAmount)} deducted from wallet` : 'Refunded to sender'}
+            </Text>
+          )}
           {isReturning && !isCancelled && (
             <Text style={[styles.mCancelledText, { color: colors.warning }]}>
               Returning parcel to sender pickup pin
@@ -2147,9 +2192,15 @@ export default function TaskScreen() {
         </View>
 
         <View style={styles.oFooter}>
-          <Text style={styles.oPayLabel}>Total pay:</Text>
-          <Text numberOfLines={1} style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
-            {money(info.earnings)}
+          <Text style={styles.oPayLabel}>
+            {disputeRefunded && info.disputeRefundAmount > 0 ? 'Refunded:' : 'Total pay:'}
+          </Text>
+          <Text numberOfLines={1} style={[
+            styles.oPrice,
+            isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted },
+            disputeRefunded && info.disputeRefundAmount > 0 && { color: colors.error },
+          ]}>
+            {disputeRefunded && info.disputeRefundAmount > 0 ? `-${money(info.disputeRefundAmount)}` : money(info.earnings)}
           </Text>
         </View>
 
@@ -2498,12 +2549,15 @@ export default function TaskScreen() {
   const renderDetailView = (d: any) => {
     const info = buildTaskInfo(d);
     const stage = stageOf(d);
+    const disputeRefunded = isCompletedDisputeRefund(d);
     const code = trackingCode(info.request?.request_id ?? d.delivery_id);
     const escrowStatus = String(d.escrow?.escrow_status || '');
     const released = stage === 'done' || /complet|releas/i.test(escrowStatus);
-    const paymentLabel = released
-      ? 'Completed'
-      : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
+    const paymentLabel = disputeRefunded
+      ? (info.disputeRefundAmount > 0 ? `Refunded (${money(info.disputeRefundAmount)})` : 'Refunded to sender')
+      : released
+        ? 'Completed'
+        : /hold/i.test(escrowStatus) || !escrowStatus ? 'Held in escrow' : escrowStatus;
     const isCancelled = stage === 'cancelled';
     const isCompleted = stage === 'done';
     const active = stage === 'pickup' || stage === 'transit';
@@ -2548,7 +2602,7 @@ export default function TaskScreen() {
           <Animated.View style={[styles.dSheetBody, { opacity: detailAnim }]}>
             <View style={styles.oTopRow}>
               {renderServicePill(info)}
-              {renderStatusPill(statusMeta(stage, isAwaitingApproval(d)))}
+              {renderStatusPill(statusMeta(stage, isAwaitingApproval(d), disputeRefunded))}
             </View>
 
             <View style={styles.dCodeRow}>
@@ -2603,13 +2657,19 @@ export default function TaskScreen() {
                 </View>
               </View>
             ) : isCompleted ? (
-              <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><SolarIcon name="Check" variant="linear" size={20} color={colors.success} /></View>
+              <View style={[styles.doneCard, disputeRefunded && { backgroundColor: colors.warningBg, borderColor: colors.warning }]}>
+                <View style={styles.doneIcon}>
+                  <SolarIcon name="Check" variant="linear" size={20} color={disputeRefunded ? colors.warning : colors.success} />
+                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.doneTitle}>Delivered successfully</Text>
+                  <Text style={[styles.doneTitle, disputeRefunded && { color: colors.warning }]}>
+                    {disputeRefunded ? 'Completed · Dispute Refunded' : 'Delivered successfully'}
+                  </Text>
                   <Text style={styles.doneSub}>
                     {d.completed_at ? formatDateTime(d.completed_at) : ''}
-                    {released ? `  ·  ${money(info.earnings)} added to your wallet` : ''}
+                    {disputeRefunded
+                      ? `  ·  ${info.disputeRefundAmount > 0 ? `${money(info.disputeRefundAmount)} refunded to sender (deducted from wallet)` : 'Refunded to sender via dispute resolution'}`
+                      : released ? `  ·  ${money(info.earnings)} added to your wallet` : ''}
                   </Text>
                 </View>
               </View>
@@ -2889,10 +2949,19 @@ export default function TaskScreen() {
 
               <View style={[styles.payRow, styles.payRowBorder]}>
                 <Text style={styles.payRowLabel}>Payment Status</Text>
-                <Text style={[styles.payRowValue, released && { color: colors.success }]}>
+                <Text style={[styles.payRowValue, disputeRefunded ? { color: colors.error } : (released && { color: colors.success })]}>
                   {isCancelled ? 'Refunded to sender' : paymentLabel}
                 </Text>
               </View>
+
+              {disputeRefunded && info.disputeRefundAmount > 0 && (
+                <View style={[styles.payRow, styles.payRowBorder]}>
+                  <Text style={styles.payRowLabel}>Dispute Refund (Deducted)</Text>
+                  <Text style={[styles.payRowValue, { color: colors.error, fontFamily: 'Poppins_700Bold' }]}>
+                    -{money(info.disputeRefundAmount)}
+                  </Text>
+                </View>
+              )}
 
               {info.weightKg != null && (
                 <View style={[styles.payRow, styles.payRowBorder]}>
@@ -2932,6 +3001,14 @@ export default function TaskScreen() {
                           info.isReturned ? `+${money(info.returnDeposit)}` : money(info.returnDeposit),
                           info.isReturned ? colors.success : colors.textMuted,
                           false,
+                        ]]
+                      : []),
+                    ...(disputeRefunded && info.disputeRefundAmount > 0
+                      ? [[
+                          'Dispute refund (deducted from wallet)',
+                          `-${money(info.disputeRefundAmount)}`,
+                          colors.error,
+                          true,
                         ]]
                       : []),
                     [info.isReturned || !released ? 'Your earnings' : 'Net earnings', money(info.earnings), colors.success, true],

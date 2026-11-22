@@ -13,6 +13,7 @@ import { supabase } from '../../../utils/supabase';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
+import { notifyOnApplicationDecision } from '../../../services/providerApplicationNotifier';
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
@@ -205,14 +206,17 @@ export default function AccountScreen() {
       if (status === 'approved' || status === 'verified') {
         setRejectionReason(null);
         commitProviderState('approved');
+        void notifyOnApplicationDecision(userData.user_id, 'approved');
       } else if (status === 'rejected') {
         const reason = verif.rejection_reason?.trim() || null;
         setRejectionReason(reason);
         commitProviderState('rejected');
+        void notifyOnApplicationDecision(userData.user_id, 'rejected', reason);
         await checkAndShowRejectionAutoModal(userData.user_id, verif.verification_id ?? null, reason);
       } else {
         setRejectionReason(null);
         commitProviderState('pending');
+        void notifyOnApplicationDecision(userData.user_id, 'pending');
       }
     } catch (error) {
       console.error('Error fetching user data:', error);
@@ -243,14 +247,17 @@ export default function AccountScreen() {
             setRejectionReason(reason);
             commitProviderStateRef.current('rejected');
             setRejectionModalVisible(true);
+            void notifyOnApplicationDecision(userId, 'rejected', reason);
           } else if (status === 'approved' || status === 'verified') {
             setRejectionReason(null);
             commitProviderStateRef.current('approved');
             setRejectionModalVisible(false);
+            void notifyOnApplicationDecision(userId, 'approved');
           } else if (status === 'pending') {
             setRejectionReason(null);
             commitProviderStateRef.current('pending');
             setRejectionModalVisible(false);
+            void notifyOnApplicationDecision(userId, 'pending');
           }
         }
       )

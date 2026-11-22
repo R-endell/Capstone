@@ -159,6 +159,7 @@ const fromRpcRow = (r: any) => ({
     first_name: r.provider_first_name,
     last_name: r.provider_last_name,
     is_active: r.provider_is_active,
+    is_online: r.provider_is_online,
   },
   start_location: {
     place_name: r.start_place_name,
@@ -221,44 +222,50 @@ export default function ExploreScreen() {
         }
       }
 
-      // Fetch ALL active, non-deleted, non-suspended routes (not limited to is_selected).
+      // Preferred source: the explore_routes() database function (explore_routes.sql). It works under row-level
+      // security and only returns routes of providers who are ONLINE, not suspended and not removed.
+      // If the function is missing or is still the old version (no provider_is_online), use the direct query.
       let rows: any[] = [];
-      let query = supabase
-        .from('provider_routes')
-        .select(`
-          route_id, departure_time, end_time, route_frequency, provider_id, remaining_weight_kg,
-          provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active ),
-          start_location:locations!provider_routes_start_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
-          end_location:locations!provider_routes_end_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
-          vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
-        `)
-        .eq('is_deleted', false)
-        .eq('is_active', true)
-        .eq('suspended_by_strike', false)
-        .order('departure_time', { ascending: true });
-
-      if (myUserId != null && !SHOW_OWN_ROUTES) {
-        query = query.neq('provider_id', myUserId);
-      }
-
-      const { data: directData, error: directErr } = await query;
-
-      if (!directErr && Array.isArray(directData) && directData.length > 0) {
-        rows = directData;
+      const rpc = await supabase.rpc('explore_routes');
+      const rpcRows = !rpc.error && Array.isArray(rpc.data) ? (rpc.data as any[]) : null;
+      if (rpcRows && (rpcRows.length === 0 || rpcRows[0].provider_is_online !== undefined)) {
+        rows = rpcRows
+          .map(fromRpcRow)
+          .sort((a, b) => String(a.departure_time).localeCompare(String(b.departure_time)));
       } else {
-        // Fallback to explore_routes() RPC if direct query is restricted by RLS
-        const rpc = await supabase.rpc('explore_routes');
-        if (!rpc.error && Array.isArray(rpc.data)) {
-          rows = (rpc.data as any[])
-            .map(fromRpcRow)
-            .sort((a, b) => String(a.departure_time).localeCompare(String(b.departure_time)));
-        } else if (directErr) {
-          throw directErr;
+        // Direct query: all active, non-deleted, non-suspended routes (not limited to is_selected).
+        let query = supabase
+          .from('provider_routes')
+          .select(`
+            route_id, departure_time, end_time, route_frequency, provider_id, remaining_weight_kg,
+            provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active, is_online ),
+            start_location:locations!provider_routes_start_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
+            end_location:locations!provider_routes_end_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
+            vehicle:vehicles!provider_routes_vehicle_id_fkey ( vehicle_type, max_weight_kg )
+          `)
+          .eq('is_deleted', false)
+          .eq('is_active', true)
+          .eq('suspended_by_strike', false)
+          .order('departure_time', { ascending: true });
+
+        if (myUserId != null && !SHOW_OWN_ROUTES) {
+          query = query.neq('provider_id', myUserId);
         }
+
+        const { data: directData, error: directErr } = await query;
+        if (directErr) throw directErr;
+        rows = directData || [];
       }
 
       const mapped: Trip[] = rows
         .filter((r: any) => SHOW_OWN_ROUTES || myUserId == null || Number(r.provider_id) !== myUserId)
+        // Offline providers are not listed: a provider only receives requests while online.
+        // (is_online === undefined means "unknown", for example when row-level security hides the user row.)
+        .filter((r: any) => {
+          const mine = myUserId != null && Number(r.provider_id) === myUserId;
+          if (SHOW_OWN_ROUTES && mine) return true;
+          return (r.provider || {}).is_online !== false;
+        })
         .map((r: any) => {
           const provider = r.provider || {};
           const vehicle = r.vehicle || {};
@@ -380,6 +387,8 @@ export default function ExploreScreen() {
       const channel = supabase
         .channel(`explore-routes-${Date.now()}`)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes' }, refetch)
+        // a provider going online / offline (users.is_online) must add / remove their routes here
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, refetch)
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             if (firstSubscribe) { firstSubscribe = false; return; }
@@ -387,10 +396,12 @@ export default function ExploreScreen() {
           }
         });
       const appSub = AppState.addEventListener('change', (s) => { if (s === 'active') refetch(); });
+      const poll = setInterval(refetch, 30_000);   // safety net if a realtime event is missed
 
       return () => {
         unsub();
         clearInterval(tick);
+        clearInterval(poll);
         if (debounce) clearTimeout(debounce);
         supabase.removeChannel(channel);
         appSub.remove();

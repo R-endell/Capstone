@@ -170,6 +170,64 @@ export function computePricing(input: {
 }
 
 /* ==================================================================== */
+/* Provider Strike Standing Guardrail (2nd Strike = Block Route Post)   */
+/* ==================================================================== */
+export async function checkProviderStrikeBlock(providerId: number): Promise<{
+  blocked: boolean;
+  points: number;
+  message?: string;
+}> {
+  const [{ data: strikes }, { data: standing }] = await Promise.all([
+    supabase
+      .from('provider_strikes')
+      .select('weight')
+      .eq('provider_id', providerId)
+      .eq('status', 'active'),
+    supabase
+      .from('provider_standing')
+      .select('suspended_until, suspension_reason, removed_by_strikes')
+      .eq('provider_id', providerId)
+      .maybeSingle(),
+  ]);
+
+  const points = (strikes || []).reduce((sum, s: any) => sum + Number(s.weight || 1), 0);
+  const now = Date.now();
+  const isSuspended =
+    !!standing?.suspended_until && new Date(standing.suspended_until).getTime() > now;
+
+  if (standing?.removed_by_strikes) {
+    return {
+      blocked: true,
+      points,
+      message: 'Your provider account has been removed due to strikes. You can no longer post routes.',
+    };
+  }
+
+  if (isSuspended) {
+    const until = new Date(standing.suspended_until).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    return {
+      blocked: true,
+      points,
+      message: `Your account is currently suspended until ${until} (${points} active strike${points === 1 ? '' : 's'}). You cannot add new routes.`,
+    };
+  }
+
+  if (points >= 2) {
+    return {
+      blocked: true,
+      points,
+      message: `You have ${points} active strikes. Providers with 2 or more strikes are restricted from posting new routes.`,
+    };
+  }
+
+  return { blocked: false, points };
+}
+
+/* ==================================================================== */
 /* Provider Route Visibility Fix (v2.0) — Guardrails & Corridor Helpers */
 /* ==================================================================== */
 export const MAX_DAILY_ROUTES = 3;
@@ -379,6 +437,7 @@ export function canEditRoute(
 
 /**
  * Creates a provider route while enforcing all PDF guardrails:
+ * 0. Strike check: block providers with 2+ active strikes, suspended, or removed
  * 1. Max 3 routes per day (including deleted routes & active recurring)
  * 2. Max 4-hour time window per route
  * 3. Route diversity: destinations must be >= 3 km apart & no overlapping times
@@ -397,6 +456,14 @@ export async function createProviderRouteWithGuardrails(
     endTimeObj,
     routeFrequency,
   } = input;
+
+  // Guardrail 0: Strike / suspension restriction
+  const strikeCheck = await checkProviderStrikeBlock(providerId);
+  if (strikeCheck.blocked) {
+    throw new Error(
+      strikeCheck.message || 'You are restricted from posting routes due to active strikes.',
+    );
+  }
 
   const demoMode = await getDemoMode();
   const stats = await getTodayRouteStats(providerId);
@@ -426,7 +493,6 @@ export async function createProviderRouteWithGuardrails(
   }
 
   // Guardrail 3: Route diversity (Destinations >= 3 km apart & no overlapping time windows today)
-  // <--- WRAP THIS IN IF (!demoMode) --->
   if (!demoMode) {
     for (const existing of stats.activeTodayRoutes) {
       const exStart = parseNaiveRouteTime(existing.departure_time);

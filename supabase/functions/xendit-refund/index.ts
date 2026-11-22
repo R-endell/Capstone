@@ -5,8 +5,6 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 // @ts-expect-error Deno URL import is unavailable to a non-Deno TypeScript language service.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-// Supabase Edge Functions provide Deno at runtime. This declaration keeps the
-// file type-checkable when the editor is not using the Deno TypeScript setup.
 declare const Deno: {
   env: {
     get(name: string): string | undefined;
@@ -23,19 +21,96 @@ const json = (b: Record<string, unknown>) =>
   new Response(JSON.stringify(b), { status: 200, headers: CORS_HEADERS });
 
 /**
- * Resolve `payment_request_id` (pr-...) for a row.
- * Strategy (in priority order):
- *   1. Read from escrow_transactions.notes (most reliable — was written
- *      by our own webhook at payment time, contains `pr=pr-xxx`)
- *   2. Fall back to Xendit API (may fail; only used for very old rows)
+ * Send push notification + insert notification_log to sender for every Xendit refund.
  */
+async function notifySenderOfRefund(opts: {
+  supabase: any;
+  supabaseUrl: string;
+  supabaseKey: string;
+  senderId: number | null;
+  requestId: number;
+  amount: number;
+  isDepositRefund: boolean;
+  isDisputeRefund: boolean;
+  isSucceeded: boolean;
+}) {
+  const {
+    supabase,
+    supabaseUrl,
+    supabaseKey,
+    senderId,
+    requestId,
+    amount,
+    isDepositRefund,
+    isDisputeRefund,
+    isSucceeded,
+  } = opts;
+
+  if (!senderId) return;
+
+  const code = `PNS-${String(requestId).padStart(4, '0')}`;
+  const amtText = `₱${Number(amount || 0).toFixed(2)}`;
+
+  let title = isSucceeded ? 'Refund Completed' : 'Refund Initiated';
+  let body = isSucceeded
+    ? `Your refund of ${amtText} for parcel #${code} has been processed back to your wallet.`
+    : `Your refund of ${amtText} for parcel #${code} has been submitted to Xendit and is now processing.`;
+
+  if (isDepositRefund) {
+    title = isSucceeded ? 'Return Deposit Refunded' : 'Return Deposit Refund Initiated';
+    body = isSucceeded
+      ? `Your Return-to-Sender deposit of ${amtText} for parcel #${code} has been refunded to your wallet.`
+      : `Your Return-to-Sender deposit of ${amtText} for parcel #${code} is being refunded to your wallet.`;
+  } else if (isDisputeRefund) {
+    title = isSucceeded ? 'Dispute Refund Completed' : 'Dispute Refund Initiated';
+    body = isSucceeded
+      ? `A dispute refund of ${amtText} for parcel #${code} has been credited back to your wallet.`
+      : `A dispute refund of ${amtText} for parcel #${code} has been submitted for processing.`;
+  }
+
+  try {
+    await supabase.from('notification_log').insert({
+      user_id: senderId,
+      title,
+      body,
+      type: 'payment',
+      ref_id: requestId,
+    });
+  } catch (e) {
+    console.warn('[REFUND] notification_log insert failed:', e);
+  }
+
+  try {
+    await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        user_id: senderId,
+        title,
+        body,
+        data: {
+          type: 'refund',
+          requestId,
+          amount,
+          role: 'sender',
+        },
+      }),
+    });
+  } catch (e) {
+    console.warn('[REFUND] send-push failed:', e);
+  }
+}
+
 async function resolvePaymentRequestId(
   requestId: number,
   supabase: any,
   paymentId: string | null,
   auth: string,
 ): Promise<string | null> {
-  // ---- Strategy 1: escrow_transactions notes ----
   try {
     const { data: txRow } = await supabase
       .from('escrow_transactions')
@@ -48,7 +123,6 @@ async function resolvePaymentRequestId(
       .maybeSingle();
 
     if (txRow?.notes) {
-      // Match "pr=pr-<uuid>" inside the notes string
       const prMatch = String(txRow.notes).match(/pr=(pr-[a-zA-Z0-9-]+)/);
       if (prMatch?.[1]) {
         console.log('[REFUND] Extracted pr- from escrow_transactions notes:', prMatch[1]);
@@ -59,10 +133,8 @@ async function resolvePaymentRequestId(
     console.warn('[REFUND] DB notes lookup failed:', e);
   }
 
-  // ---- Strategy 2: Xendit API (best-effort) ----
   if (!paymentId) return null;
 
-  // Try /transactions with a filter — this endpoint can resolve a py- id
   try {
     const r = await fetch(
       `https://api.xendit.co/transactions?types=PAYMENT&payment_id=${encodeURIComponent(paymentId)}`,
@@ -105,15 +177,24 @@ serve(async (req: Request) => {
     if (!XENDIT_SECRET) return json({ success: false, error: 'XENDIT_SECRET_KEY not set' });
     const auth = 'Basic ' + btoa(`${XENDIT_SECRET}:`);
 
-    const { request_id, reason, amount: requestedAmount } = await req.json();
+    const {
+      request_id,
+      reason,
+      amount: requestedAmount,
+      is_dispute_refund,
+    } = await req.json();
+
     if (!request_id) return json({ success: false, error: 'request_id required' });
 
-    console.log('[REFUND] Looking up request:', request_id, typeof request_id);
+    const isDisputeRefund = Boolean(is_dispute_refund);
+    const hasExplicitAmount = typeof requestedAmount === 'number' && requestedAmount > 0;
+
+    console.log('[REFUND] Looking up request:', { request_id, requestedAmount, isDisputeRefund });
 
     const { data: reqRow, error: reqErr } = await supabase
       .from('delivery_requests')
       .select(`
-        request_id, estimated_cost, base_fare, return_deposit, delivery_status,
+        request_id, sender_id, estimated_cost, base_fare, return_deposit, delivery_status,
         payment_reference, payment_request_id,
         payment_status, escrow_status, refund_status, refund_id, payment_provider
       `)
@@ -125,20 +206,17 @@ serve(async (req: Request) => {
 
     console.log('[REFUND] Found row:', reqRow);
 
-    if (reqRow.refund_status === 'succeeded' || reqRow.refund_status === 'refunded') {
-      return json({ success: true, already_refunded: true });
-    }
-    if (reqRow.refund_status === 'pending' || reqRow.refund_status === 'processing') {
-      return json({ success: true, already_pending: true, refund_id: reqRow.refund_id });
+    // For normal (non-dispute) calls, skip if already refunded/pending.
+    // For dispute refunds (e.g., partial refund after deposit was already refunded), allow a new refund call.
+    if (!isDisputeRefund) {
+      if (reqRow.refund_status === 'succeeded' || reqRow.refund_status === 'refunded') {
+        return json({ success: true, already_refunded: true });
+      }
+      if (reqRow.refund_status === 'pending' || reqRow.refund_status === 'processing') {
+        return json({ success: true, already_pending: true, refund_id: reqRow.refund_id });
+      }
     }
 
-    // Allow refunds when:
-    //   (a) payment is held (cancellation) OR
-    //   (b) delivery completed but deposit refund pending (partial deposit refund) OR
-    //   (c) delivery completed, escrow already RELEASED to the provider, and the sender's
-    //       "Return to Sender" deposit was never refunded (refund_status empty / failed / manual_required).
-    //       settle_delivery_escrow() flips payment_status/escrow_status to 'released' BEFORE the deposit
-    //       refund is requested, which is why this used to fail with "Cannot refund — status was released".
     const isHeld =
       reqRow.payment_status === 'held' || reqRow.escrow_status === 'held';
     const isDepositRefundPending = reqRow.refund_status === 'deposit_refund_pending';
@@ -152,7 +230,14 @@ serve(async (req: Request) => {
       depositOnRow > 0 &&
       ['', 'deposit_refund_pending', 'failed', 'manual_required'].includes(refundStatusNow);
 
-    if (!isHeld && !isDepositRefundPending && !isDepositRetry) {
+    const isMarkedRefunded =
+      String(reqRow.payment_status || '').toLowerCase() === 'refunded' ||
+      String(reqRow.escrow_status || '').toLowerCase() === 'refunded';
+    const isDisputeRefundUnpaid =
+      isDisputeRefund ||
+      (isMarkedRefunded && ['', 'failed', 'manual_required'].includes(refundStatusNow));
+
+    if (!isHeld && !isDepositRefundPending && !isDepositRetry && !isDisputeRefundUnpaid) {
       return json({
         success: false,
         error: `Cannot refund — status was ${reqRow.payment_status}/${reqRow.escrow_status}, refund_status=${reqRow.refund_status}`,
@@ -162,22 +247,27 @@ serve(async (req: Request) => {
       return json({ success: false, error: 'No payment identifier on this request' });
     }
 
-    // Compute refund amount:
-    //   - explicit `amount` wins (partial)
-    //   - else if deposit-refund-pending → refund only return_deposit
-    //   - else → full estimated_cost (cancellation)
     const fullAmount = Number(reqRow.estimated_cost) || 0;
     const depositAmount = Number(reqRow.return_deposit) || 0;
+    const isDepositOnlyRefund = !isDisputeRefund && (isDepositRefundPending || isDepositRetry) && depositAmount > 0;
+
     let refundAmount = fullAmount;
-    if (typeof requestedAmount === 'number' && requestedAmount > 0) {
-      refundAmount = requestedAmount;
-    } else if ((isDepositRefundPending || isDepositRetry) && depositAmount > 0) {
+    if (hasExplicitAmount) {
+      refundAmount = Math.min(requestedAmount, fullAmount);
+    } else if (isDepositOnlyRefund) {
       refundAmount = depositAmount;
     }
-    // Once the escrow was released to the provider, only the deposit may ever go back to the sender.
-    if (!isHeld && (isDepositRefundPending || isDepositRetry) && depositAmount > 0) {
+
+    // Only cap to depositAmount when this is a deposit-only refund (NOT a dispute refund).
+    if (!isDisputeRefund && !isHeld && isDepositOnlyRefund) {
       refundAmount = Math.min(refundAmount, depositAmount);
     }
+
+    refundAmount = Math.round(refundAmount * 100) / 100;
+    if (refundAmount <= 0) {
+      return json({ success: false, error: 'Refund amount must be greater than 0.' });
+    }
+
     const isPartialRefund = refundAmount < fullAmount;
 
     // ---- Resolve payment_request_id ----
@@ -212,66 +302,68 @@ serve(async (req: Request) => {
       });
     }
 
-    // ---- Pre-check: does a refund already exist for this pr-? ----
-    try {
-      const existingResp = await fetch(
-        `https://api.xendit.co/refunds?payment_request_id=${encodeURIComponent(paymentRequestId)}`,
-        {
-          headers: {
-            Authorization: auth,
-            'api-version': '2024-11-11',
+    // ---- Pre-check: skip for dispute partial refunds so a previous deposit refund doesn't block it ----
+    if (!isDisputeRefund) {
+      try {
+        const existingResp = await fetch(
+          `https://api.xendit.co/refunds?payment_request_id=${encodeURIComponent(paymentRequestId)}`,
+          {
+            headers: {
+              Authorization: auth,
+              'api-version': '2024-11-11',
+            },
           },
-        },
-      );
-
-      if (existingResp.ok) {
-        const existingData = await existingResp.json();
-        const refunds: any[] = Array.isArray(existingData?.data)
-          ? existingData.data
-          : Array.isArray(existingData)
-            ? existingData
-            : [];
-
-        const live = refunds.find(
-          (r: any) => r.status === 'PENDING' || r.status === 'SUCCEEDED',
         );
 
-        if (live) {
-          const now = new Date().toISOString();
-          const isSucceeded = live.status === 'SUCCEEDED';
+        if (existingResp.ok) {
+          const existingData = await existingResp.json();
+          const refunds: any[] = Array.isArray(existingData?.data)
+            ? existingData.data
+            : Array.isArray(existingData)
+              ? existingData
+              : [];
 
-          const partialExisting = Number(live.amount ?? 0) < fullAmount;
-          const liveUpdate: Record<string, unknown> = {
-            refund_id: live.id,
-            refund_status: isSucceeded ? 'succeeded' : 'pending',
-            refund_requested_at: live.created
-              ? new Date(live.created).toISOString()
-              : now,
-          };
-          if (!partialExisting) {
-            liveUpdate.payment_status = isSucceeded ? 'refunded' : 'refund_pending';
-            liveUpdate.escrow_status = isSucceeded ? 'refunded' : 'held';
-            if (isSucceeded) liveUpdate.escrow_refunded_at = now;
-          } else if (isSucceeded) {
-            liveUpdate.escrow_refunded_at = now;
+          const live = refunds.find(
+            (r: any) => r.status === 'PENDING' || r.status === 'SUCCEEDED',
+          );
+
+          if (live) {
+            const now = new Date().toISOString();
+            const isSucceeded = live.status === 'SUCCEEDED';
+
+            const partialExisting = Number(live.amount ?? 0) < fullAmount;
+            const liveUpdate: Record<string, unknown> = {
+              refund_id: live.id,
+              refund_status: isSucceeded ? 'succeeded' : 'pending',
+              refund_requested_at: live.created
+                ? new Date(live.created).toISOString()
+                : now,
+            };
+            if (!partialExisting) {
+              liveUpdate.payment_status = isSucceeded ? 'refunded' : 'refund_pending';
+              liveUpdate.escrow_status = isSucceeded ? 'refunded' : 'held';
+              if (isSucceeded) liveUpdate.escrow_refunded_at = now;
+            } else if (isSucceeded) {
+              liveUpdate.escrow_refunded_at = now;
+            }
+
+            await supabase
+              .from('delivery_requests')
+              .update(liveUpdate)
+              .eq('request_id', request_id);
+
+            return json({
+              success: true,
+              already_refunded: isSucceeded,
+              already_pending: !isSucceeded,
+              refund_id: live.id,
+              status: live.status,
+            });
           }
-
-          await supabase
-            .from('delivery_requests')
-            .update(liveUpdate)
-            .eq('request_id', request_id);
-
-          return json({
-            success: true,
-            already_refunded: isSucceeded,
-            already_pending: !isSucceeded,
-            refund_id: live.id,
-            status: live.status,
-          });
         }
+      } catch (e) {
+        console.warn('[REFUND] pre-check failed (continuing):', e);
       }
-    } catch (e) {
-      console.warn('[REFUND] pre-check failed (continuing):', e);
     }
 
     // ---- Submit refund ----
@@ -288,7 +380,6 @@ serve(async (req: Request) => {
       headers: {
         Authorization: auth,
         'Content-Type': 'application/json',
-        // Timestamp ensures retries after transient failures work
         'Idempotency-key': `refund-req-${request_id}-${Date.now()}`,
       },
       body: JSON.stringify(refundBody),
@@ -303,7 +394,6 @@ serve(async (req: Request) => {
       let actionable = refundData?.message || 'Xendit refund failed';
 
       if (code.includes('ALREADY_REFUNDED') || code.includes('MAXIMUM_REFUND')) {
-        // A partial (deposit-only) refund must never flip the whole payment to 'refunded'.
         const alreadyUpdate: Record<string, unknown> = isPartialRefund
           ? { refund_status: 'succeeded', escrow_refunded_at: new Date().toISOString() }
           : {
@@ -333,16 +423,24 @@ serve(async (req: Request) => {
       });
     }
 
+    const now = new Date().toISOString();
+    const isSucceeded = String(refundData?.status || '').toUpperCase() === 'SUCCEEDED';
+
     const updatePayload: Record<string, unknown> = {
       refund_id: refundData.id,
-      refund_status: 'pending',
-      refund_requested_at: new Date().toISOString(),
+      refund_status: isSucceeded ? 'succeeded' : 'pending',
+      refund_requested_at: now,
       payment_request_id: paymentRequestId,
     };
-    // Only flip payment_status if this is a FULL refund.
-    // For partial (deposit-only), the delivery is already 'released' — leave it.
+
     if (!isPartialRefund) {
-      updatePayload.payment_status = 'refund_pending';
+      updatePayload.payment_status = isSucceeded ? 'refunded' : 'refund_pending';
+      if (isSucceeded) {
+        updatePayload.escrow_status = 'refunded';
+        updatePayload.escrow_refunded_at = now;
+      }
+    } else if (isSucceeded) {
+      updatePayload.escrow_refunded_at = now;
     }
 
     await supabase
@@ -350,7 +448,25 @@ serve(async (req: Request) => {
       .update(updatePayload)
       .eq('request_id', request_id);
 
-    return json({ success: true, refund_id: refundData.id, status: refundData.status });
+    // Send push notification + in-app notification_log to sender
+    await notifySenderOfRefund({
+      supabase,
+      supabaseUrl,
+      supabaseKey,
+      senderId: reqRow.sender_id ?? null,
+      requestId: Number(request_id),
+      amount: refundAmount,
+      isDepositRefund: isDepositOnlyRefund,
+      isDisputeRefund,
+      isSucceeded,
+    });
+
+    return json({
+      success: true,
+      refund_id: refundData.id,
+      status: refundData.status,
+      amount: refundAmount,
+    });
   } catch (e: any) {
     console.error('[REFUND] exception:', e);
     return json({ success: false, error: e?.message ?? 'Unexpected error' });

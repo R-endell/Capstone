@@ -391,6 +391,7 @@ interface MappedDelivery {
   payout_base: number;
   payout_fee: number;
   payout_deposit: number;
+  dispute_refund_amount: number;
   payment_method: string | null;
   coords: {
     pickup: { latitude: number | null; longitude: number | null };
@@ -642,7 +643,7 @@ export default function ActivityScreen() {
           )
         `)
         .eq('sender_id', currentUserId)
-        .in('payment_status', ['held', 'paid', 'released', 'refunded'])
+        .or('payment_status.in.(held,paid,released,refunded),payment_status.ilike.*refund*,escrow_status.in.(released,refunded)')
         .order('created_at', { ascending: false });
 
       if (requestsError) throw requestsError;
@@ -654,7 +655,7 @@ export default function ActivityScreen() {
       const preferredProviderIds = (requests || []).map((r: any) => r.preferred_provider_id).filter(Boolean);
       const none = Promise.resolve({ data: [] as any[] });
 
-      const [receiverRes, deliveriesRes] = await Promise.all([
+      const [receiverRes, deliveriesRes, disputeRefundRes] = await Promise.all([
         receiverIds.length > 0
           ? supabase
               .from('receivers')
@@ -668,10 +669,25 @@ export default function ActivityScreen() {
               .in('request_id', requestIds)
               .order('accepted_at', { ascending: false })
           : none,
+        requestIds.length > 0
+          ? supabase
+              .from('escrow_transactions')
+              .select('request_id, amount, event')
+              .in('request_id', requestIds)
+              .eq('event', 'dispute_refund_after_release')
+              .order('created_at', { ascending: false })
+          : none,
       ]);
 
       const receiverById: Record<number, any> = {};
       ((receiverRes as any).data || []).forEach((r: any) => { receiverById[r.receiver_id] = r; });
+
+      const disputeRefundByRequestId: Record<number, number> = {};
+      ((disputeRefundRes as any).data || []).forEach((row: any) => {
+        if (disputeRefundByRequestId[row.request_id] == null) {
+          disputeRefundByRequestId[row.request_id] = Number(row.amount || 0);
+        }
+      });
 
       const deliveriesData: Delivery[] = ((deliveriesRes as any).data || []) as Delivery[];
       const qrByDeliveryId: Record<number, any> = {};
@@ -729,7 +745,9 @@ export default function ActivityScreen() {
         let statusDisplay = status;
 
         const hasDeliveryRecord = !!delivery;
+        const hasDisputeRefund = hasDeliveryRecord && (disputeRefundByRequestId[item.request_id] || 0) > 0;
         const hasCompletedOrReturned =
+          hasDisputeRefund ||
           status === 'Completed' ||
           status === 'Returned' ||
           !!(delivery as any)?.returned_at ||
@@ -752,7 +770,7 @@ export default function ActivityScreen() {
         else if (status === 'Returned' || !!(delivery as any)?.returned_at) statusDisplay = 'Returned';
         else if (status === 'Returning') statusDisplay = 'Returning';
         else if (status === 'Awaiting Approval' && !delivery?.completed_at) statusDisplay = 'Awaiting Approval';
-        else if (delivery?.completed_at || status === 'Completed') statusDisplay = 'Completed';
+        else if (delivery?.completed_at || status === 'Completed' || hasDisputeRefund) statusDisplay = 'Completed';
         else if (qrRow?.pickup_verified || status === 'In Transit') statusDisplay = 'In Transit';
         else if (status === 'Accepted') statusDisplay = 'In Progress';
         else if (status === 'Pending') {
@@ -838,6 +856,7 @@ export default function ActivityScreen() {
           payout_base: Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0)),
           payout_fee: Math.round((Number(item.base_fare) || Math.max(0, (Number(item.estimated_cost) || 0) - (Number(item.return_deposit) || 0))) * 0.15 * 100) / 100,
           payout_deposit: Number(item.return_deposit) || 0,
+          dispute_refund_amount: disputeRefundByRequestId[item.request_id] || 0,
           price: item.estimated_cost?.toFixed(2) || '0.00',
           payment_method: item.payment_provider || null,
           coords: {
@@ -927,6 +946,7 @@ export default function ActivityScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'qr_verifications' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_confirmations' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_payments' }, onRelatedChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_transactions' }, onRelatedChange)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'support_tickets', filter: `reporter_id=eq.${userId}` }, scheduleRefresh)
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') scheduleRefresh();
@@ -1550,6 +1570,14 @@ export default function ActivityScreen() {
     );
   };
 
+  const isCompletedDisputeRefund = (item: MappedDelivery) => {
+    const isDone = item.status === 'Completed' || item.status === 'Returned' || !!item.deliveryData?.completed_at;
+    return isDone && (
+      item.dispute_refund_amount > 0 ||
+      String(item.rawData?.escrow_status || '').toLowerCase() === 'refunded'
+    );
+  };
+
   const stageOf = (item: MappedDelivery): 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled' => {
     if (item.status === 'Cancelled') return 'cancelled';
     if (item.status === 'Completed' || item.status === 'Returned' || !!item.deliveryData?.completed_at) return 'done';
@@ -1558,7 +1586,14 @@ export default function ActivityScreen() {
     return 'pending';
   };
 
-  const statusMeta = (stage: 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled', hasPreferredProvider = false) => {
+  const statusMeta = (
+    stage: 'pending' | 'pickup' | 'transit' | 'done' | 'cancelled',
+    hasPreferredProvider = false,
+    disputeRefunded = false,
+  ) => {
+    if (stage === 'done' && disputeRefunded) {
+      return { label: 'Refunded to you', bg: colors.warningBg, fg: colors.warning, icon: 'CheckCircle' };
+    }
     switch (stage) {
       case 'done':
         return { label: 'Completed', bg: colors.successBg, fg: colors.success, icon: 'CheckCircle' };
@@ -1724,12 +1759,13 @@ export default function ActivityScreen() {
     const stage = stageOf(item);
     const awaitingApproval = isAwaitingApproval(item);
     const isCancelled = stage === 'cancelled';
+    const disputeRefunded = isCompletedDisputeRefund(item);
     const isUnpaid = !isRequestPaidStatus(item.rawData?.payment_status) && !item.isMatched && !isCancelled;
     const meta = awaitingApproval
       ? { label: 'Approve Delivery', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
       : isUnpaid
         ? { label: 'Payment Incomplete', bg: colors.errorBg, fg: colors.error, icon: 'Card' }
-        : statusMeta(stage, item.hasPreferredProvider);
+        : statusMeta(stage, item.hasPreferredProvider, disputeRefunded);
     const isActive = stage === 'pickup' || stage === 'transit' || stage === 'pending';
     const receiverName = item.receiver?.receiver_name || item.receiver?.receiver_phone || 'Receiver';
     const receiverPhone = item.receiver?.receiver_phone || null;
@@ -1830,12 +1866,23 @@ export default function ActivityScreen() {
           </View>
 
           {isCancelled && <Text style={styles.mCancelledText}>Booking cancelled</Text>}
+          {disputeRefunded && (
+            <Text style={[styles.mCancelledText, { color: colors.success }]}>
+              Dispute refund: {item.dispute_refund_amount > 0 ? `${money(item.dispute_refund_amount)} refunded to you` : 'Refunded to you'}
+            </Text>
+          )}
         </View>
 
         <View style={styles.oFooter}>
-          <Text style={styles.oPayLabel}>Total pay:</Text>
-          <Text numberOfLines={1} style={[styles.oPrice, isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted }]}>
-            {money(item.price)}
+          <Text style={styles.oPayLabel}>
+            {disputeRefunded && item.dispute_refund_amount > 0 ? 'Refunded:' : 'Total pay:'}
+          </Text>
+          <Text numberOfLines={1} style={[
+            styles.oPrice,
+            isCancelled && { textDecorationLine: 'line-through', color: colors.textMuted },
+            disputeRefunded && item.dispute_refund_amount > 0 && { color: colors.success },
+          ]}>
+            {disputeRefunded && item.dispute_refund_amount > 0 ? money(item.dispute_refund_amount) : money(item.price)}
           </Text>
         </View>
 
@@ -1971,12 +2018,13 @@ export default function ActivityScreen() {
     const awaitingApproval = isAwaitingApproval(d);
     const code = trackingCode(d.request_id);
     const isCancelled = stage === 'cancelled';
+    const disputeRefunded = isCompletedDisputeRefund(d);
     const isUnpaid = !isRequestPaidStatus(d.rawData?.payment_status) && !d.isMatched && !isCancelled;
     const meta = awaitingApproval
       ? { label: 'Awaiting Your Approval', bg: colors.warningBg, fg: colors.warning, icon: 'Clock' }
       : isUnpaid
         ? { label: 'Payment Incomplete', bg: colors.errorBg, fg: colors.error, icon: 'Card' }
-        : statusMeta(stage, d.hasPreferredProvider);
+        : statusMeta(stage, d.hasPreferredProvider, disputeRefunded);
     const isCompleted = stage === 'done';
     const pickupPhotoUrl = (d.deliveryData as any)?.pickup_photo_url || null;
     const isPickedUp =
@@ -2012,13 +2060,15 @@ export default function ActivityScreen() {
     const released = isCompleted || /complet|releas/i.test(escrowStatus);
     const paymentLabel = isCancelled
       ? 'Refunded / Cancelled'
-      : isUnpaid
-        ? (d.rawData?.payment_status === 'processing' ? 'Payment Incomplete' : 'Unpaid')
-        : released
-          ? 'Released to provider'
-          : (d.isMatched || d.rawData?.payment_status === 'held')
-            ? 'Held in escrow'
-            : 'Awaiting provider';
+      : disputeRefunded
+        ? (d.dispute_refund_amount > 0 ? `Refunded (${money(d.dispute_refund_amount)})` : 'Refunded')
+        : isUnpaid
+          ? (d.rawData?.payment_status === 'processing' ? 'Payment Incomplete' : 'Unpaid')
+          : released
+            ? 'Released to provider'
+            : (d.isMatched || d.rawData?.payment_status === 'held')
+              ? 'Held in escrow'
+              : 'Awaiting provider';
 
     const payoutProvider = escrowRow?.payment_method || d.payment_method;
 
@@ -2185,15 +2235,21 @@ export default function ActivityScreen() {
                 </View>
               </View>
             ) : isCompleted ? (
-              <View style={styles.doneCard}>
-                <View style={styles.doneIcon}><SolarIcon name="Check" variant="linear" size={20} color={colors.success} /></View>
+              <View style={[styles.doneCard, disputeRefunded && { backgroundColor: colors.warningBg, borderColor: colors.warning }]}>
+                <View style={styles.doneIcon}>
+                  <SolarIcon name="Check" variant="linear" size={20} color={disputeRefunded ? colors.warning : colors.success} />
+                </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.doneTitle}>
-                    {d.status === 'Returned' ? 'Returned to sender' : 'Delivered successfully'}
+                  <Text style={[styles.doneTitle, disputeRefunded && { color: colors.warning }]}>
+                    {disputeRefunded
+                      ? 'Completed · Refunded to you'
+                      : d.status === 'Returned' ? 'Returned to sender' : 'Delivered successfully'}
                   </Text>
                   <Text style={styles.doneSub}>
                     {d.deliveryData?.completed_at ? formatDateTime(d.deliveryData.completed_at) : ''}
-                    {released ? (
+                    {disputeRefunded ? (
+                      `  ·  ${d.dispute_refund_amount > 0 ? `${money(d.dispute_refund_amount)} refunded to you via dispute resolution` : 'Refunded to you via dispute resolution'}`
+                    ) : released ? (
                       <>
                         {`  ·  ${money(
                           d.status === 'Returned'
@@ -2370,10 +2426,19 @@ export default function ActivityScreen() {
 
               <View style={[styles.payRow, styles.payRowBorder]}>
                 <Text style={styles.payRowLabel}>Payment Status</Text>
-                <Text style={[styles.payRowValue, released && { color: colors.success }]}>
+                <Text style={[styles.payRowValue, (released || disputeRefunded) && { color: colors.success }]}>
                   {paymentLabel}
                 </Text>
               </View>
+
+              {disputeRefunded && d.dispute_refund_amount > 0 && (
+                <View style={[styles.payRow, styles.payRowBorder]}>
+                  <Text style={styles.payRowLabel}>Dispute Refund Amount</Text>
+                  <Text style={[styles.payRowValue, { color: colors.success, fontFamily: 'Poppins_700Bold' }]}>
+                    +{money(d.dispute_refund_amount)}
+                  </Text>
+                </View>
+              )}
 
               {!isUnpaid && !!payoutProvider && (
                 <View style={[styles.payRow, styles.payRowBorder]}>
@@ -2411,6 +2476,14 @@ export default function ActivityScreen() {
                   money(d.payout_deposit),
                   returned ? colors.textSecondary : (done && /^(succeeded|refunded)$/.test(rs) ? colors.success : undefined),
                   false,
+                ]);
+              }
+              if (disputeRefunded && d.dispute_refund_amount > 0) {
+                rows.push([
+                  'Dispute refund · Refunded to you',
+                  `+${money(d.dispute_refund_amount)}`,
+                  colors.success,
+                  true,
                 ]);
               }
               rows.push([isUnpaid ? 'Amount due (unpaid)' : 'Total paid', money(d.price), undefined, true]);

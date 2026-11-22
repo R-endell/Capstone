@@ -39,24 +39,43 @@ const normalize = (s: string | null | undefined): AppStatus => {
   return 'pending';
 };
 
-const fmtWhen = (iso: string | null) => {
+// ---- Manila time (Asia/Manila = UTC+8, no daylight saving) -------------------------------------------------
+// provider_verifications.submitted_at is a "timestamp WITHOUT time zone" that the database fills in UTC, so
+// Supabase returns it like "2026-11-22T08:30:00" with no "Z". new Date() reads such a string as the PHONE's local
+// time, which shifts the result. Here a string without a zone is read as UTC, then shown in Manila time.
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const parseDbTime = (iso: string | null): Date | null => {
   if (!iso) return null;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return null;
-  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  let v = String(iso).trim().replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(v.slice(10))) v += 'Z';   // no zone given -> it is UTC
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+const fmtWhen = (iso: string | null) => {
+  const d = parseDbTime(iso);
+  if (!d) return null;
+  const m = new Date(d.getTime() + MANILA_OFFSET_MS);     // read with the getUTC* methods = Manila wall clock
+  const h24 = m.getUTCHours();
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const mm = String(m.getUTCMinutes()).padStart(2, '0');
+  return `${MONTHS[m.getUTCMonth()]} ${m.getUTCDate()}, ${m.getUTCFullYear()}, ${h12}:${mm} ${h24 < 12 ? 'AM' : 'PM'}`;
 };
 
 const fmtAgo = (iso: string | null) => {
-  if (!iso) return null;
-  const ms = Date.now() - new Date(iso).getTime();
-  if (isNaN(ms) || ms < 0) return null;
+  const d = parseDbTime(iso);
+  if (!d) return null;
+  const ms = Date.now() - d.getTime();
+  if (ms < 0) return 'just now';
   const m = Math.floor(ms / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m} min ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`;
-  const d = Math.floor(h / 24);
-  return `${d} day${d === 1 ? '' : 's'} ago`;
+  const days = Math.floor(h / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 };
 
 export default function ProviderApplicationStatusScreen() {
