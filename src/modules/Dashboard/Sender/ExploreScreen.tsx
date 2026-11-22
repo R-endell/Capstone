@@ -24,9 +24,14 @@ try { Location = require('expo-location'); } catch { Location = null; }
 const { height } = Dimensions.get('window');
 const ORANGE = '#F27024';
 const BLUE = '#3B82F6';
-const BRAND_ORANGE = '#FF751F';   // same orange as the pickup pin in LiveTrackingScreen
+const BRAND_ORANGE = '#FF751F';
 
-const HIDE_DEPARTED_AFTER_MIN = 180;
+// A route disappears from Explore 10 minutes after its departure time.
+// Daily / Weekly routes automatically roll over to their next scheduled run.
+const HIDE_AFTER_DEPARTURE_MIN = 10;
+const HIDE_AFTER_DEPARTURE_MS = HIDE_AFTER_DEPARTURE_MIN * 60 * 1000;
+const KEEP_LIVE_ROUTES_VISIBLE = false;
+const SHOW_OWN_ROUTES = __DEV__;
 const SEND_NOW_WINDOW_MIN = 60;
 const HIDE_FINISHED_AFTER_MS = 2 * 60 * 60 * 1000;
 
@@ -83,7 +88,7 @@ type FilterState = {
   radiusKm: number | null;
 };
 
-const DEFAULT_RADIUS_KM: number | null = null; // show ALL providers by default (closest first)
+const DEFAULT_RADIUS_KM: number | null = null; // Show all active routes by default
 const RADIUS_OPTIONS: (number | null)[] = [2, 5, 10, 20, null];
 
 type LocStatus = 'loading' | 'granted' | 'denied' | 'unavailable';
@@ -100,14 +105,9 @@ const haversineKm = (aLat: number, aLng: number, bLat: number, bLng: number) => 
 };
 const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) * 100)} m` : `${km.toFixed(1)} km`);
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
-// departure_time is a naive (no timezone) timestamp in the app's local frame, so compare with a naive local string.
-const naiveNowString = (): string => {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:00`;
-};
-// Daily/Weekly routes store the FIRST run's date, so after that day they would look "finished" forever.
-// Project them to their current/next run (today's window while it's still going, else the next one).
+
+// Project Daily/Weekly routes to their current or next run.
+// Once a run is more than HIDE_AFTER_DEPARTURE_MIN past departure, roll to the next run.
 const occurrenceFor = (
   t: { departureTime: Date; endTime?: Date | null; routeFrequency: string },
   nowMs: number,
@@ -124,10 +124,13 @@ const occurrenceFor = (
   for (let i = 0; i < 8; i++) {
     const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, dep.getHours(), dep.getMinutes());
     if (freq === 'weekly' && start.getDay() !== dep.getDay()) continue;
-    if (start.getTime() + durMs >= nowMs) return { dep: start, end: new Date(start.getTime() + durMs) };
+    if (start.getTime() + HIDE_AFTER_DEPARTURE_MS >= nowMs) {
+      return { dep: start, end: new Date(start.getTime() + durMs) };
+    }
   }
   return { dep, end: new Date(depMs + durMs) };
 };
+
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
@@ -143,6 +146,38 @@ const formatTimeLabel = (dep: Date): string => {
     dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
   );
 };
+
+const fromRpcRow = (r: any) => ({
+  route_id: r.route_id,
+  departure_time: r.departure_time,
+  end_time: r.end_time,
+  route_frequency: r.route_frequency,
+  provider_id: r.provider_id,
+  remaining_weight_kg: r.remaining_weight_kg,
+  provider: {
+    user_id: r.provider_id,
+    first_name: r.provider_first_name,
+    last_name: r.provider_last_name,
+    is_active: r.provider_is_active,
+  },
+  start_location: {
+    place_name: r.start_place_name,
+    street_address: r.start_street_address,
+    barangay: r.start_barangay,
+    city: r.start_city,
+    latitude: r.start_latitude,
+    longitude: r.start_longitude,
+  },
+  end_location: {
+    place_name: r.end_place_name,
+    street_address: r.end_street_address,
+    barangay: r.end_barangay,
+    city: r.end_city,
+    latitude: r.end_latitude,
+    longitude: r.end_longitude,
+  },
+  vehicle: { vehicle_type: r.vehicle_type, max_weight_kg: r.max_weight_kg },
+});
 
 export default function ExploreScreen() {
   const navigation = useNavigation<any>();
@@ -165,7 +200,6 @@ export default function ExploreScreen() {
   const [myCoords, setMyCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locStatus, setLocStatus] = useState<LocStatus>('loading');
 
-  // Out-of-order guard: a slow older fetch must never overwrite a newer one.
   const fetchSeqRef = useRef(0);
 
   const fetchTrips = useCallback(async () => {
@@ -187,10 +221,12 @@ export default function ExploreScreen() {
         }
       }
 
+      // Fetch ALL active, non-deleted, non-suspended routes (not limited to is_selected).
+      let rows: any[] = [];
       let query = supabase
         .from('provider_routes')
         .select(`
-          route_id, departure_time, end_time, route_frequency, provider_id, is_selected,
+          route_id, departure_time, end_time, route_frequency, provider_id, remaining_weight_kg,
           provider:users!provider_routes_provider_id_fkey ( user_id, first_name, last_name, is_active ),
           start_location:locations!provider_routes_start_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
           end_location:locations!provider_routes_end_location_id_fkey ( place_name, street_address, barangay, city, latitude, longitude ),
@@ -198,18 +234,31 @@ export default function ExploreScreen() {
         `)
         .eq('is_deleted', false)
         .eq('is_active', true)
-        .eq('is_selected', true)
+        .eq('suspended_by_strike', false)
         .order('departure_time', { ascending: true });
 
-      if (myUserId != null) {
+      if (myUserId != null && !SHOW_OWN_ROUTES) {
         query = query.neq('provider_id', myUserId);
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
+      const { data: directData, error: directErr } = await query;
 
-      const mapped: Trip[] = (data || [])
-        .filter((r: any) => myUserId == null || Number(r.provider_id) !== myUserId)
+      if (!directErr && Array.isArray(directData) && directData.length > 0) {
+        rows = directData;
+      } else {
+        // Fallback to explore_routes() RPC if direct query is restricted by RLS
+        const rpc = await supabase.rpc('explore_routes');
+        if (!rpc.error && Array.isArray(rpc.data)) {
+          rows = (rpc.data as any[])
+            .map(fromRpcRow)
+            .sort((a, b) => String(a.departure_time).localeCompare(String(b.departure_time)));
+        } else if (directErr) {
+          throw directErr;
+        }
+      }
+
+      const mapped: Trip[] = rows
+        .filter((r: any) => SHOW_OWN_ROUTES || myUserId == null || Number(r.provider_id) !== myUserId)
         .map((r: any) => {
           const provider = r.provider || {};
           const vehicle = r.vehicle || {};
@@ -240,11 +289,19 @@ export default function ExploreScreen() {
             end.city && end.city !== 'Unknown' ? end.city : '',
           ].filter(Boolean).join(', ');
 
+          const capacityKg =
+            r.remaining_weight_kg != null && Number(r.remaining_weight_kg) > 0
+              ? Number(r.remaining_weight_kg)
+              : vehicle.max_weight_kg != null
+                ? Number(vehicle.max_weight_kg)
+                : null;
+
           return {
             id: String(r.route_id),
             routeId: r.route_id,
             providerId: Number(r.provider_id),
-            name: `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider',
+            name: (`${provider.first_name || ''} ${provider.last_name || ''}`.trim() || 'Unknown Provider')
+              + (myUserId != null && Number(r.provider_id) === myUserId ? ' (you)' : ''),
             isActive: !!provider.is_active,
             rating: 4.9,
             pickup: startTitle || 'Starting point',
@@ -257,7 +314,7 @@ export default function ExploreScreen() {
             departureTime: dep,
             endTime: endTimeObj,
             vehicleType: vehicle.vehicle_type || 'Vehicle',
-            maxWeightKg: vehicle.max_weight_kg != null ? Number(vehicle.max_weight_kg) : null,
+            maxWeightKg: capacityKg,
             routeFrequency: r.route_frequency || 'Daily',
           };
         });
@@ -314,9 +371,6 @@ export default function ExploreScreen() {
       });
       const tick = setInterval(() => setNow(Date.now()), 15_000);
 
-      // REALTIME: a provider switching their selected route (or posting / ending one) flips
-      // provider_routes.is_selected / is_active / is_deleted. Refetch silently, debounced so the
-      // two-step is_selected swap lands as one update instead of flickering.
       let debounce: ReturnType<typeof setTimeout> | null = null;
       const refetch = () => {
         if (debounce) clearTimeout(debounce);
@@ -329,7 +383,7 @@ export default function ExploreScreen() {
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             if (firstSubscribe) { firstSubscribe = false; return; }
-            refetch();   // reconnected: catch up on anything missed
+            refetch();
           }
         });
       const appSub = AppState.addEventListener('change', (s) => { if (s === 'active') refetch(); });
@@ -352,14 +406,17 @@ export default function ExploreScreen() {
     const myUserId = user?.user_id != null ? Number(user.user_id) : null;
     const out: CardTrip[] = [];
     trips.forEach((t) => {
-      if (myUserId != null && t.providerId === myUserId) return;
+      if (!SHOW_OWN_ROUTES && myUserId != null && t.providerId === myUserId) return;
 
-      // current/next run of this route (matters for Daily/Weekly routes)
       const occ = occurrenceFor(t, now);
-
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
       const mins = minutesUntil(occ.dep, now);
+
+      // Hide route once it is 10 minutes past its departure time.
+      if (now > safeTime(occ.dep) + HIDE_AFTER_DEPARTURE_MS && !(KEEP_LIVE_ROUTES_VISIBLE && live)) {
+        return;
+      }
 
       const endTimeMs = safeTime(occ.end);
       const isFinished = endTimeMs !== Infinity && now > endTimeMs;
@@ -372,8 +429,9 @@ export default function ExploreScreen() {
       else if (mins > SEND_NOW_WINDOW_MIN) state = 'scheduled';
       else state = 'offline';
 
-      if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) return;
-      // 'offline' (provider not online yet) routes are still listed so every provider route is visible
+      if (state === 'finished' && endTimeMs !== Infinity && now > endTimeMs + HIDE_FINISHED_AFTER_MS) {
+        return;
+      }
 
       const ref = live && fix
         ? { lat: fix.latitude, lng: fix.longitude }
@@ -403,13 +461,15 @@ export default function ExploreScreen() {
       if (filters.show === 'upcoming' && !(t.state === 'soon' || t.state === 'scheduled')) return false;
       return true;
     });
-    if (myCoords) {
-      list.sort((a, b) => {
-        const distDiff = (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity);
-        if (distDiff !== 0) return distDiff;
-        return safeTime(a.departureTime) - safeTime(b.departureTime);
-      });
-    }
+    // Soonest departure first; nearest first when two routes leave at the same time.
+    list.sort((a, b) => {
+      const ta = safeTime(a.departureTime);
+      const tb = safeTime(b.departureTime);
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      const da = a.distanceKm ?? Infinity;
+      const db = b.distanceKm ?? Infinity;
+      return da === db ? 0 : da < db ? -1 : 1;
+    });
     return list;
   }, [cardTrips, filters, myCoords]);
 
@@ -424,6 +484,10 @@ export default function ExploreScreen() {
 
   const requestAlongRoute = async (trip: TrackTrip) => {
     if (requesting) return;
+    if (user?.user_id != null && trip.providerId === Number(user.user_id)) {
+      Alert.alert('Your own route', 'You cannot send a package on your own route.');
+      return;
+    }
     if ((trip as any).state === 'finished') {
       Alert.alert('Route Finished', 'This provider has already arrived at their destination and cannot accept new deliveries on this route.');
       return;
@@ -488,7 +552,7 @@ export default function ExploreScreen() {
       case 'soon':
         return { label: 'Leaving soon', color: colors.warning, bg: colors.warningBg, icon: 'Clock' };
       case 'offline':
-        return { label: 'Not online yet', color: isDark ? '#94A3B8' : '#64748B', bg: isDark ? 'rgba(148,163,184,0.18)' : '#F1F5F9', icon: 'Clock' };
+        return { label: 'Scheduled', color: isDark ? '#94A3B8' : '#64748B', bg: isDark ? 'rgba(148,163,184,0.18)' : '#F1F5F9', icon: 'Clock' };
       case 'finished':
         return {
           label: 'Route Finished',
@@ -704,7 +768,7 @@ export default function ExploreScreen() {
         <View style={styles.locBanner}>
           <SolarIcon name="Routing" variant="duotone" size={16} color={ORANGE} />
           <Text style={styles.locBannerText}>
-            {filters.radiusKm === null ? 'Showing all providers, closest first' : `Providers within ${filters.radiusKm} km of you`}
+            {filters.radiusKm === null ? 'Showing all active provider routes, soonest first' : `Routes within ${filters.radiusKm} km of you`}
           </Text>
           <TouchableOpacity onPress={locateMe} hitSlop={10}>
             <SolarIcon name="Refresh" variant="linear" size={16} color={colors.textSecondary} />
@@ -714,7 +778,7 @@ export default function ExploreScreen() {
         <View style={[styles.locBanner, styles.locBannerWarn]}>
           <SolarIcon name="MapPoint" variant="bold" size={16} color={colors.error} />
           <Text style={styles.locBannerText}>
-            {locStatus === 'denied' ? 'Location is off, so all providers are shown.' : 'Could not get your location.'}
+            {locStatus === 'denied' ? 'Location is off, so distances are hidden.' : 'Could not get your location.'}
           </Text>
           <TouchableOpacity onPress={locStatus === 'denied' ? () => Linking.openSettings() : locateMe} hitSlop={10}>
             <Text style={styles.locBannerAction}>{locStatus === 'denied' ? 'Settings' : 'Retry'}</Text>
@@ -724,8 +788,10 @@ export default function ExploreScreen() {
 
       <View style={styles.sectionHeaderRow}>
         <View style={{ flex: 1, paddingRight: 12 }}>
-          <Text style={styles.sectionTitle}>Providers Near You</Text>
-          <Text style={styles.sectionSubtitleTight}>Tap a provider to see their live location and request a delivery.</Text>
+          <Text style={styles.sectionTitle}>Provider Routes</Text>
+          <Text style={styles.sectionSubtitleTight}>
+            {`All active routes along the way. Routes close ${HIDE_AFTER_DEPARTURE_MIN} minutes after departure.`}
+          </Text>
         </View>
         <TouchableOpacity
           style={[styles.filterBtn, hasActiveFilters && styles.filterBtnActive]}
@@ -745,7 +811,7 @@ export default function ExploreScreen() {
           {headerEl}
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={ORANGE} />
-            <Text style={styles.loadingText}>Finding providers near you...</Text>
+            <Text style={styles.loadingText}>Loading provider routes...</Text>
           </View>
         </View>
       ) : (
@@ -765,13 +831,13 @@ export default function ExploreScreen() {
                 resizeMode="contain"
               />
               <Text style={styles.emptyText}>
-                {locationKnown && cardTrips.length > 0 ? 'No providers near you' : 'No providers on the road'}
+                {cardTrips.length > 0 ? 'No routes match your filters' : 'No active routes right now'}
               </Text>
               <Text style={styles.emptySubtext}>
                 {cardTrips.length === 0
-                  ? 'Nobody is traveling right now. Check back soon!'
+                  ? 'There are no upcoming provider routes right now. Check back soon!'
                   : locationKnown && filters.radiusKm !== null
-                    ? `Nobody is traveling within ${filters.radiusKm} km of you right now.`
+                    ? `No routes within ${filters.radiusKm} km of you.`
                     : 'Try adjusting your filters.'}
               </Text>
               {locationKnown && cardTrips.length > 0 && filters.radiusKm !== null && (
@@ -957,7 +1023,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   filterBtnActive: { borderColor: c.accent },
   filterDot: { position: 'absolute', top: 8, right: 8, width: 8, height: 8, borderRadius: 4, backgroundColor: c.accent },
 
-  /* Filters & Banners */
   activeFiltersRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12, gap: 6 },
   filterChip: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: c.divider,
@@ -1007,7 +1072,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   listContainer: { paddingHorizontal: 20, paddingBottom: 100 },
 
-  /* ---------- TRIP CARD (matches LiveTrackingScreen card language) ---------- */
   tcCard: {
     backgroundColor: c.card,
     borderRadius: 16,
@@ -1084,7 +1148,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
   },
   tcRequestText: { color: '#FFFFFF', fontSize: 14, fontFamily: 'Poppins_700Bold', flexShrink: 1 },
 
-  /* Empty state */
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingTop: 40 },
   emptyImage: { width: 140, height: 140, marginBottom: 16 },
   emptyText: {
@@ -1112,7 +1175,6 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     fontSize: 13,
   },
 
-  /* Filter modal */
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   filterModal: {
     backgroundColor: c.card,
