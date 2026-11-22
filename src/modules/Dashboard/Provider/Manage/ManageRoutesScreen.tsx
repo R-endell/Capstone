@@ -24,6 +24,7 @@ import {
   updateProviderRouteWithGuardrails,
   canEditRoute,
   softDeleteProviderRoute,
+  checkProviderStrikeBlock,
   MAX_DAILY_ROUTES,
 } from '../../../../services/routeService';
 import { DEMO_MODE } from '../../../../services/activeRouteStore';
@@ -1371,7 +1372,16 @@ export default function ManageRoutesScreen() {
     setModalVisible(true);
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
+    const pid = userId || (await fetchUserId());
+    if (!pid) return;
+
+    const strikeCheck = await checkProviderStrikeBlock(pid);
+    if (strikeCheck.blocked) {
+      Alert.alert('Route Posting Restricted', strikeCheck.message);
+      return;
+    }
+
     resetForm();
     setModalVisible(true);
   };

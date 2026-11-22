@@ -24,6 +24,7 @@ import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../../../utils/themeContext';
 import { SolarIcon } from '../../../../components/ui/SolarIcon';
+import { notifyOnVehicleDecision } from '../../../../services/vehicleVerificationNotifier';
 
 const EMPTY_BOX_ICON = require('../../../../../assets/empty-box-icon.png');
 
@@ -39,6 +40,7 @@ interface Vehicle {
   vehicle_doc: string | null;
   verification_status: 'Pending' | 'Verified' | 'Rejected';
   provider_id: number;
+  rejection_reason?: string | null;
 }
 
 const VEHICLE_TYPES = ['Sedan', 'SUV', 'MPV', 'Hatchback', 'Van', 'Truck'];
@@ -134,23 +136,81 @@ export default function ManageVehicleScreen() {
     } catch (error) { console.error('Error fetching user ID:', error); return null; }
   };
 
-  const fetchVehicles = async () => {
+  // `silent` = background refresh (realtime re-sync): no spinner and no error pop-up.
+  const fetchVehicles = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const id = await fetchUserId();
-      if (!id) { setLoading(false); return; }
+      if (!id) { if (!silent) setLoading(false); return; }
       setUserId(id);
       const { data, error } = await supabase
         .from('vehicles')
         .select('*')
         .eq('provider_id', id)
         .order('vehicle_id', { ascending: false });
-      if (error) { console.error('Error fetching vehicles:', error); Alert.alert('Error', 'Failed to load vehicles'); return; }
-      setVehicles(data || []);
-    } catch (error) { console.error('Error fetching vehicles:', error); Alert.alert('Error', 'Failed to load vehicles'); } finally { setLoading(false); }
+      if (error) {
+        console.error('Error fetching vehicles:', error);
+        if (!silent) Alert.alert('Error', 'Failed to load vehicles');
+        return;
+      }
+      const rows = (data || []) as Vehicle[];
+      setVehicles(rows);
+      // a status that changed while this screen was closed (Pending -> Verified) still sends its notification
+      rows.forEach(v => { void notifyOnVehicleDecision(id, v); });
+    } catch (error) {
+      console.error('Error fetching vehicles:', error);
+      if (!silent) Alert.alert('Error', 'Failed to load vehicles');
+    } finally {
+      if (!silent) setLoading(false);
+    }
   };
+  const fetchVehiclesRef = useRef(fetchVehicles);
+  fetchVehiclesRef.current = fetchVehicles;
 
-  useFocusEffect(useCallback(() => { fetchVehicles(); }, []));
+  useFocusEffect(useCallback(() => { void fetchVehiclesRef.current(); }, []));
+
+  // REALTIME: the list follows the database. When the admin verifies / rejects a vehicle (or it is added, edited or
+  // deleted from another device) the card changes by itself, no pull-to-refresh needed.
+  useEffect(() => {
+    if (!userId) return;
+    const sortDesc = (a: Vehicle, b: Vehicle) => b.vehicle_id - a.vehicle_id;
+
+    const channel = supabase
+      // unique topic per subscription (re-using a topic that is still being removed breaks .on())
+      .channel(`manage-vehicles-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'vehicles', filter: `provider_id=eq.${userId}` },
+        (payload) => {
+          if (payload.eventType === 'DELETE') {
+            const id = (payload.old as any)?.vehicle_id;
+            if (id != null) setVehicles(prev => prev.filter(v => v.vehicle_id !== id));
+            return;
+          }
+          const row = payload.new as Vehicle | null;
+          if (!row || row.provider_id !== userId) return;
+
+          setVehicles(prev => {
+            const exists = prev.some(v => v.vehicle_id === row.vehicle_id);
+            const next = exists
+              ? prev.map(v => (v.vehicle_id === row.vehicle_id ? { ...v, ...row } : v))
+              : [row, ...prev];
+            return next.sort(sortDesc);
+          });
+          // if the edit form is open for this vehicle, only its status follows (typed values are never overwritten)
+          setEditingVehicle(prev =>
+            prev && prev.vehicle_id === row.vehicle_id
+              ? { ...prev, verification_status: row.verification_status, rejection_reason: row.rejection_reason ?? null }
+              : prev,
+          );
+          void notifyOnVehicleDecision(userId, row);
+        },
+      )
+      // events missed while the socket was down are caught by one quiet re-sync on every (re)connect
+      .subscribe((status) => { if (status === 'SUBSCRIBED') void fetchVehiclesRef.current(true); });
+
+    return () => { supabase.removeChannel(channel); };
+  }, [userId]);
 
   const pickDocument = async () => {
     try {
@@ -424,6 +484,16 @@ export default function ManageVehicleScreen() {
           </View>
         </View>
 
+        {item.verification_status === 'Rejected' && !!item.rejection_reason?.trim() && (
+          <View style={styles.rejectBox}>
+            <SolarIcon name="Warning" variant="linear" size={16} color={colors.error} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rejectLabel}>NOT APPROVED</Text>
+              <Text style={styles.rejectText}>{item.rejection_reason.trim()}</Text>
+            </View>
+          </View>
+        )}
+
         {/* Footer Row: OR/CR Document Status */}
         <View style={styles.oFooter}>
           <View style={styles.oChip}>
@@ -511,7 +581,7 @@ export default function ManageVehicleScreen() {
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
             refreshing={loading}
-            onRefresh={fetchVehicles}
+            onRefresh={() => { void fetchVehicles(); }}
             ListFooterComponent={<View style={{ height: 40 }} />}
           />
         </Animated.View>
@@ -855,6 +925,12 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => StyleSheet.create({
     borderRadius: 999,
   },
   stDot: { width: 7, height: 7, borderRadius: 4 },
+  rejectBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: c.errorBg, borderRadius: 12, padding: 12, marginHorizontal: 16, marginBottom: 12,
+  },
+  rejectLabel: { fontSize: 10.5, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.6, color: c.error },
+  rejectText: { fontSize: 13, fontFamily: 'Poppins_500Medium', color: c.textPrimary, marginTop: 2, lineHeight: 18 },
   stPillText: { fontSize: 11, fontFamily: 'Poppins_800ExtraBold', letterSpacing: 0.4 },
 
   plateHeroRow: {

@@ -1,7 +1,8 @@
 // src/modules/Help/ReportFlowScreen.tsx
 // Registered as the 'ReportIssue' route. Params (all optional):
 //   { role?: 'sender' | 'provider', deliveryId?: number, requestId?: number }
-// Opened from a delivery, it skips straight to "what went wrong".
+// Opened from a delivery, it skips straight to "what went wrong" — or straight
+// to the existing TicketDetail if a dispute already exists for that request.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, StatusBar, TextInput, Image,
@@ -12,6 +13,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme, ThemeColors } from '../../utils/themeContext';
+import { supabase } from '../../utils/supabase';
 import {
   MyDelivery, Ticket, MAX_PHOTOS, createTicket, fetchMyDeliveries, getMyUserId, uploadPhotos,
 } from '../../services/ticketService';
@@ -36,6 +38,7 @@ export default function ReportFlowScreen() {
 
   const [step, setStep] = useState(0);
   const [deliveries, setDeliveries] = useState<MyDelivery[]>([]);
+  const [existingDisputeByReq, setExistingDisputeByReq] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [delivery, setDelivery] = useState<MyDelivery | null>(null);
   const [noDelivery, setNoDelivery] = useState(false);
@@ -50,29 +53,78 @@ export default function ReportFlowScreen() {
 
   const role: Role = delivery?.myRole ?? roleParam ?? 'sender';
 
+  const getExistingTicketId = useCallback(
+    (d?: MyDelivery | null): number | null => {
+      if (!d) return null;
+      return existingDisputeByReq[d.request_id] ?? d.openTicketId ?? null;
+    },
+    [existingDisputeByReq],
+  );
+
   useEffect(() => {
     (async () => {
       try {
-        const list = await fetchMyDeliveries(roleParam ? [roleParam] : ['sender', 'provider']);
+        const [me, list] = await Promise.all([
+          getMyUserId(),
+          fetchMyDeliveries(roleParam ? [roleParam] : ['sender', 'provider']),
+        ]);
         setDeliveries(list);
+
+        // Fetch ANY existing dispute ticket (open or resolved) per request_id so a user
+        // cannot file multiple disputes for the same request.
+        const reqIds = Array.from(new Set(list.map(d => d.request_id).filter(Boolean)));
+        if (presetRequestId && !reqIds.includes(presetRequestId)) reqIds.push(presetRequestId);
+
+        const disputeMap: Record<number, number> = {};
+        if (reqIds.length > 0) {
+          let q = supabase
+            .from('support_tickets')
+            .select('ticket_id, request_id, delivery_id, reporter_id')
+            .eq('type', 'dispute')
+            .in('request_id', reqIds)
+            .order('created_at', { ascending: false });
+
+          if (me) q = q.eq('reporter_id', me);
+
+          const { data: existingRows } = await q;
+          for (const row of existingRows || []) {
+            if (row.request_id && !disputeMap[row.request_id]) {
+              disputeMap[row.request_id] = Number(row.ticket_id);
+            }
+          }
+        }
+        setExistingDisputeByReq(disputeMap);
+
         const hit = list.find(d =>
           (presetDeliveryId && d.delivery_id === presetDeliveryId) ||
           (presetRequestId && d.request_id === presetRequestId && (!roleParam || d.myRole === roleParam)));
-        if (hit) { setDelivery(hit); setStep(1); }
+
+        if (hit) {
+          const existingId = disputeMap[hit.request_id] ?? hit.openTicketId ?? null;
+          if (existingId) {
+            navigation.replace('TicketDetail', { ticketId: existingId });
+            return;
+          }
+          setDelivery(hit);
+          setStep(1);
+        } else if (presetRequestId && disputeMap[presetRequestId]) {
+          navigation.replace('TicketDetail', { ticketId: disputeMap[presetRequestId] });
+          return;
+        }
       } catch (e) {
         console.warn('[ReportFlow] load deliveries failed:', e);
       } finally {
         setLoading(false);
       }
     })();
-  }, [roleParam, presetDeliveryId, presetRequestId]);
+  }, [roleParam, presetDeliveryId, presetRequestId, navigation]);
 
   const categories = useMemo(() => {
     const all = CATEGORIES[role];
     if (noDelivery) return all.filter(c => c.delivery !== 'required');
-    if (delivery?.openTicketId) return all.filter(c => c.type !== 'dispute'); // one open report per delivery
+    if (getExistingTicketId(delivery)) return all.filter(c => c.type !== 'dispute');
     return all;
-  }, [role, noDelivery, delivery]);
+  }, [role, noDelivery, delivery, getExistingTicketId]);
 
   // Search by delivery ID (PNS-0012, 0012 or just 12), or by address / person name.
   const shownDeliveries = useMemo(() => {
@@ -131,8 +183,9 @@ export default function ReportFlowScreen() {
   };
 
   const pickDelivery = (d: MyDelivery) => {
-    if (d.openTicketId) {
-      navigation.navigate('TicketDetail', { ticketId: d.openTicketId });
+    const existingId = getExistingTicketId(d);
+    if (existingId) {
+      navigation.navigate('TicketDetail', { ticketId: existingId });
       return;
     }
     setDelivery(d); setNoDelivery(false); setCategory(null); setSub(null);
@@ -146,10 +199,39 @@ export default function ReportFlowScreen() {
     if (!category || !sub) return;
     try {
       setSubmitting(true);
+      const me = await getMyUserId();
+      if (!me) throw new Error('Please sign in again.');
+
+      // Guardrail: prevent duplicate dispute reports on the same request
+      if (delivery?.request_id && category.type === 'dispute') {
+        const { data: dup } = await supabase
+          .from('support_tickets')
+          .select('ticket_id')
+          .eq('type', 'dispute')
+          .eq('request_id', delivery.request_id)
+          .eq('reporter_id', me)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (dup?.ticket_id) {
+          setSubmitting(false);
+          Alert.alert(
+            'Dispute Already Exists',
+            'You already have a dispute ticket for this delivery. Opening your existing ticket now.',
+            [
+              {
+                text: 'View Ticket',
+                onPress: () => navigation.replace('TicketDetail', { ticketId: dup.ticket_id }),
+              },
+            ],
+          );
+          return;
+        }
+      }
+
       let attachments: { path: string }[] = [];
       if (photos.length) {
-        const me = await getMyUserId();
-        if (!me) throw new Error('Please sign in again.');
         attachments = await uploadPhotos(me, photos);
       }
       const t = await createTicket({
@@ -220,6 +302,7 @@ export default function ReportFlowScreen() {
   }
 
   const titles = ['Which delivery?', 'What went wrong?', 'Tell us more', 'Review and send'];
+  const selectedExistingTicketId = getExistingTicketId(delivery);
 
   return (
     <View style={styles.container}>
@@ -264,7 +347,8 @@ export default function ReportFlowScreen() {
                     <Text style={styles.hint}>No delivery matches "{query.trim()}". Check the ID and try again.</Text>
                   )}
                   {shownDeliveries.map(d => {
-                    const on = delivery?.delivery_id === d.delivery_id && delivery?.myRole === d.myRole;
+                    const existingId = getExistingTicketId(d);
+                    const on = !existingId && delivery?.delivery_id === d.delivery_id && delivery?.myRole === d.myRole;
                     return (
                       <TouchableOpacity key={`${d.myRole}-${d.delivery_id}`} onPress={() => pickDelivery(d)}
                         activeOpacity={0.85} style={[styles.card, on && styles.cardOn]}>
@@ -279,9 +363,13 @@ export default function ReportFlowScreen() {
                           <Text style={styles.cardMeta}>
                             {d.myRole === 'sender' ? 'Provider' : 'Sender'}: {d.otherName}   {d.date}
                           </Text>
-                          {d.openTicketId ? <Text style={styles.openTag}>Report already open. Tap to view</Text> : null}
+                          {existingId ? <Text style={styles.openTag}>Dispute already filed · Tap to view ticket</Text> : null}
                         </View>
-                        {on && <Ionicons name="checkmark-circle" size={22} color={ORANGE} />}
+                        {existingId ? (
+                          <Ionicons name="chevron-forward" size={20} color="#3B82F6" />
+                        ) : on ? (
+                          <Ionicons name="checkmark-circle" size={22} color={ORANGE} />
+                        ) : null}
                       </TouchableOpacity>
                     );
                   })}
@@ -316,10 +404,10 @@ export default function ReportFlowScreen() {
                   <Text style={styles.contextText} numberOfLines={1}>{delivery.tracking}   {delivery.route}</Text>
                 </View>
               )}
-              {delivery?.openTicketId ? (
-                <TouchableOpacity style={styles.banner} onPress={() => navigation.navigate('TicketDetail', { ticketId: delivery.openTicketId })}>
+              {selectedExistingTicketId ? (
+                <TouchableOpacity style={styles.banner} onPress={() => navigation.navigate('TicketDetail', { ticketId: selectedExistingTicketId })}>
                   <Ionicons name="information-circle-outline" size={18} color="#3B82F6" />
-                  <Text style={styles.bannerText}>You already have an open report for this delivery. Tap to view it.</Text>
+                  <Text style={styles.bannerText}>You already have a dispute ticket for this delivery. Tap to view it.</Text>
                 </TouchableOpacity>
               ) : null}
 

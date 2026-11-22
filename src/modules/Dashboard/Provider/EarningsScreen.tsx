@@ -47,6 +47,8 @@ interface EarningRow {
   is_returned: boolean;          // package went back to the sender (provider keeps the deposit)
   fallback_action: string | null;   // 'return_to_sender' (Option A) | 'leave_with_guard' (Option B)
   refund_status: string | null;     // state of the deposit refund to the sender
+  dispute_refund_amount: number;    // amount refunded to the sender through a dispute (deducted from this provider)
+  is_dispute_refund: boolean;       // true when a dispute refund applies to this delivery
 }
 
 /* ------------------------------------------------------------------ */
@@ -100,6 +102,7 @@ export default function EarningsScreen() {
   const [totalEarned, setTotalEarned] = useState(0);
   const [totalPending, setTotalPending] = useState(0);
   const [completedJobs, setCompletedJobs] = useState(0);
+  const [totalDisputeRefunded, setTotalDisputeRefunded] = useState(0);
 
   // Ticks every minute so held earnings unlock on screen without a manual refresh.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -199,6 +202,7 @@ export default function EarningsScreen() {
       setTotalEarned(0);
       setTotalPending(0);
       setCompletedJobs(0);
+      setTotalDisputeRefunded(0);
       return;
     }
 
@@ -206,6 +210,36 @@ export default function EarningsScreen() {
     const { data: txns } = await supabase.from('transactions').select('*').in('escrow_id', escrowIds);
     const txnByEscrow: Record<number, any> = {};
     (txns || []).forEach((t: any) => { txnByEscrow[t.escrow_id] = t; });
+
+    // Dispute refunds paid back to the sender AFTER the escrow was already released to this provider.
+    // (Same source the Task / Activity screens use.)
+    const requestIdsForRefund = Array.from(new Set(
+      escrows
+        .map((e: any) => {
+          const dl = Array.isArray(e.delivery) ? e.delivery[0] : e.delivery;
+          const rq = Array.isArray(dl?.delivery_requests) ? dl.delivery_requests[0] : dl?.delivery_requests;
+          return rq?.request_id;
+        })
+        .filter(Boolean),
+    )) as number[];
+    const disputeRefundByRequest: Record<number, number> = {};
+    if (requestIdsForRefund.length > 0) {
+      try {
+        const { data: refundRows } = await supabase
+          .from('escrow_transactions')
+          .select('request_id, amount')
+          .in('request_id', requestIdsForRefund)
+          .eq('event', 'dispute_refund_after_release')
+          .order('created_at', { ascending: false });
+        (refundRows || []).forEach((row: any) => {
+          if (disputeRefundByRequest[row.request_id] == null) {
+            disputeRefundByRequest[row.request_id] = Number(row.amount || 0);
+          }
+        });
+      } catch (err) {
+        console.warn('[Earnings] dispute refund lookup warning:', err);
+      }
+    }
 
     const rows: EarningRow[] = escrows.map((e: any) => {
       const t = txnByEscrow[e.escrow_id];
@@ -215,14 +249,21 @@ export default function EarningsScreen() {
       const completedAt = delivery.completed_at || null;
       const isReleased = escrowStatusRaw === 'released' || escrowStatusRaw === 'completed';
 
-      let displayStatus: EarningRow['display_status'] = 'pending';
-      if (e.emergency_frozen) displayStatus = 'frozen';
-      else if (escrowStatusRaw === 'refunded') displayStatus = 'refunded';
-      else if (isReleased || txnStatusRaw === 'completed') displayStatus = 'earned';
-
       const request = Array.isArray(delivery?.delivery_requests)
         ? delivery.delivery_requests[0]
         : delivery?.delivery_requests;
+
+      // A dispute refund means the sender got their money back, so this is NOT earned income anymore.
+      const disputeRefundAmt = request?.request_id != null
+        ? Number(disputeRefundByRequest[request.request_id] || 0)
+        : 0;
+      const isDisputeRefund = disputeRefundAmt > 0;
+
+      let displayStatus: EarningRow['display_status'] = 'pending';
+      if (isDisputeRefund) displayStatus = 'refunded';
+      else if (e.emergency_frozen) displayStatus = 'frozen';
+      else if (escrowStatusRaw === 'refunded') displayStatus = 'refunded';
+      else if (isReleased || txnStatusRaw === 'completed') displayStatus = 'earned';
       const requestStatus = String(request?.delivery_status || '').toLowerCase();
       const baseFare = request?.base_fare != null ? Number(request.base_fare) : 0;
       const deposit = request?.return_deposit != null ? Number(request.return_deposit) : 0;
@@ -269,6 +310,8 @@ export default function EarningsScreen() {
         is_returned: isReturned,
         fallback_action: request?.fallback_action ?? null,
         refund_status: request?.refund_status ?? null,
+        dispute_refund_amount: disputeRefundAmt,
+        is_dispute_refund: isDisputeRefund,
       };
     });
 
@@ -278,6 +321,9 @@ export default function EarningsScreen() {
     setTotalEarned(earned.reduce((s, r) => s + r.display_amount, 0));
     setTotalPending(pending.reduce((s, r) => s + r.display_amount, 0));
     setCompletedJobs(earned.length);
+    setTotalDisputeRefunded(
+      rows.filter(r => r.is_dispute_refund).reduce((s, r) => s + r.dispute_refund_amount, 0),
+    );
   };
 
   const loadData = async (silent = false) => {
@@ -322,6 +368,8 @@ export default function EarningsScreen() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_wallet', filter: `provider_id=eq.${providerId}` }, () => loadData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'withdrawal_requests' }, () => loadData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => loadData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'escrow_transactions' }, () => loadData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_requests' }, () => loadData(true))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [providerId]);
@@ -451,7 +499,7 @@ export default function EarningsScreen() {
         </View>
 
         {/* Status Pills (Pending Escrow / Payout in Progress) */}
-        {(totalPending > 0 || activeWithdrawalsTotal > 0 || lockedAmount > 0) && (
+        {(totalPending > 0 || activeWithdrawalsTotal > 0 || lockedAmount > 0 || totalDisputeRefunded > 0) && (
           <View style={styles.walletStatusList}>
             {totalPending > 0 && (
               <View style={styles.pendingPill}>
@@ -466,6 +514,14 @@ export default function EarningsScreen() {
                 <SolarIcon name="Clock" variant="bold" size={13} color={colors.warning} />
                 <Text style={styles.pendingText}>
                   ₱{lockedAmount.toFixed(2)} on hold · next unlock in {formatCountdown(nextUnlockAt - nowMs)}
+                </Text>
+              </View>
+            )}
+            {totalDisputeRefunded > 0 && (
+              <View style={[styles.pendingPill, { backgroundColor: colors.errorBg }]}>
+                <SolarIcon name="ArrowLeft" variant="bold" size={13} color={colors.error} />
+                <Text style={[styles.pendingText, { color: colors.error }]}>
+                  ₱{totalDisputeRefunded.toFixed(2)} refunded to senders (disputes)
                 </Text>
               </View>
             )}
@@ -571,6 +627,7 @@ export default function EarningsScreen() {
 
     if (isEarned) { statusColor = colors.success; statusBg = colors.successBg; statusIcon = 'CheckCircle'; statusLabel = 'Earned'; }
     else if (isFrozen) { statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'Snowflake'; statusLabel = 'Frozen'; }
+    else if (isRefunded && item.is_dispute_refund) { statusColor = colors.error; statusBg = colors.errorBg; statusIcon = 'ArrowLeft'; statusLabel = 'Dispute refunded'; }
     else if (isRefunded) { statusColor = colors.textSecondary; statusBg = colors.divider; statusIcon = 'ArrowLeft'; statusLabel = 'Refunded'; }
     else if (isPending) { statusLabel = item.delivery_completed_at ? 'Releasing' : 'In Escrow'; }
 
@@ -614,12 +671,23 @@ export default function EarningsScreen() {
           <Text
             style={[
               styles.transactionAmount,
-              { color: isEarned ? colors.success : isRefunded ? colors.textSecondary : colors.textPrimary },
-              isRefunded && { textDecorationLine: 'line-through' },
+              {
+                color: isEarned
+                  ? colors.success
+                  : item.is_dispute_refund
+                    ? colors.error
+                    : isRefunded ? colors.textSecondary : colors.textPrimary,
+              },
+              isRefunded && !item.is_dispute_refund && { textDecorationLine: 'line-through' },
             ]}
           >
-            {isEarned ? '+' : ''}₱{item.display_amount.toFixed(2)}
+            {item.is_dispute_refund
+              ? `-₱${item.dispute_refund_amount.toFixed(2)}`
+              : `${isEarned ? '+' : ''}₱${item.display_amount.toFixed(2)}`}
           </Text>
+          {item.is_dispute_refund && (
+            <Text style={[styles.penaltyText, { color: colors.textMuted }]}>Refunded to sender</Text>
+          )}
           {item.service_fee != null && item.service_fee > 0 && !isRefunded && (
             <Text style={[styles.penaltyText, { color: colors.textMuted }]}>₱{item.service_fee.toFixed(2)} platform fee</Text>
           )}
@@ -814,6 +882,7 @@ export default function EarningsScreen() {
     let headColor = colors.warning, headBg = colors.warningBg, headIcon: any = 'Clock', headLabel = 'Pending payout';
     if (isEarned) { headColor = colors.success; headBg = colors.successBg; headIcon = 'CheckCircle'; headLabel = 'Earned'; }
     else if (isFrozen) { headColor = colors.error; headBg = colors.errorBg; headIcon = 'Snowflake'; headLabel = 'Frozen (emergency)'; }
+    else if (isRefunded && r.is_dispute_refund) { headColor = colors.error; headBg = colors.errorBg; headIcon = 'ArrowLeft'; headLabel = 'Dispute refund · Refunded to sender'; }
     else if (isRefunded) { headColor = colors.textSecondary; headBg = colors.divider; headIcon = 'ArrowLeft'; headLabel = 'Refunded to sender'; }
     else if (isPending) { headLabel = r.delivery_completed_at ? 'Awaiting escrow release' : 'In escrow'; }
 
@@ -850,7 +919,9 @@ export default function EarningsScreen() {
                   <Text style={styles.heroSub}>Delivery #{r.delivery_id}</Text>
                 </View>
                 <Text style={[styles.heroAmount, { color: headColor }]}>
-                  {isEarned ? '+' : ''}₱{r.display_amount.toFixed(2)}
+                  {r.is_dispute_refund
+                    ? `-₱${r.dispute_refund_amount.toFixed(2)}`
+                    : `${isEarned ? '+' : ''}₱${r.display_amount.toFixed(2)}`}
                 </Text>
               </View>
 
@@ -866,11 +937,21 @@ export default function EarningsScreen() {
                 {penaltyFee > 0 && (
                   <BreakdownRow styles={styles} colors={colors} label="Penalty fee" value={penaltyFee} negative />
                 )}
+                {r.is_dispute_refund && (
+                  <BreakdownRow styles={styles} colors={colors} label="Dispute refund to sender (deducted)" value={r.dispute_refund_amount} negative />
+                )}
                 <View style={styles.breakdownDivider} />
                 <View style={styles.totalRow}>
-                  <Text style={styles.totalLabel}>{isEarned ? 'Net credited to wallet' : 'Expected payout'}</Text>
-                  <Text style={[styles.totalValue, { color: isEarned ? colors.success : colors.textPrimary }]}>
-                    {isEarned ? '+' : ''}₱{(baseAmount != null ? baseAmount : r.display_amount).toFixed(2)}
+                  <Text style={styles.totalLabel}>
+                    {r.is_dispute_refund ? 'Net after dispute refund' : isEarned ? 'Net credited to wallet' : 'Expected payout'}
+                  </Text>
+                  <Text style={[styles.totalValue, { color: r.is_dispute_refund ? colors.error : isEarned ? colors.success : colors.textPrimary }]}>
+                    {r.is_dispute_refund
+                      ? (() => {
+                          const net = Math.round(((baseAmount != null ? baseAmount : 0) - r.dispute_refund_amount) * 100) / 100;
+                          return `${net < 0 ? '-' : ''}₱${Math.abs(net).toFixed(2)}`;
+                        })()
+                      : `${isEarned ? '+' : ''}₱${(baseAmount != null ? baseAmount : r.display_amount).toFixed(2)}`}
                   </Text>
                 </View>
               </View>
@@ -968,7 +1049,9 @@ export default function EarningsScreen() {
                 <View style={[styles.noteBox, { backgroundColor: colors.divider, borderColor: colors.border }]}>
                   <SolarIcon name="ArrowLeft" variant="linear" size={14} color={colors.textSecondary} />
                   <Text style={[styles.noteText, { color: colors.textSecondary }]}>
-                    This delivery was refunded to the sender. No earnings were credited.
+                    {r.is_dispute_refund
+                      ? `A dispute on this delivery was resolved in the sender's favor. ₱${r.dispute_refund_amount.toFixed(2)} was refunded to the sender and deducted from your earnings.`
+                      : 'This delivery was refunded to the sender. No earnings were credited.'}
                   </Text>
                 </View>
               )}

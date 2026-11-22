@@ -16,10 +16,12 @@ import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
 import TermsModal from '../../../components/terms/TermsModal';
 import { needsAcceptance, recordTermsAcceptance } from '../../../services/termsService';
+import { markApplicationPending } from '../../../services/providerApplicationNotifier';
+import { registerPushToken } from '../../../services/pushService';
 
 const BUCKET_NAME = 'vehicle-documents';
 
-const ID_ANALYZER_KEY = 'idk_daZdDfrYrNjwLl6nPD7FdknSDQrFk8DYm70ymez5e';
+const ID_ANALYZER_KEY = 'idk_gVJgCVIAjgoXZQiMT3NQabFWFz1kKPiSdFmjE8AE';
 const MIN_CONFIDENCE_PERCENT = 90; // Minimum confidence required to accept an ID photo
 
 type Side = 'front' | 'back';
@@ -61,7 +63,6 @@ export default function RegisterProviderScreen() {
 
   const [frontVerified, setFrontVerified] = useState(false);
   const [backVerified, setBackVerified] = useState(false);
-  const [backAutoRead, setBackAutoRead] = useState(false);
 
   const [uploadingSide, setUploadingSide] = useState<Side | null>(null);
 
@@ -374,7 +375,6 @@ export default function RegisterProviderScreen() {
       setLicenseBackBase64(null);
       setLicenseBackUrl(null);
       setBackVerified(false);
-      setBackAutoRead(false);
     }
   };
 
@@ -452,20 +452,66 @@ export default function RegisterProviderScreen() {
       Image.getSize(uri, (w, h) => resolve(Math.min(w, h) >= 500), () => resolve(true));
     });
 
-  const confirmUseBackAnyway = (): Promise<boolean> =>
-    new Promise((resolve) => {
-      Alert.alert(
-        "Couldn't read the back automatically",
-        "We couldn't automatically confirm the back photo. Make sure the WHOLE back of the license is in frame, in good light and sharp. You can retake it, or use this photo anyway — our team will review it together with your verified front.",
-        [
-          { text: 'Retake', style: 'cancel', onPress: () => resolve(false) },
-          { text: 'Use Anyway', onPress: () => resolve(true) },
-        ],
-        { cancelable: false },
-      );
-    });
+  // Triggered automatically once BOTH Front and Back are selected.
+  // Only the Front is scanned by ID Analyzer; Back is required and uploaded directly.
+  const autoScanAndUploadBoth = async (
+    fUri: string,
+    fBase64: string,
+    bUri: string,
+    bBase64: string,
+  ) => {
+    setUploadingSide('front');
+    setScanAttempted(false);
+    setLastScanResult(null);
+    setManualNumberEntryAllowed(false);
+    clearLicenseFields();
 
-  // Step 1: Select Front and Back locally first (no scan or upload yet)
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('No user found');
+
+      const scan = await runIdAnalyzerScan(fBase64, null);
+
+      if (!scan || scan.decision === 'error' || scan.decision === 'reject' || !scan.isValidDriverLicense) {
+        resetSideState('front');
+        clearLicenseFields();
+        setManualNumberEntryAllowed(false);
+        setLastScanResult(null);
+
+        const detected = scan?.documentName || scan?.documentType;
+        Alert.alert(
+          'Invalid License Photo',
+          scan?.decision === 'error'
+            ? (scan.errorMessage || 'Could not verify license right now. Please try again.')
+            : detected
+              ? `We detected "${detected}". Only a valid Philippine Driver's License is accepted.`
+              : "This photo is not recognized as a valid Philippine Driver's License. Please retake the front photo."
+        );
+        return;
+      }
+
+      const [frontUrl, backUrl] = await Promise.all([
+        uploadFileFromBase64(fUri, fBase64, user.id, 'license_front'),
+        uploadFileFromBase64(bUri, bBase64, user.id, 'license_back'),
+      ]);
+
+      setLicenseFrontUrl(frontUrl);
+      setFrontVerified(true);
+      setLicenseBackUrl(backUrl);
+      setBackVerified(true);
+
+      setLastScanResult(scan);
+      setScanAttempted(true);
+      populateFieldsFromScan(scan);
+    } catch (error: any) {
+      console.error('Auto scan/upload error:', error);
+      Alert.alert('Verification Error', error?.message || 'Failed to verify and upload license.');
+    } finally {
+      setUploadingSide(null);
+    }
+  };
+
+  // Auto-scan only once BOTH Front and Back are selected
   const handlePickedImage = async (side: Side, uri: string) => {
     try {
       if (!(await isUsableImage(uri))) {
@@ -489,6 +535,11 @@ export default function RegisterProviderScreen() {
         return;
       }
 
+      const nextFrontUri = side === 'front' ? uri : licenseFrontUri;
+      const nextFrontBase64 = side === 'front' ? base64 : licenseFrontBase64;
+      const nextBackUri = side === 'back' ? uri : licenseBackUri;
+      const nextBackBase64 = side === 'back' ? base64 : licenseBackBase64;
+
       if (side === 'front') {
         setLicenseFrontUri(uri);
         setLicenseFrontBase64(base64);
@@ -499,96 +550,14 @@ export default function RegisterProviderScreen() {
         setLicenseBackBase64(base64);
         setLicenseBackUrl(null);
         setBackVerified(false);
-        setBackAutoRead(false);
       }
 
-      setLastScanResult(null);
-      setScanAttempted(false);
-      setManualNumberEntryAllowed(false);
-      clearLicenseFields();
+      if (nextFrontUri && nextFrontBase64 && nextBackUri && nextBackBase64) {
+        await autoScanAndUploadBoth(nextFrontUri, nextFrontBase64, nextBackUri, nextBackBase64);
+      }
     } catch (error: any) {
       console.error('Pick error:', error);
       Alert.alert('Error', error?.message || 'Failed to read selected image.');
-    }
-  };
-
-  // Step 2: Scan Front + Back together in one API call, then upload both in parallel
-  const handleVerifyAndUploadLicense = async () => {
-    if (!licenseFrontUri || !licenseFrontBase64) {
-      Alert.alert('Front Photo Required', "Please select the FRONT of your Driver's License first.");
-      return;
-    }
-    if (!licenseBackUri || !licenseBackBase64) {
-      Alert.alert('Back Photo Required', "Please select the BACK of your Driver's License first.");
-      return;
-    }
-
-    setUploadingSide('front');
-    setScanAttempted(false);
-
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user found');
-
-      // 1. Scan Front + Back together in a single ID Analyzer call
-      let scan = await runIdAnalyzerScan(licenseFrontBase64, licenseBackBase64);
-      let usedBackInScan = true;
-
-      // Fallback: if combined scan failed because the back barcode wasn't machine-readable,
-      // verify the front alone and ask the user whether to retake or keep the back for admin review.
-      if (!scan || !scan.isValidDriverLicense) {
-        const frontOnlyScan = await runIdAnalyzerScan(licenseFrontBase64, null);
-        if (frontOnlyScan && frontOnlyScan.isValidDriverLicense) {
-          const keepBack = await confirmUseBackAnyway();
-          if (!keepBack) {
-            resetSideState('back');
-            return;
-          }
-          scan = frontOnlyScan;
-          usedBackInScan = false;
-        }
-      }
-
-      if (!scan || scan.decision === 'error' || scan.decision === 'reject' || !scan.isValidDriverLicense) {
-        clearLicenseFields();
-        setManualNumberEntryAllowed(false);
-        setLastScanResult(null);
-
-        const detected = scan?.documentName || scan?.documentType;
-        Alert.alert(
-          'Invalid License Photo',
-          detected
-            ? `We detected "${detected}". Only a valid Philippine Driver's License is accepted.`
-            : "This photo is not recognized as a valid Philippine Driver's License. Please retake clearer photos."
-        );
-        return;
-      }
-
-      // 2. Upload Front and Back to Supabase Storage in parallel
-      const [frontUrl, backUrl] = await Promise.all([
-        uploadFileFromBase64(licenseFrontUri, licenseFrontBase64, user.id, 'license_front'),
-        uploadFileFromBase64(licenseBackUri, licenseBackBase64, user.id, 'license_back'),
-      ]);
-
-      setLicenseFrontUrl(frontUrl);
-      setFrontVerified(true);
-      setLicenseBackUrl(backUrl);
-      setBackVerified(true);
-      setBackAutoRead(usedBackInScan);
-
-      setLastScanResult(scan);
-      setScanAttempted(true);
-      populateFieldsFromScan(scan);
-
-      Alert.alert(
-        'License Verified ✓',
-        "Front and Back of your Driver's License are verified and uploaded. Please confirm the expiry date below."
-      );
-    } catch (error: any) {
-      console.error('Verify/Upload error:', error);
-      Alert.alert('Verification Error', error?.message || 'Failed to verify and upload license.');
-    } finally {
-      setUploadingSide(null);
     }
   };
 
@@ -677,7 +646,7 @@ export default function RegisterProviderScreen() {
     if (!licenseFrontUri || !frontVerified || !licenseBackUri || !backVerified) {
       Alert.alert(
         'Valid License Required',
-        "Please upload both the FRONT and BACK of your Driver's License and tap 'Scan & Verify License'."
+        "Please upload both the FRONT and BACK of your Driver's License."
       );
       return;
     }
@@ -688,7 +657,7 @@ export default function RegisterProviderScreen() {
     if (!lastScanResult || !lastScanResult.isValidDriverLicense) {
       Alert.alert(
         "Invalid Driver's License",
-        "Your uploaded photos could not be verified as a valid Philippine Driver's License. Please upload clear photos of your actual license."
+        "Your uploaded front photo could not be verified as a valid Philippine Driver's License. Please upload a clear photo of your actual license."
       );
       return;
     }
@@ -855,6 +824,12 @@ export default function RegisterProviderScreen() {
         throw new Error('Failed to submit verification: ' + verifError.message);
       }
 
+      // Remember that this application is "pending" so the approval/rejection that comes later is recognised as a
+      // real change and the push notification is sent. Also make sure this phone has a push token on file, since
+      // the approval is pushed to it while the app may be closed.
+      await markApplicationPending(userData.user_id);
+      try { await registerPushToken(userData.user_id); } catch { /* push is optional, never block the application */ }
+
       const { error: updateUserError } = await supabase
         .from('users')
         .update({
@@ -948,8 +923,8 @@ export default function RegisterProviderScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.introTitle}>Apply to become a provider</Text>
             <Text style={styles.introText}>
-              Select both the FRONT and BACK of your Philippine Driver's License, then tap
-              Scan &amp; Verify to validate and upload both together.
+              Upload both the FRONT and BACK of your Philippine Driver's License. Verification
+              starts automatically once both photos are uploaded.
             </Text>
           </View>
         </Animated.View>
@@ -992,7 +967,7 @@ export default function RegisterProviderScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.uploadTitle}>Driver's License Photos</Text>
-                <Text style={styles.uploadSubtitle}>Select Front &amp; Back, then Scan</Text>
+                <Text style={styles.uploadSubtitle}>Upload Front &amp; Back to auto-scan</Text>
               </View>
             </View>
             {licenseComplete && (
@@ -1015,7 +990,7 @@ export default function RegisterProviderScreen() {
                   <Image source={{ uri: licenseFrontUri }} style={styles.tileImage} />
                   <View style={styles.tileLabelBadge}>
                     <Text style={styles.tileLabelText}>
-                      {frontVerified ? 'FRONT ✓' : 'FRONT READY'}
+                      {frontVerified ? 'FRONT ✓' : (scanningLicense || uploadingLicense) ? 'SCANNING...' : 'FRONT READY'}
                     </Text>
                   </View>
                   {(uploadingLicense || scanningLicense) && (
@@ -1043,7 +1018,7 @@ export default function RegisterProviderScreen() {
                   <Image source={{ uri: licenseBackUri }} style={styles.tileImage} />
                   <View style={styles.tileLabelBadge}>
                     <Text style={styles.tileLabelText}>
-                      {backVerified ? 'BACK ✓' : 'BACK READY'}
+                      {backVerified ? 'BACK ✓' : (scanningLicense || uploadingLicense) ? 'UPLOADING...' : 'BACK READY'}
                     </Text>
                   </View>
                   {(uploadingLicense || scanningLicense) && (
@@ -1061,43 +1036,18 @@ export default function RegisterProviderScreen() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={[
-              styles.registerButton,
-              { marginTop: 12, paddingVertical: 12 },
-              (!licenseFrontUri || !licenseBackUri || scanningLicense || uploadingLicense) && styles.registerButtonDisabled,
-            ]}
-            onPress={handleVerifyAndUploadLicense}
-            disabled={!licenseFrontUri || !licenseBackUri || scanningLicense || uploadingLicense}
-            activeOpacity={0.85}
-          >
-            {scanningLicense || uploadingLicense ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color="#FFF" />
-                <Text style={styles.registerButtonText}>Scanning &amp; Uploading...</Text>
-              </View>
-            ) : (
-              <>
-                <SolarIcon name="ShieldCheck" variant="linear" size={18} color="#FFFFFF" />
-                <Text style={styles.registerButtonText}>
-                  {licenseComplete ? 'Re-scan License' : 'Scan & Verify License'}
-                </Text>
-              </>
-            )}
-          </TouchableOpacity>
-
           <Text style={styles.uploadHint}>
             Tip: use a flat surface and good lighting. Non-license photos will be rejected.
           </Text>
 
-          {scanningLicense && (
+          {(scanningLicense || uploadingLicense) && (
             <View style={styles.scanningBadge}>
               <ActivityIndicator size="small" color={colors.accent} />
-              <Text style={styles.scanningText}>Verifying Driver's License photos...</Text>
+              <Text style={styles.scanningText}>Verifying &amp; uploading Driver's License...</Text>
             </View>
           )}
 
-          {!scanningLicense && lastScanResult && lastScanResult.isValidDriverLicense && (
+          {!scanningLicense && !uploadingLicense && lastScanResult && lastScanResult.isValidDriverLicense && (
             <View
               style={[
                 styles.scanResultBadge,
@@ -1140,7 +1090,7 @@ export default function RegisterProviderScreen() {
                       ? 'Scanning your license...'
                       : scanAttempted
                       ? 'License number auto-filled · pick expiry date'
-                      : 'Scan valid license photos to auto-fill'
+                      : 'Upload Front & Back photos to auto-fill'
                     : 'Enter the license number printed on your ID'}
                 </Text>
               </View>
@@ -1172,7 +1122,7 @@ export default function RegisterProviderScreen() {
             <View style={styles.waitingNote}>
               <SolarIcon name="CloudUpload" variant="linear" size={14} color={colors.textSecondary} />
               <Text style={styles.waitingNoteText}>
-                Select both Front and Back photos of your Driver's License above and tap Scan &amp; Verify to auto-fill your license number.
+                Upload both Front and Back photos of your Driver's License above to auto-scan and fill your license number.
               </Text>
             </View>
           )}

@@ -1730,6 +1730,21 @@ const OnlinePulseDot = React.memo(function OnlinePulseDot({ online, color }: { o
   );
 });
 
+// ---- Provider readiness: strikes (suspension / removal) and vehicle verification ------------------------------
+type ProviderReadiness = {
+  kind: 'ok' | 'removed' | 'suspended' | 'no_vehicle' | 'vehicle_pending' | 'vehicle_rejected';
+  title: string;
+  message: string;
+};
+type ProviderStanding = { suspendedUntil: Date | null; removed: boolean; reason: string | null };
+type VehicleInfo = { total: number; verified: number; pending: number };
+
+const formatSuspensionEnd = (d: Date) =>
+  d.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// The database also refuses these actions for a suspended / removed provider (provider_suspension_guards.sql).
+const isSuspensionDbError = (msg?: string | null) => !!msg && /PROVIDER_SUSPENDED|PROVIDER_REMOVED/i.test(msg);
+
 export default function JobsScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -1746,6 +1761,55 @@ export default function JobsScreen() {
   const [activeRoute, setActiveRoute] = useState<Route | null>(null);
   const [usedTodayCount, setUsedTodayCount] = useState(0);
   const [, setDemoModeState] = useState(false);
+
+  // Account standing (strikes) and vehicle readiness
+  const [standing, setStanding] = useState<ProviderStanding>({ suspendedUntil: null, removed: false, reason: null });
+  const [vehicleInfo, setVehicleInfo] = useState<VehicleInfo | null>(null);   // null = not loaded yet
+  const [, setStandingTick] = useState(0);
+  const standingRef = useRef<ProviderStanding>(standing);
+  const liftTriedRef = useRef<string | null>(null);
+  const routesPausedRef = useRef(false);                 // true while some of my routes are still flagged suspended_by_strike
+  const healInFlightRef = useRef(false);
+  const lastHealAtRef = useRef(0);
+  const healPausedRoutesRef = useRef<(pid: number) => Promise<boolean>>(async () => false);
+  const loadStandingRef = useRef<(pid?: number | null) => Promise<void>>(async () => {});
+  const loadVehicleInfoRef = useRef<(pid?: number | null) => Promise<void>>(async () => {});
+  const goOfflineRef = useRef<() => void>(() => {});
+  useEffect(() => { standingRef.current = standing; }, [standing]);
+
+  // Suspended (strike 2, until the date passes or an admin revokes it) or removed (strike limit).
+  const isSuspendedNow = () => {
+    const st = standingRef.current;
+    return st.removed || (!!st.suspendedUntil && st.suspendedUntil.getTime() > Date.now());
+  };
+
+  const getReadiness = (): ProviderReadiness => {
+    if (standing.removed) {
+      return {
+        kind: 'removed',
+        title: 'Account removed',
+        message: 'Your provider account was removed after reaching the strike limit. Contact support if you think this is a mistake.',
+      };
+    }
+    if (standing.suspendedUntil && standing.suspendedUntil.getTime() > Date.now()) {
+      return {
+        kind: 'suspended',
+        title: 'Account suspended',
+        message: `Suspended until ${formatSuspensionEnd(standing.suspendedUntil)}. You cannot go online, receive or match requests, or post routes until the suspension ends or an admin lifts it.`,
+      };
+    }
+    if (vehicleInfo) {
+      if (vehicleInfo.total === 0) {
+        return { kind: 'no_vehicle', title: 'Register a vehicle first', message: 'Add your vehicle to start posting routes and receiving requests.' };
+      }
+      if (vehicleInfo.verified === 0) {
+        return vehicleInfo.pending > 0
+          ? { kind: 'vehicle_pending', title: 'Vehicle under review', message: 'You can post a route and go online once your vehicle is verified.' }
+          : { kind: 'vehicle_rejected', title: 'Vehicle needs attention', message: 'Your vehicle was not approved. Update it and submit it again.' };
+      }
+    }
+    return { kind: 'ok', title: '', message: '' };
+  };
 
   const providerIdRef = useRef<number | null>(null);
   const activeRouteRef = useRef<Route | null>(null);
@@ -2080,7 +2144,7 @@ export default function JobsScreen() {
     navigation.navigate('ManageRoutes');
   };
 
-  const fetchRoutes = async (pid: number): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
+  const fetchRoutes = async (pid: number, alreadyHealed = false): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
     try {
       const [stats, { data, error }] = await Promise.all([
         getTodayRouteStats(pid),
@@ -2098,7 +2162,23 @@ export default function JobsScreen() {
       setUsedTodayCount(stats.usedTodayCount);
       if (error) throw error;
 
-      const validRoutes = ((data || []) as Route[]).filter((r) => r.is_deleted !== true && !isRouteExpired(r));
+      const allRows = (data || []) as Route[];
+      // Routes paused by a strike (suspended_by_strike) disappear from the provider's list until the suspension
+      // ends or an admin revokes the strike.
+      const validRoutes = allRows.filter(
+        (r) => r.is_deleted !== true && !isRouteExpired(r) && (r as any).suspended_by_strike !== true,
+      );
+      const pausedByStrike = allRows.some((r) => r.is_deleted !== true && (r as any).suspended_by_strike === true);
+      routesPausedRef.current = pausedByStrike;
+
+      // SELF-HEAL: the provider is no longer suspended / removed (suspension ended or admin revoked the strike),
+      // but some routes are still flagged suspended_by_strike. Un-pause them now and reload once, so the provider
+      // does not have to log out and log in again.
+      if (pausedByStrike && !alreadyHealed && !isSuspendedNow()) {
+        const healed = await healPausedRoutesRef.current(pid);
+        if (healed) return await fetchRoutes(pid, true);
+      }
+
       setRoutes(validRoutes);
       routesRef.current = validRoutes;
 
@@ -2107,7 +2187,7 @@ export default function JobsScreen() {
 
       // When the route is finished / expired there is no active route any more, but the map should still draw the
       // last route (display only; matching and going online keep using the real active route).
-      const keepable = ((data || []) as Route[]).filter(r => r.is_deleted !== true);
+      const keepable = allRows.filter(r => r.is_deleted !== true && (r as any).suspended_by_strike !== true);
       setEndedRoute(
         validRoutes.length > 0 ? null
           : (savedId ? keepable.find(r => r.route_id === savedId) : null) ?? keepable[0] ?? null,
@@ -2127,7 +2207,8 @@ export default function JobsScreen() {
       } else {
         setActiveRoute(null);
         activeRouteRef.current = null;
-        await setActiveRouteId(null);
+        // keep the saved selection while the routes are only paused by a strike: they come back later
+        if (!pausedByStrike) await setActiveRouteId(null);
         return { resolvedRoute: null, validRoutes: [] };
       }
     } catch (e) {
@@ -2250,8 +2331,8 @@ export default function JobsScreen() {
     const pid = overridePid ?? providerIdRef.current;
     if (!pid) return;
 
-    // Offline: do not evaluate, fetch or show ANY request (route matches and direct requests alike).
-    if (!isOnlineRef.current) {
+    // Offline or suspended: do not evaluate, fetch or show ANY request (route matches and direct requests alike).
+    if (!isOnlineRef.current || isSuspendedNow()) {
       refreshSeqRef.current += 1;
       awaitingSeqRef.current += 1;
       setRequests([]);
@@ -2370,6 +2451,8 @@ export default function JobsScreen() {
       const pid = await getProviderData();
       if (pid) {
         void loadNotifs();
+        // standing (strikes) and vehicles first: a suspended provider is forced offline before any matching runs
+        await Promise.all([loadStandingRef.current(pid), loadVehicleInfoRef.current(pid)]);
         const switchedAt = lastLocalSelectAtRef.current;
         const { resolvedRoute } = await fetchRoutes(pid);
         // If the provider switched route while this load was running, their choice wins.
@@ -2457,6 +2540,16 @@ export default function JobsScreen() {
       // another provider accepting a request inserts a deliveries row: drop it from my list right away
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deliveries' }, (payload) => { if (concernsMe(payload)) scheduleRefresh(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_routes', filter: `provider_id=eq.${providerId}` }, scheduleRouteReload)
+      // a strike / revoke / lifted suspension changed my standing
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'provider_standing', filter: `provider_id=eq.${providerId}` }, () => {
+        void loadStandingRef.current();
+        scheduleRouteReload();
+      })
+      // the server switched me offline (strike suspension): follow it right away
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `user_id=eq.${providerId}` }, (payload) => {
+        const row: any = payload.new;
+        if (row && row.is_online === false && isOnlineRef.current) goOfflineRef.current();
+      })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notification_log', filter: `user_id=eq.${providerId}` }, (payload) => {
         void loadNotifs();
         const row: any = payload.new;
@@ -2492,6 +2585,7 @@ export default function JobsScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active' || !providerIdRef.current) return;
+      void loadStandingRef.current();
       void refreshMatches(providerIdRef.current, activeRouteRef.current, true, true);
       void loadNotifs();
     });
@@ -2505,6 +2599,7 @@ export default function JobsScreen() {
     const id = setInterval(() => {
       if (modalOpenRef.current || loadInFlightRef.current) return;
       tick += 1;
+      void loadStandingRef.current();
       void refreshMatches(providerIdRef.current, activeRouteRef.current, tick % POLL_EVALUATE_EVERY === 0, true);
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
@@ -2522,6 +2617,9 @@ export default function JobsScreen() {
   const openAddRouteModal = async () => {
     const pid = providerId || (await getProviderData());
     if (!pid) { Alert.alert('Error', 'Provider account details not loaded yet.'); return; }
+    // A suspended / removed provider cannot post routes, and a route needs a verified vehicle.
+    const readiness = getReadiness();
+    if (readiness.kind !== 'ok') { showReadinessAlert(readiness); return; }
     setRoutePickerVisible(false);
     const initial = new Date(Date.now() + 135 * 60 * 1000);
     setNewRouteStart(null);
@@ -2629,6 +2727,7 @@ export default function JobsScreen() {
 
   const handleAddRouteSubmit = async () => {
     if (!providerId) { Alert.alert('Error', 'Provider not loaded.'); return; }
+    if (isSuspendedNow()) { showReadinessAlert(getReadiness()); return; }
     if (!newRouteStart || !newRouteEnd || !newRouteVehicleId || !newRouteStart.location_id || !newRouteEnd.location_id) {
       Alert.alert('Required', 'Please select start location, destination, and vehicle.');
       return;
@@ -2700,7 +2799,13 @@ export default function JobsScreen() {
       await refreshMatches(providerId, resolvedRoute, true);
     } catch (err: any) {
       console.error('handleAddRouteSubmit error:', err);
-      Alert.alert('Guardrail Check', err?.message || 'Failed to save route.');
+      if (isSuspensionDbError(err?.message)) {
+        void loadStandingRef.current();
+        setAddRouteModalVisible(false);
+        Alert.alert('Account suspended', 'Your account is suspended, so you cannot post a route right now. Open Account Health for details.');
+      } else {
+        Alert.alert('Guardrail Check', err?.message || 'Failed to save route.');
+      }
     } finally {
       setNewRouteSubmitting(false);
     }
@@ -2711,6 +2816,10 @@ export default function JobsScreen() {
     if (!pid) { Alert.alert('Error', 'Provider account details could not be loaded.'); return; }
 
     if (online) {
+      // Strikes and vehicle checks come first: a suspended / removed provider cannot go online at all.
+      const readiness = getReadiness();
+      if (readiness.kind !== 'ok') { showReadinessAlert(readiness); return; }
+
       let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
@@ -2726,7 +2835,15 @@ export default function JobsScreen() {
       }
 
       const { error: onErr } = await supabase.from('users').update({ is_online: true }).eq('user_id', pid);
-      if (onErr) { Alert.alert('Could not go online', onErr.message); return; }
+      if (onErr) {
+        if (isSuspensionDbError(onErr.message)) {
+          void loadStandingRef.current();
+          Alert.alert('Account suspended', 'Your account is suspended, so you cannot go online right now. Open Account Health for details.');
+        } else {
+          Alert.alert('Could not go online', onErr.message);
+        }
+        return;
+      }
       isOnlineRef.current = true;
       setIsOnline(true);
       await refreshMatches(pid, currentRoute, true);
@@ -2736,16 +2853,7 @@ export default function JobsScreen() {
         {
           text: 'Go Offline', style: 'destructive', onPress: async () => {
             // stop everything on this device first, so nothing can slip in while the DB write is in flight
-            isOnlineRef.current = false;
-            refreshSeqRef.current += 1;
-            awaitingSeqRef.current += 1;
-            if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
-            setIsOnline(false);
-            setRequests([]);
-            setAwaiting([]);
-            setLapsedIds([]);
-            setCheckingMatches(false);
-            setDetailRequestId(null);
+            goOfflineLocally();
 
             const { error: offErr } = await supabase.from('users').update({ is_online: false }).eq('user_id', pid);
             if (offErr) {
@@ -2760,6 +2868,154 @@ export default function JobsScreen() {
       ]);
     }
   };
+
+  // ---- Strikes + vehicle readiness ------------------------------------------------------------------------
+  const goOfflineLocally = useCallback(() => {
+    isOnlineRef.current = false;
+    refreshSeqRef.current += 1;
+    awaitingSeqRef.current += 1;
+    if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+    setIsOnline(false);
+    setRequests([]);
+    setAwaiting([]);
+    setLapsedIds([]);
+    setCheckingMatches(false);
+    setDetailRequestId(null);
+  }, []);
+  goOfflineRef.current = goOfflineLocally;
+
+  const showReadinessAlert = (r: ProviderReadiness) => {
+    const blockedByStrike = r.kind === 'removed' || r.kind === 'suspended';
+    Alert.alert(
+      r.title,
+      r.message,
+      blockedByStrike
+        ? [
+            { text: 'OK', style: 'cancel' as const },
+            { text: 'Account Health', onPress: () => navigation.navigate('AccountHealth') },
+          ]
+        : [
+            { text: 'Not now', style: 'cancel' as const },
+            { text: r.kind === 'no_vehicle' ? 'Register a Vehicle' : 'Manage Vehicle', onPress: () => navigation.navigate('ManageVehicle') },
+          ],
+    );
+  };
+
+  // Brings back the routes that a strike paused, once the provider is no longer suspended / removed.
+  // 1) ask the database (lift_expired_suspensions); 2) if routes are still flagged afterwards (function missing, no
+  // permission, or an admin revoke that did not clear them), clear the flag directly. Never runs while suspended.
+  const healPausedRoutes = useCallback(async (pid: number): Promise<boolean> => {
+    if (!pid || healInFlightRef.current) return false;
+    if (isSuspendedNow()) return false;
+    if (Date.now() - lastHealAtRef.current < 15000) return false;   // throttle
+    healInFlightRef.current = true;
+    lastHealAtRef.current = Date.now();
+    try {
+      const { error: rpcErr } = await supabase.rpc('lift_expired_suspensions');
+      if (rpcErr) console.warn('[jobs] lift_expired_suspensions failed:', rpcErr.message);
+
+      const countPaused = async () => {
+        const { count, error } = await supabase
+          .from('provider_routes')
+          .select('route_id', { count: 'exact', head: true })
+          .eq('provider_id', pid)
+          .eq('is_deleted', false)
+          .eq('suspended_by_strike', true);
+        return error ? null : (count ?? 0);
+      };
+
+      const remaining = await countPaused();
+      if (remaining !== null && remaining > 0 && !isSuspendedNow()) {
+        const { error: updErr } = await supabase
+          .from('provider_routes')
+          .update({ suspended_by_strike: false })
+          .eq('provider_id', pid)
+          .eq('is_deleted', false)
+          .eq('suspended_by_strike', true);
+        if (updErr) console.warn('[jobs] could not un-pause routes:', updErr.message);
+      }
+      return true;
+    } catch (e) {
+      console.warn('[jobs] healPausedRoutes error:', e);
+      return false;
+    } finally {
+      healInFlightRef.current = false;
+    }
+  }, []);
+  healPausedRoutesRef.current = healPausedRoutes;
+
+  const loadStanding = useCallback(async (pid?: number | null) => {
+    const id = pid ?? providerIdRef.current;
+    if (!id) return;
+    try {
+      const { data, error } = await supabase
+        .from('provider_standing')
+        .select('suspended_until, removed_by_strikes, suspension_reason')
+        .eq('provider_id', id)
+        .maybeSingle();
+      if (error) throw error;
+      const next: ProviderStanding = {
+        suspendedUntil: data?.suspended_until ? new Date(data.suspended_until) : null,
+        removed: !!data?.removed_by_strikes,
+        reason: data?.suspension_reason ?? null,
+      };
+      standingRef.current = next;
+      setStanding(next);
+
+      const suspendedNow = next.removed || (!!next.suspendedUntil && next.suspendedUntil.getTime() > Date.now());
+      if (suspendedNow) {
+        if (isOnlineRef.current) {
+          goOfflineLocally();
+          void supabase.from('users').update({ is_online: false }).eq('user_id', id);
+        }
+      } else if (
+        routesPausedRef.current ||
+        (next.suspendedUntil && liftTriedRef.current !== next.suspendedUntil.toISOString())
+      ) {
+        // Not suspended any more (the suspension ran out, or an admin revoked the strike) but routes are still
+        // paused: bring them back and reload. Retries on every standing check until the routes are really back.
+        if (next.suspendedUntil) liftTriedRef.current = next.suspendedUntil.toISOString();
+        void (async () => {
+          const attempted = await healPausedRoutesRef.current(id);
+          if (attempted) reloadWhenIdle();
+        })();
+      }
+    } catch (e) {
+      console.warn('[jobs] could not load account standing:', e);
+    }
+  }, [goOfflineLocally, reloadWhenIdle]);
+
+  const loadVehicleInfo = useCallback(async (pid?: number | null) => {
+    const id = pid ?? providerIdRef.current;
+    if (!id) return;
+    try {
+      const { data, error } = await supabase.from('vehicles').select('verification_status').eq('provider_id', id);
+      if (error) throw error;
+      const rows = (data || []) as { verification_status: string | null }[];
+      const norm = (v: string | null) => String(v || '').toLowerCase();
+      setVehicleInfo({
+        total: rows.length,
+        verified: rows.filter(r => norm(r.verification_status) === 'verified').length,
+        pending: rows.filter(r => norm(r.verification_status) === 'pending').length,
+      });
+    } catch (e) {
+      console.warn('[jobs] could not load vehicles:', e);
+    }
+  }, []);
+
+  loadStandingRef.current = loadStanding;
+  loadVehicleInfoRef.current = loadVehicleInfo;
+
+  // When the suspension date passes, re-check right away (and lift it) instead of waiting for the next poll.
+  useEffect(() => {
+    const until = standing.suspendedUntil?.getTime();
+    if (!until || until <= Date.now()) return;
+    const id = setTimeout(() => {
+      setStandingTick(t => t + 1);
+      void loadStanding();
+    }, Math.min(until - Date.now() + 1000, 2147000000));
+    return () => clearTimeout(id);
+  }, [standing.suspendedUntil, loadStanding]);
 
   useFocusEffect(
     useCallback(() => {
@@ -2857,6 +3113,7 @@ export default function JobsScreen() {
 
   const doAccept = async (req: JobRequest) => {
     if (!providerId) return;
+    if (isSuspendedNow()) { showReadinessAlert(getReadiness()); return; }
     setAccepting(true);
     try {
       let vehicleId: number | null =
@@ -3545,6 +3802,7 @@ export default function JobsScreen() {
   };
 
   const renderSheetHeader = () => {
+    const readiness = getReadiness();
     const start = describePlace(activeRoute?.start_location);
     const end = describePlace(activeRoute?.end_location);
     const rDate = activeRoute ? parseNaiveIsoString(activeRoute.departure_time) : null;
@@ -3559,17 +3817,47 @@ export default function JobsScreen() {
             <Text style={styles.statusSub} numberOfLines={1}>
               {isOnline
                 ? (checkingMatches ? 'Scanning your route…' : `${awaiting.length} matched request${awaiting.length === 1 ? '' : 's'}`)
-                : 'Go online to receive requests'}
+                : (readiness.kind === 'ok' ? 'Go online to receive requests' : readiness.title)}
             </Text>
           </View>
           <TouchableOpacity
-            style={isOnline ? styles.offlineBtn : styles.onlineBtn}
+            style={[isOnline ? styles.offlineBtn : styles.onlineBtn, !isOnline && readiness.kind !== 'ok' && styles.onlineBtnBlocked]}
             onPress={() => toggleOnlineStatus(!isOnline)}
             activeOpacity={0.85}
           >
             <Text style={isOnline ? styles.offlineBtnText : styles.onlineBtnText}>{isOnline ? 'Go offline' : 'Go online'}</Text>
           </TouchableOpacity>
         </View>
+
+        {(readiness.kind === 'removed' || readiness.kind === 'suspended') && (
+          <TouchableOpacity style={styles.standingCard} onPress={() => navigation.navigate('AccountHealth')} activeOpacity={0.85}>
+            <View style={styles.standingIcon}>
+              <SolarIcon name="ShieldCheck" variant="bold" size={16} color="#FFFFFF" />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.standingTitle}>{readiness.title}</Text>
+              <Text style={styles.standingSub}>{readiness.message}</Text>
+            </View>
+            <SolarIcon name="AltArrowRight" variant="linear" size={16} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
+
+        {(readiness.kind === 'no_vehicle' || readiness.kind === 'vehicle_pending' || readiness.kind === 'vehicle_rejected') && (
+          <View style={styles.vehicleCard}>
+            <View style={styles.vehicleCardTop}>
+              <View style={styles.routeRowIcon}>
+                <SolarIcon name="Car" variant="bold" size={16} color="#FFFFFF" />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.routeRowTitle}>{readiness.title}</Text>
+                <Text style={styles.routeRowSub}>{readiness.message}</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.vehicleBtn} onPress={() => navigation.navigate('ManageVehicle')} activeOpacity={0.85}>
+              <Text style={styles.vehicleBtnText}>{readiness.kind === 'no_vehicle' ? 'Register a Vehicle' : 'Manage Vehicle'}</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {renderTripCard()}
 
@@ -3605,7 +3893,7 @@ export default function JobsScreen() {
               <Text style={styles.changePillText}>Change</Text>
             </View>
           </TouchableOpacity>
-        ) : (
+        ) : readiness.kind !== 'ok' ? null : (
           <TouchableOpacity style={styles.routeRow} onPress={openAddRouteModal} activeOpacity={0.85}>
             <View style={styles.routeRowIcon}>
               <SolarIcon name="AddCircle" variant="bold" size={16} color="#FFFFFF" />
@@ -4704,6 +4992,21 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
     routeChip: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: c.card, borderWidth: 1, borderColor: c.divider },
     routeChipText: { fontSize: 11.5, fontFamily: 'Poppins_600SemiBold', color: c.textSecondary },
     routeRowSub: { fontSize: 12, fontFamily: 'Poppins_400Regular', color: c.textSecondary, marginTop: 1 },
+    onlineBtnBlocked: { opacity: 0.5 },
+    standingCard: {
+      flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12,
+      backgroundColor: c.errorBg, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(239,68,68,0.35)', padding: 12,
+    },
+    standingIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: c.error, alignItems: 'center', justifyContent: 'center' },
+    standingTitle: { fontSize: 14, fontFamily: 'Poppins_700Bold', color: c.error },
+    standingSub: { fontSize: 12, lineHeight: 17, fontFamily: 'Poppins_500Medium', color: c.textSecondary, marginTop: 1 },
+    vehicleCard: {
+      gap: 10, marginBottom: 12,
+      backgroundColor: c.background, borderRadius: 14, borderWidth: 1, borderColor: BRAND_ORANGE, padding: 12,
+    },
+    vehicleCardTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    vehicleBtn: { height: 40, borderRadius: 20, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
+    vehicleBtnText: { fontSize: 13.5, fontFamily: 'Poppins_700Bold', color: '#FFFFFF' },
     changePill: { height: 32, paddingHorizontal: 12, borderRadius: 16, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' },
     changePillText: { fontSize: 12.5, fontFamily: 'Poppins_700Bold', color: c.accent },
     reqCard: { backgroundColor: c.card, borderRadius: 16, borderWidth: 1, borderColor: hair, padding: 16, marginBottom: 14 },
