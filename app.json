@@ -71,7 +71,15 @@
       "favicon": "./assets/appiconfixed.png"
     },
     "plugins": [
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/appiconfixed.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
       "expo-web-browser",
       "expo-sqlite",
       "expo-status-bar",

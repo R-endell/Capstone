@@ -12,6 +12,10 @@ import Svg, { Defs, LinearGradient, Stop, Rect, RadialGradient, Circle, G } from
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import {
+  peekCache, writeCache, patchCache, resolveAuthUser, offlineCacheReady,
+  PROFILE_KEY, CachedProfile,
+} from '../../../utils/offlineCache';
 import NotificationsList from '../Disputes/NotificationsList';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { routeNotification, NotifRow, isWithdrawalNotif } from '../../../utils/notifRouter';
@@ -21,6 +25,8 @@ const ICON_3D_SEND = require('../../../../assets/package-icon.png');
 const ICON_3D_SCHEDULE = require('../../../../assets/schedule-icon.png');
 
 type Notif = NotifRow;
+
+const NOTIFS_CACHE_KEY = 'home.notifs';
 
 const ago = (iso: string) => {
   const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
@@ -201,12 +207,16 @@ export default function HomeScreen() {
     return hour >= 18 || hour < 6;
   }, []);
 
-  const [userName, setUserName] = useState('there');
-  const [myId, setMyId] = useState<number | null>(null);
+  // Last known data (memory cache) -> keeps "Hello, <name>" + notifications when offline.
+  const cachedProfile = peekCache<CachedProfile>(PROFILE_KEY);
+  const cachedNotifs = peekCache<Notif[]>(NOTIFS_CACHE_KEY);
+
+  const [userName, setUserName] = useState(cachedProfile?.firstName || 'there');
+  const [myId, setMyId] = useState<number | null>(cachedProfile?.userId ?? null);
   const [notifModalOpen, setNotifModalOpen] = useState(false);
-  const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [notifs, setNotifs] = useState<Notif[]>(cachedNotifs ?? []);
   const [notifLoading, setNotifLoading] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(() => (cachedNotifs ?? []).filter((n) => !n.is_read).length);
   const [fullListOpen, setFullListOpen] = useState(false);
   const notifChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [openItem, setOpenItem] = useState<string | null>(null);
@@ -226,16 +236,39 @@ export default function HomeScreen() {
     return () => driftAnimation.stop();
   }, [driftY]);
 
+  // Cold start while offline: fill from disk once the cache has loaded
+  // (only touches values that are still at their defaults).
+  useEffect(() => {
+    let alive = true;
+    offlineCacheReady.then(() => {
+      if (!alive) return;
+      const p = peekCache<CachedProfile>(PROFILE_KEY);
+      if (p?.firstName) setUserName((cur) => (cur === 'there' ? p.firstName as string : cur));
+      if (p?.userId != null) setMyId((cur) => cur ?? (p.userId as number));
+      const n = peekCache<Notif[]>(NOTIFS_CACHE_KEY);
+      if (n) {
+        setNotifs((cur) => (cur.length ? cur : n));
+        setUnreadCount((cur) => cur || n.filter((x) => !x.is_read).length);
+      }
+    });
+    return () => { alive = false; };
+  }, []);
+
   useEffect(() => {
     let active = true;
     (async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        // Offline-safe: falls back to the locally stored session.
+        const user = await resolveAuthUser();
         if (!user) return;
         const { data } = await supabase.from('users').select('user_id, first_name').eq('auth_id', user.id).maybeSingle();
         if (!active) return;
         if (data?.first_name) setUserName(data.first_name);
         if (data?.user_id) setMyId(data.user_id);
+        patchCache<CachedProfile>(PROFILE_KEY, {
+          userId: data?.user_id ?? undefined,
+          firstName: data?.first_name || undefined,
+        });
       } catch {}
     })();
     return () => { active = false; };
@@ -254,6 +287,7 @@ export default function HomeScreen() {
       const list = (data || []) as Notif[];
       setNotifs(list);
       setUnreadCount(list.filter(n => !n.is_read).length);
+      writeCache(NOTIFS_CACHE_KEY, list);
     } catch (e) { console.warn('[home] notif load failed', e); } finally { setNotifLoading(false); }
   }, [myId]);
 

@@ -9,6 +9,10 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import {
+  peekCache, writeCache, patchCache, resolveAuthUser, offlineCacheReady, clearOfflineCache,
+  PROFILE_KEY, CachedProfile,
+} from '../../../utils/offlineCache';
 import { countAwaitingMyResponse } from '../../../services/disputeService';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
@@ -27,23 +31,43 @@ const { height: SCREEN_H } = Dimensions.get('window');
 // are listed — active jobs live elsewhere.
 type OutcomeFilter = 'All' | 'Completed' | 'Cancelled';
 
+const HISTORY_CACHE_KEY = 'provider.history';
+const DISPUTE_CACHE_KEY = 'provider.disputeCount';
+const HISTORY_CACHE_LIMIT = 50;
+
+// Cached history is plain JSON: Date objects become strings and the theme colors
+// are stale, so rebuild both from the saved data.
+const rehydrateHistory = (raw: any, c: ThemeColors): any[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((j: any) => {
+    let statusColor = c.warning, statusBg = c.warningBg, statusIcon: any = 'Clock';
+    if (j.statusLabel === 'Completed') { statusColor = c.success; statusBg = c.successBg; statusIcon = 'CheckCircle'; }
+    else if (j.statusLabel === 'Cancelled') { statusColor = c.error; statusBg = c.errorBg; statusIcon = 'CloseCircle'; }
+    else if (j.statusLabel === 'In Transit') { statusColor = c.info; statusBg = c.infoSoft; statusIcon = 'Lightning'; }
+    return { ...j, rawDate: new Date(j.timestamp ?? j.rawDate), statusColor, statusBg, statusIcon };
+  });
+};
+
 export default function ProviderAccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
   const { isDark, colors, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const [firstName, setFirstName] = useState<string>('First');
-  const [lastName, setLastName] = useState<string>('Last');
-  const [userEmail, setUserEmail] = useState<string>('');
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  // Last known data (memory cache) -> no flash of placeholders when the screen re-mounts offline.
+  const cachedProfile = peekCache<CachedProfile>(PROFILE_KEY);
+
+  const [firstName, setFirstName] = useState<string>(cachedProfile?.firstName || 'First');
+  const [lastName, setLastName] = useState<string>(cachedProfile?.lastName || 'Last');
+  const [userEmail, setUserEmail] = useState<string>(cachedProfile?.email || '');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(cachedProfile?.avatarUrl || null);
   const [imageError, setImageError] = useState(false);
-  const [userId, setUserId] = useState<number | null>(null);
-  const [disputeCount, setDisputeCount] = useState(0);
+  const [userId, setUserId] = useState<number | null>(cachedProfile?.userId ?? null);
+  const [disputeCount, setDisputeCount] = useState<number>(peekCache<number>(DISPUTE_CACHE_KEY) ?? 0);
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
   const [showHistory, setShowHistory] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<any[]>(() => rehydrateHistory(peekCache<any[]>(HISTORY_CACHE_KEY), colors));
   const [historyLoading, setHistoryLoading] = useState(false);
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('All');
   const [selectedHistoryJob, setSelectedHistoryJob] = useState<any | null>(null);
@@ -87,6 +111,30 @@ export default function ProviderAccountScreen() {
     pulse.start();
     return () => pulse.stop();
   }, [headerAnim, contentAnim, avatarPulse]);
+
+  // Cold start while offline: fill from disk as soon as the cache has loaded,
+  // unless the network fetch already delivered fresher data.
+  const fetchedFreshRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    offlineCacheReady.then(() => {
+      if (!alive || fetchedFreshRef.current) return;
+      const pr = peekCache<CachedProfile>(PROFILE_KEY);
+      if (pr) {
+        if (pr.firstName) setFirstName(pr.firstName);
+        if (pr.lastName) setLastName(pr.lastName);
+        if (pr.email) setUserEmail(pr.email);
+        if (pr.avatarUrl) setAvatarUrl(pr.avatarUrl);
+        if (pr.userId != null) setUserId(pr.userId);
+      }
+      const d = peekCache<number>(DISPUTE_CACHE_KEY);
+      if (typeof d === 'number') setDisputeCount(d);
+      const h = peekCache<any[]>(HISTORY_CACHE_KEY);
+      if (h) setHistory((cur) => (cur.length ? cur : rehydrateHistory(h, colors)));
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -245,9 +293,10 @@ export default function ProviderAccountScreen() {
 
       mapped.sort((a, b) => b.timestamp - a.timestamp);
       setHistory(mapped);
+      writeCache(HISTORY_CACHE_KEY, mapped.slice(0, HISTORY_CACHE_LIMIT));
     } catch (err) {
-      console.error('Error fetching provider history:', err);
-      setHistory([]);
+      // Offline / failed: KEEP whatever history we already have (cached) instead of wiping it.
+      console.warn('Error fetching provider history:', err);
     } finally {
       setHistoryLoading(false);
     }
@@ -258,7 +307,8 @@ export default function ProviderAccountScreen() {
       const fetchUserData = async () => {
         try {
           setImgKey(Date.now());
-          const { data: { user } } = await supabase.auth.getUser();
+          // Offline-safe: falls back to the locally stored session.
+          const user = await resolveAuthUser();
           if (!user) return;
 
           if (user.user_metadata?.first_name) setFirstName(user.user_metadata.first_name);
@@ -268,6 +318,12 @@ export default function ProviderAccountScreen() {
             setImageError(false);
           }
           setUserEmail(user.email || '');
+          patchCache<CachedProfile>(PROFILE_KEY, {
+            email: user.email || undefined,
+            firstName: user.user_metadata?.first_name || undefined,
+            lastName: user.user_metadata?.last_name || undefined,
+            avatarUrl: user.user_metadata?.avatar_url || undefined,
+          });
 
           const { data: userData, error: userError } = await supabase
             .from('users')
@@ -277,8 +333,11 @@ export default function ProviderAccountScreen() {
 
           if (userError || !userData) return;
 
+          fetchedFreshRef.current = true;
           setUserId(userData.user_id);
-          countAwaitingMyResponse(userData.user_id).then(setDisputeCount).catch(() => {});
+          countAwaitingMyResponse(userData.user_id)
+            .then((n) => { setDisputeCount(n); writeCache(DISPUTE_CACHE_KEY, n); })
+            .catch(() => {});
 
           if (!user.user_metadata?.first_name && userData.first_name) setFirstName(userData.first_name);
           if (!user.user_metadata?.last_name && userData.last_name) setLastName(userData.last_name);
@@ -286,10 +345,16 @@ export default function ProviderAccountScreen() {
             setAvatarUrl(userData.profile_photo);
             setImageError(false);
           }
+          patchCache<CachedProfile>(PROFILE_KEY, {
+            userId: userData.user_id,
+            firstName: user.user_metadata?.first_name || userData.first_name || undefined,
+            lastName: user.user_metadata?.last_name || userData.last_name || undefined,
+            avatarUrl: user.user_metadata?.avatar_url || userData.profile_photo || undefined,
+          });
 
           fetchHistory(userData.user_id);
         } catch (error) {
-          console.error('Error fetching provider data:', error);
+          console.warn('Error fetching provider data:', error);
         }
       };
       fetchUserData();
@@ -308,6 +373,7 @@ export default function ProviderAccountScreen() {
         text: 'Log Out', style: 'destructive',
         onPress: async () => {
           await clearLastMode();
+          await clearOfflineCache();
           await supabase.auth.signOut();
           navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
         },

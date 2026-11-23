@@ -14,6 +14,7 @@ import { SolarIcon } from './src/components/ui/SolarIcon';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import "expo-crypto";
 import { supabase } from './src/utils/supabase';
+import { peekCache, writeCache, resolveAuthUser, offlineCacheReady, clearOfflineCache } from './src/utils/offlineCache';
 import { isApprovedProvider, clearLastMode } from './src/utils/resolveHomeRoute';
 
 import { useFonts, Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold, Poppins_700Bold, Poppins_800ExtraBold } from '@expo-google-fonts/poppins';
@@ -118,9 +119,13 @@ import LiveTrackingScreen from './src/modules/Dashboard/Sender/Delivery/LiveTrac
 import './src/services/backgroundLocationTask';
 
 import * as Notifications from 'expo-notifications';
+import * as SplashScreen from 'expo-splash-screen';
 import { registerPushToken } from './src/services/pushService';
 import VerifyEmailScreen from './src/modules/Authentication/VerifyEmailScreen';
 import ProviderNoticeModal from './src/components/ProviderNoticeModal';
+
+// Keep the native splash visible until fonts are ready, then hand over to LoadingScreen.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export type RootStackParamList = {
   Loading: undefined;
@@ -235,15 +240,28 @@ const CustomTabLabel = ({ color, children }: { focused: boolean, color: string, 
 
 // --- GLOBAL UNREAD BADGE HOOK ---
 function useUnreadMessages() {
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState<number>(() => peekCache<number>('app.unread') ?? 0);
 
   useEffect(() => {
     let isMounted = true;
     let channel: any;
+    let fetchedFresh = false;
+
+    // Cold start while offline: show the last known badge once the disk cache has loaded.
+    offlineCacheReady.then(() => {
+      if (!isMounted || fetchedFresh) return;
+      const c = peekCache<number>('app.unread');
+      if (typeof c === 'number') setUnreadCount(c);
+    });
+    const applyUnread = (n: number) => {
+      fetchedFresh = true;
+      if (isMounted) setUnreadCount(n);
+      writeCache('app.unread', n);
+    };
 
     const fetchUnread = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = await resolveAuthUser();
         if (!user) return;
         const { data: userRecord } = await supabase.from('users').select('user_id').eq('auth_id', user.id).single();
         if (!userRecord) return;
@@ -260,14 +278,14 @@ function useUnreadMessages() {
         }
 
         const deliveryIds = Array.from(new Set([...(providerDelivs || []).map((d) => d.delivery_id), ...(senderDelivs || []).map((d) => d.delivery_id)]));
-        if (deliveryIds.length === 0) { if (isMounted) setUnreadCount(0); return; }
+        if (deliveryIds.length === 0) { applyUnread(0); return; }
 
         const { data: rooms } = await supabase.from('chat_rooms').select('room_id').in('delivery_id', deliveryIds);
         const roomIds = (rooms || []).map((r) => r.room_id);
-        if (roomIds.length === 0) { if (isMounted) setUnreadCount(0); return; }
+        if (roomIds.length === 0) { applyUnread(0); return; }
 
         const { count } = await supabase.from('chat_messages').select('*', { count: 'exact', head: true }).in('room_id', roomIds).eq('is_read', false).neq('sender_id', userId);
-        if (isMounted) setUnreadCount(count || 0);
+        applyUnread(count || 0);
       } catch (e) { console.log(e); }
     };
 
@@ -668,6 +686,7 @@ function AppInner() {
 
     const { data: authSub } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (cancelled) return;
+      if (_event === 'SIGNED_OUT') { void clearOfflineCache(); }
       if (!session?.user) {
         if (matcherStartedRef.current) { stopBackgroundMatcher(); matcherStartedRef.current = false; }
         return;
@@ -814,6 +833,10 @@ export default function App() {
     Poppins_700Bold,
     Poppins_800ExtraBold,
   });
+
+  useEffect(() => {
+    if (fontsLoaded) SplashScreen.hideAsync().catch(() => {});
+  }, [fontsLoaded]);
 
   if (!fontsLoaded) return null;
 

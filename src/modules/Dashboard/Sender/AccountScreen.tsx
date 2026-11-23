@@ -10,6 +10,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../../../App';
 import { supabase } from '../../../utils/supabase';
+import {
+  peekCache, writeCache, patchCache, resolveAuthUser, offlineCacheReady, clearOfflineCache,
+  PROFILE_KEY, CachedProfile,
+} from '../../../utils/offlineCache';
 import { setLastMode, clearLastMode } from '../../../utils/resolveHomeRoute';
 import { useTheme, ThemeColors } from '../../../utils/themeContext';
 import { SolarIcon } from '../../../components/ui/SolarIcon';
@@ -17,22 +21,31 @@ import { notifyOnApplicationDecision } from '../../../services/providerApplicati
 
 type ProviderState = 'none' | 'pending' | 'approved' | 'rejected';
 
+// Last known provider status, so an approved provider does not suddenly look like
+// "Register as a Provider" when the internet drops.
+const PROVIDER_CACHE_KEY = 'account.provider';
+type CachedProvider = { providerState: ProviderState; rejectionReason: string | null };
+
 export default function AccountScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const insets = useSafeAreaInsets();
   const { isDark, colors, toggleDark } = useTheme();
   const styles = useMemo(() => makeStyles(colors, isDark), [colors, isDark]);
 
-  const [firstName, setFirstName] = useState<string>('First');
-  const [lastName, setLastName] = useState<string>('Last');
-  const [userEmail, setUserEmail] = useState<string>('john.doe@example.com');
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  // Last known data (memory cache) -> no flash of placeholders when the screen re-mounts offline.
+  const cachedProfile = peekCache<CachedProfile>(PROFILE_KEY);
+  const cachedProvider = peekCache<CachedProvider>(PROVIDER_CACHE_KEY);
+
+  const [firstName, setFirstName] = useState<string>(cachedProfile?.firstName || 'First');
+  const [lastName, setLastName] = useState<string>(cachedProfile?.lastName || 'Last');
+  const [userEmail, setUserEmail] = useState<string>(cachedProfile?.email || '');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(cachedProfile?.avatarUrl || null);
   const [imageError, setImageError] = useState(false);
-  const [providerState, setProviderState] = useState<ProviderState>('none');
-  const [rejectionReason, setRejectionReason] = useState<string | null>(null);
+  const [providerState, setProviderState] = useState<ProviderState>(cachedProvider?.providerState ?? 'none');
+  const [rejectionReason, setRejectionReason] = useState<string | null>(cachedProvider?.rejectionReason ?? null);
   const [rejectionModalVisible, setRejectionModalVisible] = useState<boolean>(false);
-  const [userId, setUserId] = useState<number | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(false); // provider presence (users.is_online)
+  const [userId, setUserId] = useState<number | null>(cachedProfile?.userId ?? null);
+  const [isOnline, setIsOnline] = useState<boolean>(!!cachedProfile?.isOnline); // provider presence (users.is_online)
   const [imgKey, setImgKey] = useState<number>(Date.now());
 
   // --- NEW: guards that stop "Tap → Register-as-Provider" while state is unresolved.
@@ -60,6 +73,31 @@ export default function AccountScreen() {
     pulse.start();
     return () => pulse.stop();
   }, [headerAnim, contentAnim, avatarPulse]);
+
+  // Cold start while offline: fill from disk as soon as the cache has loaded,
+  // unless the network fetch already delivered fresher data.
+  const fetchedFreshRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    offlineCacheReady.then(() => {
+      if (!alive || fetchedFreshRef.current) return;
+      const p = peekCache<CachedProfile>(PROFILE_KEY);
+      if (p) {
+        if (p.firstName) setFirstName(p.firstName);
+        if (p.lastName) setLastName(p.lastName);
+        if (p.email) setUserEmail(p.email);
+        if (p.avatarUrl) setAvatarUrl(p.avatarUrl);
+        if (p.userId != null) setUserId(p.userId);
+        if (typeof p.isOnline === 'boolean') setIsOnline(p.isOnline);
+      }
+      const c = peekCache<CachedProvider>(PROVIDER_CACHE_KEY);
+      if (c) {
+        setProviderState(c.providerState);
+        setRejectionReason(c.rejectionReason ?? null);
+      }
+    });
+    return () => { alive = false; };
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -107,6 +145,7 @@ export default function AccountScreen() {
    */
   const commitProviderState = useCallback((next: ProviderState) => {
     setProviderState(next);
+    patchCache<CachedProvider>(PROVIDER_CACHE_KEY, { providerState: next });
     providerStateReadyRef.current = true;
     setProviderStateReady(true);
     if (userId != null) lastResolvedRef.current = { userId, state: next };
@@ -117,6 +156,20 @@ export default function AccountScreen() {
   const commitProviderStateRef = useRef(commitProviderState);
   commitProviderStateRef.current = commitProviderState;
 
+  // State + cache for the rejection reason.
+  const applyRejection = useCallback((reason: string | null) => {
+    setRejectionReason(reason);
+    patchCache<CachedProvider>(PROVIDER_CACHE_KEY, { rejectionReason: reason });
+  }, []);
+
+  // Network failed / session unavailable: fall back to the LAST KNOWN provider status
+  // (instead of pretending the user is not a provider).
+  const commitFromCache = useCallback(() => {
+    const c = peekCache<CachedProvider>(PROVIDER_CACHE_KEY);
+    if (c) setRejectionReason(c.rejectionReason ?? null);
+    commitProviderState(c?.providerState ?? 'none');
+  }, [commitProviderState]);
+
   const fetchUserData = useCallback(async () => {
     try {
       setImgKey(Date.now());
@@ -124,10 +177,10 @@ export default function AccountScreen() {
       providerStateReadyRef.current = false;
       setProviderStateReady(false);
 
-      const { data: { user } } = await supabase.auth.getUser();
+      // Offline-safe: falls back to the locally stored session.
+      const user = await resolveAuthUser();
       if (!user) {
-        // No session — don't pretend we know anything.
-        commitProviderState('none');
+        commitFromCache();
         return;
       }
 
@@ -137,7 +190,13 @@ export default function AccountScreen() {
         setAvatarUrl(user.user_metadata.avatar_url);
         setImageError(false);
       }
-      setUserEmail(user.email || 'john.doe@example.com');
+      setUserEmail(user.email || '');
+      patchCache<CachedProfile>(PROFILE_KEY, {
+        email: user.email || undefined,
+        firstName: user.user_metadata?.first_name || undefined,
+        lastName: user.user_metadata?.last_name || undefined,
+        avatarUrl: user.user_metadata?.avatar_url || undefined,
+      });
 
       const { data: userData, error: userError } = await supabase
         .from('users')
@@ -145,10 +204,10 @@ export default function AccountScreen() {
         .eq('auth_id', user.id)
         .maybeSingle();
 
-      if (userError || !userData) {
-        commitProviderState('none');
-        return;
-      }
+      if (userError) { commitFromCache(); return; }      // network blip -> keep last known
+      if (!userData) { commitProviderState('none'); return; }
+
+      fetchedFreshRef.current = true;
       setUserId(userData.user_id);
       setIsOnline(!!(userData as any).is_online);
 
@@ -167,16 +226,20 @@ export default function AccountScreen() {
         setAvatarUrl(userData.profile_photo);
         setImageError(false);
       }
+      patchCache<CachedProfile>(PROFILE_KEY, {
+        userId: userData.user_id,
+        isOnline: !!(userData as any).is_online,
+        firstName: user.user_metadata?.first_name || userData.first_name || undefined,
+        lastName: user.user_metadata?.last_name || userData.last_name || undefined,
+        avatarUrl: user.user_metadata?.avatar_url || userData.profile_photo || undefined,
+      });
 
       const { data: userRoles, error: rolesError } = await supabase
         .from('user_roles')
         .select(`role_id, roles!inner (role_name)`)
         .eq('user_id', userData.user_id);
 
-      if (rolesError) {
-        commitProviderState('none');
-        return;
-      }
+      if (rolesError) { commitFromCache(); return; }
 
       const hasProviderRole = (userRoles || []).some(
         (ur: any) => ur.roles?.role_name === 'Provider'
@@ -190,40 +253,43 @@ export default function AccountScreen() {
         .limit(1)
         .maybeSingle();
 
+      // Query failed (offline) -> do NOT guess "none"/"pending"; keep the last known state.
+      if (verifError) { commitFromCache(); return; }
+
       if (!hasProviderRole && !verif) {
-        setRejectionReason(null);
+        applyRejection(null);
         commitProviderState('none');
         return;
       }
 
-      if (verifError || !verif) {
-        setRejectionReason(null);
+      if (!verif) {
+        applyRejection(null);
         commitProviderState('pending');
         return;
       }
 
       const status = (verif.verification_status || '').toLowerCase();
       if (status === 'approved' || status === 'verified') {
-        setRejectionReason(null);
+        applyRejection(null);
         commitProviderState('approved');
         void notifyOnApplicationDecision(userData.user_id, 'approved');
       } else if (status === 'rejected') {
         const reason = verif.rejection_reason?.trim() || null;
-        setRejectionReason(reason);
+        applyRejection(reason);
         commitProviderState('rejected');
         void notifyOnApplicationDecision(userData.user_id, 'rejected', reason);
         await checkAndShowRejectionAutoModal(userData.user_id, verif.verification_id ?? null, reason);
       } else {
-        setRejectionReason(null);
+        applyRejection(null);
         commitProviderState('pending');
         void notifyOnApplicationDecision(userData.user_id, 'pending');
       }
     } catch (error) {
-      console.error('Error fetching user data:', error);
+      console.warn('Error fetching user data:', error);
       // Safety: don't leave the row stuck as unresolved on a network blip.
-      commitProviderState('none');
+      commitFromCache();
     }
-  }, [checkAndShowRejectionAutoModal, commitProviderState]);
+  }, [checkAndShowRejectionAutoModal, commitProviderState, commitFromCache, applyRejection]);
 
   useFocusEffect(useCallback(() => { fetchUserData(); }, [fetchUserData]));
 
@@ -244,17 +310,17 @@ export default function AccountScreen() {
           const status = String(updated.verification_status || '').toLowerCase();
           if (status === 'rejected') {
             const reason = updated.rejection_reason?.trim() || null;
-            setRejectionReason(reason);
+            applyRejection(reason);
             commitProviderStateRef.current('rejected');
             setRejectionModalVisible(true);
             void notifyOnApplicationDecision(userId, 'rejected', reason);
           } else if (status === 'approved' || status === 'verified') {
-            setRejectionReason(null);
+            applyRejection(null);
             commitProviderStateRef.current('approved');
             setRejectionModalVisible(false);
             void notifyOnApplicationDecision(userId, 'approved');
           } else if (status === 'pending') {
-            setRejectionReason(null);
+            applyRejection(null);
             commitProviderStateRef.current('pending');
             setRejectionModalVisible(false);
             void notifyOnApplicationDecision(userId, 'pending');
@@ -267,7 +333,10 @@ export default function AccountScreen() {
         { event: 'UPDATE', schema: 'public', table: 'users', filter: `user_id=eq.${userId}` },
         (payload) => {
           const row = payload.new as any;
-          if (row && typeof row.is_online === 'boolean') setIsOnline(row.is_online);
+          if (row && typeof row.is_online === 'boolean') {
+            setIsOnline(row.is_online);
+            patchCache<CachedProfile>(PROFILE_KEY, { isOnline: row.is_online });
+          }
         }
       )
       .subscribe();
@@ -282,6 +351,7 @@ export default function AccountScreen() {
         style: 'destructive',
         onPress: async () => {
           await clearLastMode();
+          await clearOfflineCache();
           await supabase.auth.signOut();
           navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
         },
