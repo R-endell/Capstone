@@ -30,6 +30,10 @@ const BRAND_ORANGE = '#FF751F';
 // Daily / Weekly routes automatically roll over to their next scheduled run.
 const HIDE_AFTER_DEPARTURE_MIN = 10;
 const HIDE_AFTER_DEPARTURE_MS = HIDE_AFTER_DEPARTURE_MIN * 60 * 1000;
+// Daily / Weekly routes come back this many hours BEFORE their next departure (not earlier).
+// e.g. a daily 11:30 PM route is hidden at 12:38 AM and shows again from 8:30 PM.
+const RECURRING_SHOW_HOURS_BEFORE = 3;
+const RECURRING_SHOW_MS = RECURRING_SHOW_HOURS_BEFORE * 60 * 60 * 1000;
 const KEEP_LIVE_ROUTES_VISIBLE = false;
 const SHOW_OWN_ROUTES = __DEV__;
 const SEND_NOW_WINDOW_MIN = 60;
@@ -107,44 +111,45 @@ const formatKm = (km: number) => (km < 1 ? `${Math.max(50, Math.round(km * 10) *
 const radiusLabel = (r: number | null) => (r === null ? 'Any distance' : `${r} km`);
 
 // Project Daily/Weekly routes to their current or next run.
-// Once a run is more than HIDE_AFTER_DEPARTURE_MIN past departure, roll to the next run.
+//  - One-time route: visible until HIDE_AFTER_DEPARTURE_MIN after its departure, then gone for good.
+//  - Daily / Weekly: once the current run is more than HIDE_AFTER_DEPARTURE_MIN past departure it DISAPPEARS,
+//    then it comes back (`visibleFrom`) RECURRING_SHOW_HOURS_BEFORE hours before its next run, and disappears again
+//    HIDE_AFTER_DEPARTURE_MIN after that run's departure.
 const occurrenceFor = (
   t: { departureTime: Date; endTime?: Date | null; routeFrequency: string },
   nowMs: number,
-): { dep: Date; end: Date } => {
+): { dep: Date; end: Date; visibleFrom: number } => {
   const dep = t.departureTime;
   const depMs = safeTime(dep);
   const endMs = t.endTime ? safeTime(t.endTime) : Infinity;
   const durMs = endMs !== Infinity && endMs > depMs ? endMs - depMs : 4 * 60 * 60 * 1000;
   const freq = (t.routeFrequency || '').trim().toLowerCase();
   if ((freq !== 'daily' && freq !== 'weekly') || depMs > nowMs) {
-    return { dep, end: new Date(depMs + durMs) };
+    return { dep, end: new Date(depMs + durMs), visibleFrom: -Infinity };
   }
   const today = new Date(nowMs);
   for (let i = 0; i < 8; i++) {
     const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i, dep.getHours(), dep.getMinutes());
     if (freq === 'weekly' && start.getDay() !== dep.getDay()) continue;
     if (start.getTime() + HIDE_AFTER_DEPARTURE_MS >= nowMs) {
-      return { dep: start, end: new Date(start.getTime() + durMs) };
+      return { dep: start, end: new Date(start.getTime() + durMs), visibleFrom: start.getTime() - RECURRING_SHOW_MS };
     }
   }
-  return { dep, end: new Date(depMs + durMs) };
+  return { dep, end: new Date(depMs + durMs), visibleFrom: -Infinity };
 };
 
 const minutesUntil = (d: Date, now: number) => Math.round((safeTime(d) - now) / 60000);
 
 const formatTimeLabel = (dep: Date): string => {
-  const diffMin = Math.round((safeTime(dep) - Date.now()) / 60000);
+  const nowD = new Date();
+  const diffMin = Math.round((safeTime(dep) - nowD.getTime()) / 60000);
+  const timeTxt = dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   if (diffMin < 0) return 'On the road now';
   if (diffMin < 60) return `Leaves in ${diffMin} mins`;
-  if (diffMin < 1440) {
-    return `Today at ${dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-  }
-  return (
-    dep.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-    ' at ' +
-    dep.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  );
+  const tomorrow = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate() + 1);
+  if (dep.toDateString() === nowD.toDateString()) return `Today at ${timeTxt}`;
+  if (dep.toDateString() === tomorrow.toDateString()) return `Tomorrow at ${timeTxt}`;
+  return dep.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' + timeTxt;
 };
 
 const fromRpcRow = (r: any) => ({
@@ -420,9 +425,19 @@ export default function ExploreScreen() {
       if (!SHOW_OWN_ROUTES && myUserId != null && t.providerId === myUserId) return;
 
       const occ = occurrenceFor(t, now);
+      if (__DEV__) {
+        console.log(
+          `[explore] route ${t.routeId} ${t.routeFrequency} | stored dep ${t.departureTime?.toString?.()} | ` +
+          `run ${occ.dep.toString()} | visibleFrom ${occ.visibleFrom === -Infinity ? 'always' : new Date(occ.visibleFrom).toString()} | ` +
+          `hidden=${now < occ.visibleFrom || now > safeTime(occ.dep) + HIDE_AFTER_DEPARTURE_MS}`,
+        );
+      }
       const fix = fixes[t.providerId] ?? null;
       const live = isFixFresh(fix, now);
       const mins = minutesUntil(occ.dep, now);
+
+      // Daily/Weekly: stay hidden between runs (after today's run closed, until the next run's day starts).
+      if (now < occ.visibleFrom) return;
 
       // Hide route once it is 10 minutes past its departure time.
       if (now > safeTime(occ.dep) + HIDE_AFTER_DEPARTURE_MS && !(KEEP_LIVE_ROUTES_VISIBLE && live)) {
