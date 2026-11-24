@@ -100,7 +100,7 @@ import {
   startBackgroundMatcher,
   stopBackgroundMatcher,
 } from './src/services/backgroundMatcher';
-import { setActiveRouteId } from './src/services/activeRouteStore';
+import { setActiveRouteId, getActiveRouteId } from './src/services/activeRouteStore';
 import { useTabBarHidden } from './src/services/tabBarVisibilityStore';
 
 import PaymentMethodsScreen from './src/modules/Settings/PaymentMethodsScreen';
@@ -666,10 +666,23 @@ function AppInner() {
         return;
       }
 
-      const { data: routeRow } = await supabase.from('provider_routes').select('route_id').eq('provider_id', userRow.user_id).order('created_at', { ascending: false }).limit(1).maybeSingle();
-      if (!routeRow?.route_id) return;
+      const { data: myRoutes } = await supabase
+        .from('provider_routes')
+        .select('route_id, is_selected, created_at')
+        .eq('provider_id', userRow.user_id)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: false });
+      if (!myRoutes?.length) return;
 
-      await setActiveRouteId(routeRow.route_id);
+      // Keep the route the provider picked. Only choose one when nothing valid is saved
+      // (first run, other account, route deleted): prefer the DB-selected route, else the newest.
+      // (This used to overwrite the selection with the newest route on every login / app resume.)
+      const savedId = await getActiveRouteId();
+      const savedStillValid = savedId != null && myRoutes.some((r: any) => r.route_id === savedId);
+      const routeRow = savedStillValid
+        ? { route_id: savedId as number }
+        : (myRoutes.find((r: any) => r.is_selected === true) ?? myRoutes[0]);
+      if (!savedStillValid) await setActiveRouteId(routeRow.route_id);
 
       if (!matcherStartedRef.current) {
         try {
