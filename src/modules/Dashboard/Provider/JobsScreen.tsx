@@ -668,6 +668,19 @@ const ProviderMap = React.memo(({
   const hasRoute = sLat != null && sLng != null && eLat != null && eLng != null;
   const routeKey = hasRoute ? roadCacheKey({ lat: sLat!, lng: sLng! }, { lat: eLat!, lng: eLng! }) : '';
 
+  // Android's native map can keep the OLD route's line (-> two lines) or lose the pins when overlays are
+  // removed and re-added in the SAME frame. So whenever the selected route (or the overlay epoch) changes we
+  // first render the map with NO overlays, and only draw the new ones ~90 ms later (a different frame).
+  const viewKey = `${routeKey}#${overlayEpoch}`;
+  const [shownKey, setShownKey] = useState(viewKey);
+  useEffect(() => {
+    if (shownKey === viewKey) return;
+    const t = setTimeout(() => setShownKey(viewKey), 90);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey]);
+  const overlaysOn = shownKey === viewKey;
+
   // ---- trip: numbered pins only. The only line on the map is the provider's POSTED route (start -> end). ----
   const tripPins: TripPin[] = trip;
   const hasTrip = tripPins.length > 0;
@@ -824,7 +837,7 @@ const ProviderMap = React.memo(({
       pitchEnabled={false}
     >
       {/* Matching corridor radii (outermost first so inner zones stay crisp) */}
-      {hasRoute && fallbackPolygon.length > 3 && (
+      {overlaysOn && hasRoute && fallbackPolygon.length > 3 && (
         <Polygon
           key={`poly-fb-${overlayEpoch}-${routeKey}`}
           coordinates={fallbackPolygon}
@@ -834,7 +847,7 @@ const ProviderMap = React.memo(({
           zIndex={1}
         />
       )}
-      {hasRoute && doorPolygon.length > 3 && (
+      {overlaysOn && hasRoute && doorPolygon.length > 3 && (
         <Polygon
           key={`poly-door-${overlayEpoch}-${routeKey}`}
           coordinates={doorPolygon}
@@ -844,7 +857,7 @@ const ProviderMap = React.memo(({
           zIndex={2}
         />
       )}
-      {hasRoute && curbPolygon.length > 3 && (
+      {overlaysOn && hasRoute && curbPolygon.length > 3 && (
         <Polygon
           key={`poly-curb-${overlayEpoch}-${routeKey}`}
           coordinates={curbPolygon}
@@ -856,9 +869,9 @@ const ProviderMap = React.memo(({
       )}
 
       {/* the posted route: always drawn, with or without accepted orders */}
-      {hasRoute && lineCoords.length > 1 && (
+      {overlaysOn && hasRoute && lineCoords.length > 1 && (
         <Polyline
-          key={`line-${overlayEpoch}-${routeKey}-${lineCoords.length}`}
+          key={`line-${viewKey}-${lineCoords.length}`}
           coordinates={lineCoords}
           strokeColor={BRAND_ORANGE}
           strokeWidth={6}
@@ -867,9 +880,9 @@ const ProviderMap = React.memo(({
           zIndex={4}
         />
       )}
-      {hasRoute && (
+      {overlaysOn && hasRoute && (
         <RoutePlaceMarker
-          key={`start-${overlayEpoch}`}
+          key={`start-${viewKey}`}
           lat={sLat!}
           lng={sLng!}
           title={route.start.title || 'Starting Point'}
@@ -878,9 +891,9 @@ const ProviderMap = React.memo(({
           mk={mapStyles}
         />
       )}
-      {hasRoute && (
+      {overlaysOn && hasRoute && (
         <RoutePlaceMarker
-          key={`end-${overlayEpoch}`}
+          key={`end-${viewKey}`}
           lat={eLat!}
           lng={eLng!}
           title={route.end.title || 'Destination'}
@@ -890,13 +903,13 @@ const ProviderMap = React.memo(({
         />
       )}
 
-      {hasTrip && tripPins.map(pin => (
-        <TripPinMarker key={`${pin.key}-${overlayEpoch}`} pin={pin} mk={mapStyles} />
+      {overlaysOn && hasTrip && tripPins.map(pin => (
+        <TripPinMarker key={`${pin.key}-${viewKey}`} pin={pin} mk={mapStyles} />
       ))}
 
-      {provider && (
+      {overlaysOn && provider && (
         <ProviderPin
-          key={`me-${overlayEpoch}`}
+          key={`me-${viewKey}`}
           lat={provider.lat}
           lng={provider.lng}
           online={online}
@@ -2007,6 +2020,7 @@ export default function JobsScreen() {
   // Timestamp of the last route switch made on this device. Background reloads use it to know
   // that the provider's choice must win over whatever an older, slower load resolved.
   const lastLocalSelectAtRef = useRef(0);
+  const routeSelectSeqRef = useRef(0); // +1 on every local route switch; lets an in-flight fetchRoutes know it is stale
   const applyRouteRef = useRef<(r: Route, persist: boolean) => Promise<void>>(async () => {});
 
   // loadData() silently bails when another load is running or a modal is open. For reloads we
@@ -2145,6 +2159,7 @@ export default function JobsScreen() {
   };
 
   const fetchRoutes = async (pid: number, alreadyHealed = false): Promise<{ resolvedRoute: Route | null; validRoutes: Route[] }> => {
+    const selectSeqAtStart = routeSelectSeqRef.current;
     try {
       const [stats, { data, error }] = await Promise.all([
         getTodayRouteStats(pid),
@@ -2182,7 +2197,12 @@ export default function JobsScreen() {
       setRoutes(validRoutes);
       routesRef.current = validRoutes;
 
-      const savedId = await getActiveRouteId();
+      const savedIdStored = await getActiveRouteId();
+      // The provider picked another route while this fetch was in flight: the stored id may still be the OLD one,
+      // so trust the route that is selected on screen right now (otherwise the map flips back to the old route).
+      const savedId = routeSelectSeqRef.current !== selectSeqAtStart
+        ? (activeRouteRef.current?.route_id ?? savedIdStored)
+        : savedIdStored;
       const restored = savedId ? validRoutes.find((r) => r.route_id === savedId) : null;
 
       // When the route is finished / expired there is no active route any more, but the map should still draw the
@@ -2199,7 +2219,9 @@ export default function JobsScreen() {
         if (restored.is_selected !== true) void syncSelectedRouteToDb(restored.route_id, true);
         return { resolvedRoute: restored, validRoutes };
       } else if (validRoutes.length > 0) {
-        const firstRoute = validRoutes[0];
+        // No usable saved id (expired / deleted / other account / storage read failed): prefer the route that is
+        // still flagged is_selected in the database (the provider's last real choice) instead of the newest one.
+        const firstRoute = validRoutes.find((r) => r.is_selected === true) ?? validRoutes[0];
         setActiveRoute(firstRoute);
         activeRouteRef.current = firstRoute;
         await setActiveRouteId(firstRoute.route_id);
@@ -2426,6 +2448,7 @@ export default function JobsScreen() {
   const applyActiveRoute = useCallback(async (r: Route, persist: boolean) => {
     if (!r) return;
     lastLocalSelectAtRef.current = Date.now();
+    routeSelectSeqRef.current += 1;
     refreshSeqRef.current += 1;      // stale refreshMatches() calls can no longer write state
     awaitingSeqRef.current += 1;     // same for loadAwaiting()
     setActiveRoute(r);
@@ -2790,6 +2813,7 @@ export default function JobsScreen() {
           ? routesRef.current
           : [optimisticRoute, ...routesRef.current];
 
+        routeSelectSeqRef.current += 1;
         setActiveRoute(optimisticRoute);
         activeRouteRef.current = optimisticRoute;
         await setActiveRouteId(optimisticRoute.route_id);
@@ -2823,7 +2847,7 @@ export default function JobsScreen() {
       let currentRoute = activeRoute && !isRouteExpired(activeRoute) ? activeRoute : null;
       if (!currentRoute) {
         if (routes.length > 0) {
-          currentRoute = routes[0];
+          currentRoute = routes.find((r) => r.is_selected === true) ?? routes[0];
           setActiveRoute(currentRoute);
           activeRouteRef.current = currentRoute;
           await setActiveRouteId(currentRoute.route_id);
@@ -4514,8 +4538,9 @@ export default function JobsScreen() {
                   onPress={() => { setRoutePickerVisible(false); openAddRouteModal(); }}
                   activeOpacity={0.85}
                   hitSlop={8}
+                  style={styles.routePickerAddBtn}
                 >
-                  <SolarIcon name="Plus" variant="bold" size={20} color="#FFFFFF" />
+                  <SolarIcon name="AddCircle" variant="linear" size={20} color="#FFFFFF" />
                 </TouchableOpacity>
 
                 <TouchableOpacity onPress={() => setRoutePickerVisible(false)} hitSlop={8}>
@@ -4784,6 +4809,7 @@ const makeStyles = (c: ThemeColors, isDark: boolean) => {
         alignSelf: 'center', marginBottom: 14,
       },
     routePickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+    routePickerAddBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: BRAND_ORANGE, alignItems: 'center', justifyContent: 'center' },
     routePickerTitle: { fontSize: 17, fontFamily: 'Poppins_700Bold', color: c.textPrimary },
     routePickerEmpty: { alignItems: 'center', paddingVertical: 40, gap: 10 },
     routePickerEmptyTitle: { fontSize: 16, fontFamily: 'Poppins_700Bold', color: c.textPrimary, marginTop: 8 },
